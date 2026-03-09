@@ -1520,3 +1520,134 @@ def get_all_predictions(
     )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Best-prediction selection with expected-error scoring
+# ---------------------------------------------------------------------------
+
+def select_best_prediction(
+    all_predictions: Dict[str, Optional[PredictionResult]],
+) -> PredictionResult:
+    """
+    Select the best prediction from a dict returned by get_all_predictions().
+
+    Uses expected-error scoring rather than a simple cascade:
+        1. Score each available prediction by expected error (seconds).
+        2. Apply a spread penalty if the methods disagree significantly.
+        3. Return the prediction with the lowest expected error.
+
+    Manual overrides are always preferred unconditionally.
+
+    Expected error formula (ported from STRATHEX select_best_prediction()):
+        base  = confidence_to_error[confidence]
+        +0.5  if method is 'llm' (slight variance penalty)
+        +1.5  if metadata['scaled'] is True (diameter/species normalization)
+        -1.0  if metadata['tournament_weighted'] is True (same-wood bonus, floor 0.5)
+
+    Spread penalty (applied to overall confidence):
+        max_diff >= 6s or >= 25% of mean  -> downgrade 2 steps
+        max_diff >= 4s or >= 12% of mean  -> downgrade 1 step
+
+    Args:
+        all_predictions: Dict returned by get_all_predictions(), keys are
+                         'manual', 'llm', 'ml', 'baseline', 'panel'.
+                         Each value is a PredictionResult or None.
+
+    Returns:
+        The PredictionResult selected as best. Never None (panel mark is the
+        unconditional fallback and is always present).
+    """
+    _confidence_order = ['VERY HIGH', 'HIGH', 'MEDIUM', 'LOW', 'VERY LOW']
+    _error_map = {
+        'VERY HIGH': 2.0,
+        'HIGH':      3.0,
+        'MEDIUM':    5.0,
+        'LOW':       7.0,
+        'VERY LOW':  9.0,
+    }
+
+    def _expected_error(pred: PredictionResult) -> float:
+        base = _error_map.get(pred.confidence or 'LOW', 7.0)
+        if pred.method == 'llm':
+            base += 0.5
+        meta = pred.metadata or {}
+        if meta.get('scaled', False):
+            base += 1.5
+        if meta.get('tournament_weighted', False):
+            base = max(0.5, base - 1.0)
+        return base
+
+    def _downgrade(conf: str, steps: int) -> str:
+        idx = _confidence_order.index(conf) if conf in _confidence_order else 3
+        return _confidence_order[min(len(_confidence_order) - 1, idx + steps)]
+
+    # Manual override wins unconditionally
+    manual = all_predictions.get('manual')
+    if manual is not None:
+        return manual
+
+    # Gather scoreable candidates (ml, llm, baseline; not panel unless nothing else)
+    primary_keys = ['ml', 'llm', 'baseline']
+    candidates = [
+        all_predictions[k]
+        for k in primary_keys
+        if all_predictions.get(k) is not None
+    ]
+
+    if not candidates:
+        # Fall back to panel mark
+        panel = all_predictions.get('panel')
+        if panel is not None:
+            return panel
+        raise RuntimeError(
+            "select_best_prediction: all prediction levels are None, "
+            "including panel mark fallback."
+        )
+
+    # Score and pick lowest expected error
+    scored = [(pred, _expected_error(pred)) for pred in candidates]
+    best_pred, best_error = min(scored, key=lambda x: x[1])
+
+    # Apply spread penalty
+    values = [p.value for p in candidates]
+    spread_penalty = 0
+    if len(values) >= 2:
+        mean_v = sum(values) / len(values)
+        max_diff = max(values) - min(values)
+        pct_diff = max_diff / mean_v if mean_v else 0.0
+        if max_diff >= 6.0 or pct_diff >= 0.25:
+            spread_penalty = 2
+        elif max_diff >= 4.0 or pct_diff >= 0.12:
+            spread_penalty = 1
+
+    # Derive overall confidence from expected error, then apply spread penalty
+    if best_error <= 2.5:
+        overall_conf = 'VERY HIGH'
+    elif best_error <= 3.5:
+        overall_conf = 'HIGH'
+    elif best_error <= 5.5:
+        overall_conf = 'MEDIUM'
+    elif best_error <= 7.5:
+        overall_conf = 'LOW'
+    else:
+        overall_conf = 'VERY LOW'
+
+    if spread_penalty:
+        overall_conf = _downgrade(overall_conf, spread_penalty)
+
+    # If overall confidence differs from method confidence, annotate explanation
+    explanation = best_pred.explanation
+    if best_pred.confidence != overall_conf and explanation:
+        explanation = (
+            f"{explanation} [Method conf: {best_pred.confidence}, "
+            f"overall conf: {overall_conf}]"
+        )
+
+    return PredictionResult(
+        value=best_pred.value,
+        confidence=overall_conf,
+        method=best_pred.method,
+        explanation=explanation,
+        metadata=best_pred.metadata,
+    )

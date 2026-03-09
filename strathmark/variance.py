@@ -408,6 +408,10 @@ def run_monte_carlo_simulation(
     num_simulations: int = 2_000_000,
     heat_variance_seconds: float = HEAT_VARIANCE_SECONDS,
     seed: Optional[int] = None,
+    track_finish_orders: bool = False,
+    track_podium_margins: bool = False,
+    show_live_leaders: bool = False,
+    progress_interval: int = 50000,
 ) -> Dict:
     """
     Run num_simulations races and return fairness statistics.
@@ -473,6 +477,16 @@ def run_monte_carlo_simulation(
     # Track individual finish times for per-competitor statistics
     competitor_finish_times = {comp['name']: [] for comp in competitors}
 
+    # Optional tracking for finish orders, podium margins, photo-finish
+    order_counts: Optional[Dict] = {} if track_finish_orders else None
+    order_scope = "podium" if track_finish_orders and len(competitors) > 8 else "full"
+    margin_12_sum = 0.0
+    margin_23_sum = 0.0
+    margin_12_count = 0
+    margin_23_count = 0
+    photo_finish_count = 0
+    photo_finish_threshold = 0.25
+
     # Track front marker (slowest predicted, starts first)
     front_marker_name = max(competitors, key=lambda x: x['predicted_time'])['name']
     back_marker_name = min(competitors, key=lambda x: x['predicted_time'])['name']
@@ -481,8 +495,14 @@ def run_monte_carlo_simulation(
     print(f"Simulating races with per-competitor variance and +/-{heat_variance_seconds:.1f}s heat variance...")
 
     for i in range(num_simulations):
-        if (i + 1) % 50000 == 0:
+        if progress_interval and (i + 1) % progress_interval == 0:
             print(f"  Completed {i + 1:,}/{num_simulations:,} simulations...")
+            if show_live_leaders:
+                leaders = sorted(winner_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+                leader_str = ", ".join(
+                    [f"{name} {count / (i + 1) * 100:.1f}%" for name, count in leaders]
+                )
+                print(f"    Leaders: {leader_str}")
 
         # Run one race (full result needed for spread and position tracking)
         if rng is None:
@@ -527,6 +547,26 @@ def run_monte_carlo_simulation(
         for result in race_results:
             competitor_finish_times[result['name']].append(result['finish_time'])
 
+        # Track podium margins and photo-finish rate
+        if track_podium_margins and len(race_results) >= 2:
+            margin_12 = race_results[1]['finish_time'] - race_results[0]['finish_time']
+            margin_12_sum += margin_12
+            margin_12_count += 1
+            if margin_12 <= photo_finish_threshold:
+                photo_finish_count += 1
+            if len(race_results) >= 3:
+                margin_23 = race_results[2]['finish_time'] - race_results[1]['finish_time']
+                margin_23_sum += margin_23
+                margin_23_count += 1
+
+        # Track most common finish order
+        if order_counts is not None:
+            if order_scope == "full":
+                order_key = tuple(r['name'] for r in race_results)
+            else:
+                order_key = tuple(r['name'] for r in race_results[:3])
+            order_counts[order_key] = order_counts.get(order_key, 0) + 1
+
     # Calculate statistics
     avg_finish_positions = {
         name: pos_sum / num_simulations
@@ -551,6 +591,24 @@ def run_monte_carlo_simulation(
         )
 
     spreads_arr = np.array(finish_spreads)
+
+    # Derive optional tracking results
+    most_common_order = None
+    most_common_order_pct = None
+    if order_counts:
+        most_common_order = max(order_counts.items(), key=lambda x: x[1])[0]
+        most_common_order_pct = (order_counts[most_common_order] / num_simulations) * 100.0
+
+    avg_margin_12 = (margin_12_sum / margin_12_count) if margin_12_count else None
+    avg_margin_23 = (margin_23_sum / margin_23_count) if margin_23_count else None
+    photo_finish_pct = (
+        (photo_finish_count / margin_12_count * 100.0) if margin_12_count else None
+    )
+
+    competitor_variances = {
+        comp['name']: _get_competitor_variance_seconds(comp)
+        for comp in competitors
+    }
 
     analysis = {
         'num_simulations': num_simulations,
@@ -579,6 +637,16 @@ def run_monte_carlo_simulation(
         'competitors': competitors,
         'competitor_time_stats': competitor_time_stats,
         'heat_variance_seconds': heat_variance_seconds,
+        'competitor_variances': competitor_variances,
+        # Optional finish order tracking
+        'most_common_order': most_common_order,
+        'most_common_order_pct': most_common_order_pct,
+        'most_common_order_scope': order_scope if order_counts is not None else None,
+        # Optional podium margin tracking
+        'avg_podium_margin_12': avg_margin_12,
+        'avg_podium_margin_23': avg_margin_23,
+        'photo_finish_pct': photo_finish_pct,
+        'photo_finish_threshold': photo_finish_threshold,
     }
 
     return analysis
