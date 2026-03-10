@@ -129,36 +129,36 @@ def build_feature_matrix(
     wood_df: pd.DataFrame,
 ) -> Tuple[pd.DataFrame, pd.Series]:
     """
-    Build the XGBoost feature matrix from raw results.
+    Build the XGBoost/LightGBM feature matrix from raw results.
 
-    Features (25 total, matching MLConfig.FEATURE_NAMES):
-        1.  competitor_avg_time_by_event  - leave-one-out mean per competitor/event
-        2.  event_encoded                 - 0=SB, 1=UH
-        3.  size_mm                       - block diameter
-        4.  wood_janka_hardness           - Janka N (continuous)
-        5.  wood_spec_gravity             - specific gravity (continuous)
-        6.  wood_shear_strength           - shear strength
-        7.  wood_crush_strength           - crush strength
-        8.  wood_MOR                      - modulus of rupture
-        9.  wood_MOE                      - modulus of elasticity
-        10. competitor_experience         - total result count for competitor
-        11. competitor_trend_slope        - linear trend (seconds/day) last 5 results
-        12. wood_quality                  - quality rating 1-10
-        13. diameter_squared              - size_mm ** 2
-        14. quality_x_diameter            - quality * size_mm
-        15. quality_x_hardness            - quality * janka_hard
-        16. experience_x_size             - experience * size_mm
-        17. competitor_variance           - std dev of competitor times
-        18. competitor_median_diameter    - median historical diameter
-        19. recency_score                 - decay-weighted recency (days since last result)
-        20. career_phase                  - 0=early(<5 results), 1=mid(5-20), 2=established(>20)
-        21. seasonal_month_sin            - sin(2*pi*month/12)
-        22. seasonal_month_cos            - cos(2*pi*month/12)
-        23. event_x_diameter              - event_encoded * size_mm
-        24. peer_event_avg_time           - avg time for competitor in OTHER event
-        25. uh_to_sb_ratio                - competitor's UH/SB mean ratio
-
-    Also computes per-row sample_weight using exponential time-decay.
+    Features (27 total, matching MLConfig.FEATURE_NAMES):
+        1.  comp_weighted_avg         - leave-one-out mean per competitor/event
+        2.  comp_count                - result count for competitor/event
+        3.  comp_std                  - std dev of competitor times
+        4.  comp_best                 - all-time best for competitor/event
+        5.  comp_recent               - most recent result time
+        6.  comp_trend                - linear trend slope (sec/result)
+        7.  comp_cross_event_avg      - avg time in OTHER event (SB<->UH)
+        8.  days_since_last           - days between last two results
+        9.  size_deviation            - size_mm minus competitor median diameter
+        10. event_encoded             - 0=SB, 1=UH
+        11. gender_encoded            - 0=F, 1=M
+        12. janka_hard                - Janka hardness
+        13. spec_gravity              - specific gravity
+        14. crush_strength            - crush strength
+        15. shear                     - shear strength
+        16. MOR                       - modulus of rupture
+        17. MOE                       - modulus of elasticity
+        18. species_mult              - empirical species time multiplier
+        19. size_mm                   - block diameter
+        20. size_mm_sq                - size_mm ** 2
+        21. log_size                  - log(size_mm)
+        22. event_x_size              - event_encoded * size_mm
+        23. species_mult_x_size       - species_mult * size_mm
+        24. comp_avg_x_species        - comp_weighted_avg * species_mult
+        25. comp_avg_x_size           - comp_weighted_avg * size_mm / 300.0
+        26. month_sin                 - sin(2*pi*month/12)
+        27. month_cos                 - cos(2*pi*month/12)
 
     Args:
         results_df: Standardized results DataFrame.
@@ -168,7 +168,7 @@ def build_feature_matrix(
         (feature_df, target_series) where target is raw_time.
     """
     from strathmark.utils import standardize_results_columns
-    from strathmark.wood import get_species_properties
+    from strathmark.wood import get_species_properties, get_species_time_multiplier
 
     df = standardize_results_columns(results_df).copy()
     df = df.dropna(subset=['raw_time', 'event', 'competitor_name', 'size_mm'])
@@ -183,8 +183,7 @@ def build_feature_matrix(
 
     _log.info("Building features for %d rows...", len(df))
 
-    # Parse dates for decay weighting
-    today = datetime.now().date()
+    # Parse dates
     if 'result_date' in df.columns:
         df['result_date'] = pd.to_datetime(df['result_date'], errors='coerce')
     else:
@@ -205,65 +204,56 @@ def build_feature_matrix(
             return default
         return df['_props'].apply(lambda p: getattr(p, col, default) if p else default)
 
-    df['wood_janka_hardness'] = _prop('janka_hardness', 1690.0) if 'species' in df.columns else 1690.0
-    df['wood_spec_gravity'] = _prop('specific_gravity', 0.34) if 'species' in df.columns else 0.34
-    df['wood_shear_strength'] = _prop('shear_strength', 5.0) if 'species' in df.columns else 5.0
-    df['wood_crush_strength'] = _prop('crush_strength', 30.0) if 'species' in df.columns else 30.0
-    df['wood_MOR'] = _prop('mor', 50.0) if 'species' in df.columns else 50.0
-    df['wood_MOE'] = _prop('moe', 8.0) if 'species' in df.columns else 8.0
+    df['janka_hard'] = _prop('janka_hardness', 1690.0) if 'species' in df.columns else 1690.0
+    df['spec_gravity'] = _prop('specific_gravity', 0.34) if 'species' in df.columns else 0.34
+    df['shear'] = _prop('shear_strength', 5.0) if 'species' in df.columns else 5.0
+    df['crush_strength'] = _prop('crush_strength', 30.0) if 'species' in df.columns else 30.0
+    df['MOR'] = _prop('mor', 50.0) if 'species' in df.columns else 50.0
+    df['MOE'] = _prop('moe', 8.0) if 'species' in df.columns else 8.0
 
     # Drop helper column
     df = df.drop(columns=['_props'], errors='ignore')
 
+    # --- Species time multiplier ---
+    if 'species' in df.columns:
+        df['species_mult'] = df['species'].apply(get_species_time_multiplier)
+    else:
+        df['species_mult'] = 1.0
+
     # --- Event encoding ---
     df['event_encoded'] = (df['event'] == 'UH').astype(int)
 
-    # --- Diameter squared ---
-    df['diameter_squared'] = df['size_mm'] ** 2
-
-    # --- Wood quality (default 5 if not present) ---
-    if 'quality' not in df.columns:
-        df['wood_quality'] = 5.0
-    else:
-        df['wood_quality'] = df['quality'].fillna(5.0).clip(1, 10)
-
     # --- Gender encoding ---
     if 'gender' in df.columns:
-        df['gender_encoded'] = df['gender'].map({'M': 0, 'F': 1, 'male': 0, 'female': 1}).fillna(0).astype(int)
+        df['gender_encoded'] = df['gender'].map({'M': 1, 'F': 0, 'male': 1, 'female': 0}).fillna(0).astype(float)
     else:
-        df['gender_encoded'] = 0
+        df['gender_encoded'] = 0.0
 
     # --- Per-competitor aggregates (leave-one-out to avoid data leakage) ---
     grp_event = df.groupby(['competitor_name', 'event'])['raw_time']
-    df['competitor_count_event'] = grp_event.transform('count')
-    df['competitor_sum_event'] = grp_event.transform('sum')
+    df['_comp_count'] = grp_event.transform('count')
+    df['_comp_sum'] = grp_event.transform('sum')
     # Leave-one-out mean: (sum - this_value) / (count - 1)
-    df['competitor_avg_time_by_event'] = (
-        (df['competitor_sum_event'] - df['raw_time']) /
-        (df['competitor_count_event'] - 1).clip(lower=1)
+    df['comp_weighted_avg'] = (
+        (df['_comp_sum'] - df['raw_time']) /
+        (df['_comp_count'] - 1).clip(lower=1)
     )
-
-    # Experience (total results per competitor, all events)
-    df['competitor_experience'] = df.groupby('competitor_name')['raw_time'].transform('count')
+    df['comp_count'] = df['_comp_count'].astype(float)
 
     # Competitor variance
-    df['competitor_variance'] = df.groupby(['competitor_name', 'event'])['raw_time'].transform('std').fillna(3.0)
+    df['comp_std'] = df.groupby(['competitor_name', 'event'])['raw_time'].transform('std').fillna(3.0)
+
+    # Competitor best
+    df['comp_best'] = df.groupby(['competitor_name', 'event'])['raw_time'].transform('min')
 
     # Median diameter for competitor
-    df['competitor_median_diameter'] = df.groupby('competitor_name')['size_mm'].transform('median')
-
-    # Career phase
-    df['career_phase'] = pd.cut(
-        df['competitor_experience'],
-        bins=[0, 5, 20, float('inf')],
-        labels=[0, 1, 2],
-    ).astype(float).fillna(0)
+    df['_comp_median_diam'] = df.groupby('competitor_name')['size_mm'].transform('median')
+    df['size_deviation'] = df['size_mm'] - df['_comp_median_diam']
 
     # Trend slope (linear regression on last 5 results per competitor/event)
     def _trend_slope(group):
         if len(group) < 3:
             return pd.Series(0.0, index=group.index)
-        # Sort by date
         g = group.copy()
         if 'result_date' in g.columns:
             g = g.sort_values('result_date')
@@ -277,99 +267,95 @@ def build_feature_matrix(
                 slopes[i] = slope
         return pd.Series(slopes, index=g.index)
 
-    df['competitor_trend_slope'] = (
+    df['comp_trend'] = (
         df.groupby(['competitor_name', 'event'], group_keys=False)
         .apply(_trend_slope)
         .fillna(0.0)
     )
 
-    # Peer event avg (UH<->SB cross-event)
-    peer_event = df.copy()
-    peer_event['peer_event'] = peer_event['event'].map({'SB': 'UH', 'UH': 'SB'})
-    peer_means = (
-        peer_event.groupby(['competitor_name', 'event'])['raw_time']
-        .mean()
-        .rename('peer_event_avg_time')
+    # comp_recent and days_since_last (most recent time and interval)
+    def _recent_and_gap(group):
+        g = group.copy()
+        recent = pd.Series(g['raw_time'].mean(), index=g.index)
+        gap = pd.Series(365.0, index=g.index)
+        if 'result_date' in g.columns:
+            g_sorted = g.dropna(subset=['result_date']).sort_values('result_date')
+            if len(g_sorted) > 0:
+                last_time = float(g_sorted.iloc[-1]['raw_time'])
+                recent = pd.Series(last_time, index=g.index)
+                if len(g_sorted) >= 2:
+                    last_gap = float((g_sorted.iloc[-1]['result_date'] - g_sorted.iloc[-2]['result_date']).days)
+                    last_gap = max(0.0, min(1000.0, last_gap))
+                    gap = pd.Series(last_gap, index=g.index)
+        return pd.DataFrame({'comp_recent': recent, 'days_since_last': gap})
+
+    recent_gap = (
+        df.groupby(['competitor_name', 'event'], group_keys=False)
+        .apply(_recent_and_gap)
     )
-    # Remap: competitor's UH avg -> for SB rows, and vice versa
+    df['comp_recent'] = recent_gap['comp_recent']
+    df['days_since_last'] = recent_gap['days_since_last']
+
+    # Peer event avg (UH<->SB cross-event)
+    peer_means = (
+        df.groupby(['competitor_name', 'event'])['raw_time']
+        .mean()
+    )
     peer_map = {}
     for (name, evt), val in peer_means.items():
-        # This is the avg in 'evt' event -> use as peer for opposite event
         opposite = 'SB' if evt == 'UH' else 'UH'
         peer_map[(name, opposite)] = val
 
-    df['peer_event_avg_time'] = df.apply(
+    df['comp_cross_event_avg'] = df.apply(
         lambda r: peer_map.get((r['competitor_name'], r['event']),
-                               r['competitor_avg_time_by_event']),
+                               r['comp_weighted_avg']),
         axis=1,
     )
 
-    # UH/SB ratio per competitor
-    sb_means = df[df['event'] == 'SB'].groupby('competitor_name')['raw_time'].mean().rename('sb_mean')
-    uh_means = df[df['event'] == 'UH'].groupby('competitor_name')['raw_time'].mean().rename('uh_mean')
-    ratio_df = pd.concat([sb_means, uh_means], axis=1)
-    ratio_df['uh_to_sb_ratio'] = (ratio_df['uh_mean'] / ratio_df['sb_mean'].clip(lower=1.0)).fillna(1.0)
-    df = df.join(ratio_df['uh_to_sb_ratio'], on='competitor_name', how='left')
-    df['uh_to_sb_ratio'] = df['uh_to_sb_ratio'].fillna(1.0)
+    # Block size features
+    df['size_mm_sq'] = df['size_mm'] ** 2
+    df['log_size'] = np.log(df['size_mm'].clip(lower=1.0))
 
     # Interaction features
-    df['quality_x_diameter'] = df['wood_quality'] * df['size_mm']
-    df['quality_x_hardness'] = df['wood_quality'] * df['wood_janka_hardness']
-    df['experience_x_size'] = df['competitor_experience'] * df['size_mm']
-    df['event_x_diameter'] = df['event_encoded'] * df['size_mm']
+    df['event_x_size'] = df['event_encoded'] * df['size_mm']
+    df['species_mult_x_size'] = df['species_mult'] * df['size_mm']
+    df['comp_avg_x_species'] = df['comp_weighted_avg'] * df['species_mult']
+    df['comp_avg_x_size'] = df['comp_weighted_avg'] * df['size_mm'] / 300.0
 
     # Seasonal features (from result_date)
     df['_month'] = df['result_date'].dt.month.fillna(6).astype(float)
-    df['seasonal_month_sin'] = np.sin(2 * np.pi * df['_month'] / 12)
-    df['seasonal_month_cos'] = np.cos(2 * np.pi * df['_month'] / 12)
-
-    # Recency score (days since result / 365, capped at 5)
-    def _days_since(d):
-        if pd.isna(d):
-            return 365.0  # default 1 year
-        return max(0.0, (datetime.now() - d).days)
-
-    df['recency_score'] = df['result_date'].apply(_days_since) / 365.0
-    df['recency_score'] = df['recency_score'].clip(0, 5)
-
-    # --- Compute sample weights (exponential time-decay) ---
-    def _weight(d, half_life=DEFAULT_HALF_LIFE_DAYS):
-        if pd.isna(d):
-            return 0.5  # moderate weight for undated results
-        days_old = max(0, (datetime.now() - d).days)
-        return 0.5 ** (days_old / half_life)
-
-    df['sample_weight'] = df['result_date'].apply(_weight)
+    df['month_sin'] = np.sin(2 * np.pi * df['_month'] / 12)
+    df['month_cos'] = np.cos(2 * np.pi * df['_month'] / 12)
 
     # --- Assemble feature matrix ---
     feature_cols = [
-        'competitor_avg_time_by_event',
+        'comp_weighted_avg',
+        'comp_count',
+        'comp_std',
+        'comp_best',
+        'comp_recent',
+        'comp_trend',
+        'comp_cross_event_avg',
+        'days_since_last',
+        'size_deviation',
         'event_encoded',
-        'size_mm',
-        'wood_janka_hardness',
-        'wood_spec_gravity',
-        'wood_shear_strength',
-        'wood_crush_strength',
-        'wood_MOR',
-        'wood_MOE',
-        'competitor_experience',
-        'competitor_trend_slope',
-        'wood_quality',
-        'diameter_squared',
-        'quality_x_diameter',
-        'quality_x_hardness',
-        'experience_x_size',
-        'competitor_variance',
-        'competitor_median_diameter',
-        'recency_score',
-        'career_phase',
-        'seasonal_month_sin',
-        'seasonal_month_cos',
-        'event_x_diameter',
-        'peer_event_avg_time',
-        'uh_to_sb_ratio',
         'gender_encoded',
-        'sample_weight',
+        'janka_hard',
+        'spec_gravity',
+        'crush_strength',
+        'shear',
+        'MOR',
+        'MOE',
+        'species_mult',
+        'size_mm',
+        'size_mm_sq',
+        'log_size',
+        'event_x_size',
+        'species_mult_x_size',
+        'comp_avg_x_species',
+        'comp_avg_x_size',
+        'month_sin',
+        'month_cos',
     ]
 
     missing = [c for c in feature_cols if c not in df.columns]
@@ -439,7 +425,6 @@ def temporal_cv(
 
         X_train = feature_df.loc[train_mask, feature_cols]
         y_train = target.loc[train_mask]
-        w_train = feature_df.loc[train_mask, 'sample_weight']
         X_val = feature_df.loc[val_mask, feature_cols]
         y_val = target.loc[val_mask]
 
@@ -448,16 +433,22 @@ def temporal_cv(
             continue
 
         model = xgb.XGBRegressor(
-            n_estimators=100,
+            n_estimators=292,
             max_depth=4,
-            learning_rate=0.1,
+            learning_rate=0.0305,
             objective='reg:squarederror',
             tree_method='hist',
+            subsample=0.643,
+            colsample_bytree=0.508,
+            min_child_weight=7,
+            reg_alpha=0.261,
+            reg_lambda=0.219,
             random_state=42,
             verbosity=0,
         )
-        model.fit(X_train, y_train, sample_weight=w_train)
-        preds = model.predict(X_val)
+        y_train_log = np.log(y_train.clip(lower=1.0))
+        model.fit(X_train, y_train_log)
+        preds = np.exp(model.predict(X_val))
 
         errors = y_val.values - preds
         rmse = float(np.sqrt(np.mean(errors ** 2)))
@@ -585,20 +576,16 @@ def train_and_save(
     half_life_days: int = DEFAULT_HALF_LIFE_DAYS,
 ) -> Path:
     """
-    Train an XGBoost model and save with metadata.
+    Train XGBoost and LightGBM models on log(time) target and save with metadata.
 
-    Trains three models:
-        - median (reg:squarederror) for point prediction
-        - q10 (quantile alpha=0.1) for lower bound
-        - q90 (quantile alpha=0.9) for upper bound
-
-    Also runs temporal CV to get RMSE/MAE for metadata.
+    Trains on np.log(target) and exponentiates predictions at inference time.
+    Does NOT use sample weights (validated: weights hurt accuracy by ~0.37s MAE).
 
     Args:
-        feature_df: Feature matrix (includes 'result_date', 'sample_weight').
-        target: Target times.
+        feature_df: Feature matrix (includes 'result_date' column).
+        target: Target times (raw seconds).
         event_type: 'SB', 'UH', or 'combined'.
-        half_life_days: Decay half-life used for sample weights.
+        half_life_days: Decay half-life (kept in metadata; not used for weighting).
 
     Returns:
         Path to the saved model directory.
@@ -610,63 +597,67 @@ def train_and_save(
 
     feature_cols = [c for c in feature_df.columns if c not in ('result_date', 'sample_weight')]
     X = feature_df[feature_cols]
-    y = target
-    weights = feature_df['sample_weight']
+    y_raw = target
+    y_log = np.log(y_raw)
 
     n_rows = len(X)
-    _log.info("Training %s model on %d rows (half-life=%d days)...", event_type, n_rows, half_life_days)
+    _log.info("Training %s model on %d rows (log target, no sample weights)...", event_type, n_rows)
 
-    # Run temporal CV first
+    # Run temporal CV on log-space predictions
     cv_results = temporal_cv(feature_df, target, half_life_days)
 
-    # Train median model
-    model_median = xgb.XGBRegressor(
-        n_estimators=100,
+    # Train XGBoost on log(time) — NO sample weights
+    model_xgb = xgb.XGBRegressor(
+        n_estimators=292,
         max_depth=4,
-        learning_rate=0.1,
+        learning_rate=0.0305,
         objective='reg:squarederror',
         tree_method='hist',
+        subsample=0.643,
+        colsample_bytree=0.508,
+        min_child_weight=7,
+        reg_alpha=0.261,
+        reg_lambda=0.219,
         random_state=42,
         verbosity=0,
     )
-    model_median.fit(X, y, sample_weight=weights)
+    model_xgb.fit(X, y_log)
 
-    # Train quantile models for prediction intervals
+    # In-sample MAE (exponentiated)
+    xgb_preds_raw = np.exp(model_xgb.predict(X))
+    xgb_mae = float(np.mean(np.abs(xgb_preds_raw - y_raw.values)))
+    _log.info("  XGBoost in-sample MAE: %.3fs", xgb_mae)
+
+    # Train LightGBM on log(time)
+    lgb_model = None
+    lgb_mae = None
     try:
-        model_q10 = xgb.XGBRegressor(
-            n_estimators=100,
+        import lightgbm as lgb
+        lgb_model = lgb.LGBMRegressor(
+            n_estimators=222,
             max_depth=4,
-            learning_rate=0.1,
-            objective='reg:quantileerror',
-            quantile_alpha=0.1,
-            tree_method='hist',
+            learning_rate=0.0303,
+            subsample=0.938,
+            colsample_bytree=0.626,
+            min_child_samples=20,
+            num_leaves=23,
+            reg_alpha=0.079,
+            reg_lambda=0.101,
             random_state=42,
-            verbosity=0,
+            verbose=-1,
         )
-        model_q10.fit(X, y, sample_weight=weights)
+        lgb_model.fit(X, y_log)
+        lgb_preds_raw = np.exp(lgb_model.predict(X))
+        lgb_mae = float(np.mean(np.abs(lgb_preds_raw - y_raw.values)))
+        _log.info("  LightGBM in-sample MAE: %.3fs", lgb_mae)
+    except ImportError:
+        _log.warning("LightGBM not installed; saving XGBoost-only model.")
 
-        model_q90 = xgb.XGBRegressor(
-            n_estimators=100,
-            max_depth=4,
-            learning_rate=0.1,
-            objective='reg:quantileerror',
-            quantile_alpha=0.9,
-            tree_method='hist',
-            random_state=42,
-            verbosity=0,
-        )
-        model_q90.fit(X, y, sample_weight=weights)
-        has_quantiles = True
-    except Exception as e:
-        _log.warning("Quantile models failed (%s); prediction intervals unavailable.", e)
-        model_q10 = model_q90 = None
-        has_quantiles = False
-
-    # Serialize median model to get version hash
+    # Serialize XGBoost model to get version hash
     import tempfile
     with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
         tmp_path = tmp.name
-    model_median.save_model(tmp_path)
+    model_xgb.save_model(tmp_path)
     with open(tmp_path, 'rb') as f:
         model_bytes = f.read()
     model_version = _sha256_bytes(model_bytes)
@@ -680,10 +671,9 @@ def train_and_save(
     model_dir = MODELS_DIR / f"{event_type}_{timestamp}"
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    model_median.save_model(str(model_dir / "model.json"))
-    if has_quantiles and model_q10 is not None:
-        model_q10.save_model(str(model_dir / "model_q10.json"))
-        model_q90.save_model(str(model_dir / "model_q90.json"))
+    model_xgb.save_model(str(model_dir / "model.json"))
+    if lgb_model is not None:
+        lgb_model.booster_.save_model(str(model_dir / "model_lgb.txt"))
 
     metadata = {
         'model_version': model_version,
@@ -694,7 +684,10 @@ def train_and_save(
         'n_training_rows': n_rows,
         'event_type': event_type,
         'half_life_days': half_life_days,
-        'has_quantile_models': has_quantiles,
+        'log_target': True,
+        'has_lgb': lgb_model is not None,
+        'xgb_insample_mae': xgb_mae,
+        'lgb_insample_mae': lgb_mae,
         'feature_names': feature_cols,
         'cv_folds': cv_results['n_folds'],
         'cv_fold_results': cv_results['fold_results'],

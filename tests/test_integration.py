@@ -142,7 +142,7 @@ class TestIntegrationFairnessAudit:
             for r in mark_results
         ]
 
-        audit = audit_mark_sheet(competitors_with_marks, num_simulations=50_000)
+        audit = audit_mark_sheet(competitors_with_marks, num_simulations=50_000, verbose=False)
 
         assert audit['fairness_rating'] != 'poor', (
             f"Mark sheet rated 'poor'. Win-rate spread: {audit['win_rate_spread']:.1f}%. "
@@ -161,7 +161,7 @@ class TestIntegrationFairnessAudit:
             {'name': r.name, 'predicted_time': r.predicted_time, 'mark': r.mark}
             for r in mark_results
         ]
-        audit = audit_mark_sheet(competitors_with_marks, num_simulations=10_000)
+        audit = audit_mark_sheet(competitors_with_marks, num_simulations=10_000, verbose=False)
 
         required_keys = {
             'per_competitor', 'front_marker_win_rate', 'back_marker_win_rate',

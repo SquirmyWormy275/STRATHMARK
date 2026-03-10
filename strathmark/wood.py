@@ -48,11 +48,27 @@ import pandas as pd
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_SCALING_EXPONENT: float = 1.4
+DEFAULT_SCALING_EXPONENT_SB: float = 1.8
 """
-Power-law diameter scaling exponent (fallback when calibration is unavailable).
-Chosen because time ~ diameter^1.4 fits between linear (1.0) and quadratic (2.0).
-Calibrated from historical data when multi-diameter competitor pairs exist.
+Standing Block diameter scaling exponent (fallback when calibration unavailable).
+Derived from within-competitor same-species diameter pairs (n=11, median=1.26,
+MAE-optimized=1.8 with species normalization). Standing block has shallower
+diameter scaling than underhand due to the different cutting mechanics.
+"""
+
+DEFAULT_SCALING_EXPONENT_UH: float = 2.1
+"""
+Underhand diameter scaling exponent (fallback when calibration unavailable).
+Derived from within-competitor same-species diameter pairs (n=26, median=2.09,
+MAE-optimized=2.1 with species normalization). Underhand has steeper diameter
+scaling because the competitor must cut through the full cross-section from above.
+"""
+
+DEFAULT_SCALING_EXPONENT: float = 2.0
+"""
+Generic fallback diameter scaling exponent used when event type is unknown.
+Midpoint of the SB (1.8) and UH (2.1) event-specific defaults.
+Preserved for backward compatibility with any code that references this constant.
 """
 
 DIAMETER_TOLERANCE: float = 10.0
@@ -75,6 +91,107 @@ LLM_QUALITY_MULTIPLIER_MAX: float = 1.15
 
 STATISTICAL_QUALITY_ADJUSTMENT_PER_POINT: float = 0.02
 """+-2% per quality point from baseline 5 (statistical fallback when LLM unavailable)."""
+
+# ---------------------------------------------------------------------------
+# Empirical species time multipliers (vs S01 reference)
+# ---------------------------------------------------------------------------
+
+SPECIES_TIME_MULTIPLIERS: Dict[str, float] = {
+    # Empirical median time multiplier vs S01 (eastern white pine = 1.000).
+    # Derived from 186 within-competitor, diameter-controlled cross-species
+    # comparisons in woodchopping_clean.xlsx. A multiplier of 1.317 means
+    # the same competitor takes 31.7% longer on that species vs S01.
+    #
+    # Keyed by speciesID code. The lookup function also resolves species names.
+    "S01": 1.000,   # eastern white pine (reference)
+    "S02": 1.100,   # yellow-poplar (estimated from hardness — no direct data)
+    "S03": 1.132,   # quaking aspen (n=14 comparisons)
+    "S04": 1.238,   # alder (n=16)
+    "S05": 1.317,   # ponderosa pine (n=20)
+    "S06": 1.195,   # western white pine (n=36)
+    "S07": 1.000,   # sugar pine (estimated — similar hardness to S01)
+    "S08": 1.034,   # cottonwood (n=6)
+    "S09": 1.131,   # poplar Hybrid (n=13)
+    "S10": 0.971,   # poplar European (n=81)
+    "S11": 1.050,   # poplar Lombardi (estimated from hardness)
+    "S12": 1.400,   # Monterey pine (estimated — highest Janka in table)
+    "S13": 1.050,   # basswood (estimated from hardness)
+}
+"""
+Empirical species time multipliers relative to S01 (eastern white pine).
+Values derived from within-competitor cross-species comparisons where the same
+competitor cut both S01 and species X at controlled diameters. Entries marked
+'estimated' use shear-strength regression for species with insufficient direct data.
+"""
+
+# Reverse lookup: species name (lowercase) -> speciesID code
+_SPECIES_NAME_TO_ID: Dict[str, str] = {
+    "eastern white pine": "S01",
+    "yellow-poplar": "S02",
+    "quaking aspen": "S03",
+    "alder": "S04",
+    "ponderosa pine": "S05",
+    "western white pine": "S06",
+    "sugar pine": "S07",
+    "cottonwood": "S08",
+    "poplar (hybrid)": "S09",
+    "poplar hybrid": "S09",
+    "poplar (european)": "S10",
+    "poplar european": "S10",
+    "poplar (lombardi)": "S11",
+    "poplar lombardi": "S11",
+    "monterey pine": "S12",
+    "basswood": "S13",
+}
+
+
+def get_species_time_multiplier(species: str) -> float:
+    """
+    Return the empirical time multiplier for a species relative to S01 (1.000).
+
+    Accepts either a speciesID code (e.g. 'S05') or a species name
+    (e.g. 'ponderosa pine'). Returns 1.0 for unrecognized species.
+    """
+    key = str(species).strip()
+
+    # Try direct speciesID lookup (case-insensitive)
+    upper = key.upper()
+    if upper in SPECIES_TIME_MULTIPLIERS:
+        return SPECIES_TIME_MULTIPLIERS[upper]
+
+    # Try species name lookup
+    lower = key.lower()
+    sid = _SPECIES_NAME_TO_ID.get(lower)
+    if sid is not None:
+        return SPECIES_TIME_MULTIPLIERS.get(sid, 1.0)
+
+    return 1.0
+
+
+def estimate_species_multiplier_from_shear(
+    species: str,
+    wood_df: Optional[pd.DataFrame] = None,
+) -> float:
+    """
+    Fallback: estimate species time multiplier from shear strength ratio vs S01.
+
+    Formula: multiplier = (species_shear / S01_shear) ^ 0.97
+    S01 shear = 900. Best single-property approximation (RMSE = 0.096).
+
+    Used only for species not in the SPECIES_TIME_MULTIPLIERS table.
+    """
+    mult = get_species_time_multiplier(species)
+    if mult != 1.0:
+        # Already in the empirical table — use the empirical value
+        return mult
+
+    props = get_species_properties(species, wood_df)
+    S01_SHEAR = 900.0
+    ratio = props.shear_strength / S01_SHEAR
+    if ratio <= 0:
+        return 1.0
+    return float(ratio ** 0.97)
+
 
 # Cache calibrated exponents per event (mutable module-level dict)
 _event_exponent_cache: Dict[str, float] = {}
@@ -432,23 +549,31 @@ def get_event_scaling_exponent(
     """
     Return a calibrated diameter scaling exponent for an event.
 
-    Falls back to the default exponent when calibration is not possible.
+    Falls back to the event-specific default exponent when calibration is not possible.
     Results are cached per event code in the module-level _event_exponent_cache.
     """
     event_key = str(event_code).strip().upper()
     if event_key in _event_exponent_cache:
         return _event_exponent_cache[event_key]
 
+    # Event-specific default fallback
+    if event_key == 'SB':
+        default = DEFAULT_SCALING_EXPONENT_SB
+    elif event_key == 'UH':
+        default = DEFAULT_SCALING_EXPONENT_UH
+    else:
+        default = DEFAULT_SCALING_EXPONENT
+
     if results_df is None or results_df.empty:
-        _event_exponent_cache[event_key] = DEFAULT_SCALING_EXPONENT
-        return DEFAULT_SCALING_EXPONENT
+        _event_exponent_cache[event_key] = default
+        return default
 
     # Standardize column names if needed
     df = _standardize_results_columns(results_df)
 
     exponent = calibrate_scaling_exponent(df, event_key)
     if exponent is None:
-        exponent = DEFAULT_SCALING_EXPONENT
+        exponent = default
 
     _event_exponent_cache[event_key] = float(exponent)
     return float(exponent)

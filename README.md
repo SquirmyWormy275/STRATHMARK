@@ -1,4 +1,6 @@
-![STRATHMARK](assets/strathmark_logo.png)
+<p align="center">
+  <img src="assets/strathmark_logo.png" alt="STRATHMARK" width="480"/>
+</p>
 
 # STRATHMARK
 
@@ -11,7 +13,7 @@ STRATHEX codebase.
 
 ## Status
 
-Version 0.2.0 - fully implemented. All modules complete. 48 tests passing
+Version 0.3.0 - fully implemented. All modules complete. 48 tests passing
 (28 calculator + 13 variance + 7 integration).
 
 ## Install
@@ -72,7 +74,7 @@ pytest tests/ -v
 
 - Mark floor: 3 seconds (never lower under any circumstances)
 - Mark ceiling: 183 seconds system-wide (180s time limit + 3s minimum mark)
-- Gap logic: slowest -> Mark 3; each second faster -> +1 mark; ceiling arithmetic (round UP)
+- Gap logic: slowest -> Mark 3; each second faster -> +1 mark; standard rounding (round half-to-even)
 - Variance: absolute +/- 3 seconds ONLY -- proportional variance is forbidden
 - Prediction cascade: Manual > LLM > ML > Panel mark fallback
 - Time-decay: exponential decay, 2-year half-life (730 days)
@@ -84,13 +86,12 @@ pytest tests/ -v
 
 ```
 gap = predicted_time(competitor) - predicted_time(front_marker)
-mark = 3 + int(gap + 0.999)   # ceiling arithmetic
-mark = min(mark, 183)          # system-wide ceiling
+mark = 3 + round(gap)   # standard rounding (half-to-even)
+mark = min(mark, 183)   # system-wide ceiling
 ```
 
-The `int(gap + 0.999)` pattern is used instead of `math.ceil()` to match
-the legacy STRATHEX implementation exactly. Values within 0.001s of an
-integer boundary are treated as exact (no rounding up).
+Standard Python `round()` is used (banker's rounding, round-half-to-even),
+which avoids systematic upward bias in mark assignment.
 
 ## Package structure
 
@@ -99,7 +100,7 @@ strathmark/
     __init__.py         Public API (HandicapCalculator, CompetitorRecord, WoodProfile)
     calculator.py       Mark computation, gap logic, start sheet
     predictor.py        Prediction cascade (Manual > LLM > ML > panel fallback)
-    variance.py         Absolute variance model, Monte Carlo simulation (2M races)
+    variance.py         Absolute variance model, Monte Carlo simulation (500K races)
     wood.py             Species properties, diameter scaling, quality adjustment
     decay.py            Exponential time-decay weighting (2-year half-life)
     fallback.py         Panel marks and event baseline fallbacks
@@ -112,6 +113,7 @@ strathmark/
     fairness.py         AI-assisted fairness assessment (Ollama LLM)
     visualization.py    Plain-text simulation summaries and ASCII bar charts
     llm.py              Ollama connection management and prompt execution
+    llm_roles.py        Extended LLM roles (competitor profiles, commentary, anomaly detection)
     api.py              FastAPI REST API (calculate, predict, simulate, results)
 tests/
     test_calculator.py  Mark invariants (floor, ceiling, gap logic) -- 28 tests

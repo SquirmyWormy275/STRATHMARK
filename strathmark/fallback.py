@@ -136,11 +136,11 @@ def _normalize_time_for_baseline(
 ) -> float:
     """
     Normalize a historical time to the target species and diameter.
-    Applies quality normalization (to quality-5 reference) and diameter scaling.
-    Species cross-normalization uses a conservative 1.0 factor (data-driven
-    calibration requires the full baseline model).
+    Applies quality normalization (to quality-5 reference), diameter scaling,
+    and species time multiplier normalization.
     """
     from strathmark.wood import get_event_scaling_exponent, calculate_scaling_factor
+    from strathmark.wood import get_species_time_multiplier
 
     quality_val = max(1, min(10, int(quality) if quality is not None and not pd.isna(quality) else 5))
 
@@ -158,6 +158,13 @@ def _normalize_time_for_baseline(
         exponent = get_event_scaling_exponent(results_df, event_code)
         factor = calculate_scaling_factor(float(hist_diameter), float(target_diameter), exponent)
         normalized = normalized * factor
+
+    # Species normalization
+    if hist_species and target_species:
+        hist_mult = get_species_time_multiplier(hist_species)
+        target_mult = get_species_time_multiplier(target_species)
+        if hist_mult > 0 and hist_mult != target_mult:
+            normalized = normalized / hist_mult * target_mult
 
     return normalized
 

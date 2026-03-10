@@ -92,26 +92,69 @@ class DataRequirements:
 
 @dataclass(frozen=True)
 class MLConfig:
-    """XGBoost ML model hyperparameters and settings"""
+    """XGBoost + LightGBM ML model hyperparameters and settings"""
 
-    # Model hyperparameters
-    N_ESTIMATORS: int = 100
-    """Number of boosting rounds (trees)"""
+    # XGBoost hyperparameters (Optuna-tuned, 30 trials, GroupKFold validation)
+    N_ESTIMATORS: int = 292
+    """Number of boosting rounds"""
 
     MAX_DEPTH: int = 4
-    """Maximum tree depth (optimized for small datasets)"""
+    """Maximum tree depth"""
 
-    LEARNING_RATE: float = 0.1
-    """Boosting learning rate"""
+    LEARNING_RATE: float = 0.0305
+    """Boosting learning rate (Optuna-tuned)"""
 
     RANDOM_STATE: int = 42
     """Random seed for reproducibility"""
 
     OBJECTIVE: str = 'reg:squarederror'
-    """Loss function (regression with squared error)"""
+    """Loss function (applied to log-transformed target)"""
 
     TREE_METHOD: str = 'hist'
-    """Tree construction algorithm (histogram-based)"""
+    """Tree construction algorithm"""
+
+    SUBSAMPLE: float = 0.643
+    """Row subsampling ratio (Optuna-tuned)"""
+
+    COLSAMPLE_BYTREE: float = 0.508
+    """Column subsampling ratio (Optuna-tuned)"""
+
+    MIN_CHILD_WEIGHT: int = 7
+    """Minimum sum of instance weight in a child (Optuna-tuned)"""
+
+    REG_ALPHA: float = 0.261
+    """L1 regularization (Optuna-tuned)"""
+
+    REG_LAMBDA: float = 0.219
+    """L2 regularization (Optuna-tuned)"""
+
+    # LightGBM hyperparameters (Optuna-tuned, 30 trials, GroupKFold validation)
+    LGB_N_ESTIMATORS: int = 222
+    """LightGBM number of boosting rounds"""
+
+    LGB_MAX_DEPTH: int = 4
+    """LightGBM maximum tree depth"""
+
+    LGB_LEARNING_RATE: float = 0.0303
+    """LightGBM learning rate"""
+
+    LGB_SUBSAMPLE: float = 0.938
+    """LightGBM row subsampling"""
+
+    LGB_COLSAMPLE_BYTREE: float = 0.626
+    """LightGBM column subsampling"""
+
+    LGB_MIN_CHILD_SAMPLES: int = 20
+    """LightGBM minimum samples in a leaf"""
+
+    LGB_NUM_LEAVES: int = 23
+    """LightGBM maximum number of leaves"""
+
+    LGB_REG_ALPHA: float = 0.079
+    """LightGBM L1 regularization"""
+
+    LGB_REG_LAMBDA: float = 0.101
+    """LightGBM L2 regularization"""
 
     # Cross-validation
     CV_FOLDS: int = 5
@@ -124,35 +167,44 @@ class MLConfig:
     MAX_PREDICTION_TIME: float = 300.0
     """Maximum reasonable prediction time (seconds)"""
 
-    # Feature names (26 features - 23 original + 2 cross-event correlation + 1 field strength)
-    # Data analysis showed ALL 6 properties combined: r=0.621 (vs shear alone r=0.523)
+    # Feature names (27 features — optimized from empirical testing)
+    # Feature importance ranking (log-target XGBoost, gain-based):
+    #   comp_avg_x_species (26%), comp_avg_x_size (19%), gender (9%),
+    #   comp_weighted_avg (7%), species_mult (5%), shear (5%)
     FEATURE_NAMES: tuple = (
-        'competitor_avg_time_by_event',  # 1 - PRIMARY (70-80% importance)
-        'event_encoded',                # 2
-        'size_mm',                      # 3
-        'wood_janka_hardness',         # 4
-        'wood_spec_gravity',            # 5
-        'wood_shear_strength',          # 6 - BEST single predictor (r=0.527)
-        'wood_crush_strength',          # 7 - Second best (r=0.447)
-        'wood_MOR',                     # 8 - Modulus of Rupture
-        'wood_MOE',                     # 9 - Modulus of Elasticity
-        'competitor_experience',        # 10
-        'competitor_trend_slope',       # 11
-        'wood_quality',                 # 12
-        'diameter_squared',             # 13
-        'quality_x_diameter',           # 14
-        'quality_x_hardness',           # 15
-        'experience_x_size',            # 16
-        'competitor_variance',          # 17
-        'competitor_median_diameter',   # 18
-        'recency_score',                # 19
-        'career_phase',                 # 20
-        'seasonal_month_sin',           # 21
-        'seasonal_month_cos',           # 22
-        'event_x_diameter',             # 23
-        'peer_event_avg_time',          # 24 - avg time in OTHER event (SB<->UH correlation)
-        'uh_to_sb_ratio',               # 25 - UH/SB mean ratio (technique balance)
-        'field_strength',               # 26 - avg mark across all competitors at same show/event
+        # Competitor ability (temporal, leak-free)
+        'comp_weighted_avg',          # 1 - Time-decay weighted historical average
+        'comp_count',                 # 2 - Number of prior results for this event
+        'comp_std',                   # 3 - Historical performance std dev
+        'comp_best',                  # 4 - All-time best for this event (NEW)
+        'comp_recent',                # 5 - Most recent prior time
+        'comp_trend',                 # 6 - Linear slope of last 5 results (sec/day)
+        'comp_cross_event_avg',       # 7 - Average time in OTHER event (SB<->UH)
+        'days_since_last',            # 8 - Days since last competition
+        'size_deviation',             # 9 - Target size minus competitor's median size (NEW)
+        # Event and competitor attributes
+        'event_encoded',              # 10 - 0=SB, 1=UH
+        'gender_encoded',             # 11 - 0=F, 1=M (NEW — 9% importance)
+        # Wood properties
+        'janka_hard',                 # 12
+        'spec_gravity',               # 13
+        'crush_strength',             # 14
+        'shear',                      # 15 - 5% importance
+        'MOR',                        # 16
+        'MOE',                        # 17
+        'species_mult',               # 18 - Empirical species time multiplier (NEW — 5%)
+        # Block size
+        'size_mm',                    # 19
+        'size_mm_sq',                 # 20
+        'log_size',                   # 21 - log(diameter) (NEW)
+        # Interaction features (KEY for accuracy)
+        'event_x_size',               # 22 - event_encoded * size_mm
+        'species_mult_x_size',        # 23 - species_mult * size_mm (NEW)
+        'comp_avg_x_species',         # 24 - comp_weighted_avg * species_mult (NEW — 26% importance!)
+        'comp_avg_x_size',            # 25 - comp_weighted_avg * size_mm / 300.0 (NEW — 19% importance!)
+        # Seasonal
+        'month_sin',                  # 26
+        'month_cos',                  # 27
     )
 
     # Bayesian optimization parameters (NEW for Phase 2)
@@ -168,14 +220,6 @@ class MLConfig:
 
     EVENT_ENCODING_UH: int = 1
     """Underhand event encoding"""
-
-    # Default wood properties (fallback values when species lookup fails)
-    # Based on Eastern White Pine (S01) - common baseline species
-    DEFAULT_JANKA_HARDNESS: float = 1690.0
-    """Default Janka hardness if species not found (Eastern White Pine)"""
-
-    DEFAULT_SPECIFIC_GRAVITY: float = 0.34
-    """Default specific gravity if species not found (Eastern White Pine)"""
 
     # Trend-based weighting (performance-driven)
     TREND_MIN_SAMPLES: int = 5
@@ -210,8 +254,11 @@ class MLConfig:
 class SimulationConfig:
     """Monte Carlo simulation parameters"""
 
-    NUM_SIMULATIONS: int = 2_000_000
-    """Number of race simulations to run for maximum statistical precision"""
+    NUM_SIMULATIONS: int = 500_000
+    """Number of race simulations to run for high statistical precision"""
+
+    NUM_SIMULATIONS_QUICK: int = 100_000
+    """Quick simulation count for fast pre-competition checks"""
 
     HEAT_VARIANCE_SECONDS: float = 1.0
     """Shared heat-level variance applied to all competitors (wind, grain, conditions)"""
@@ -219,7 +266,7 @@ class SimulationConfig:
     MIN_COMPETITOR_STD_SECONDS: float = 1.5
     """Minimum per-competitor performance std-dev when historical data is used"""
 
-    MAX_COMPETITOR_STD_SECONDS: float = 6.0
+    MAX_COMPETITOR_STD_SECONDS: float = 15.0
     """Maximum per-competitor performance std-dev when historical data is used"""
 
     # Fairness assessment thresholds
@@ -303,7 +350,7 @@ class BaselineConfig:
     MIN_STD_DEV_SECONDS: float = 1.5
     """Minimum competitor std_dev (floor for elite)"""
 
-    MAX_STD_DEV_SECONDS: float = 6.0
+    MAX_STD_DEV_SECONDS: float = 15.0
     """Maximum competitor std_dev (ceiling for high-variance)"""
 
     CONSISTENCY_VERY_HIGH_THRESHOLD: float = 2.5
@@ -404,24 +451,24 @@ class DecayConfig:
 class LLMConfig:
     """Ollama LLM settings for AI-enhanced predictions"""
 
-    DEFAULT_MODEL: str = "qwen2.5:32b"
-    """Default Ollama model (32B parameters for maximum mathematical precision)"""
+    DEFAULT_MODEL: str = "qwen3.5:9b"
+    """Default Ollama model (Qwen 3.5 9B — fits 8GB VRAM at Q4_K_M, released Feb 2026)"""
 
-    PREDICTION_MODEL: str = "qwen2.5:32b"
-    """Model for time predictions and race analysis (same as default for consistency)"""
+    PREDICTION_MODEL: str = "qwen3.5:9b"
+    """Model for time predictions and quality adjustment (same as default)"""
 
     OLLAMA_URL: str = "http://localhost:11434/api/generate"
     """Ollama API endpoint — overridden at runtime via HandicapCalculator(ollama_url=...)"""
 
-    TIMEOUT_SECONDS: int = 120
-    """Request timeout in seconds (increased for comprehensive analyses)"""
+    TIMEOUT_SECONDS: int = 30
+    """Request timeout in seconds (reduced from 120 — 9B model responds in 1-5s)"""
 
     MAX_RETRIES: int = 2
     """Maximum retry attempts for failed requests"""
 
     # Token limits for different use cases
-    TOKENS_TIME_PREDICTION: int = 50
-    """Token limit for single-number time predictions (fast responses)"""
+    TOKENS_TIME_PREDICTION: int = 150
+    """Token limit for quality adjustment JSON response"""
 
     TOKENS_ANALYSIS_SHORT: int = 200
     """Token limit for short comparative analysis (3-4 sentences)"""

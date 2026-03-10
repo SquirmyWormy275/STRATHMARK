@@ -73,7 +73,7 @@ class TestAbsoluteVariance:
         slow = _comp("Slow", 3, 90.0, std_dev=3.0)
 
         result = run_monte_carlo_simulation(
-            [fast, slow], num_simulations=10_000, seed=42
+            [fast, slow], num_simulations=10_000, seed=42, verbose=False
         )
 
         fast_stats = result["competitor_time_stats"]["Fast"]
@@ -184,7 +184,7 @@ class TestMonteCarlo:
             for i in range(n)
         ]
         return run_monte_carlo_simulation(
-            competitors, num_simulations=num_simulations, seed=42
+            competitors, num_simulations=num_simulations, seed=42, verbose=False
         )
 
     def test_win_rates_sum_to_100(self):
@@ -242,8 +242,8 @@ class TestMonteCarlo:
             _comp("Bob", 10, 55.0),
             _comp("Carol", 18, 45.0),
         ]
-        r1 = run_monte_carlo_simulation(competitors, num_simulations=1_000, seed=7)
-        r2 = run_monte_carlo_simulation(competitors, num_simulations=1_000, seed=7)
+        r1 = run_monte_carlo_simulation(competitors, num_simulations=1_000, seed=7, verbose=False)
+        r2 = run_monte_carlo_simulation(competitors, num_simulations=1_000, seed=7, verbose=False)
 
         assert r1["winner_counts"] == r2["winner_counts"], (
             "Different winner counts with same seed -- not reproducible"

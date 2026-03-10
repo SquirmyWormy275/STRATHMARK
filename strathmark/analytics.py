@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from strathmark.predictor import CompetitorRecord, HistoricalResult, WoodProfile, predict_baseline
+from strathmark.predictor import CompetitorRecord, HistoricalResult, WoodProfile, predict_baseline, get_best_prediction
 
 
 # ---------------------------------------------------------------------------
@@ -35,15 +35,24 @@ def backtest_predictions(
     wood: WoodProfile,
     event_code: str,
     actuals: Dict[str, float],
+    ml_model=None,
+    results_df=None,
+    wood_df=None,
 ) -> Dict[str, Any]:
     """
     Compare predicted times against actual race times.
+
+    Uses the full prediction cascade (get_best_prediction) when ml_model or
+    results_df are provided, otherwise falls back to baseline only.
 
     Args:
         competitors: List of CompetitorRecord objects.
         wood: Wood profile used in the event.
         event_code: 'SB' or 'UH'.
         actuals: Dict mapping competitor name to actual cutting time (seconds).
+        ml_model: Optional trained MLModel for ML cascade level.
+        results_df: Optional historical results DataFrame.
+        wood_df: Optional wood properties DataFrame.
 
     Returns:
         Dict with keys:
@@ -60,7 +69,12 @@ def backtest_predictions(
         if record.name not in actuals:
             continue
         actual = actuals[record.name]
-        pred_result = predict_baseline(record, wood, event_code)
+        pred_result = get_best_prediction(
+            record, wood, event_code,
+            wood_data_df=wood_df,
+            results_df=results_df,
+            ml_model=ml_model,
+        )
         if pred_result is None:
             continue
         predicted = pred_result.value

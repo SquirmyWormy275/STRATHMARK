@@ -380,13 +380,14 @@ def simulate_single_race(
 
 def run_monte_carlo_simulation(
     competitors: List[Dict],
-    num_simulations: int = 2_000_000,
+    num_simulations: int = 500_000,
     heat_variance_seconds: float = HEAT_VARIANCE_SECONDS,
     seed: Optional[int] = None,
     track_finish_orders: bool = False,
     track_podium_margins: bool = False,
     show_live_leaders: bool = False,   # kept for API compatibility; not used in vectorized path
     progress_interval: int = 50000,    # kept for API compatibility; not used in vectorized path
+    verbose: bool = True,
 ) -> Dict:
     """
     Run num_simulations races and return fairness statistics.
@@ -472,8 +473,9 @@ def run_monte_carlo_simulation(
         for comp in competitors
     }
 
-    print(f"\nRUNNING MONTE CARLO SIMULATION ({num_simulations:,} races)")
-    print(f"Simulating races with per-competitor variance and +/-{heat_variance_seconds:.1f}s heat variance...")
+    if verbose:
+        print(f"\nRUNNING MONTE CARLO SIMULATION ({num_simulations:,} races)")
+        print(f"Simulating races with per-competitor variance and +/-{heat_variance_seconds:.1f}s heat variance...")
 
     # Vectorized simulation — generate all random values at once
     if rng is None:
@@ -594,6 +596,14 @@ def run_monte_carlo_simulation(
 
     competitor_variances = competitor_variance  # pre-computed before simulation
 
+    # Variance imbalance: flag when max/min std_dev ratio exceeds 2.0
+    variance_values = list(competitor_variances.values())
+    if len(variance_values) >= 2 and min(variance_values) > 0:
+        variance_ratio = max(variance_values) / min(variance_values)
+    else:
+        variance_ratio = 1.0
+    variance_imbalanced = variance_ratio > 2.0
+
     analysis = {
         'num_simulations': num_simulations,
         'finish_spreads': finish_spreads,
@@ -622,6 +632,8 @@ def run_monte_carlo_simulation(
         'competitor_time_stats': competitor_time_stats,
         'heat_variance_seconds': heat_variance_seconds,
         'competitor_variances': competitor_variances,
+        'variance_ratio': variance_ratio,
+        'variance_imbalanced': variance_imbalanced,
         # Optional finish order tracking
         'most_common_order': most_common_order,
         'most_common_order_pct': most_common_order_pct,
@@ -644,6 +656,7 @@ def audit_mark_sheet(
     competitors_with_marks: list,
     num_simulations: int = 250_000,
     variance: float = 3.0,
+    verbose: bool = False,
 ) -> dict:
     """
     Run a Monte Carlo fairness audit on a proposed mark sheet.
@@ -685,6 +698,7 @@ def audit_mark_sheet(
     sim = run_monte_carlo_simulation(
         competitors=normalised,
         num_simulations=num_simulations,
+        verbose=verbose,
     )
 
     winner_pct = sim['winner_percentages']        # {name: 0.0-100.0}
@@ -715,10 +729,44 @@ def audit_mark_sheet(
     else:
         fairness_rating = 'poor'
 
+    variance_ratio = sim.get('variance_ratio', 1.0)
+    variance_warning = sim.get('variance_imbalanced', False)
+
     return {
         'per_competitor': per_competitor,
         'front_marker_win_rate': front_win_rate,
         'back_marker_win_rate': back_win_rate,
         'win_rate_spread': spread,
         'fairness_rating': fairness_rating,
+        'variance_ratio': variance_ratio,
+        'variance_warning': variance_warning,
     }
+
+
+# ---------------------------------------------------------------------------
+# Quick fairness check
+# ---------------------------------------------------------------------------
+
+def quick_fairness_check(
+    competitors_with_marks: list,
+    variance: float = 3.0,
+) -> dict:
+    """
+    Fast fairness check using 100K simulations. Wrapper for audit_mark_sheet().
+
+    Suitable for rapid pre-competition checks where speed matters more than
+    high statistical precision.
+
+    Args:
+        competitors_with_marks: List of dicts with 'name', 'predicted_time', 'mark'.
+        variance: Per-competitor absolute std-dev override in seconds.
+
+    Returns:
+        Same dict as audit_mark_sheet().
+    """
+    return audit_mark_sheet(
+        competitors_with_marks=competitors_with_marks,
+        num_simulations=100_000,
+        variance=variance,
+        verbose=False,
+    )

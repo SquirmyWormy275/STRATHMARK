@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 _log = logging.getLogger(__name__)
 
 OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "qwen2.5:7b"
+DEFAULT_MODEL = "qwen3.5:9b"
 CONFIG_OUTPUT = Path("strathmark/llm_prompt_config.json")
 
 

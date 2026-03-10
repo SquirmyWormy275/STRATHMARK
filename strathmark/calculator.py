@@ -36,7 +36,7 @@ from strathmark.predictor import (
     PredictionResult,
     get_best_prediction,
 )
-from strathmark.config import rules
+from strathmark.config import rules, llm_config
 
 _log = logging.getLogger(__name__)
 
@@ -398,6 +398,11 @@ class HandicapCalculator:
                 )
 
             # Run prediction cascade, forwarding stored data frames and ML model
+            llm_client = {
+                'url': self._ollama_url,
+                'model': llm_config.PREDICTION_MODEL,
+                'timeout': llm_config.TIMEOUT_SECONDS,
+            }
             prediction: PredictionResult = get_best_prediction(
                 effective_record,
                 wood,
@@ -405,6 +410,7 @@ class HandicapCalculator:
                 wood_data_df=self.wood_df,
                 results_df=self.results_df,
                 ml_model=self._ml_model,
+                llm_client=llm_client,
             )
 
             # Compute per-competitor std_dev from event history.
@@ -417,9 +423,10 @@ class HandicapCalculator:
             ]
             if len(event_times) >= 3:
                 raw_std = float(np.std(event_times, ddof=1))
-                competitor_std = max(1.5, min(raw_std, 6.0))
+                competitor_std = max(1.5, min(raw_std, 15.0))
             else:
-                competitor_std = float(rules.PERFORMANCE_VARIANCE_SECONDS)
+                # Scale default variance with predicted time (empirically validated)
+                competitor_std = max(1.5, min(prediction.value * 0.12, 15.0))
 
             results.append(
                 MarkResult(
@@ -448,7 +455,7 @@ class HandicapCalculator:
         Gap logic (from STRATHEX calculator.py lines 152-162):
             slowest_time = max(predicted_times)
             gap = slowest_time - competitor_predicted_time
-            mark = MARK_FLOOR + int(gap + 0.999)   # ceiling arithmetic
+            mark = MARK_FLOOR + round(gap)   # standard rounding
             mark = min(mark, effective_ceiling)
 
         The slowest competitor receives the floor mark (3).
@@ -470,7 +477,7 @@ class HandicapCalculator:
 
         for result in results:
             gap = slowest_time - result.predicted_time
-            mark = self.MARK_FLOOR + int(gap + 0.999)  # ceiling arithmetic
+            mark = self.MARK_FLOOR + round(gap)  # standard rounding
             mark = min(mark, self.effective_ceiling)
             result.mark = mark
 

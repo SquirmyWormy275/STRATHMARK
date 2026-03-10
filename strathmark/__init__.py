@@ -58,7 +58,7 @@ from strathmark.predictor import (
     predict_baseline,
 )
 from strathmark.store import ResultStore
-from strathmark.variance import run_monte_carlo_simulation, estimate_competitor_std_dev, audit_mark_sheet
+from strathmark.variance import run_monte_carlo_simulation, estimate_competitor_std_dev, audit_mark_sheet, quick_fairness_check
 from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
 from strathmark.fairness import (
     get_ai_assessment_of_handicaps,
@@ -97,6 +97,7 @@ __all__ = [
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",
     "audit_mark_sheet",
+    "quick_fairness_check",
     # Visualization
     "generate_simulation_summary",
     "visualize_simulation_results",
@@ -121,4 +122,4 @@ __all__ = [
     "score_prediction_accuracy",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

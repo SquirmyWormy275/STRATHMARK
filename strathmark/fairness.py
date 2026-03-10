@@ -34,6 +34,20 @@ from strathmark.variance import run_monte_carlo_simulation
 from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
 
 
+# JSON schema for LLM fairness assessment (Ollama structured output)
+FAIRNESS_ASSESSMENT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "rating": {"type": "string", "enum": ["Excellent", "Very Good", "Good", "Fair", "Poor", "Unacceptable"]},
+        "statistical_analysis": {"type": "string"},
+        "pattern_diagnosis": {"type": "string"},
+        "prediction_accuracy": {"type": "string"},
+        "recommendations": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["rating", "statistical_analysis", "pattern_diagnosis", "prediction_accuracy", "recommendations"]
+}
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -110,6 +124,20 @@ def _stats_dict_to_str(stats_val: Any) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def _variance_warning_text(analysis: Dict[str, Any]) -> str:
+    """Return a variance imbalance warning line if ratio exceeds 2.0."""
+    ratio = analysis.get('variance_ratio', 1.0)
+    if ratio > 2.0:
+        variances = analysis.get('competitor_variances', {})
+        max_name = max(variances, key=variances.get) if variances else 'unknown'
+        min_name = min(variances, key=variances.get) if variances else 'unknown'
+        return (
+            f"\nVARIANCE IMBALANCE WARNING: {max_name} has {ratio:.1f}x more variance than "
+            f"{min_name}. This may cause misleading fairness statistics."
+        )
+    return ""
+
 
 def get_ai_assessment_of_handicaps(analysis: Dict[str, Any]) -> str:
     """
@@ -236,6 +264,7 @@ STATISTICAL MEASURES:
 - Win Rate Spread: {win_rate_spread:.2f}% (maximum minus minimum)
 - Standard Deviation: {win_rate_std_dev:.2f}%
 - Coefficient of Variation: {cv:.1f}%
+{_variance_warning_text(analysis)}
 
 FINISH TIME ANALYSIS:
 - Average finish spread: {analysis['avg_spread']:.1f} seconds
@@ -291,13 +320,34 @@ RESPONSE REQUIREMENTS:
 
 Your Expert Assessment:"""
 
-    response = call_ollama(prompt, num_predict=llm_config.TOKENS_FAIRNESS_ASSESSMENT)
+    response = call_ollama(
+        prompt,
+        num_predict=llm_config.TOKENS_FAIRNESS_ASSESSMENT,
+        format_schema=FAIRNESS_ASSESSMENT_SCHEMA,
+    )
 
     if response:
-        return _validate_fairness_assessment(
-            response, win_rate_spread, ideal_win_rate,
-            most_favored, most_disadvantaged, deviations,
-        )
+        try:
+            import json
+            result = json.loads(response)
+            # Format structured result into plain-text sections
+            formatted = (
+                f"FAIRNESS RATING: {result['rating']}\n\n"
+                f"STATISTICAL ANALYSIS:\n{result['statistical_analysis']}\n\n"
+                f"PATTERN DIAGNOSIS:\n{result['pattern_diagnosis']}\n\n"
+                f"PREDICTION ACCURACY:\n{result['prediction_accuracy']}\n\n"
+                f"RECOMMENDATIONS:\n"
+            )
+            for rec in result.get('recommendations', []):
+                formatted += f"  - {rec}\n"
+
+            return _validate_fairness_assessment(
+                formatted, win_rate_spread, ideal_win_rate,
+                most_favored, most_disadvantaged, deviations,
+            )
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Fall through to statistical fallback
+            pass
 
     # Statistical fallback
     if win_rate_spread < 3:
@@ -348,6 +398,7 @@ Your Expert Assessment:"""
         f"{winner_pcts[most_disadvantaged]:.1f}% wins ({deviations[most_disadvantaged]:.1f}% below ideal).\n\n"
         f"PREDICTION ACCURACY: Statistical analysis only (Ollama unavailable).\n\n"
         f"RECOMMENDATIONS:\n- {rec_1}\n- {rec_2}\n- {rec_3}"
+        + (_variance_warning_text(analysis) if analysis.get('variance_imbalanced') else "")
     )
 
 

@@ -173,15 +173,15 @@ class TestGapLogic:
 
     def test_fractional_gap_rounds_up(self):
         """
-        Gap of 5.5 -> mark = 3 + 6 = 9  (ceiling: int(5.5 + 0.999) = int(6.499) = 6).
-        Gap of 4.5 -> mark = 3 + 5 = 8  (ceiling: int(4.5 + 0.999) = int(5.499) = 5).
+        Standard rounding: gap = 5.5 -> round(5.5) = 6 -> mark = 9.
+        Standard rounding: gap = 4.5 -> round(4.5) = 4 -> mark = 7 (banker's rounding).
 
         Use 0.5-second fractions which are exact in IEEE 754 float, avoiding
         floating point subtraction errors that can occur near integer boundaries.
         """
         calc = HandicapCalculator()
 
-        # gap = 5.5 -> int(5.5 + 0.999) = int(6.499) = 6 -> mark = 9
+        # gap = 5.5 -> round(5.5) = 6 -> mark = 9
         r1 = [
             _mark_result("Slow", 40.5),
             _mark_result("Fast", 35.0),
@@ -189,13 +189,13 @@ class TestGapLogic:
         calc._assign_marks(r1)
         assert r1[1].mark == 9
 
-        # gap = 4.5 -> int(4.5 + 0.999) = int(5.499) = 5 -> mark = 8
+        # gap = 4.5 -> round(4.5) = 4 (banker's rounding, rounds to even) -> mark = 7
         r2 = [
             _mark_result("Slow", 39.5),
             _mark_result("Fast", 35.0),
         ]
         calc._assign_marks(r2)
-        assert r2[1].mark == 8
+        assert r2[1].mark == 7
 
     def test_zero_gap_gives_mark_3(self):
         """Two competitors with identical predicted times both get Mark 3."""

@@ -90,6 +90,7 @@ def call_ollama(
     num_predict: Optional[int] = None,
     ollama_url: Optional[str] = None,
     timeout: Optional[int] = None,
+    format_schema: Optional[dict] = None,
 ) -> Optional[str]:
     """
     Send a prompt to Ollama and return the response text.
@@ -98,17 +99,21 @@ def call_ollama(
         - Connection status caching (avoids repeated error messages)
         - Retry logic with simple backoff (max 2 retries)
         - Single error message per session
+        - JSON schema enforcement via format parameter (Ollama v0.5+)
 
     Args:
         prompt: Text prompt to send.
         model: Ollama model name. Defaults to llm_config.DEFAULT_MODEL.
         num_predict: Maximum tokens to generate. Common values:
-                     50   -- time prediction (single number)
-                     200  -- short analysis (3-4 sentences)
-                     800  -- championship race analysis
-                     5000 -- full fairness assessment
+                     150  -- quality adjustment (JSON)
+                     500  -- competitor profile (JSON)
+                     2000 -- full fairness assessment (JSON)
         ollama_url: Full API URL including path. Defaults to llm_config.OLLAMA_URL.
         timeout: Request timeout seconds. Defaults to llm_config.TIMEOUT_SECONDS.
+        format_schema: Optional JSON schema dict for structured output enforcement.
+                       When provided, Ollama constrains generation to valid JSON
+                       matching this schema via GBNF grammar logit masking.
+                       Temperature is forced to 0.0 for schema compliance.
 
     Returns:
         Stripped response string, or None if Ollama is unavailable.
@@ -124,7 +129,7 @@ def call_ollama(
     if model is None:
         model = llm_config.DEFAULT_MODEL
     if num_predict is None:
-        num_predict = 50
+        num_predict = 150
     if ollama_url is None:
         ollama_url = llm_config.OLLAMA_URL
     if timeout is None:
@@ -132,19 +137,28 @@ def call_ollama(
 
     max_retries = llm_config.MAX_RETRIES
 
+    # When format_schema is set, force temperature to 0 for deterministic output
+    temperature = 0.0 if format_schema is not None else 0.3
+
     for attempt in range(max_retries + 1):
         try:
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": num_predict,
+                },
+            }
+
+            # Add JSON schema enforcement if provided
+            if format_schema is not None:
+                payload["format"] = format_schema
+
             response = requests.post(
                 ollama_url,
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": num_predict,
-                    },
-                },
+                json=payload,
                 timeout=timeout,
             )
 
@@ -172,6 +186,7 @@ def call_ollama(
                 print("=" * 60)
                 print("Cannot connect to Ollama. LLM predictions will be skipped.")
                 print("To enable AI predictions, run: ollama serve")
+                print("Then pull the model: ollama pull qwen3.5:9b")
                 print("System will continue with Baseline and ML predictions only.")
                 print("=" * 60 + "\n")
                 _ollama_status['error_shown'] = True
