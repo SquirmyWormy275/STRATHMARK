@@ -67,32 +67,7 @@ CONSISTENCY_MODERATE_THRESHOLD: float = sim_config.CONSISTENCY_MODERATE_THRESHOL
 # Private helpers (ported from STRATHEX baseline.py)
 # ---------------------------------------------------------------------------
 
-def _standardize_results_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize column names for results DataFrames."""
-    if df is None or df.empty:
-        return df
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    rename_map = {
-        'time': 'raw_time',
-        'actualtime': 'raw_time',
-        'actual_time': 'raw_time',
-        'competitorname': 'competitor_name',
-        'competitor name': 'competitor_name',
-        'name': 'competitor_name',
-        'event_code': 'event',
-        'eventcode': 'event',
-        'diameter': 'size_mm',
-        'diameter_mm': 'size_mm',
-    }
-    df.rename(columns=rename_map, inplace=True)
-    if 'raw_time' in df.columns:
-        df['raw_time'] = pd.to_numeric(df['raw_time'], errors='coerce')
-    if 'event' in df.columns:
-        df['event'] = df['event'].astype(str).str.strip().str.upper()
-    if 'competitor_name' in df.columns:
-        df['competitor_name'] = df['competitor_name'].astype(str).str.strip()
-    return df
+from strathmark.utils import standardize_results_columns as _standardize_results_columns
 
 
 def _pooled_std_dev_by_event(
@@ -410,8 +385,8 @@ def run_monte_carlo_simulation(
     seed: Optional[int] = None,
     track_finish_orders: bool = False,
     track_podium_margins: bool = False,
-    show_live_leaders: bool = False,
-    progress_interval: int = 50000,
+    show_live_leaders: bool = False,   # kept for API compatibility; not used in vectorized path
+    progress_interval: int = 50000,    # kept for API compatibility; not used in vectorized path
 ) -> Dict:
     """
     Run num_simulations races and return fairness statistics.
@@ -491,80 +466,92 @@ def run_monte_carlo_simulation(
     front_marker_name = max(competitors, key=lambda x: x['predicted_time'])['name']
     back_marker_name = min(competitors, key=lambda x: x['predicted_time'])['name']
 
+    # Pre-compute per-competitor variance once (not per-simulation)
+    competitor_variance = {
+        comp['name']: _get_competitor_variance_seconds(comp)
+        for comp in competitors
+    }
+
     print(f"\nRUNNING MONTE CARLO SIMULATION ({num_simulations:,} races)")
     print(f"Simulating races with per-competitor variance and +/-{heat_variance_seconds:.1f}s heat variance...")
 
-    for i in range(num_simulations):
-        if progress_interval and (i + 1) % progress_interval == 0:
-            print(f"  Completed {i + 1:,}/{num_simulations:,} simulations...")
-            if show_live_leaders:
-                leaders = sorted(winner_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-                leader_str = ", ".join(
-                    [f"{name} {count / (i + 1) * 100:.1f}%" for name, count in leaders]
-                )
-                print(f"    Leaders: {leader_str}")
+    # Vectorized simulation — generate all random values at once
+    if rng is None:
+        rand_func = np.random.normal
+    else:
+        rand_func = rng.normal
 
-        # Run one race (full result needed for spread and position tracking)
-        if rng is None:
-            rand_normal = np.random.normal
-        else:
-            rand_normal = rng.normal
+    n_comp = len(competitors)
+    comp_names = [comp['name'] for comp in competitors]
+    predicted_times_arr = np.array([comp['predicted_time'] for comp in competitors])
+    start_delays_arr = np.array([comp['mark'] - rules.MIN_MARK_SECONDS for comp in competitors])
+    std_devs_arr = np.array([competitor_variance[name] for name in comp_names])
+    time_floors_arr = predicted_times_arr * 0.5
 
-        heat_delta = rand_normal(0.0, heat_variance_seconds)
-        race_results = []
+    # heat_deltas: (num_simulations,) — shared per-race environmental noise
+    heat_deltas = rand_func(0.0, heat_variance_seconds, num_simulations)
+    # comp_noise: (n_comp, num_simulations) — independent per-competitor noise
+    comp_noise = rand_func(0.0, std_devs_arr[:, np.newaxis], (n_comp, num_simulations))
 
-        for comp in competitors:
-            variance_seconds = _get_competitor_variance_seconds(comp)
-            actual_time = rand_normal(comp['predicted_time'] + heat_delta, variance_seconds)
-            actual_time = max(actual_time, comp['predicted_time'] * 0.5)
-            start_delay = comp['mark'] - rules.MIN_MARK_SECONDS
-            finish_time = start_delay + actual_time
+    # Actual chopping times: (n_comp, num_simulations)
+    raw_times = predicted_times_arr[:, np.newaxis] + heat_deltas[np.newaxis, :] + comp_noise
+    actual_times_matrix = np.maximum(raw_times, time_floors_arr[:, np.newaxis])
 
-            race_results.append({
-                'name': comp['name'],
-                'finish_time': finish_time,
-                'actual_time': actual_time,
-            })
+    # Finish times = start_delay + actual_chopping_time: (n_comp, num_simulations)
+    finish_times_matrix = start_delays_arr[:, np.newaxis] + actual_times_matrix
 
-        race_results.sort(key=lambda x: x['finish_time'])
+    # Finish spreads per simulation
+    finish_spreads_arr = (
+        np.max(finish_times_matrix, axis=0) - np.min(finish_times_matrix, axis=0)
+    )
+    finish_spreads = finish_spreads_arr.tolist()
 
-        # Calculate finish spread
-        spread = race_results[-1]['finish_time'] - race_results[0]['finish_time']
-        finish_spreads.append(spread)
+    # rank_matrix[pos, sim] = competitor index finishing at position pos in sim
+    rank_matrix = np.argsort(finish_times_matrix, axis=0)  # (n_comp, num_simulations)
 
-        # Track winner
-        winner_counts[race_results[0]['name']] += 1
+    # Winner counts
+    winner_indices = rank_matrix[0]  # argmin is rank_matrix[0] since argsort is ascending
+    winner_counts_arr = np.bincount(winner_indices, minlength=n_comp)
+    for ci, name in enumerate(comp_names):
+        winner_counts[name] = int(winner_counts_arr[ci])
 
-        # Track podium (top 3)
-        for j in range(min(3, len(race_results))):
-            podium_counts[race_results[j]['name']] += 1
+    # Podium counts (top 3)
+    podium_n = min(3, n_comp)
+    podium_flat = rank_matrix[:podium_n].ravel()
+    podium_counts_arr = np.bincount(podium_flat, minlength=n_comp)
+    for ci, name in enumerate(comp_names):
+        podium_counts[name] = int(podium_counts_arr[ci])
 
-        # Track average finish positions
-        for pos, result in enumerate(race_results, 1):
-            finish_position_sums[result['name']] += pos
+    # Average finish positions: for each competitor, sum their 1-indexed position across sims
+    flat_comp = rank_matrix.ravel()
+    flat_pos = np.repeat(np.arange(1, n_comp + 1), num_simulations).astype(np.float64)
+    sum_positions_arr = np.bincount(flat_comp, weights=flat_pos, minlength=n_comp)
+    for ci, name in enumerate(comp_names):
+        finish_position_sums[name] = float(sum_positions_arr[ci])
 
-        # Track individual finish times for per-competitor statistics
-        for result in race_results:
-            competitor_finish_times[result['name']].append(result['finish_time'])
+    # Per-competitor finish times (numpy arrays; post-loop stats code handles both list and array)
+    for ci, name in enumerate(comp_names):
+        competitor_finish_times[name] = finish_times_matrix[ci]
 
-        # Track podium margins and photo-finish rate
-        if track_podium_margins and len(race_results) >= 2:
-            margin_12 = race_results[1]['finish_time'] - race_results[0]['finish_time']
-            margin_12_sum += margin_12
-            margin_12_count += 1
-            if margin_12 <= photo_finish_threshold:
-                photo_finish_count += 1
-            if len(race_results) >= 3:
-                margin_23 = race_results[2]['finish_time'] - race_results[1]['finish_time']
-                margin_23_sum += margin_23
-                margin_23_count += 1
+    # Podium margins and photo-finish rate
+    if track_podium_margins and n_comp >= 2:
+        sorted_finish = np.sort(finish_times_matrix, axis=0)
+        margins_12 = sorted_finish[1] - sorted_finish[0]
+        margin_12_sum = float(np.sum(margins_12))
+        margin_12_count = num_simulations
+        photo_finish_count = int(np.sum(margins_12 <= photo_finish_threshold))
+        if n_comp >= 3:
+            margins_23 = sorted_finish[2] - sorted_finish[1]
+            margin_23_sum = float(np.sum(margins_23))
+            margin_23_count = num_simulations
 
-        # Track most common finish order
-        if order_counts is not None:
+    # Finish order tracking (optional; Python loop over rank columns)
+    if order_counts is not None:
+        for sim_order in rank_matrix.T:
             if order_scope == "full":
-                order_key = tuple(r['name'] for r in race_results)
+                order_key = tuple(comp_names[idx] for idx in sim_order)
             else:
-                order_key = tuple(r['name'] for r in race_results[:3])
+                order_key = tuple(comp_names[idx] for idx in sim_order[:3])
             order_counts[order_key] = order_counts.get(order_key, 0) + 1
 
     # Calculate statistics
@@ -605,10 +592,7 @@ def run_monte_carlo_simulation(
         (photo_finish_count / margin_12_count * 100.0) if margin_12_count else None
     )
 
-    competitor_variances = {
-        comp['name']: _get_competitor_variance_seconds(comp)
-        for comp in competitors
-    }
+    competitor_variances = competitor_variance  # pre-computed before simulation
 
     analysis = {
         'num_simulations': num_simulations,
@@ -650,3 +634,91 @@ def run_monte_carlo_simulation(
     }
 
     return analysis
+
+
+# ---------------------------------------------------------------------------
+# Phase 3A: audit_mark_sheet — public fairness wrapper
+# ---------------------------------------------------------------------------
+
+def audit_mark_sheet(
+    competitors_with_marks: list,
+    num_simulations: int = 250_000,
+    variance: float = 3.0,
+) -> dict:
+    """
+    Run a Monte Carlo fairness audit on a proposed mark sheet.
+
+    Wraps run_monte_carlo_simulation() to provide a standardised fairness
+    report for a single event. Does NOT reimplement the simulation logic.
+
+    Args:
+        competitors_with_marks: List of dicts, each with keys:
+            'name'           (str)  -- competitor display name
+            'predicted_time' (float) -- predicted time in seconds
+            'mark'           (int)  -- assigned handicap mark in seconds
+        num_simulations: Number of Monte Carlo iterations (default 250 000).
+        variance: Per-competitor absolute std-dev override in seconds.
+                  Applied to every competitor without historical std-dev data.
+
+    Returns:
+        Dict with keys:
+            per_competitor   -- {name: {win_rate, podium_rate, avg_finish_position}}
+            front_marker_win_rate  -- float (0.0–100.0)
+            back_marker_win_rate   -- float (0.0–100.0)
+            win_rate_spread        -- float (back_marker - front_marker win rate)
+            fairness_rating        -- str ('excellent', 'good', 'fair', 'poor')
+
+    Fairness thresholds (win_rate_spread):
+        < 5 %  -> 'excellent'
+        < 10 % -> 'good'
+        < 20 % -> 'fair'
+        >= 20 % -> 'poor'
+    """
+    # Inject the variance override into each competitor dict if not already set
+    normalised = []
+    for comp in competitors_with_marks:
+        entry = dict(comp)
+        if 'performance_std_dev' not in entry and 'std_dev' not in entry:
+            entry['std_dev'] = float(variance)
+        normalised.append(entry)
+
+    sim = run_monte_carlo_simulation(
+        competitors=normalised,
+        num_simulations=num_simulations,
+    )
+
+    winner_pct = sim['winner_percentages']        # {name: 0.0-100.0}
+    podium_pct = sim['podium_percentages']         # {name: 0.0-100.0}
+    avg_pos = sim['avg_finish_positions']          # {name: float}
+    front_name = sim['front_marker_name']
+    back_name = sim['back_marker_name']
+
+    per_competitor = {
+        name: {
+            'win_rate': round(winner_pct.get(name, 0.0), 2),
+            'podium_rate': round(podium_pct.get(name, 0.0), 2),
+            'avg_finish_position': round(avg_pos.get(name, 0.0), 3),
+        }
+        for name in winner_pct
+    }
+
+    front_win_rate = round(winner_pct.get(front_name, 0.0), 2)
+    back_win_rate = round(winner_pct.get(back_name, 0.0), 2)
+    spread = round(back_win_rate - front_win_rate, 2)
+
+    if spread < 5.0:
+        fairness_rating = 'excellent'
+    elif spread < 10.0:
+        fairness_rating = 'good'
+    elif spread < 20.0:
+        fairness_rating = 'fair'
+    else:
+        fairness_rating = 'poor'
+
+    return {
+        'per_competitor': per_competitor,
+        'front_marker_win_rate': front_win_rate,
+        'back_marker_win_rate': back_win_rate,
+        'win_rate_spread': spread,
+        'fairness_rating': fairness_rating,
+    }

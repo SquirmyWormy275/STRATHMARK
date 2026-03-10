@@ -46,7 +46,7 @@ Live integration (editable install):
     No rebuild or reinstall required.
 """
 
-from strathmark.calculator import HandicapCalculator
+from strathmark.calculator import HandicapCalculator, process_competition_day
 from strathmark.predictor import (
     CompetitorRecord,
     WoodProfile,
@@ -58,7 +58,7 @@ from strathmark.predictor import (
     predict_baseline,
 )
 from strathmark.store import ResultStore
-from strathmark.variance import run_monte_carlo_simulation, estimate_competitor_std_dev
+from strathmark.variance import run_monte_carlo_simulation, estimate_competitor_std_dev, audit_mark_sheet
 from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
 from strathmark.fairness import (
     get_ai_assessment_of_handicaps,
@@ -66,10 +66,21 @@ from strathmark.fairness import (
     simulate_and_assess_handicaps,
 )
 from strathmark.llm import call_ollama, check_ollama_connection
+from strathmark.loader import load_woodchopping_xlsx, load_results_for_competitor
+from strathmark.db import (
+    push_results,
+    pull_results,
+    push_competitors,
+    pull_competitors,
+    record_prediction_residuals,
+    get_competitor_bias,
+)
+from strathmark.utils import score_prediction_accuracy
 
 __all__ = [
     # Core calculation
     "HandicapCalculator",
+    "process_competition_day",
     # Data types
     "CompetitorRecord",
     "WoodProfile",
@@ -85,6 +96,7 @@ __all__ = [
     # Simulation
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",
+    "audit_mark_sheet",
     # Visualization
     "generate_simulation_summary",
     "visualize_simulation_results",
@@ -95,6 +107,18 @@ __all__ = [
     # LLM
     "call_ollama",
     "check_ollama_connection",
+    # Data loading
+    "load_woodchopping_xlsx",
+    "load_results_for_competitor",
+    # Database (Supabase)
+    "push_results",
+    "pull_results",
+    "push_competitors",
+    "pull_competitors",
+    "record_prediction_residuals",
+    "get_competitor_bias",
+    # Scoring / accuracy
+    "score_prediction_accuracy",
 ]
 
 __version__ = "0.2.0"

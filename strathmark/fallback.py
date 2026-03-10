@@ -10,7 +10,7 @@ fallback. Panel marks are division-based defaults representing a typical
 competitor for that division at 300mm standard diameter.
 
 This module also handles the broader "sparse data" fallback chain:
-    1. Competitor has no history at all          -> panel mark (this module)
+    1. Competitor has no history at all          -> default mark (this module)
     2. Competitor has history but wrong event    -> event baseline shrinkage
     3. Competitor has history but wrong species  -> diameter + species scaling
     4. Competitor has history but wrong diameter -> diameter scaling only
@@ -18,21 +18,22 @@ This module also handles the broader "sparse data" fallback chain:
 The distinction matters because each level of the chain produces a different
 confidence level and explanation string.
 
-Panel mark reference table (from STRATHEX qaa_scaling.py -> get_qaa_panel_mark()):
+STRATHEX development defaults (at 300mm standard, quality 5):
     Division        Mark @ 300mm SB    Mark @ 300mm UH    Notes
-    Open            15s                15s                Elite division
-    Novice          35s                35s                Beginner division
-    Junior          15s                15s                Youth division
-    Veterans        35s                35s                Masters/Veterans
-    Womens          35s                35s                Women's division
+    Open            20s                20s                Elite division
+    Novice          40s                40s                Beginner division
+    Junior          30s                30s                Youth division
+    Veterans        30s                30s                Masters/Veterans
+    Womens          30s                30s                Women's division
+    Default         20s                20s                Unknown division
 
 Note: These are starting marks at 300mm. Diameter scaling is applied afterward
-to produce the final mark for the actual event diameter.
+to produce the final mark for the actual event diameter. The consuming
+application may pass a custom panel_marks dict to override these defaults.
 
 Source references (STRATHEX):
-    woodchopping/predictions/qaa_scaling.py -> get_qaa_panel_mark()
-    woodchopping/predictions/baseline.py    -> get_event_baseline_flexible()
-    woodchopping/predictions/baseline.py    -> get_competitor_historical_times_flexible()
+    woodchopping/predictions/baseline.py -> get_event_baseline_flexible()
+    woodchopping/predictions/baseline.py -> get_competitor_historical_times_flexible()
 """
 
 from __future__ import annotations
@@ -50,20 +51,21 @@ import pandas as pd
 
 PANEL_MARKS_300MM: dict = {
     # (event_code, division) -> mark in seconds at 300mm, quality 5
-    ("SB", "Open"):     15.0,
-    ("SB", "Novice"):   35.0,
-    ("SB", "Junior"):   15.0,
-    ("SB", "Veterans"): 35.0,
-    ("SB", "Womens"):   35.0,
-    ("UH", "Open"):     15.0,
-    ("UH", "Novice"):   35.0,
-    ("UH", "Junior"):   15.0,
-    ("UH", "Veterans"): 35.0,
-    ("UH", "Womens"):   35.0,
+    # STRATHEX development defaults
+    ("SB", "Open"):     20.0,
+    ("SB", "Novice"):   40.0,
+    ("SB", "Junior"):   30.0,
+    ("SB", "Veterans"): 30.0,
+    ("SB", "Womens"):   30.0,
+    ("UH", "Open"):     20.0,
+    ("UH", "Novice"):   40.0,
+    ("UH", "Junior"):   30.0,
+    ("UH", "Veterans"): 30.0,
+    ("UH", "Womens"):   30.0,
 }
 
-PANEL_MARK_DEFAULT_UNKNOWN_DIVISION: float = 35.0
-"""Fallback when division is unknown (conservative/slower estimate)."""
+PANEL_MARK_DEFAULT_UNKNOWN_DIVISION: float = 20.0
+"""Fallback when division is unknown. STRATHEX development default."""
 
 
 # ---------------------------------------------------------------------------
@@ -72,58 +74,18 @@ PANEL_MARK_DEFAULT_UNKNOWN_DIVISION: float = 35.0
 
 def _standardize_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Apply minimal standardization to a results DataFrame so fallback functions
-    can work without importing from woodchopping.data.
+    Standardize column names and coerce types; then drop invalid rows.
 
-    Normalizes column names, renames common variants, and coerces types.
-    Returns a copy of the input with standardized column names.
+    Delegates normalization to utils.standardize_results_columns, then
+    removes rows with missing or non-positive raw_time.
     """
-    if results_df is None or results_df.empty:
-        return results_df
-
-    df = results_df.copy()
-    # Lowercase all column names
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    # Rename common variants to canonical names
-    rename_map = {
-        'time': 'raw_time',
-        'actualtime': 'raw_time',
-        'actual_time': 'raw_time',
-        'competitorname': 'competitor_name',
-        'competitor name': 'competitor_name',
-        'name': 'competitor_name',
-        'event_code': 'event',
-        'eventcode': 'event',
-        'diameter': 'size_mm',
-        'diameter_mm': 'size_mm',
-        'size': 'size_mm',
-        'wood_species': 'species',
-        'woodspecies': 'species',
-    }
-    df.rename(columns=rename_map, inplace=True)
-
-    # Coerce numeric columns
-    for col in ['raw_time', 'size_mm', 'quality']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # Strip whitespace from string columns
-    for col in ['competitor_name', 'event', 'species']:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
-
-    # Normalize event codes to uppercase
-    if 'event' in df.columns:
-        df['event'] = df['event'].str.upper()
-
-    # Remove rows with missing required values
-    required = [c for c in ['raw_time', 'competitor_name', 'event'] if c in df.columns]
-    if required:
-        df = df.dropna(subset=['raw_time'] if 'raw_time' in df.columns else [])
-        if 'raw_time' in df.columns:
-            df = df[df['raw_time'] > 0]
-
+    from strathmark.utils import standardize_results_columns
+    df = standardize_results_columns(results_df)
+    if df is None or df.empty:
+        return df
+    if 'raw_time' in df.columns:
+        df = df.dropna(subset=['raw_time'])
+        df = df[df['raw_time'] > 0]
     return df
 
 
@@ -220,33 +182,36 @@ def _compute_robust_mean(times: list) -> Optional[float]:
 # Panel mark functions
 # ---------------------------------------------------------------------------
 
-def get_qaa_panel_mark(
+def get_panel_mark(
     event_code: str,
     division: Optional[str],
+    custom_marks: Optional[dict] = None,
 ) -> Tuple[float, str]:
     """
-    Return the panel mark (book mark) for a competitor with no history.
+    Return the default mark for a competitor with no history.
 
-    Panel marks are at 300mm standard diameter and quality 5. The caller
+    Default marks are at 300mm standard diameter and quality 5. The caller
     is responsible for applying diameter scaling (wood.scale_time()) afterward
     to adjust for the actual event diameter.
 
-    Panel Marks (QAA Page 2):
-        - Open UH/SB: 15 seconds
-        - Novice: 35 seconds
-        - Junior: 15 seconds
-        - Veterans: Set by committee (default 35)
-        - Women's UH: 35 seconds
+    STRATHEX development defaults:
+        - Open UH/SB: 20 seconds
+        - Novice: 40 seconds
+        - Junior: 30 seconds
+        - Veterans: 30 seconds
+        - Women's UH/SB: 30 seconds
 
     Args:
         event_code: 'SB' or 'UH'.
         division: Competitor's division ('Open', 'Novice', 'Junior', etc.).
                   None or unrecognized values fall back to
                   PANEL_MARK_DEFAULT_UNKNOWN_DIVISION.
+        custom_marks: Optional dict of {(event_code, division): mark_seconds}
+                      passed by the consuming application to override defaults.
 
     Returns:
-        Tuple of (panel_mark_seconds, explanation_string).
-        Confidence for panel marks is always 'VERY LOW'.
+        Tuple of (mark_seconds, explanation_string).
+        Confidence for default marks is always 'VERY LOW'.
     """
     event_upper = str(event_code).strip().upper()
 
@@ -265,18 +230,23 @@ def get_qaa_panel_mark(
         elif div_lower in ('open', 'elite', 'professional'):
             div_key = 'Open'
 
+    # Merge custom_marks with defaults (custom takes priority)
+    marks_table = dict(PANEL_MARKS_300MM)
+    if custom_marks:
+        marks_table.update(custom_marks)
+
     if div_key is not None:
         key = (event_upper, div_key)
-        if key in PANEL_MARKS_300MM:
-            mark = PANEL_MARKS_300MM[key]
-            explanation = f"Panel mark: {div_key} division {event_upper} @ 300mm standard"
+        if key in marks_table:
+            mark = marks_table[key]
+            explanation = f"Default mark: {div_key} division {event_upper} @ 300mm standard"
             return mark, explanation
 
     # Fallback for unknown or None division
     mark = PANEL_MARK_DEFAULT_UNKNOWN_DIVISION
     div_label = division if division else "Unknown"
     explanation = (
-        f"Panel mark: {div_label} division (unrecognized, using default "
+        f"Default mark: {div_label} division (unrecognized, using default "
         f"{PANEL_MARK_DEFAULT_UNKNOWN_DIVISION:.0f}s)"
     )
     return mark, explanation

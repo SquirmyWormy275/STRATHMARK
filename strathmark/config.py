@@ -55,11 +55,11 @@ class DataRequirements:
     MIN_HISTORICAL_TIMES: int = 3
     """Minimum historical times required for new competitors"""
 
-    MIN_ML_TRAINING_RECORDS_TOTAL: int = 30
-    """Minimum total records required for ML model training"""
+    MIN_ML_TRAINING_RECORDS_TOTAL: int = 100
+    """Minimum total records required for ML model training (23 features x 10:1 ratio = 230 ideal; 100 hard floor)"""
 
-    MIN_ML_TRAINING_RECORDS_PER_EVENT: int = 15
-    """Minimum records per event (SB/UH) for event-specific models"""
+    MIN_ML_TRAINING_RECORDS_PER_EVENT: int = 75
+    """Minimum records per event (SB/UH) for event-specific models (was 15; raised to prevent XGBoost overfitting)"""
 
     # Validation ranges
     MIN_DIAMETER_MM: int = 225
@@ -124,7 +124,7 @@ class MLConfig:
     MAX_PREDICTION_TIME: float = 300.0
     """Maximum reasonable prediction time (seconds)"""
 
-    # Feature names (23 features - ALL 6 wood properties included for maximum accuracy)
+    # Feature names (26 features - 23 original + 2 cross-event correlation + 1 field strength)
     # Data analysis showed ALL 6 properties combined: r=0.621 (vs shear alone r=0.523)
     FEATURE_NAMES: tuple = (
         'competitor_avg_time_by_event',  # 1 - PRIMARY (70-80% importance)
@@ -138,18 +138,21 @@ class MLConfig:
         'wood_MOE',                     # 9 - Modulus of Elasticity
         'competitor_experience',        # 10
         'competitor_trend_slope',       # 11
-        'wood_quality',                 # 12 - NEW (CRITICAL MISSING FEATURE)
-        'diameter_squared',             # 13 - NEW (non-linear size)
-        'quality_x_diameter',           # 14 - NEW (interaction)
-        'quality_x_hardness',           # 15 - NEW (interaction)
-        'experience_x_size',            # 16 - NEW (interaction)
-        'competitor_variance',          # 17 - NEW (consistency)
-        'competitor_median_diameter',   # 18 - NEW (selection bias)
-        'recency_score',                # 19 - NEW (momentum vs rust)
-        'career_phase',                 # 20 - NEW (rising/peak/declining)
-        'seasonal_month_sin',           # 21 - NEW (cyclical season)
-        'seasonal_month_cos',           # 22 - NEW (cyclical season)
-        'event_x_diameter'              # 23 - NEW (UH vs SB scale differently)
+        'wood_quality',                 # 12
+        'diameter_squared',             # 13
+        'quality_x_diameter',           # 14
+        'quality_x_hardness',           # 15
+        'experience_x_size',            # 16
+        'competitor_variance',          # 17
+        'competitor_median_diameter',   # 18
+        'recency_score',                # 19
+        'career_phase',                 # 20
+        'seasonal_month_sin',           # 21
+        'seasonal_month_cos',           # 22
+        'event_x_diameter',             # 23
+        'peer_event_avg_time',          # 24 - avg time in OTHER event (SB<->UH correlation)
+        'uh_to_sb_ratio',               # 25 - UH/SB mean ratio (technique balance)
+        'field_strength',               # 26 - avg mark across all competitors at same show/event
     )
 
     # Bayesian optimization parameters (NEW for Phase 2)

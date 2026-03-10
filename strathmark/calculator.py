@@ -5,9 +5,9 @@ Handicap Mark Calculator
 Core handicap mark computation for woodchopping competitions.
 
 This module contains HandicapCalculator, the primary public class for computing
-AAA-compliant handicap marks. It orchestrates the prediction cascade (Manual >
-LLM > ML > Panel fallback), gap computation, floor/ceiling enforcement, and
-produces a ranked start sheet.
+association-agnostic handicap marks. It orchestrates the prediction cascade
+(Manual > LLM > ML > Panel fallback), gap computation, floor/ceiling
+enforcement, and produces a ranked start sheet.
 
 Key constraints (must never be violated):
     - Mark floor:   3 seconds (front marker minimum)
@@ -19,13 +19,16 @@ Key constraints (must never be violated):
 
 Source references (STRATHEX):
     woodchopping/handicaps/calculator.py  -> calculate_ai_enhanced_handicaps()
-    woodchopping/handicaps/qaa_legacy.py  -> calculate_qaa_legacy_marks()
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
+
+import numpy as np
+import pandas as pd
 
 from strathmark.predictor import (
     CompetitorRecord,
@@ -33,11 +36,9 @@ from strathmark.predictor import (
     PredictionResult,
     get_best_prediction,
 )
-from strathmark.wood import (
-    calculate_effective_janka_hardness,
-    interpolate_qaa_tables,
-)
 from strathmark.config import rules
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,25 @@ class MarkResult:
 
     explanation: str
     """Human-readable explanation of why this prediction was selected."""
+
+    std_dev: float = 3.0
+    """Per-competitor performance std-dev in seconds (used in Monte Carlo simulation).
+    Computed directly from competitor event history (3+ results -> clamped sample std;
+    <3 results -> 3.0 flat). Independent of which cascade level won the prediction.
+    Clamped to [1.5, 6.0]. Default 3.0 (PERFORMANCE_VARIANCE_SECONDS)."""
+
+    def to_simulation_dict(self) -> dict:
+        """Return a dict suitable for passing to run_monte_carlo_simulation().
+
+        Includes 'std_dev' so per-competitor variance reaches the MC loop.
+        The key 'std_dev' is read by _get_competitor_variance_seconds() in variance.py.
+        """
+        return {
+            'name': self.name,
+            'mark': self.mark,
+            'predicted_time': self.predicted_time,
+            'std_dev': self.std_dev,
+        }
 
 
 @dataclass
@@ -189,12 +209,19 @@ class HandicapCalculator:
         self,
         event_ceiling: Optional[int] = None,
         ollama_url: str = "http://localhost:11434",
+        wood_df: Optional[pd.DataFrame] = None,
+        results_df: Optional[pd.DataFrame] = None,
     ) -> None:
         """
         Args:
             event_ceiling: Optional lower ceiling for this event (seconds).
                            Must be > MARK_FLOOR. If None, system default of 183 is used.
             ollama_url: Base URL for the Ollama API used by the LLM prediction layer.
+            wood_df: Optional species properties DataFrame (Janka hardness, etc.).
+                     When provided, passed to get_best_prediction() on every call.
+            results_df: Optional historical results DataFrame. When provided and no
+                        ML model has been trained yet, training is attempted on the
+                        first call to calculate(). Cached in self._ml_model.
         """
         if event_ceiling is not None:
             if event_ceiling <= self.MARK_FLOOR:
@@ -212,6 +239,77 @@ class HandicapCalculator:
             self.effective_ceiling = self.MARK_CEILING
 
         self._ollama_url = ollama_url
+        self.wood_df: Optional[pd.DataFrame] = wood_df
+        self.results_df: Optional[pd.DataFrame] = results_df
+        self._ml_model = None  # set on first calculate() when results_df is available
+
+    @classmethod
+    def from_db(
+        cls,
+        competitor_ids: Optional[List[str]] = None,
+        wood_df: Optional[pd.DataFrame] = None,
+        **kwargs,
+    ) -> "HandicapCalculator":
+        """
+        Construct a HandicapCalculator pre-loaded with data from the global database.
+
+        Calls pull_results() and pull_competitors() internally to fetch the
+        historical results needed for ML training and baseline prediction.
+
+        Args:
+            competitor_ids: Optional list of competitor IDs to filter results by.
+                            If None, all results in the database are fetched.
+            wood_df: Species properties DataFrame (Janka hardness, etc.).
+                     Required — load it from Excel using load_woodchopping_xlsx()
+                     or supply a DataFrame directly.
+            **kwargs: Forwarded to HandicapCalculator.__init__() (e.g. event_ceiling).
+
+        Returns:
+            HandicapCalculator with results_df populated from the database,
+            ready to call calculate() on.
+
+        Raises:
+            ValueError: If wood_df is None.
+
+        Example:
+            wood_df, _ = load_woodchopping_xlsx('woodchopping_clean.xlsx')
+            calc = HandicapCalculator.from_db(wood_df=wood_df)
+            sheet = calc.calculate(competitors, wood_profile, event_code)
+        """
+        if wood_df is None:
+            raise ValueError(
+                "wood_df is required — load it from Excel using "
+                "load_woodchopping_xlsx() or supply a DataFrame directly."
+            )
+
+        from strathmark.db import pull_results
+        results_df = pull_results(competitor_ids=competitor_ids)
+        return cls(wood_df=wood_df, results_df=results_df, **kwargs)
+
+    @classmethod
+    def from_xlsx(cls, path: str, **kwargs) -> "HandicapCalculator":
+        """
+        Construct a HandicapCalculator pre-loaded with data from an Excel workbook.
+
+        Calls load_woodchopping_xlsx(path) to read the 'Wood' and 'Results'
+        sheets, then returns a fully initialized instance with wood_df and
+        results_df already set. ML training is deferred to the first call to
+        calculate().
+
+        Args:
+            path: Path to the .xlsx workbook (e.g. 'woodchopping_clean.xlsx').
+            **kwargs: Forwarded to HandicapCalculator.__init__() (e.g. event_ceiling).
+
+        Returns:
+            HandicapCalculator with wood_df and results_df populated.
+
+        Example:
+            calc = HandicapCalculator.from_xlsx('woodchopping_clean.xlsx')
+            sheet = calc.calculate(competitors, wood_profile, event_code)
+        """
+        from strathmark.utils import load_woodchopping_xlsx
+        wood_df, results_df = load_woodchopping_xlsx(path)
+        return cls(wood_df=wood_df, results_df=results_df, **kwargs)
 
     def calculate(
         self,
@@ -256,6 +354,27 @@ class HandicapCalculator:
         if tournament_results is None:
             tournament_results = {}
 
+        # Lazy ML training: attempt once per instance when results_df is available
+        # and no model has been trained yet.
+        if self._ml_model is None and self.results_df is not None:
+            from strathmark.predictor import MLModel
+            ml = MLModel()
+            try:
+                trained = ml.train(self.results_df, self.wood_df)
+                if trained:
+                    self._ml_model = ml
+                else:
+                    _log.warning(
+                        "HandicapCalculator: ML training returned False "
+                        "(insufficient data). Continuing with baseline."
+                    )
+            except Exception as exc:
+                _log.warning(
+                    "HandicapCalculator: ML training failed (%s). "
+                    "Continuing with baseline.",
+                    exc,
+                )
+
         results: List[MarkResult] = []
 
         for record in competitors:
@@ -278,13 +397,29 @@ class HandicapCalculator:
                     tournament_time=tournament_results[record.name],
                 )
 
-            # Run prediction cascade
+            # Run prediction cascade, forwarding stored data frames and ML model
             prediction: PredictionResult = get_best_prediction(
                 effective_record,
                 wood,
                 event_code,
-                ollama_url=self._ollama_url,
+                wood_data_df=self.wood_df,
+                results_df=self.results_df,
+                ml_model=self._ml_model,
             )
+
+            # Compute per-competitor std_dev from event history.
+            # Done here (not in predictor.py) so all cascade levels get the correct
+            # value regardless of which method (ML/LLM/baseline/panel) won.
+            # Threshold: 3+ results -> clamped sample std; <3 -> flat 3.0.
+            event_times = [
+                h.time_seconds for h in record.history
+                if h.event_code.upper() == event_code.upper()
+            ]
+            if len(event_times) >= 3:
+                raw_std = float(np.std(event_times, ddof=1))
+                competitor_std = max(1.5, min(raw_std, 6.0))
+            else:
+                competitor_std = float(rules.PERFORMANCE_VARIANCE_SECONDS)
 
             results.append(
                 MarkResult(
@@ -294,6 +429,7 @@ class HandicapCalculator:
                     method_used=prediction.method,
                     confidence=prediction.confidence,
                     explanation=prediction.explanation,
+                    std_dev=competitor_std,
                 )
             )
 
@@ -368,164 +504,103 @@ class HandicapCalculator:
             entries=list(results),
         )
 
-
 # ---------------------------------------------------------------------------
-# QAA legacy calculator
+# Phase 5E: process_competition_day -- batch helper
 # ---------------------------------------------------------------------------
 
-class QAACalculator:
+def process_competition_day(
+    events,
+    overrides=None,
+):
     """
-    Calculate handicap marks using the QAA (Queensland Axemen's Association)
-    empirical lookup tables.
+    Process multiple events for a competition day in a single call.
 
-    QAA methodology differs from AI-enhanced prediction:
-        1. Predict a competitor "book mark" at 300mm standard diameter
-           using baseline V2 hybrid (no LLM, no ML -- pure historical).
-        2. Cap book mark at MAX_BOOK_MARK (43s for open events).
-        3. Scale the book mark to the target diameter using QAA lookup tables,
-           blending hardwood/medium/softwood tables based on effective Janka hardness.
-        4. Round the scaled mark to the nearest whole second.
+    Iterates over each event specification, builds a HandicapCalculator from
+    the provided data source (xlsx path or pre-loaded DataFrames), runs
+    calculate(), and returns a list of result dicts -- one per event.
 
-    This produces marks that are compatible with the traditional QAA handicap
-    system used in Australian and international woodchopping competition.
+    Args:
+        events: List of event specification dicts, each containing:
+            'event_name'    (str)         -- human-readable label, e.g. '225mm SB'
+            'event_code'    (str)         -- 'SB' or 'UH'
+            'species'       (str)         -- wood species
+            'diameter_mm'   (float)       -- block diameter in mm
+            'quality'       (int)         -- wood quality 1-10
+            'competitors'   (list)        -- list of CompetitorRecord objects
+            'xlsx_path'     (str, opt)    -- path to Excel workbook (file-based data)
+            'wood_df'       (DataFrame, opt) -- pre-loaded wood properties DataFrame
+            'results_df'    (DataFrame, opt) -- pre-loaded historical results DataFrame
+            'event_ceiling' (int, opt)    -- per-event mark ceiling override
+            'tournament_results' (dict, opt) -- {name: time} from earlier rounds
+            'overrides'     (dict, opt)   -- per-event {name: predicted_time} overrides
+        overrides: Optional global manual override dict {competitor_name: predicted_time}.
 
-    Design invariants:
-        - Mark floor = 3 (enforced after all other logic)
-        - MAX_BOOK_MARK = 43 (QAA open event cap)
-        - STANDARD_DIAMETER_MM = 300.0 (all book marks computed at 300mm)
-        - Quality is FIXED to 5 (standard conditions) for book mark derivation
-          -- the QAA tables already encode species-level hardness variation.
+    Returns:
+        List of dicts, one per event, each containing:
+            'event_name'  (str)
+            'event_code'  (str)
+            'results'     (list[MarkResult])
+            'start_sheet' (StartSheet)
     """
+    if overrides is None:
+        overrides = {}
 
-    MARK_FLOOR: int = 3
-    MAX_BOOK_MARK: float = 43.0
-    STANDARD_DIAMETER_MM: float = 300.0
+    day_results = []
 
-    def calculate(
-        self,
-        competitors: Sequence[CompetitorRecord],
-        wood: WoodProfile,
-        event_code: str,
-        results_df=None,   # pandas DataFrame -- optional, passed to predict_baseline
-        wood_df=None,      # pandas DataFrame -- optional species properties table
-    ) -> List[MarkResult]:
-        """
-        Calculate QAA legacy marks for SB/UH events.
+    for event_spec in events:
+        event_name = event_spec['event_name']
+        event_code = event_spec['event_code']
+        competitors = event_spec['competitors']
 
-        Steps per competitor:
-            1. Predict baseline time at 300mm, quality=5 (standard conditions).
-            2. Cap book mark at MAX_BOOK_MARK.
-            3. Scale to target diameter via interpolate_qaa_tables().
-            4. Round to nearest second, apply floor.
-
-        Args:
-            competitors: Sequence of CompetitorRecord objects.
-            wood: Wood profile for this event (species, diameter, quality).
-            event_code: 'SB' or 'UH'. Other codes are rejected.
-            results_df: Optional historical results DataFrame for baseline prediction.
-                        If None, baseline prediction falls back to panel mark.
-            wood_df: Optional species properties DataFrame for Janka lookup.
-                     If None, a default effective_janka of 1000.0 is used.
-
-        Returns:
-            List of MarkResult with method_used='QAA', sorted slowest-to-fastest
-            (front marker first).
-
-        Raises:
-            ValueError: If event_code is not 'SB' or 'UH'.
-            ValueError: If competitors list is empty.
-        """
-        from strathmark.predictor import predict_baseline
-
-        event_code = str(event_code).strip().upper()
-        if event_code not in ("SB", "UH"):
-            raise ValueError(
-                f"QAACalculator only supports 'SB' and 'UH', got '{event_code}'"
-            )
-        if not competitors:
-            raise ValueError("competitors list must not be empty")
-
-        quality_val = max(1, min(10, int(wood.quality)))
-
-        # Resolve effective Janka hardness for this species/quality combination
-        # This blends the tables to give the right hardwood/medium/soft weighting.
-        effective_janka = calculate_effective_janka_hardness(
-            wood.species, quality_val, wood_df
+        wood = WoodProfile(
+            species=event_spec['species'],
+            diameter_mm=float(event_spec['diameter_mm']),
+            quality=int(event_spec.get('quality', 5)),
         )
 
-        results: List[MarkResult] = []
+        xlsx_path = event_spec.get('xlsx_path')
+        wood_df = event_spec.get('wood_df')
+        results_df = event_spec.get('results_df')
+        event_ceiling = event_spec.get('event_ceiling')
 
-        for record in competitors:
-            # Step 1: Predict a book mark at 300mm, quality=5 (standard conditions).
-            # Use a WoodProfile with the same species but standard diameter/quality.
-            standard_wood = WoodProfile(
-                species=wood.species,
-                diameter_mm=self.STANDARD_DIAMETER_MM,
-                quality=5,
-            )
+        if xlsx_path and wood_df is None:
+            kw = {'event_ceiling': event_ceiling} if event_ceiling else {}
+            calc = HandicapCalculator.from_xlsx(xlsx_path, **kw)
+        else:
+            init_kwargs = {}
+            if event_ceiling:
+                init_kwargs['event_ceiling'] = event_ceiling
+            if wood_df is not None:
+                init_kwargs['wood_df'] = wood_df
+            if results_df is not None:
+                init_kwargs['results_df'] = results_df
+            calc = HandicapCalculator(**init_kwargs)
 
-            # Build a copy of the record stripped of tournament/manual overrides
-            # so the QAA path uses pure historical baseline only.
-            from dataclasses import replace
-            baseline_record = replace(
-                record,
-                manual_time_override=None,
-                tournament_time=None,
-            )
+        merged_overrides = dict(overrides)
+        merged_overrides.update(event_spec.get('overrides', {}))
 
-            baseline_pred: PredictionResult = predict_baseline(
-                baseline_record,
-                standard_wood,
-                event_code,
-                results_df=results_df,
-                wood_df=wood_df,
-            )
+        tournament_results = event_spec.get('tournament_results')
 
-            base_time = baseline_pred.value
+        mark_results = calc.calculate(
+            competitors=competitors,
+            wood=wood,
+            event_code=event_code,
+            tournament_results=tournament_results,
+            manual_overrides=merged_overrides if merged_overrides else None,
+        )
 
-            # Step 2: Cap book mark at MAX_BOOK_MARK (QAA open event limit = 43s)
-            book_mark_300 = max(float(self.MARK_FLOOR), min(base_time, self.MAX_BOOK_MARK))
+        sheet = calc.build_start_sheet(
+            results=mark_results,
+            event_name=event_name,
+            event_code=event_code,
+            wood=wood,
+        )
 
-            # Step 3: Scale to target diameter via QAA lookup tables
-            scaled_mark, weights = interpolate_qaa_tables(
-                book_mark_300,
-                float(wood.diameter_mm),
-                effective_janka,
-            )
+        day_results.append({
+            'event_name': event_name,
+            'event_code': event_code,
+            'results': mark_results,
+            'start_sheet': sheet,
+        })
 
-            # Step 4: Round to nearest second, apply floor
-            mark = int(round(scaled_mark))
-            mark = max(self.MARK_FLOOR, mark)
-
-            # Build a compact explanation for the start sheet
-            blend_parts = []
-            if weights.get("softwood", 0.0) > 0.01:
-                blend_parts.append(f"{weights['softwood']*100:.0f}% soft")
-            if weights.get("medium", 0.0) > 0.01:
-                blend_parts.append(f"{weights['medium']*100:.0f}% med")
-            if weights.get("hardwood", 0.0) > 0.01:
-                blend_parts.append(f"{weights['hardwood']*100:.0f}% hard")
-
-            blend_str = ", ".join(blend_parts) if blend_parts else "mixed"
-
-            explanation = (
-                f"QAA: {book_mark_300:.1f}s @ 300mm -> {scaled_mark:.1f}s "
-                f"@ {wood.diameter_mm:.0f}mm "
-                f"({blend_str}, {effective_janka:.0f} Janka)"
-            )
-
-            results.append(
-                MarkResult(
-                    name=record.name,
-                    mark=mark,
-                    predicted_time=scaled_mark,  # use scaled mark as "predicted time"
-                    method_used="QAA",
-                    confidence=baseline_pred.confidence,
-                    explanation=explanation,
-                )
-            )
-
-        # Sort slowest-to-fastest (highest scaled mark first = front marker first)
-        results.sort(key=lambda r: r.predicted_time, reverse=True)
-
-        return results
+    return day_results

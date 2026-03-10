@@ -44,14 +44,24 @@ def _mark_result(name: str, predicted_time: float) -> MarkResult:
     )
 
 
-def _competitor(name: str, time_s: float, tournament_time: float = None) -> CompetitorRecord:
+def _competitor(
+    name: str,
+    time_s: float,
+    tournament_time: float = None,
+    num_tournament_rounds: int = 1,
+) -> CompetitorRecord:
     """Build a CompetitorRecord with three identical historical results."""
     history = [
         HistoricalResult("SB", time_s, "Pine", 300.0, 5, date(2025, 1, 1)),
         HistoricalResult("SB", time_s, "Pine", 300.0, 5, date(2025, 2, 1)),
         HistoricalResult("SB", time_s, "Pine", 300.0, 5, date(2025, 3, 1)),
     ]
-    return CompetitorRecord(name=name, history=history, tournament_time=tournament_time)
+    return CompetitorRecord(
+        name=name,
+        history=history,
+        tournament_time=tournament_time,
+        num_tournament_rounds=num_tournament_rounds,
+    )
 
 
 PINE_300 = WoodProfile(species="Pine", diameter_mm=300, quality=5)
@@ -220,16 +230,21 @@ class TestGapLogic:
 # ---------------------------------------------------------------------------
 
 class TestTournamentWeighting:
-    """Verify 97% weighting of same-tournament results (tested via predict_baseline)."""
+    """Verify graduated tournament weighting (tested via predict_baseline)."""
 
     def test_tournament_result_weighted_97_pct(self):
         """
-        When tournament_time is provided, the baseline is:
+        With 4+ rounds completed, tournament weight is 97%:
             (tournament_time * 0.97) + (historical_baseline * 0.03)
         """
         historical_time = 30.0
         tournament_time_val = 50.0
-        comp = _competitor("Alice", historical_time, tournament_time=tournament_time_val)
+        comp = _competitor(
+            "Alice",
+            historical_time,
+            tournament_time=tournament_time_val,
+            num_tournament_rounds=4,
+        )
 
         result = predict_baseline(comp, PINE_300, "SB")
 
@@ -289,3 +304,172 @@ class TestStartSheet:
         assert not ansi_pattern.search(rendered), (
             "render() output contains ANSI escape codes"
         )
+
+# ---------------------------------------------------------------------------
+# Phase 4A: Additional unit tests
+# ---------------------------------------------------------------------------
+
+class TestDecayWeighting:
+    """Older results should be down-weighted relative to recent ones."""
+
+    def test_recent_results_dominate_old(self):
+        """
+        A competitor with a very recent fast result AND old slow results
+        should predict closer to the recent time than the old-results average.
+
+        Uses datetime objects to ensure the decay weight function can compute
+        (reference_datetime - result_datetime).days without type error.
+        """
+        from datetime import datetime
+        today = datetime.now()
+        old_date = datetime(2019, 1, 1)   # ~6 years ago, near-zero decay weight
+
+        # Three old slow results + one very recent fast result
+        history = [
+            HistoricalResult("SB", 60.0, "Pine", 300.0, 5, old_date),
+            HistoricalResult("SB", 60.0, "Pine", 300.0, 5, old_date),
+            HistoricalResult("SB", 60.0, "Pine", 300.0, 5, old_date),
+            HistoricalResult("SB", 20.0, "Pine", 300.0, 5, today),
+        ]
+        comp = CompetitorRecord(name="TimeWarpAlex", history=history)
+        result = predict_baseline(comp, PINE_300, "SB")
+        assert result is not None
+        # With 730-day half-life, 6-year-old results have weight ~0.5^3 = 0.125.
+        # Weighted average pulls strongly toward the recent 20s result.
+        assert result.value < 45.0, (
+            f"Expected decay to pull prediction toward recent 20s, got {result.value:.2f}s"
+        )
+
+
+class TestLargeField:
+    """Mark assignment invariants hold for a 20-competitor field."""
+
+    def test_large_field_marks_all_valid(self):
+        """All marks in a 20-competitor field must be in [3, 183]."""
+        calc = HandicapCalculator()
+        # Spread of 20 competitors from 15s to 110s
+        results = [
+            _mark_result(f"Comp{i}", 15.0 + i * 5.0)
+            for i in range(20)
+        ]
+        # _assign_marks expects slowest first
+        results.sort(key=lambda r: r.predicted_time, reverse=True)
+        calc._assign_marks(results)
+        for r in results:
+            assert rules.MIN_MARK_SECONDS <= r.mark <= rules.MAX_MARK_SECONDS
+
+    def test_large_field_monotonic_marks(self):
+        """Marks must be non-decreasing from slowest to fastest."""
+        calc = HandicapCalculator()
+        results = [
+            _mark_result(f"Comp{i}", 15.0 + i * 5.0)
+            for i in range(20)
+        ]
+        results.sort(key=lambda r: r.predicted_time, reverse=True)
+        calc._assign_marks(results)
+        marks = [r.mark for r in results]
+        assert marks == sorted(marks), f"Marks not monotonic: {marks}"
+
+    def test_large_field_front_marker_is_3(self):
+        """Slowest competitor in a 20-person field gets exactly mark 3."""
+        calc = HandicapCalculator()
+        results = [
+            _mark_result(f"Comp{i}", 15.0 + i * 5.0)
+            for i in range(20)
+        ]
+        results.sort(key=lambda r: r.predicted_time, reverse=True)
+        calc._assign_marks(results)
+        assert results[0].mark == 3
+
+
+class TestSingleCompetitor:
+    """Edge case: one competitor in the field."""
+
+    def test_single_competitor_calculate(self):
+        """calculate() with one competitor must return exactly one result."""
+        calc = HandicapCalculator()
+        comp = _competitor("Solo", 25.0)
+        results = calc.calculate([comp], PINE_300, "SB")
+        assert len(results) == 1
+        assert results[0].mark == rules.MIN_MARK_SECONDS
+        assert results[0].name == "Solo"
+
+    def test_single_competitor_mark_is_floor(self):
+        """Single competitor must receive mark floor (no gap to compute)."""
+        calc = HandicapCalculator()
+        solo = [_mark_result("Solo", 42.0)]
+        calc._assign_marks(solo)
+        assert solo[0].mark == rules.MIN_MARK_SECONDS
+
+
+class TestTiedPredictions:
+    """Competitors with identical predicted times must both get mark 3."""
+
+    def test_two_way_tie(self):
+        """Two identical predicted times -> both receive mark 3."""
+        calc = HandicapCalculator()
+        results = [
+            _mark_result("Alice", 30.0),
+            _mark_result("Bob", 30.0),
+        ]
+        calc._assign_marks(results)
+        assert results[0].mark == 3
+        assert results[1].mark == 3
+
+    def test_three_way_tie_all_get_floor(self):
+        """Three-way tie: all three get mark 3."""
+        calc = HandicapCalculator()
+        results = [
+            _mark_result("Alice", 25.0),
+            _mark_result("Bob", 25.0),
+            _mark_result("Carol", 25.0),
+        ]
+        calc._assign_marks(results)
+        for r in results:
+            assert r.mark == 3
+
+    def test_partial_tie_faster_group(self):
+        """
+        Slowest group tied at 60s -> both get mark 3.
+        Faster group tied at 30s -> both get mark 3+30=33.
+        """
+        calc = HandicapCalculator()
+        results = [
+            _mark_result("Slow1", 60.0),
+            _mark_result("Slow2", 60.0),
+            _mark_result("Fast1", 30.0),
+            _mark_result("Fast2", 30.0),
+        ]
+        results.sort(key=lambda r: r.predicted_time, reverse=True)
+        calc._assign_marks(results)
+        slow_marks = [r.mark for r in results if r.predicted_time == 60.0]
+        fast_marks = [r.mark for r in results if r.predicted_time == 30.0]
+        assert all(m == 3 for m in slow_marks)
+        assert all(m == 33 for m in fast_marks)
+
+
+class TestInvalidInputs:
+    """HandicapCalculator raises on invalid event_code or empty competitor list."""
+
+    def test_invalid_event_code_raises(self):
+        """event_code other than 'SB' or 'UH' must raise ValueError."""
+        calc = HandicapCalculator()
+        comp = _competitor("Alice", 25.0)
+        with pytest.raises(ValueError, match="SB.*UH|event_code"):
+            calc.calculate([comp], PINE_300, "XX")
+
+    def test_empty_competitors_raises(self):
+        """Empty competitor list must raise ValueError."""
+        calc = HandicapCalculator()
+        with pytest.raises(ValueError):
+            calc.calculate([], PINE_300, "SB")
+
+    def test_event_ceiling_below_floor_raises(self):
+        """event_ceiling <= MARK_FLOOR must raise ValueError at construction."""
+        with pytest.raises(ValueError):
+            HandicapCalculator(event_ceiling=3)
+
+    def test_event_ceiling_above_system_ceiling_raises(self):
+        """event_ceiling > 183 must raise ValueError at construction."""
+        with pytest.raises(ValueError):
+            HandicapCalculator(event_ceiling=200)

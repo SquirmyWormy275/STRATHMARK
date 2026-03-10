@@ -27,16 +27,20 @@ Source references (STRATHEX):
     woodchopping/predictions/ai_predictor.py          -> predict_competitor_time_with_ai()
     woodchopping/predictions/baseline.py              -> predict_baseline_v2_hybrid()
     woodchopping/predictions/ml_model.py              -> predict_time_ml()
-    woodchopping/predictions/qaa_scaling.py           -> get_qaa_panel_mark()
+    woodchopping/predictions/baseline.py               -> get_panel_mark()
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import statistics as _statistics
+import time as _time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
+
+_log = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -57,13 +61,12 @@ from strathmark.wood import (
     calculate_scaling_factor,
     calculate_effective_janka_hardness,
     apply_quality_multiplier_statistical,
-    interpolate_qaa_tables,
     get_species_properties,
 )
 from strathmark.fallback import (
     PANEL_MARKS_300MM,
     PANEL_MARK_DEFAULT_UNKNOWN_DIVISION,
-    get_qaa_panel_mark,
+    get_panel_mark,
     get_event_baseline,
     get_competitor_historical_times_flexible,
     _standardize_results_df,
@@ -100,6 +103,13 @@ class HistoricalResult:
     heat_id: Optional[str] = None
     """Optional identifier linking results to a specific tournament heat."""
 
+    field_strength: Optional[float] = None
+    """
+    Average handicap mark across all competitors in the same event at the same
+    show. Higher values indicate stronger fields. Null for historical results
+    predating the field_strength column; used as ML feature #26.
+    """
+
 
 @dataclass
 class CompetitorRecord:
@@ -134,8 +144,27 @@ class CompetitorRecord:
     tournament_time: Optional[float] = None
     """
     Actual time from an earlier round in the SAME tournament on the SAME wood.
-    When set, receives 97% weight in the weighted baseline calculation.
+    Weight applied depends on num_tournament_rounds (see graduated weighting below).
     Confidence is upgraded to VERY HIGH.
+    """
+
+    num_tournament_rounds: int = 1
+    """
+    Number of rounds already completed in this tournament for this event.
+    Used to graduate the tournament weight:
+        1 round -> 65%  (single data point, still uncertain)
+        2 rounds -> 80%
+        3 rounds -> 90%
+        4+ rounds -> 97%
+    Only used when tournament_time is set.
+    """
+
+    personal_scaling_exponent: Optional[float] = None
+    """
+    Per-competitor power-law diameter scaling exponent fitted from their own
+    multi-diameter history. None until computed; cached after first call to
+    predict_baseline() when the competitor has 3+ results across 2+ distinct
+    diameters. Falls back to the event-wide calibrated exponent (or 1.4) when None.
     """
 
 
@@ -341,7 +370,7 @@ class VarianceScaler:
         try:
             X = pd.DataFrame([competitor_features])
             predicted_std = model.predict(X)[0]
-            final_std = max(predicted_std, baseline_std)
+            final_std = predicted_std  # allow lower than baseline for consistent competitors
             from strathmark.config import sim_config
             final_std = max(sim_config.MIN_COMPETITOR_STD_SECONDS,
                            min(final_std, sim_config.MAX_COMPETITOR_STD_SECONDS))
@@ -364,6 +393,7 @@ class MLModel:
 
     def __init__(self):
         self._models: Dict[str, object] = {}  # 'SB' and/or 'UH' -> xgb model
+        self._calibrator: IsotonicCalibrator = IsotonicCalibrator()
         self._training_data_size: int = 0
         self._cv_metrics: Dict[str, Optional[dict]] = {'SB': None, 'UH': None}
         self._is_trained: bool = False
@@ -450,6 +480,16 @@ class MLModel:
             if len(X) < data_req.MIN_ML_TRAINING_RECORDS_PER_EVENT:
                 continue
 
+            # Hard minimum: 5 samples per feature to prevent severe overfitting
+            n_features = len(feature_cols)
+            if len(X) < n_features * 5:
+                if verbose:
+                    print(
+                        f"Skipping {event} model: {len(X)} rows, {n_features} features "
+                        f"(need {n_features * 5} for 5:1 ratio)."
+                    )
+                continue
+
             model = xgb.XGBRegressor(**model_params)
             model.fit(X, y, sample_weight=sample_weights)
 
@@ -461,6 +501,26 @@ class MLModel:
                 mae = mean_absolute_error(y, y_pred)
                 r2 = r2_score(y, y_pred)
                 print(f"Trained {event} model: {len(X)} records (MAE: {mae:.2f}s, R2: {r2:.3f})")
+
+        # Fit isotonic calibrator on in-sample residuals across all trained events
+        if trained_any:
+            cal_preds, cal_actuals, cal_events = [], [], []
+            for event, model in self._models.items():
+                event_df = df_eng[df_eng['event'] == event].copy()
+                mask = ~(event_df[feature_cols].isna().any(axis=1) | event_df['raw_time'].isna())
+                X_cal = event_df[feature_cols][mask]
+                y_cal = event_df['raw_time'][mask]
+                if len(X_cal) > 10:
+                    preds = model.predict(X_cal)
+                    cal_preds.append(preds)
+                    cal_actuals.append(y_cal.values)
+                    cal_events.append(np.full(len(preds), event))
+            if cal_preds:
+                self._calibrator.fit(
+                    np.concatenate(cal_preds),
+                    np.concatenate(cal_actuals),
+                    np.concatenate(cal_events),
+                )
 
         self._training_data_size = len(df)
         self._is_trained = trained_any
@@ -508,7 +568,7 @@ class MLModel:
             wood_props_cache[species_code] = result
             return result
 
-        # Compute competitor averages by event (time-decay weighted)
+        # Compute competitor averages by event (time-decay weighted) -- used for cross-event features
         comp_event_avg: Dict[str, float] = {}
         for (comp, event), group in df.groupby(['competitor_name', 'event']):
             if 'date' in group.columns:
@@ -621,6 +681,36 @@ class MLModel:
                 'seasonal_month_sin': float(np.sin(month_rad)),
                 'seasonal_month_cos': float(np.cos(month_rad)),
                 'event_x_diameter': float(event_enc) * diameter,
+                # Cross-event correlation features (SB <-> UH)
+                'peer_event_avg_time': comp_event_avg.get(
+                    f"{comp}||{'UH' if event == 'SB' else 'SB'}",
+                    comp_avg,  # fall back to same-event avg when peer event missing
+                ),
+                'uh_to_sb_ratio': (
+                    comp_event_avg.get(f"{comp}||UH", 0.0) /
+                    comp_event_avg.get(f"{comp}||SB", 1.0)
+                    if comp_event_avg.get(f"{comp}||SB", 0.0) > 0
+                    else 1.0
+                ),
+                # Feature #26: field_strength -- avg mark across field at same show/event.
+                # Falls back to competitor's median field_strength, then 0.0.
+                'field_strength': (
+                    float(row['field_strength'])
+                    if 'field_strength' in row and row['field_strength'] is not None
+                       and not (isinstance(row['field_strength'], float) and np.isnan(row['field_strength']))
+                    else (
+                        float(
+                            pd.to_numeric(
+                                comp_event_data['field_strength'], errors='coerce'
+                            ).median()
+                        )
+                        if 'field_strength' in comp_event_data.columns
+                           and not pd.to_numeric(
+                               comp_event_data['field_strength'], errors='coerce'
+                           ).isna().all()
+                        else 0.0
+                    )
+                ),
                 # Pass-through columns needed after feature engineering
                 'competitor_name': comp,
                 'event': event,
@@ -745,6 +835,28 @@ class MLModel:
         month_rad = (month - 1) * (2 * np.pi / 12)
         event_enc = ml_config.EVENT_ENCODING_SB if event_upper == 'SB' else ml_config.EVENT_ENCODING_UH
 
+        # Cross-event features: peer event average (SB<->UH correlation)
+        peer_event_code = 'UH' if event_upper == 'SB' else 'SB'
+        peer_history = [h for h in all_history if h.event_code.upper() == peer_event_code]
+        if peer_history:
+            peer_times = [h.time_seconds for h in peer_history]
+            peer_dates = [h.result_date for h in peer_history]
+            peer_weights = compute_weights_for_results(peer_dates, adaptive=True)
+            try:
+                peer_avg = compute_weighted_average(peer_times, peer_weights)
+            except Exception:
+                peer_avg = float(np.mean(peer_times))
+        else:
+            peer_avg = comp_avg  # fall back to same-event avg
+
+        sb_avg = (
+            comp_avg if event_upper == 'SB' else peer_avg
+        )
+        uh_avg = (
+            comp_avg if event_upper == 'UH' else peer_avg
+        )
+        uh_to_sb_ratio = (uh_avg / sb_avg) if sb_avg > 0 else 1.0
+
         # Wood properties
         props = get_species_properties(wood.species)
         quality = max(1, min(10, int(wood.quality)))
@@ -773,13 +885,25 @@ class MLModel:
             'seasonal_month_sin': float(np.sin(month_rad)),
             'seasonal_month_cos': float(np.cos(month_rad)),
             'event_x_diameter': float(event_enc) * float(wood.diameter_mm),
+            'peer_event_avg_time': float(peer_avg),
+            'uh_to_sb_ratio': float(uh_to_sb_ratio),
+            # Feature #26: field_strength -- median from competitor's history, or 0.0.
+            'field_strength': (
+                float(np.median([
+                    h.field_strength for h in (event_history or all_history)
+                    if h.field_strength is not None
+                ]))
+                if any(h.field_strength is not None for h in (event_history or all_history))
+                else 0.0
+            ),
         }
 
         feature_cols = list(ml_config.FEATURE_NAMES)
         features = pd.DataFrame([feature_payload])[feature_cols]
 
         try:
-            base_prediction = float(model.predict(features)[0])
+            raw_prediction = float(model.predict(features)[0])
+            base_prediction = self._calibrator.calibrate(raw_prediction, event_upper)
 
             # Apply quality adjustment (+-2% per quality point from 5)
             quality_offset = quality - 5
@@ -857,6 +981,20 @@ def predict_baseline(
     else:
         combined = internal_df
 
+    # Fit personal diameter scaling exponent if not yet cached.
+    # Requires 3+ total results across 2+ distinct diameters for this event.
+    # Uses calibrate_scaling_exponent() on the competitor's own history only.
+    if competitor.personal_scaling_exponent is None and len(competitor.history) >= 3:
+        _hist_df = _competitor_history_to_df(competitor)
+        if _hist_df is not None and 'size_mm' in _hist_df.columns:
+            _event_rows = _hist_df[_hist_df['event'] == event_upper]
+            _distinct_diams = _event_rows['size_mm'].dropna().nunique()
+            if _distinct_diams >= 2:
+                from strathmark.wood import calibrate_scaling_exponent as _calibrate_exp
+                _personal_exp = _calibrate_exp(_hist_df, event_upper)
+                if _personal_exp is not None:
+                    competitor.personal_scaling_exponent = _personal_exp
+
     # Get competitor history (event + species filtered, with diameter normalization)
     history_with_weights = []
     data_source = "no history"
@@ -874,10 +1012,13 @@ def predict_baseline(
                 hist_d = row.get('size_mm', wood.diameter_mm)
                 hist_q = row.get('quality', 5.0)
 
-                # Normalize to target diameter
+                # Normalize to target diameter using personal exponent when available
                 normalized = float(time_val)
                 if hist_d and wood.diameter_mm and float(hist_d) != float(wood.diameter_mm):
-                    exponent = get_event_scaling_exponent(combined, event_upper)
+                    if competitor.personal_scaling_exponent is not None:
+                        exponent = competitor.personal_scaling_exponent
+                    else:
+                        exponent = get_event_scaling_exponent(combined, event_upper)
                     factor = calculate_scaling_factor(float(hist_d), float(wood.diameter_mm), exponent)
                     normalized = normalized * factor
 
@@ -958,15 +1099,21 @@ def predict_baseline(
 
     historical_baseline = baseline
 
-    # Tournament result weighting (97% same-wood, 3% historical) -- V4.4 feature
+    # Tournament result weighting (graduated by number of rounds) -- V4.4+ feature
     if competitor.tournament_time is not None:
         tournament_time = competitor.tournament_time
-        baseline = (tournament_time * 0.97) + (historical_baseline * 0.03)
+        _round_weights = {1: 0.65, 2: 0.80, 3: 0.90, 4: 0.97}
+        t_weight = _round_weights.get(min(competitor.num_tournament_rounds, 4), 0.97)
+        h_weight = 1.0 - t_weight
+        baseline = (tournament_time * t_weight) + (historical_baseline * h_weight)
         confidence = "VERY HIGH"
         tournament_weighted = True
+        t_pct = int(t_weight * 100)
+        h_pct = int(h_weight * 100)
         data_source = (
-            f"Tournament result ({tournament_time:.1f}s @ 97%) + "
-            f"{data_source} (@ 3%)"
+            f"Tournament result ({tournament_time:.1f}s @ {t_pct}%, "
+            f"{competitor.num_tournament_rounds} round(s)) + "
+            f"{data_source} (@ {h_pct}%)"
         )
 
     # Apply quality multiplier (statistical adjustment, quality != 5)
@@ -977,7 +1124,27 @@ def predict_baseline(
         quality_label = "softer" if quality < 5 else "harder"
         data_source += f" [Quality {quality}/10: {quality_label}, {adj_pct:+.0f}%]"
 
+    # Apply bias correction from personal prediction residual history.
+    # Subtracting the median residual adjusts for systematic over/under-prediction.
+    # Wrapped in try/except so Supabase unavailability never breaks local predictions.
+    try:
+        from strathmark.db import get_competitor_bias as _get_bias
+        _bias = _get_bias(competitor.name)
+        if _bias is not None:
+            baseline -= _bias
+            data_source += f" [bias corrected {-_bias:+.1f}s]"
+    except Exception:
+        pass
+
     explanation = f"Predicted {baseline:.1f}s ({data_source})"
+
+    # Compute per-competitor std-dev from normalized history for Monte Carlo simulation
+    if len(history_with_weights) >= 2:
+        hist_times = [t for t, _, _ in history_with_weights]
+        raw_std = float(np.std(hist_times, ddof=1))
+        std_dev = max(1.5, min(raw_std, 6.0))
+    else:
+        std_dev = float(rules.PERFORMANCE_VARIANCE_SECONDS)
 
     return PredictionResult(
         value=baseline,
@@ -987,6 +1154,7 @@ def predict_baseline(
         metadata={
             'tournament_weighted': tournament_weighted,
             'historical_baseline': historical_baseline,
+            'std_dev': std_dev,
         },
     )
 
@@ -1006,6 +1174,7 @@ def _competitor_history_to_df(competitor: CompetitorRecord) -> Optional[pd.DataF
             'size_mm': h.diameter_mm,
             'quality': h.quality,
             'date': h.result_date,
+            'field_strength': h.field_strength,
         })
 
     df = pd.DataFrame(rows)
@@ -1313,6 +1482,148 @@ def _call_ollama(
 
 
 # ---------------------------------------------------------------------------
+# Prediction adjustment helpers (Phase 1C, 1I)
+# ---------------------------------------------------------------------------
+
+def _apply_species_affinity(
+    result: PredictionResult,
+    competitor: CompetitorRecord,
+    species: str,
+    event_code: str,
+    results_df,
+) -> PredictionResult:
+    """
+    1C: Apply species affinity adjustment.
+
+    Computes the competitor's average residual on this specific species
+    (average of actual_time - predicted_time). If the competitor has 2+
+    results on this species for this event, applies the mean residual
+    as an additive correction. If fewer than 2 results, returns unchanged.
+
+    The adjustment is capped at +/-5 seconds to prevent runaway corrections.
+    """
+    if not competitor.history or not species:
+        return result
+
+    species_times = [
+        r.time_seconds
+        for r in competitor.history
+        if (r.species or '').strip().lower() == species.strip().lower()
+        and r.event_code.upper() == event_code.upper()
+    ]
+
+    if len(species_times) < 2:
+        return result  # insufficient data -- skip
+
+    # Estimated average historical time on this species
+    species_mean = _statistics.mean(species_times)
+    # Residual: how much faster/slower than predicted this competitor typically runs
+    residual = species_mean - result.value
+    # Cap residual to prevent runaway
+    residual = max(-5.0, min(5.0, residual * 0.5))  # blend 50% of residual
+
+    if abs(residual) < 0.1:
+        return result
+
+    from dataclasses import replace as _replace
+    adjusted = result.value + residual
+    return _replace(
+        result,
+        value=round(adjusted, 2),
+        explanation=result.explanation + f" [species affinity: {residual:+.1f}s on {species}]",
+    )
+
+
+def _apply_form_trajectory(
+    result: PredictionResult,
+    competitor: CompetitorRecord,
+    event_code: str,
+) -> PredictionResult:
+    """
+    1I: Apply form trajectory adjustment.
+
+    Fits a linear regression on the competitor's last 5 results for this
+    event type (time vs. date). If slope is negative (improving) by more
+    than 0.5s/month, adjusts prediction downward. If positive (declining),
+    adjusts upward. Skips if fewer than 3 recent results.
+    """
+    if not competitor.history:
+        return result
+
+    # Get dated results for this event
+    dated = sorted(
+        [r for r in competitor.history
+         if r.event_code.upper() == event_code.upper()
+         and r.result_date is not None],
+        key=lambda r: r.result_date,
+    )
+
+    if len(dated) < 3:
+        return result  # insufficient data
+
+    # Use last 5 results
+    recent = dated[-5:]
+
+    # Convert dates to days since first result in window
+    ref_date = recent[0].result_date
+    xs = []
+    ys = []
+    for r in recent:
+        delta = (r.result_date - ref_date).days if hasattr(r.result_date, 'days') else 0
+        if isinstance(r.result_date, date):
+            delta = (r.result_date - ref_date).days
+        xs.append(float(delta))
+        ys.append(r.time_seconds)
+
+    if len(set(xs)) < 2:
+        return result  # all on same day, no slope
+
+    # Fit linear regression
+    x_arr = xs
+    y_arr = ys
+    n = len(x_arr)
+    x_mean = sum(x_arr) / n
+    y_mean = sum(y_arr) / n
+    num = sum((x_arr[i] - x_mean) * (y_arr[i] - y_mean) for i in range(n))
+    den = sum((x_arr[i] - x_mean) ** 2 for i in range(n))
+    if den == 0:
+        return result
+    slope_per_day = num / den  # seconds per day
+
+    slope_per_month = slope_per_day * 30.44
+
+    # Only adjust if slope exceeds threshold (0.5s/month)
+    if abs(slope_per_month) < 0.5:
+        return result
+
+    # Compute days since last result
+    last_date = recent[-1].result_date
+    today = date.today()
+    days_since_last = (today - last_date).days if isinstance(last_date, date) else 30
+
+    # Projected change over time since last result
+    adjustment = slope_per_day * days_since_last
+    # Cap adjustment at +/-8 seconds
+    adjustment = max(-8.0, min(8.0, adjustment))
+
+    if abs(adjustment) < 0.1:
+        return result
+
+    from dataclasses import replace as _replace
+    adjusted = result.value + adjustment
+    direction = "improving" if slope_per_month < 0 else "declining"
+    return _replace(
+        result,
+        value=round(adjusted, 2),
+        explanation=(
+            result.explanation
+            + f" [form trajectory: {slope_per_month:+.2f}s/month ({direction}), "
+            f"adj {adjustment:+.1f}s]"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Top-level cascade functions
 # ---------------------------------------------------------------------------
 
@@ -1330,8 +1641,9 @@ def get_best_prediction(
 
     Cascade order:
         1. Manual override  -- if competitor.manual_time_override is set
-        2. LLM prediction   -- baseline + quality multiplier from Ollama
-                              (requires llm_client; graceful fallback if unavailable)
+        2. LLM prediction   -- optional; only runs if llm_client is explicitly passed.
+                              Not used by HandicapCalculator.calculate() (hot path).
+                              Intended for analytics/reporting callers only.
         3. ML model         -- XGBoost trained on historical data with time-decay weights
                               (requires ml_model; skipped if not trained)
         4. Weighted baseline -- time-decay-weighted historical average with diameter
@@ -1342,7 +1654,7 @@ def get_best_prediction(
     Tournament result weighting (V4.4 feature from STRATHEX):
         If competitor.tournament_time is set, the baseline is computed as:
             weighted_baseline = (tournament_time * 0.97) + (historical_avg * 0.03)
-        This applies to levels 2, 3, and 4. Manual override (level 1) is unaffected.
+        This applies to levels 3 and 4. Manual override (level 1) is unaffected.
 
     Args:
         competitor: Full competitor record including history and optional overrides.
@@ -1368,20 +1680,43 @@ def get_best_prediction(
     if not is_valid_event(event_code):
         raise ValueError(f"Invalid event_code: '{event_code}'. Must be 'SB' or 'UH'.")
 
-    # Priority 1: Manual override
+    _t_start = _time.monotonic()
+
+    # Priority 1: Manual override (5B)
     if competitor.manual_time_override is not None:
         t = float(competitor.manual_time_override)
-        return PredictionResult(
+        result = PredictionResult(
             value=t,
             confidence="VERY HIGH",
             method='manual',
             explanation=f"Manual override: {t:.1f}s (operator-supplied)",
+            metadata={'source': 'handicapper_override'},
         )
+        _log.info(
+            "prediction competitor_id=%s method=manual value=%.2f confidence=%s "
+            "prediction_time_ms=%.1f",
+            getattr(competitor, 'competitor_id', competitor.name),
+            t, result.confidence,
+            (_time.monotonic() - _t_start) * 1000,
+        )
+        return result
 
     # Compute baseline for LLM and as fallback
     baseline_result = predict_baseline(
         competitor, wood, event_code, results_df, wood_data_df
     )
+
+    # 1C: Species affinity adjustment (additive residual for this specific species)
+    if baseline_result is not None:
+        baseline_result = _apply_species_affinity(
+            baseline_result, competitor, wood.species, event_code, results_df
+        )
+
+    # 1I: Competitor form trajectory adjustment
+    if baseline_result is not None:
+        baseline_result = _apply_form_trajectory(
+            baseline_result, competitor, event_code
+        )
 
     # Priority 2: LLM prediction (requires Ollama and a working baseline)
     if llm_client is not None and baseline_result is not None:
@@ -1406,34 +1741,69 @@ def get_best_prediction(
             wood_df=wood_data_df,
         )
         if llm_result is not None:
+            _log.info(
+                "prediction competitor_id=%s method=llm value=%.2f confidence=%s "
+                "prediction_time_ms=%.1f",
+                getattr(competitor, 'competitor_id', competitor.name),
+                llm_result.value, llm_result.confidence,
+                (_time.monotonic() - _t_start) * 1000,
+            )
             return llm_result
 
     # Priority 3: ML model
-    if ml_model is not None:
+    # 1K: Gate -- skip ML if competitor has fewer than 3 results for this event type
+    _event_result_count = sum(
+        1 for r in competitor.history
+        if r.event_code.upper() == event_code.upper()
+    )
+    if ml_model is not None and _event_result_count >= 3:
         ml_result = ml_model.predict(competitor, wood, event_code, results_df)
         if ml_result is not None:
+            _log.info(
+                "prediction competitor_id=%s method=ml value=%.2f confidence=%s "
+                "model_version=%s prediction_time_ms=%.1f",
+                getattr(competitor, 'competitor_id', competitor.name),
+                ml_result.value, ml_result.confidence,
+                ml_result.metadata.get('model_version', 'unknown'),
+                (_time.monotonic() - _t_start) * 1000,
+            )
             return ml_result
 
     # Priority 4: Weighted baseline
     if baseline_result is not None:
+        _log.info(
+            "prediction competitor_id=%s method=baseline value=%.2f confidence=%s "
+            "prediction_time_ms=%.1f",
+            getattr(competitor, 'competitor_id', competitor.name),
+            baseline_result.value, baseline_result.confidence,
+            (_time.monotonic() - _t_start) * 1000,
+        )
         return baseline_result
 
-    # Priority 5: Panel mark fallback (unconditional)
-    panel_mark, panel_expl = get_qaa_panel_mark(event_code, competitor.division)
+    # Priority 5: Default mark fallback (unconditional)
+    default_time, default_expl = get_panel_mark(event_code, competitor.division)
 
-    # Scale panel mark from 300mm standard to target diameter
+    # Scale default mark from 300mm standard to target diameter
     from strathmark.wood import calculate_scaling_factor as _csf
     if wood.diameter_mm != 300.0:
         exponent = get_event_scaling_exponent(results_df, event_code)
         factor = _csf(300.0, wood.diameter_mm, exponent)
-        panel_mark = panel_mark * factor
+        default_time = default_time * factor
 
-    return PredictionResult(
-        value=panel_mark,
+    fallback_result = PredictionResult(
+        value=default_time,
         confidence="VERY LOW",
         method='panel',
-        explanation=f"Panel mark fallback: {panel_expl}",
+        explanation=f"Default mark fallback: {default_expl}",
     )
+    _log.info(
+        "prediction competitor_id=%s method=fallback value=%.2f confidence=%s "
+        "prediction_time_ms=%.1f",
+        getattr(competitor, 'competitor_id', competitor.name),
+        default_time, "VERY LOW",
+        (_time.monotonic() - _t_start) * 1000,
+    )
+    return fallback_result
 
 
 def get_all_predictions(
@@ -1504,19 +1874,19 @@ def get_all_predictions(
     if ml_model is not None:
         results['ml'] = ml_model.predict(competitor, wood, event_code, results_df)
 
-    # Panel mark
-    panel_mark, panel_expl = get_qaa_panel_mark(event_code, competitor.division)
+    # Default mark
+    default_time, default_expl = get_panel_mark(event_code, competitor.division)
     from strathmark.wood import calculate_scaling_factor as _csf
     if wood.diameter_mm != 300.0:
         exponent = get_event_scaling_exponent(results_df, event_code)
         factor = _csf(300.0, wood.diameter_mm, exponent)
-        panel_mark = panel_mark * factor
+        default_time = default_time * factor
 
     results['panel'] = PredictionResult(
-        value=panel_mark,
+        value=default_time,
         confidence="VERY LOW",
         method='panel',
-        explanation=f"Panel mark fallback: {panel_expl}",
+        explanation=f"Default mark fallback: {default_expl}",
     )
 
     return results
@@ -1534,18 +1904,18 @@ def select_best_prediction(
 
     Uses expected-error scoring rather than a simple cascade:
         1. Score each available prediction by expected error (seconds).
-        2. Apply a spread penalty if the methods disagree significantly.
+        2. Apply a spread deduction if the methods disagree significantly.
         3. Return the prediction with the lowest expected error.
 
     Manual overrides are always preferred unconditionally.
 
     Expected error formula (ported from STRATHEX select_best_prediction()):
         base  = confidence_to_error[confidence]
-        +0.5  if method is 'llm' (slight variance penalty)
+        +0.5  if method is 'llm' (slight variance adjustment)
         +1.5  if metadata['scaled'] is True (diameter/species normalization)
         -1.0  if metadata['tournament_weighted'] is True (same-wood bonus, floor 0.5)
 
-    Spread penalty (applied to overall confidence):
+    Spread deduction (applied to overall confidence):
         max_diff >= 6s or >= 25% of mean  -> downgrade 2 steps
         max_diff >= 4s or >= 12% of mean  -> downgrade 1 step
 
@@ -1609,19 +1979,19 @@ def select_best_prediction(
     scored = [(pred, _expected_error(pred)) for pred in candidates]
     best_pred, best_error = min(scored, key=lambda x: x[1])
 
-    # Apply spread penalty
+    # Apply spread deduction when methods disagree significantly
     values = [p.value for p in candidates]
-    spread_penalty = 0
+    spread_deduction = 0
     if len(values) >= 2:
         mean_v = sum(values) / len(values)
         max_diff = max(values) - min(values)
         pct_diff = max_diff / mean_v if mean_v else 0.0
         if max_diff >= 6.0 or pct_diff >= 0.25:
-            spread_penalty = 2
+            spread_deduction = 2
         elif max_diff >= 4.0 or pct_diff >= 0.12:
-            spread_penalty = 1
+            spread_deduction = 1
 
-    # Derive overall confidence from expected error, then apply spread penalty
+    # Derive overall confidence from expected error, then apply spread deduction
     if best_error <= 2.5:
         overall_conf = 'VERY HIGH'
     elif best_error <= 3.5:
@@ -1633,8 +2003,8 @@ def select_best_prediction(
     else:
         overall_conf = 'VERY LOW'
 
-    if spread_penalty:
-        overall_conf = _downgrade(overall_conf, spread_penalty)
+    if spread_deduction:
+        overall_conf = _downgrade(overall_conf, spread_deduction)
 
     # If overall confidence differs from method confidence, annotate explanation
     explanation = best_pred.explanation
