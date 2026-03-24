@@ -16,6 +16,7 @@ Source references (STRATHEX):
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Optional
 
@@ -25,9 +26,10 @@ from strathmark.config import llm_config
 
 
 # ---------------------------------------------------------------------------
-# Module-level connection state
+# Module-level connection state (thread-safe)
 # ---------------------------------------------------------------------------
 
+_ollama_lock = threading.Lock()
 _ollama_status: dict = {
     'available': None,   # None = unknown, True = available, False = unavailable
     'last_check': 0.0,
@@ -56,32 +58,34 @@ def check_ollama_connection(
     """
     global _ollama_status
 
-    now = time.time()
-    if (
-        not force
-        and _ollama_status['available'] is not None
-        and now - _ollama_status['last_check'] < _ollama_status['check_interval']
-    ):
-        return _ollama_status['available']
+    with _ollama_lock:
+        now = time.time()
+        if (
+            not force
+            and _ollama_status['available'] is not None
+            and now - _ollama_status['last_check'] < _ollama_status['check_interval']
+        ):
+            return _ollama_status['available']
 
-    try:
-        resp = requests.get(f"{base_url}/api/tags", timeout=5)
-        _ollama_status['available'] = resp.status_code == 200
-        _ollama_status['last_check'] = now
-        _ollama_status['error_shown'] = False
-        return _ollama_status['available']
-    except Exception:
-        _ollama_status['available'] = False
-        _ollama_status['last_check'] = now
-        return False
+        try:
+            resp = requests.get(f"{base_url}/api/tags", timeout=5)
+            _ollama_status['available'] = resp.status_code == 200
+            _ollama_status['last_check'] = now
+            _ollama_status['error_shown'] = False
+            return _ollama_status['available']
+        except Exception:
+            _ollama_status['available'] = False
+            _ollama_status['last_check'] = now
+            return False
 
 
 def reset_ollama_status() -> None:
     """Reset the connection status cache so the next call does a fresh check."""
     global _ollama_status
-    _ollama_status['available'] = None
-    _ollama_status['last_check'] = 0.0
-    _ollama_status['error_shown'] = False
+    with _ollama_lock:
+        _ollama_status['available'] = None
+        _ollama_status['last_check'] = 0.0
+        _ollama_status['error_shown'] = False
 
 
 def call_ollama(
