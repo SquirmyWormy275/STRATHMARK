@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Alex Kaper/.claude/projects/**)",
+      "Read(//c/Users/Alex Kaper/.claude/skills/gstack/**)"
+    ]
+  }
+}
