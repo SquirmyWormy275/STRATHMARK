@@ -1508,7 +1508,13 @@ def _apply_form_trajectory(
     # Compute days since last result
     last_date = recent[-1].result_date
     today = date.today()
-    days_since_last = (today - last_date).days if isinstance(last_date, date) else 30
+    if isinstance(last_date, date):
+        # Normalize pandas Timestamp / datetime to plain date for subtraction
+        if hasattr(last_date, 'date'):
+            last_date = last_date.date()
+        days_since_last = (today - last_date).days
+    else:
+        days_since_last = 30
 
     # Projected change over time since last result
     adjustment = slope_per_day * days_since_last

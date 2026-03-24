@@ -56,7 +56,7 @@ def six_sb_competitors(loaded_data):
             try:
                 history.append(
                     HistoricalResult(
-                        event=str(row.get('event', 'SB')).upper(),
+                        event_code=str(row.get('event', 'SB')).upper(),
                         time_seconds=float(row['raw_time']),
                         species=str(row.get('species', 'Pine')),
                         diameter_mm=float(row.get('size_mm', 300)),
@@ -99,10 +99,10 @@ class TestIntegrationMarkInvariants:
         for r in mark_results:
             assert r.mark >= 3, f"{r.name} mark {r.mark} is below floor"
 
-    def test_all_marks_at_most_180(self, mark_results):
-        """Event ceiling for real competitions is typically 180s."""
+    def test_all_marks_at_most_183(self, mark_results):
+        """System ceiling is 183 (180s time limit + 3s minimum mark)."""
         for r in mark_results:
-            assert r.mark <= 180, f"{r.name} mark {r.mark} exceeds 180"
+            assert r.mark <= 183, f"{r.name} mark {r.mark} exceeds 183"
 
     def test_slowest_gets_mark_3(self, mark_results):
         """The first entry in the sorted list (slowest predicted time) gets mark 3."""
