@@ -50,6 +50,7 @@ from strathmark.variance import run_monte_carlo_simulation
 from strathmark.store import ResultStore
 from strathmark.llm import check_ollama_connection
 from strathmark.config import llm_config
+from strathmark import __version__
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +211,7 @@ app = FastAPI(
         "REST API for the STRATHMARK woodchopping handicap calculation engine. "
         "Exposes HandicapCalculator, Monte Carlo simulation, and result storage."
     ),
-    version="0.1.0",
+    version=__version__,
 )
 
 
