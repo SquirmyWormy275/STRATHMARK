@@ -516,7 +516,7 @@ def get_competitor_bias(competitor_id: str) -> Optional[float]:
         return statistics.median(residuals)
 
     except Exception as exc:  # pragma: no cover
-        _log.warning("get_competitor_bias failed (non-fatal): %s", exc)
+        _log.debug("get_competitor_bias failed (non-fatal): %s", exc)
         return None
 
 

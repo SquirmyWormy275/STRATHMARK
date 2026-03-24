@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -159,7 +159,7 @@ class ResultStore:
         """
         _heat_id = heat_id if heat_id is not None else ''
         _result_date = result_date.isoformat() if result_date is not None else None
-        _recorded_at = datetime.utcnow().isoformat()
+        _recorded_at = datetime.now(timezone.utc).isoformat()
 
         with self._connect() as conn:
             cursor = conn.execute(
@@ -233,7 +233,7 @@ class ResultStore:
         if 'result_date' not in df.columns:
             df['result_date'] = None
 
-        _recorded_at = datetime.utcnow().isoformat()
+        _recorded_at = datetime.now(timezone.utc).isoformat()
         insert_sql = (
             "INSERT OR IGNORE INTO results "
             "(competitor_name, event_code, time_seconds, species, "

@@ -1066,6 +1066,10 @@ def predict_baseline(
                 time_val = row.get('raw_time')
                 if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
                     continue
+                # Skip timeout/DNF results — times beyond the time limit
+                # are not representative of a competitor's ability
+                if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
+                    continue
                 hist_d = row.get('size_mm', wood.diameter_mm)
                 hist_q = row.get('quality', 5.0)
 
@@ -1192,14 +1196,17 @@ def predict_baseline(
     # Apply bias correction from personal prediction residual history.
     # Subtracting the median residual adjusts for systematic over/under-prediction.
     # Wrapped in try/except so Supabase unavailability never breaks local predictions.
-    try:
-        from strathmark.db import get_competitor_bias as _get_bias
-        _bias = _get_bias(competitor.name)
-        if _bias is not None:
-            baseline -= _bias
-            data_source += f" [bias corrected {-_bias:+.1f}s]"
-    except Exception:
-        pass
+    # Uses module-level flag to avoid repeated failed network calls when Supabase is down.
+    if not getattr(predict_baseline, '_supabase_bias_unavailable', False):
+        try:
+            from strathmark.db import get_competitor_bias as _get_bias
+            _bias = _get_bias(competitor.name)
+            if _bias is not None:
+                baseline -= _bias
+                data_source += f" [bias corrected {-_bias:+.1f}s]"
+        except Exception:
+            predict_baseline._supabase_bias_unavailable = True
+            _log.debug("Supabase bias correction unavailable; disabling for this session")
 
     explanation = f"Predicted {baseline:.1f}s ({data_source})"
 
@@ -1245,7 +1252,7 @@ def _competitor_history_to_df(competitor: CompetitorRecord) -> Optional[pd.DataF
     df = pd.DataFrame(rows)
     df['raw_time'] = pd.to_numeric(df['raw_time'], errors='coerce')
     df['size_mm'] = pd.to_numeric(df['size_mm'], errors='coerce')
-    df = df[df['raw_time'] > 0]
+    df = df[(df['raw_time'] > 0) & (df['raw_time'] <= rules.MAX_TIME_LIMIT_SECONDS)]
     return df if not df.empty else None
 
 
@@ -1419,6 +1426,7 @@ def _apply_species_affinity(
         for r in competitor.history
         if (r.species or '').strip().lower() == species.strip().lower()
         and r.event_code.upper() == event_code.upper()
+        and r.time_seconds <= rules.MAX_TIME_LIMIT_SECONDS
     ]
 
     if len(species_times) < 2:
@@ -1459,11 +1467,12 @@ def _apply_form_trajectory(
     if not competitor.history:
         return result
 
-    # Get dated results for this event
+    # Get dated results for this event (exclude timeouts)
     dated = sorted(
         [r for r in competitor.history
          if r.event_code.upper() == event_code.upper()
-         and r.result_date is not None],
+         and r.result_date is not None
+         and r.time_seconds <= rules.MAX_TIME_LIMIT_SECONDS],
         key=lambda r: r.result_date,
     )
 
@@ -1478,9 +1487,14 @@ def _apply_form_trajectory(
     xs = []
     ys = []
     for r in recent:
-        delta = (r.result_date - ref_date).days if hasattr(r.result_date, 'days') else 0
-        if isinstance(r.result_date, date):
-            delta = (r.result_date - ref_date).days
+        rd = r.result_date
+        # Normalize to plain date for consistent subtraction
+        if hasattr(rd, 'date') and callable(rd.date):
+            rd = rd.date()
+        ref = ref_date
+        if hasattr(ref, 'date') and callable(ref.date):
+            ref = ref.date()
+        delta = (rd - ref).days if isinstance(rd, date) else 0
         xs.append(float(delta))
         ys.append(r.time_seconds)
 

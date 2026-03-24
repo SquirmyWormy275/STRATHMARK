@@ -153,6 +153,19 @@ def calculate_performance_weight(
         if isinstance(reference_date, str):
             reference_date = pd.to_datetime(reference_date)
 
+        # Normalize both to date objects to avoid datetime-date subtraction error
+        if isinstance(result_date, datetime):
+            result_date = result_date.date()
+        elif hasattr(result_date, 'date'):
+            result_date = result_date.date()
+        elif not isinstance(result_date, date):
+            result_date = pd.to_datetime(result_date).date()
+
+        if isinstance(reference_date, datetime):
+            reference_date = reference_date.date()
+        elif hasattr(reference_date, 'date'):
+            reference_date = reference_date.date()
+
         days_old = (reference_date - result_date).days
 
         # Can't have negative age (future dates get full weight)

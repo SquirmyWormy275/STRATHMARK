@@ -44,6 +44,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from strathmark.config import rules
+
 
 # ---------------------------------------------------------------------------
 # Panel mark defaults (book marks at 300mm standard, quality 5)
@@ -85,7 +87,7 @@ def _standardize_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
         return df
     if 'raw_time' in df.columns:
         df = df.dropna(subset=['raw_time'])
-        df = df[df['raw_time'] > 0]
+        df = df[(df['raw_time'] > 0) & (df['raw_time'] <= rules.MAX_TIME_LIMIT_SECONDS)]
     return df
 
 
@@ -113,6 +115,12 @@ def _calculate_performance_weight_simple(result_date, reference_date=None, half_
             result_date = pd.to_datetime(result_date)
         if isinstance(reference_date, str):
             reference_date = pd.to_datetime(reference_date)
+
+        # Normalize both to date to avoid datetime-date subtraction error
+        if hasattr(result_date, 'date'):
+            result_date = result_date.date() if callable(result_date.date) else result_date
+        if hasattr(reference_date, 'date'):
+            reference_date = reference_date.date() if callable(reference_date.date) else reference_date
 
         days_old = (reference_date - result_date).days
         if days_old < 0:
@@ -328,6 +336,8 @@ def get_event_baseline(
             time_val = row.get('raw_time')
             if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
                 continue
+            if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
+                continue
             hist_d = row.get('size_mm', diameter_mm)
             hist_q = row.get('quality', 5.0)
             normalized = _normalize_time_for_baseline(
@@ -358,6 +368,8 @@ def get_event_baseline(
             time_val = row.get('raw_time')
             if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
                 continue
+            if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
+                continue
             hist_d = row.get('size_mm', diameter_mm)
             hist_q = row.get('quality', 5.0)
             normalized = _normalize_time_for_baseline(
@@ -382,6 +394,8 @@ def get_event_baseline(
     for _, row in event_only.iterrows():
         time_val = row.get('raw_time')
         if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
+            continue
+        if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
             continue
         hist_d = row.get('size_mm', diameter_mm)
         hist_q = row.get('quality', 5.0)
@@ -456,7 +470,7 @@ def get_competitor_historical_times_flexible(
         times = []
         for _, row in exact_matches.iterrows():
             time_val = row.get('raw_time')
-            if time_val is not None and not pd.isna(time_val) and float(time_val) > 0:
+            if time_val is not None and not pd.isna(time_val) and float(time_val) > 0 and float(time_val) <= rules.MAX_TIME_LIMIT_SECONDS:
                 times.append(float(time_val))
 
         if times:
@@ -467,7 +481,7 @@ def get_competitor_historical_times_flexible(
     times = []
     for _, row in any_species_matches.iterrows():
         time_val = row.get('raw_time')
-        if time_val is not None and not pd.isna(time_val) and float(time_val) > 0:
+        if time_val is not None and not pd.isna(time_val) and float(time_val) > 0 and float(time_val) <= rules.MAX_TIME_LIMIT_SECONDS:
             times.append(float(time_val))
 
     if times:
