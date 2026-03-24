@@ -71,10 +71,10 @@ if not _FASTAPI_AVAILABLE:
 
 class HistoricalResultSchema(BaseModel):
     event_code: str
-    time_seconds: float
+    time_seconds: float = Field(gt=0, description="Time in seconds (must be positive)")
     species: str
-    diameter_mm: float
-    quality: int
+    diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
+    quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
     result_date: Optional[str] = None   # ISO 8601 date string
     heat_id: Optional[str] = None
 
@@ -89,8 +89,8 @@ class CompetitorSchema(BaseModel):
 
 class WoodSchema(BaseModel):
     species: str
-    diameter_mm: float
-    quality: int
+    diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
+    quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
 
 
 class CalculateRequest(BaseModel):
@@ -131,10 +131,10 @@ class SimulateRequest(BaseModel):
 class RecordResultRequest(BaseModel):
     competitor_name: str
     event_code: str
-    time_seconds: float
+    time_seconds: float = Field(gt=0, description="Time in seconds (must be positive)")
     species: str
-    diameter_mm: float
-    quality: int
+    diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
+    quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
     heat_id: Optional[str] = None
     result_date: Optional[str] = None   # ISO 8601 date string
 
