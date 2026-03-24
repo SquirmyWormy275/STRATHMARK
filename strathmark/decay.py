@@ -36,6 +36,7 @@ Source references (STRATHEX):
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import List, Optional, Sequence, Tuple
 
@@ -43,6 +44,8 @@ import numpy as np
 import pandas as pd
 
 from strathmark.config import decay_config
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +167,7 @@ def calculate_performance_weight(
 
     except Exception as e:
         # If date parsing fails, return full weight
-        print(f"Warning: Failed to calculate weight for date {result_date}: {e}")
+        logger.warning("Failed to calculate weight for date %s: %s", result_date, e)
         return 1.0
 
 
