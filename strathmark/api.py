@@ -151,12 +151,17 @@ class RecordResultResponse(BaseModel):
 _store = ResultStore()
 
 
-def _parse_date(s: Optional[str]) -> Optional[date]:
+def _parse_date(s: Optional[str], *, strict: bool = False) -> Optional[date]:
     if s is None:
         return None
     try:
         return date.fromisoformat(s)
     except (ValueError, TypeError):
+        if strict:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid date format: '{s}'. Use ISO 8601 (YYYY-MM-DD).",
+            )
         return None
 
 
@@ -349,7 +354,7 @@ def record_result(req: RecordResultRequest) -> RecordResultResponse:
         diameter_mm=req.diameter_mm,
         quality=req.quality,
         heat_id=req.heat_id,
-        result_date=_parse_date(req.result_date),
+        result_date=_parse_date(req.result_date, strict=True),
     )
     return RecordResultResponse(
         inserted=inserted,
