@@ -36,7 +36,7 @@ from strathmark.predictor import (
     PredictionResult,
     get_best_prediction,
 )
-from strathmark.config import rules, llm_config
+from strathmark.config import rules, llm_config, sim_config
 
 _log = logging.getLogger(__name__)
 
@@ -425,8 +425,12 @@ class HandicapCalculator:
                 raw_std = float(np.std(event_times, ddof=1))
                 competitor_std = max(1.5, min(raw_std, 15.0))
             else:
-                # Scale default variance with predicted time (empirically validated)
-                competitor_std = max(1.5, min(prediction.value * 0.12, 15.0))
+                # Scale default variance with predicted time
+                competitor_std = max(
+                    sim_config.MIN_COMPETITOR_STD_SECONDS,
+                    min(prediction.value * sim_config.DEFAULT_VARIANCE_SCALING_FACTOR,
+                        sim_config.MAX_COMPETITOR_STD_SECONDS),
+                )
 
             results.append(
                 MarkResult(

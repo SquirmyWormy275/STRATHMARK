@@ -269,6 +269,11 @@ class SimulationConfig:
     MAX_COMPETITOR_STD_SECONDS: float = 15.0
     """Maximum per-competitor performance std-dev when historical data is used"""
 
+    DEFAULT_VARIANCE_SCALING_FACTOR: float = 0.12
+    """Fraction of predicted time used as default std-dev when no historical
+    variance data exists (e.g., 0.12 = assume 12% of predicted time as
+    uncertainty). Empirically validated against AAA competition data."""
+
     # Fairness assessment thresholds
     FAIRNESS_THRESHOLD_EXCELLENT: float = 0.02
     """Win rate spread threshold for 'Excellent' rating (2%)"""
