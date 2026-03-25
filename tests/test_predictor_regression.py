@@ -205,16 +205,17 @@ class TestConfidenceLevels:
 # ---------------------------------------------------------------------------
 class TestTournamentWeightingRegression:
     def test_97_percent_weight_applied(self):
-        """Tournament result should heavily influence the prediction."""
+        """With 4+ rounds, tournament result gets 97% weight vs 3% historical."""
         record = CompetitorRecord(
             name="Test",
             history=_make_history([30, 30, 30, 30]),
             tournament_time=20.0,
+            num_tournament_rounds=4,  # 4 rounds → 97% weight
         )
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         pred = get_best_prediction(record, wood, "SB")
-        # Tournament time of 20s should pull prediction well below 30s
-        assert pred.value < 28.0  # Significantly influenced by 20s tournament
+        # Base blend: 0.97 * 20 + 0.03 * ~30 = ~20.3, plus species affinity
+        assert pred.value < 24.0  # Dominated by 20s tournament time
 
     def test_tournament_upgrades_confidence(self):
         record = CompetitorRecord(

@@ -113,7 +113,11 @@ class TestTimeoutFilteringRegression:
     """Results at or above the time limit should be treated carefully."""
 
     def test_predict_baseline_excludes_extreme_outliers(self):
-        """Baseline prediction should not be pulled to 180s by timeouts."""
+        """Baseline prediction should not be pulled to 180s by timeouts.
+
+        Includes a 180s timeout result that should be handled by outlier
+        clipping or filtering, keeping the baseline near the normal times.
+        """
         from strathmark import HistoricalResult
 
         today = date.today()
@@ -127,12 +131,22 @@ class TestTimeoutFilteringRegression:
             HistoricalResult(event_code="SB", time_seconds=24.0, species="S01",
                              diameter_mm=300, quality=5,
                              result_date=today - timedelta(days=90)),
+            HistoricalResult(event_code="SB", time_seconds=25.5, species="S01",
+                             diameter_mm=300, quality=5,
+                             result_date=today - timedelta(days=120)),
+            HistoricalResult(event_code="SB", time_seconds=24.5, species="S01",
+                             diameter_mm=300, quality=5,
+                             result_date=today - timedelta(days=150)),
+            # Timeout result — should be clipped by robust averaging
+            HistoricalResult(event_code="SB", time_seconds=180.0, species="S01",
+                             diameter_mm=300, quality=5,
+                             result_date=today - timedelta(days=180)),
         ]
         record = CompetitorRecord(name="Test", history=history)
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         pred = predict_baseline(record, wood, "SB")
         if pred is not None:
-            # Baseline should be near 25s, not 180s
+            # Baseline should be near 25s, not pulled toward 180s
             assert pred.value < 50.0
 
 
