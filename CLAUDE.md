@@ -6,7 +6,7 @@ Woodchopping handicap engine - pip-installable calculation core.
 
 ```bash
 pip install -e ".[dev]"    # install with dev dependencies
-pytest tests/ -v           # run all tests (48 tests)
+pytest tests/ -v           # run all tests (667 tests)
 python train_model.py      # train XGBoost model
 python evaluate_llm_prompts.py  # evaluate LLM prompt templates
 ```
