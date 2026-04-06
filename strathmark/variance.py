@@ -40,8 +40,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from strathmark.config import rules, sim_config, baseline_config
-
+from strathmark.config import baseline_config, rules, sim_config
 
 # ---------------------------------------------------------------------------
 # Constants (mirrored from STRATHEX config.py -> SimulationConfig)
@@ -82,7 +81,7 @@ def _pooled_std_dev_by_event(
     if competitor_data is None or competitor_data.empty:
         return None
 
-    times = competitor_data.get('raw_time')
+    times = competitor_data.get("raw_time")
     if times is None:
         return None
 
@@ -90,14 +89,14 @@ def _pooled_std_dev_by_event(
     if total_samples < min_samples:
         return None
 
-    if 'event' not in competitor_data.columns:
+    if "event" not in competitor_data.columns:
         std_dev = float(times.std(ddof=1)) if total_samples >= 2 else None
         return std_dev
 
     total_df = 0.0
     var_sum = 0.0
-    for _, group in competitor_data.groupby('event'):
-        group_times = pd.to_numeric(group['raw_time'], errors='coerce').dropna().astype(float)
+    for _, group in competitor_data.groupby("event"):
+        group_times = pd.to_numeric(group["raw_time"], errors="coerce").dropna().astype(float)
         if len(group_times) < 2:
             continue
         var = float(group_times.var(ddof=1))
@@ -123,7 +122,7 @@ def _global_fallback_std_dev(
         return None
 
     pooled_values = []
-    for _, group in results_df.groupby('competitor_name'):
+    for _, group in results_df.groupby("competitor_name"):
         pooled = _pooled_std_dev_by_event(group, min_samples)
         if pooled is not None:
             pooled_values.append(pooled)
@@ -137,6 +136,7 @@ def _global_fallback_std_dev(
 # ---------------------------------------------------------------------------
 # Per-competitor variance estimation
 # ---------------------------------------------------------------------------
+
 
 def estimate_competitor_std_dev(
     competitor_name: str,
@@ -181,11 +181,11 @@ def estimate_competitor_std_dev(
         return rules.PERFORMANCE_VARIANCE_SECONDS, "MODERATE"
 
     # Standardize if needed
-    if 'raw_time' not in results_df.columns:
+    if "raw_time" not in results_df.columns:
         results_df = _standardize_results_columns(results_df)
 
     comp_match = (
-        results_df['competitor_name'].astype(str).str.strip().str.lower()
+        results_df["competitor_name"].astype(str).str.strip().str.lower()
         == str(competitor_name).strip().lower()
     )
     competitor_data = results_df[comp_match]
@@ -198,10 +198,7 @@ def estimate_competitor_std_dev(
     if pooled_std is None:
         pooled_std = float(rules.PERFORMANCE_VARIANCE_SECONDS)
 
-    std_dev = max(
-        MIN_COMPETITOR_STD_SECONDS,
-        min(float(pooled_std), MAX_COMPETITOR_STD_SECONDS)
-    )
+    std_dev = max(MIN_COMPETITOR_STD_SECONDS, min(float(pooled_std), MAX_COMPETITOR_STD_SECONDS))
 
     if std_dev <= baseline_config.CONSISTENCY_VERY_HIGH_THRESHOLD:
         consistency_rating = "VERY HIGH"
@@ -218,6 +215,7 @@ def estimate_competitor_std_dev(
 # ---------------------------------------------------------------------------
 # Consistency rating
 # ---------------------------------------------------------------------------
+
 
 def calculate_consistency_rating(std_dev_seconds: float) -> str:
     """
@@ -261,6 +259,7 @@ def calculate_consistency_rating(std_dev_seconds: float) -> str:
 # Simulation result types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CompetitorTimeStats:
     """
@@ -290,6 +289,7 @@ class CompetitorTimeStats:
 # Monte Carlo simulation
 # ---------------------------------------------------------------------------
 
+
 def _get_competitor_variance_seconds(comp: Dict) -> float:
     """
     Return per-competitor variance (std-dev) with reasonable bounds.
@@ -298,7 +298,7 @@ def _get_competitor_variance_seconds(comp: Dict) -> float:
     or falls back to the default PERFORMANCE_VARIANCE_SECONDS.
     """
     # Support both 'performance_std_dev' (STRATHEX legacy) and 'std_dev' (STRATHMARK)
-    variance = comp.get('performance_std_dev') or comp.get('std_dev')
+    variance = comp.get("performance_std_dev") or comp.get("std_dev")
     if variance is None:
         variance = rules.PERFORMANCE_VARIANCE_SECONDS
 
@@ -355,27 +355,26 @@ def simulate_single_race(
     for comp in competitors:
         # Per-competitor variance with shared heat effect
         variance_seconds = _get_competitor_variance_seconds(comp)
-        actual_time = rand_normal(
-            comp['predicted_time'] + heat_delta,
-            variance_seconds
-        )
+        actual_time = rand_normal(comp["predicted_time"] + heat_delta, variance_seconds)
 
         # Prevent unreasonably fast times (minimum 50% of predicted time)
-        actual_time = max(actual_time, comp['predicted_time'] * 0.5)
+        actual_time = max(actual_time, comp["predicted_time"] * 0.5)
 
         # Calculate finish time accounting for handicap
         # Front marker (mark=3) starts immediately; start_delay = 0
-        start_delay = comp['mark'] - rules.MIN_MARK_SECONDS
+        start_delay = comp["mark"] - rules.MIN_MARK_SECONDS
         finish_time = start_delay + actual_time
 
-        finish_results.append({
-            'name': comp['name'],
-            'finish_time': finish_time,
-        })
+        finish_results.append(
+            {
+                "name": comp["name"],
+                "finish_time": finish_time,
+            }
+        )
 
     # Sort by finish time; return winner name
-    finish_results.sort(key=lambda x: x['finish_time'])
-    return finish_results[0]['name']
+    finish_results.sort(key=lambda x: x["finish_time"])
+    return finish_results[0]["name"]
 
 
 def run_monte_carlo_simulation(
@@ -385,8 +384,8 @@ def run_monte_carlo_simulation(
     seed: Optional[int] = None,
     track_finish_orders: bool = False,
     track_podium_margins: bool = False,
-    show_live_leaders: bool = False,   # kept for API compatibility; not used in vectorized path
-    progress_interval: int = 50000,    # kept for API compatibility; not used in vectorized path
+    show_live_leaders: bool = False,  # kept for API compatibility; not used in vectorized path
+    progress_interval: int = 50000,  # kept for API compatibility; not used in vectorized path
     verbose: bool = True,
 ) -> Dict:
     """
@@ -447,11 +446,11 @@ def run_monte_carlo_simulation(
 
     # Track statistics
     finish_spreads = []
-    winner_counts = {comp['name']: 0 for comp in competitors}
-    podium_counts = {comp['name']: 0 for comp in competitors}
-    finish_position_sums = {comp['name']: 0 for comp in competitors}
+    winner_counts = {comp["name"]: 0 for comp in competitors}
+    podium_counts = {comp["name"]: 0 for comp in competitors}
+    finish_position_sums = {comp["name"]: 0 for comp in competitors}
     # Track individual finish times for per-competitor statistics
-    competitor_finish_times = {comp['name']: [] for comp in competitors}
+    competitor_finish_times = {comp["name"]: [] for comp in competitors}
 
     # Optional tracking for finish orders, podium margins, photo-finish
     order_counts: Optional[Dict] = {} if track_finish_orders else None
@@ -464,18 +463,19 @@ def run_monte_carlo_simulation(
     photo_finish_threshold = 0.25
 
     # Track front marker (slowest predicted, starts first)
-    front_marker_name = max(competitors, key=lambda x: x['predicted_time'])['name']
-    back_marker_name = min(competitors, key=lambda x: x['predicted_time'])['name']
+    front_marker_name = max(competitors, key=lambda x: x["predicted_time"])["name"]
+    back_marker_name = min(competitors, key=lambda x: x["predicted_time"])["name"]
 
     # Pre-compute per-competitor variance once (not per-simulation)
     competitor_variance = {
-        comp['name']: _get_competitor_variance_seconds(comp)
-        for comp in competitors
+        comp["name"]: _get_competitor_variance_seconds(comp) for comp in competitors
     }
 
     if verbose:
         print(f"\nRUNNING MONTE CARLO SIMULATION ({num_simulations:,} races)")
-        print(f"Simulating races with per-competitor variance and +/-{heat_variance_seconds:.1f}s heat variance...")
+        print(
+            f"Simulating races with per-competitor variance and +/-{heat_variance_seconds:.1f}s heat variance..."
+        )
 
     # Vectorized simulation — generate all random values at once
     if rng is None:
@@ -484,9 +484,9 @@ def run_monte_carlo_simulation(
         rand_func = rng.normal
 
     n_comp = len(competitors)
-    comp_names = [comp['name'] for comp in competitors]
-    predicted_times_arr = np.array([comp['predicted_time'] for comp in competitors])
-    start_delays_arr = np.array([comp['mark'] - rules.MIN_MARK_SECONDS for comp in competitors])
+    comp_names = [comp["name"] for comp in competitors]
+    predicted_times_arr = np.array([comp["predicted_time"] for comp in competitors])
+    start_delays_arr = np.array([comp["mark"] - rules.MIN_MARK_SECONDS for comp in competitors])
     std_devs_arr = np.array([competitor_variance[name] for name in comp_names])
     time_floors_arr = predicted_times_arr * 0.5
 
@@ -503,9 +503,7 @@ def run_monte_carlo_simulation(
     finish_times_matrix = start_delays_arr[:, np.newaxis] + actual_times_matrix
 
     # Finish spreads per simulation
-    finish_spreads_arr = (
-        np.max(finish_times_matrix, axis=0) - np.min(finish_times_matrix, axis=0)
-    )
+    finish_spreads_arr = np.max(finish_times_matrix, axis=0) - np.min(finish_times_matrix, axis=0)
     finish_spreads = finish_spreads_arr.tolist()
 
     # rank_matrix[pos, sim] = competitor index finishing at position pos in sim
@@ -558,8 +556,7 @@ def run_monte_carlo_simulation(
 
     # Calculate statistics
     avg_finish_positions = {
-        name: pos_sum / num_simulations
-        for name, pos_sum in finish_position_sums.items()
+        name: pos_sum / num_simulations for name, pos_sum in finish_position_sums.items()
     }
 
     # Calculate per-competitor time statistics
@@ -590,9 +587,7 @@ def run_monte_carlo_simulation(
 
     avg_margin_12 = (margin_12_sum / margin_12_count) if margin_12_count else None
     avg_margin_23 = (margin_23_sum / margin_23_count) if margin_23_count else None
-    photo_finish_pct = (
-        (photo_finish_count / margin_12_count * 100.0) if margin_12_count else None
-    )
+    photo_finish_pct = (photo_finish_count / margin_12_count * 100.0) if margin_12_count else None
 
     competitor_variances = competitor_variance  # pre-computed before simulation
 
@@ -605,44 +600,42 @@ def run_monte_carlo_simulation(
     variance_imbalanced = variance_ratio > 2.0
 
     analysis = {
-        'num_simulations': num_simulations,
-        'finish_spreads': finish_spreads,
-        'avg_spread': float(np.mean(spreads_arr)),
-        'median_spread': float(np.median(spreads_arr)),
-        'min_spread': float(np.min(spreads_arr)),
-        'max_spread': float(np.max(spreads_arr)),
-        'tight_finish_prob': float(np.sum(spreads_arr < 10) / num_simulations),
-        'very_tight_finish_prob': float(np.sum(spreads_arr < 5) / num_simulations),
-        'winner_counts': winner_counts,
-        'winner_percentages': {
-            name: (count / num_simulations * 100)
-            for name, count in winner_counts.items()
+        "num_simulations": num_simulations,
+        "finish_spreads": finish_spreads,
+        "avg_spread": float(np.mean(spreads_arr)),
+        "median_spread": float(np.median(spreads_arr)),
+        "min_spread": float(np.min(spreads_arr)),
+        "max_spread": float(np.max(spreads_arr)),
+        "tight_finish_prob": float(np.sum(spreads_arr < 10) / num_simulations),
+        "very_tight_finish_prob": float(np.sum(spreads_arr < 5) / num_simulations),
+        "winner_counts": winner_counts,
+        "winner_percentages": {
+            name: (count / num_simulations * 100) for name, count in winner_counts.items()
         },
-        'podium_counts': podium_counts,
-        'podium_percentages': {
-            name: (count / num_simulations * 100)
-            for name, count in podium_counts.items()
+        "podium_counts": podium_counts,
+        "podium_percentages": {
+            name: (count / num_simulations * 100) for name, count in podium_counts.items()
         },
-        'avg_finish_positions': avg_finish_positions,
-        'front_marker_name': front_marker_name,
-        'back_marker_name': back_marker_name,
-        'front_marker_wins': winner_counts[front_marker_name],
-        'back_marker_wins': winner_counts[back_marker_name],
-        'competitors': competitors,
-        'competitor_time_stats': competitor_time_stats,
-        'heat_variance_seconds': heat_variance_seconds,
-        'competitor_variances': competitor_variances,
-        'variance_ratio': variance_ratio,
-        'variance_imbalanced': variance_imbalanced,
+        "avg_finish_positions": avg_finish_positions,
+        "front_marker_name": front_marker_name,
+        "back_marker_name": back_marker_name,
+        "front_marker_wins": winner_counts[front_marker_name],
+        "back_marker_wins": winner_counts[back_marker_name],
+        "competitors": competitors,
+        "competitor_time_stats": competitor_time_stats,
+        "heat_variance_seconds": heat_variance_seconds,
+        "competitor_variances": competitor_variances,
+        "variance_ratio": variance_ratio,
+        "variance_imbalanced": variance_imbalanced,
         # Optional finish order tracking
-        'most_common_order': most_common_order,
-        'most_common_order_pct': most_common_order_pct,
-        'most_common_order_scope': order_scope if order_counts is not None else None,
+        "most_common_order": most_common_order,
+        "most_common_order_pct": most_common_order_pct,
+        "most_common_order_scope": order_scope if order_counts is not None else None,
         # Optional podium margin tracking
-        'avg_podium_margin_12': avg_margin_12,
-        'avg_podium_margin_23': avg_margin_23,
-        'photo_finish_pct': photo_finish_pct,
-        'photo_finish_threshold': photo_finish_threshold,
+        "avg_podium_margin_12": avg_margin_12,
+        "avg_podium_margin_23": avg_margin_23,
+        "photo_finish_pct": photo_finish_pct,
+        "photo_finish_threshold": photo_finish_threshold,
     }
 
     return analysis
@@ -651,6 +644,7 @@ def run_monte_carlo_simulation(
 # ---------------------------------------------------------------------------
 # Phase 3A: audit_mark_sheet — public fairness wrapper
 # ---------------------------------------------------------------------------
+
 
 def audit_mark_sheet(
     competitors_with_marks: list,
@@ -691,8 +685,8 @@ def audit_mark_sheet(
     normalised = []
     for comp in competitors_with_marks:
         entry = dict(comp)
-        if 'performance_std_dev' not in entry and 'std_dev' not in entry:
-            entry['std_dev'] = float(variance)
+        if "performance_std_dev" not in entry and "std_dev" not in entry:
+            entry["std_dev"] = float(variance)
         normalised.append(entry)
 
     sim = run_monte_carlo_simulation(
@@ -701,17 +695,17 @@ def audit_mark_sheet(
         verbose=verbose,
     )
 
-    winner_pct = sim['winner_percentages']        # {name: 0.0-100.0}
-    podium_pct = sim['podium_percentages']         # {name: 0.0-100.0}
-    avg_pos = sim['avg_finish_positions']          # {name: float}
-    front_name = sim['front_marker_name']
-    back_name = sim['back_marker_name']
+    winner_pct = sim["winner_percentages"]  # {name: 0.0-100.0}
+    podium_pct = sim["podium_percentages"]  # {name: 0.0-100.0}
+    avg_pos = sim["avg_finish_positions"]  # {name: float}
+    front_name = sim["front_marker_name"]
+    back_name = sim["back_marker_name"]
 
     per_competitor = {
         name: {
-            'win_rate': round(winner_pct.get(name, 0.0), 2),
-            'podium_rate': round(podium_pct.get(name, 0.0), 2),
-            'avg_finish_position': round(avg_pos.get(name, 0.0), 3),
+            "win_rate": round(winner_pct.get(name, 0.0), 2),
+            "podium_rate": round(podium_pct.get(name, 0.0), 2),
+            "avg_finish_position": round(avg_pos.get(name, 0.0), 3),
         }
         for name in winner_pct
     }
@@ -721,31 +715,32 @@ def audit_mark_sheet(
     spread = round(back_win_rate - front_win_rate, 2)
 
     if spread < 5.0:
-        fairness_rating = 'excellent'
+        fairness_rating = "excellent"
     elif spread < 10.0:
-        fairness_rating = 'good'
+        fairness_rating = "good"
     elif spread < 20.0:
-        fairness_rating = 'fair'
+        fairness_rating = "fair"
     else:
-        fairness_rating = 'poor'
+        fairness_rating = "poor"
 
-    variance_ratio = sim.get('variance_ratio', 1.0)
-    variance_warning = sim.get('variance_imbalanced', False)
+    variance_ratio = sim.get("variance_ratio", 1.0)
+    variance_warning = sim.get("variance_imbalanced", False)
 
     return {
-        'per_competitor': per_competitor,
-        'front_marker_win_rate': front_win_rate,
-        'back_marker_win_rate': back_win_rate,
-        'win_rate_spread': spread,
-        'fairness_rating': fairness_rating,
-        'variance_ratio': variance_ratio,
-        'variance_warning': variance_warning,
+        "per_competitor": per_competitor,
+        "front_marker_win_rate": front_win_rate,
+        "back_marker_win_rate": back_win_rate,
+        "win_rate_spread": spread,
+        "fairness_rating": fairness_rating,
+        "variance_ratio": variance_ratio,
+        "variance_warning": variance_warning,
     }
 
 
 # ---------------------------------------------------------------------------
 # Quick fairness check
 # ---------------------------------------------------------------------------
+
 
 def quick_fairness_check(
     competitors_with_marks: list,

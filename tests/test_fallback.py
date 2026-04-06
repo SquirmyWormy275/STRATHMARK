@@ -1,12 +1,9 @@
 """Tests for strathmark/fallback.py — panel marks and event baseline."""
 
-import pytest
-
 from strathmark.fallback import get_panel_mark
 
 
 class TestGetPanelMark:
-
     def test_unknown_division_returns_default(self):
         time_val, explanation = get_panel_mark("SB", None)
         assert time_val == 20.0

@@ -33,24 +33,33 @@ from strathmark.llm import call_ollama
 from strathmark.variance import run_monte_carlo_simulation
 from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
 
-
 # JSON schema for LLM fairness assessment (Ollama structured output)
 FAIRNESS_ASSESSMENT_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "rating": {"type": "string", "enum": ["Excellent", "Very Good", "Good", "Fair", "Poor", "Unacceptable"]},
+        "rating": {
+            "type": "string",
+            "enum": ["Excellent", "Very Good", "Good", "Fair", "Poor", "Unacceptable"],
+        },
         "statistical_analysis": {"type": "string"},
         "pattern_diagnosis": {"type": "string"},
         "prediction_accuracy": {"type": "string"},
-        "recommendations": {"type": "array", "items": {"type": "string"}}
+        "recommendations": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["rating", "statistical_analysis", "pattern_diagnosis", "prediction_accuracy", "recommendations"]
+    "required": [
+        "rating",
+        "statistical_analysis",
+        "pattern_diagnosis",
+        "prediction_accuracy",
+        "recommendations",
+    ],
 }
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _validate_fairness_assessment(
     response: str,
@@ -68,7 +77,7 @@ def _validate_fairness_assessment(
         "PREDICTION ACCURACY:",
         "RECOMMENDATIONS:",
     ]
-    missing = [s.rstrip(':') for s in required_sections if s not in response.upper()]
+    missing = [s.rstrip(":") for s in required_sections if s not in response.upper()]
     if missing:
         warning = (
             "\n\n[WARN] AI RESPONSE VALIDATION WARNING:\n"
@@ -105,7 +114,7 @@ def _stats_dict_to_str(stats_val: Any) -> str:
     """Convert either a CompetitorTimeStats dataclass or a plain dict to a display string."""
     if stats_val is None:
         return ""
-    if hasattr(stats_val, 'mean'):
+    if hasattr(stats_val, "mean"):
         # CompetitorTimeStats dataclass
         return (
             f"mean={stats_val.mean:.1f}s, std_dev={stats_val.std_dev:.2f}s, "
@@ -125,13 +134,14 @@ def _stats_dict_to_str(stats_val: Any) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def _variance_warning_text(analysis: Dict[str, Any]) -> str:
     """Return a variance imbalance warning line if ratio exceeds 2.0."""
-    ratio = analysis.get('variance_ratio', 1.0)
+    ratio = analysis.get("variance_ratio", 1.0)
     if ratio > 2.0:
-        variances = analysis.get('competitor_variances', {})
-        max_name = max(variances, key=variances.get) if variances else 'unknown'
-        min_name = min(variances, key=variances.get) if variances else 'unknown'
+        variances = analysis.get("competitor_variances", {})
+        max_name = max(variances, key=variances.get) if variances else "unknown"
+        min_name = min(variances, key=variances.get) if variances else "unknown"
         return (
             f"\nVARIANCE IMBALANCE WARNING: {max_name} has {ratio:.1f}x more variance than "
             f"{min_name}. This may cause misleading fairness statistics."
@@ -153,8 +163,8 @@ def get_ai_assessment_of_handicaps(analysis: Dict[str, Any]) -> str:
             FAIRNESS RATING, STATISTICAL ANALYSIS, PATTERN DIAGNOSIS,
             PREDICTION ACCURACY, RECOMMENDATIONS.
     """
-    winner_pcts = analysis['winner_percentages']
-    competitors = analysis['competitors']
+    winner_pcts = analysis["winner_percentages"]
+    competitors = analysis["competitors"]
 
     max_win_rate = max(winner_pcts.values())
     min_win_rate = min(winner_pcts.values())
@@ -171,7 +181,7 @@ def get_ai_assessment_of_handicaps(analysis: Dict[str, Any]) -> str:
     )
     competitor_details = "\n".join(
         f"  - {comp['name']}: {comp['predicted_time']:.1f}s predicted + Mark {comp['mark']}"
-        for comp in sorted(competitors, key=lambda x: x['predicted_time'], reverse=True)
+        for comp in sorted(competitors, key=lambda x: x["predicted_time"], reverse=True)
     )
 
     win_rate_std_dev = float(np.std(list(winner_pcts.values())))
@@ -179,17 +189,16 @@ def get_ai_assessment_of_handicaps(analysis: Dict[str, Any]) -> str:
 
     # Per-competitor time statistics section
     competitor_stats_section = ""
-    if analysis.get('competitor_time_stats'):
+    if analysis.get("competitor_time_stats"):
         stats_lines = []
         for name, stats in sorted(
-            analysis['competitor_time_stats'].items(),
-            key=lambda x: (
-                x[1].mean if hasattr(x[1], 'mean') else x[1].get('mean', 0)
-            ),
+            analysis["competitor_time_stats"].items(),
+            key=lambda x: x[1].mean if hasattr(x[1], "mean") else x[1].get("mean", 0),
         ):
             stats_lines.append(f"  - {name}: {_stats_dict_to_str(stats)}")
         competitor_stats_section = (
-            "\n\nPER-COMPETITOR STATISTICS:\n" + "\n".join(stats_lines)
+            "\n\nPER-COMPETITOR STATISTICS:\n"
+            + "\n".join(stats_lines)
             + """
 
 CONSISTENCY RATING THRESHOLDS:
@@ -214,7 +223,7 @@ In your PATTERN DIAGNOSIS section, you MUST comment on:
 - Do biased competitors also show unusual variance patterns?"""
         )
 
-    n_sims = analysis['num_simulations']
+    n_sims = analysis["num_simulations"]
     prompt = f"""You are a master woodchopping handicapper and statistician analyzing the fairness of predicted handicap marks through Monte Carlo simulation.
 
 HANDICAPPING PRINCIPLES
@@ -267,14 +276,14 @@ STATISTICAL MEASURES:
 {_variance_warning_text(analysis)}
 
 FINISH TIME ANALYSIS:
-- Average finish spread: {analysis['avg_spread']:.1f} seconds
-- Median finish spread: {analysis['median_spread']:.1f} seconds
-- Tight finishes (<10s): {analysis['tight_finish_prob']*100:.1f}% of races
-- Very tight finishes (<5s): {analysis['very_tight_finish_prob']*100:.1f}% of races{competitor_stats_section}
+- Average finish spread: {analysis["avg_spread"]:.1f} seconds
+- Median finish spread: {analysis["median_spread"]:.1f} seconds
+- Tight finishes (<10s): {analysis["tight_finish_prob"] * 100:.1f}% of races
+- Very tight finishes (<5s): {analysis["very_tight_finish_prob"] * 100:.1f}% of races{competitor_stats_section}
 
 FRONT AND BACK MARKER PERFORMANCE:
-- Front Marker (slowest): {analysis['front_marker_name']} - {analysis['front_marker_wins']/n_sims*100:.1f}% wins
-- Back Marker (fastest): {analysis['back_marker_name']} - {analysis['back_marker_wins']/n_sims*100:.1f}% wins
+- Front Marker (slowest): {analysis["front_marker_name"]} - {analysis["front_marker_wins"] / n_sims * 100:.1f}% wins
+- Back Marker (fastest): {analysis["back_marker_name"]} - {analysis["back_marker_wins"] / n_sims * 100:.1f}% wins
 
 PATTERN IDENTIFICATION:
 - Most Favored: {most_favored} ({winner_pcts[most_favored]:.2f}%, +{deviations[most_favored]:.2f}%)
@@ -298,7 +307,7 @@ Provide a comprehensive assessment in the following structure:
 
 2. STATISTICAL ANALYSIS (2-3 sentences):
    - Interpret the win rate spread of {win_rate_spread:.2f}%
-   - Comment on finish time spreads (average {analysis['avg_spread']:.1f}s)
+   - Comment on finish time spreads (average {analysis["avg_spread"]:.1f}s)
    - Assess if variation is appropriate for exciting competition
 
 3. PATTERN DIAGNOSIS (2-3 sentences):
@@ -329,6 +338,7 @@ Your Expert Assessment:"""
     if response:
         try:
             import json
+
             result = json.loads(response)
             # Format structured result into plain-text sections
             formatted = (
@@ -338,12 +348,16 @@ Your Expert Assessment:"""
                 f"PREDICTION ACCURACY:\n{result['prediction_accuracy']}\n\n"
                 f"RECOMMENDATIONS:\n"
             )
-            for rec in result.get('recommendations', []):
+            for rec in result.get("recommendations", []):
                 formatted += f"  - {rec}\n"
 
             return _validate_fairness_assessment(
-                formatted, win_rate_spread, ideal_win_rate,
-                most_favored, most_disadvantaged, deviations,
+                formatted,
+                win_rate_spread,
+                ideal_win_rate,
+                most_favored,
+                most_disadvantaged,
+                deviations,
             )
         except (json.JSONDecodeError, KeyError, TypeError):
             # Fall through to statistical fallback
@@ -351,18 +365,33 @@ Your Expert Assessment:"""
 
     # Statistical fallback
     if win_rate_spread < 3:
-        rating, assessment = "EXCELLENT", "Handicaps are nearly perfect. Predictions are highly accurate with minimal bias."
+        rating, assessment = (
+            "EXCELLENT",
+            "Handicaps are nearly perfect. Predictions are highly accurate with minimal bias.",
+        )
     elif win_rate_spread < 6:
-        rating, assessment = "VERY GOOD", "Handicaps are working very well. Minor prediction variations are within acceptable range."
+        rating, assessment = (
+            "VERY GOOD",
+            "Handicaps are working very well. Minor prediction variations are within acceptable range.",
+        )
     elif win_rate_spread < 10:
-        rating, assessment = "GOOD", "Handicaps are acceptable for competition. Some prediction refinement would improve fairness."
+        rating, assessment = (
+            "GOOD",
+            "Handicaps are acceptable for competition. Some prediction refinement would improve fairness.",
+        )
     elif win_rate_spread < 16:
-        rating, assessment = "FAIR", "Noticeable imbalance detected. Predictions show systematic bias requiring adjustment."
+        rating, assessment = (
+            "FAIR",
+            "Noticeable imbalance detected. Predictions show systematic bias requiring adjustment.",
+        )
     else:
-        rating, assessment = "POOR", "Significant imbalance requiring major prediction recalibration."
+        rating, assessment = (
+            "POOR",
+            "Significant imbalance requiring major prediction recalibration.",
+        )
 
-    front_wins = analysis['front_marker_wins'] / n_sims * 100
-    back_wins = analysis['back_marker_wins'] / n_sims * 100
+    front_wins = analysis["front_marker_wins"] / n_sims * 100
+    back_wins = analysis["back_marker_wins"] / n_sims * 100
     if front_wins > ideal_win_rate + 3:
         pattern = "Front marker advantage detected (soft wood bias likely)."
     elif back_wins > ideal_win_rate + 3:
@@ -398,7 +427,7 @@ Your Expert Assessment:"""
         f"{winner_pcts[most_disadvantaged]:.1f}% wins ({deviations[most_disadvantaged]:.1f}% below ideal).\n\n"
         f"PREDICTION ACCURACY: Statistical analysis only (Ollama unavailable).\n\n"
         f"RECOMMENDATIONS:\n- {rec_1}\n- {rec_2}\n- {rec_3}"
-        + (_variance_warning_text(analysis) if analysis.get('variance_imbalanced') else "")
+        + (_variance_warning_text(analysis) if analysis.get("variance_imbalanced") else "")
     )
 
 
@@ -421,55 +450,73 @@ def get_championship_race_analysis(
             RACE FAVORITE, KEY MATCHUPS, PODIUM BATTLE, DARK HORSE,
             CONSISTENCY ANALYSIS, RACE DYNAMICS.
     """
-    winner_pcts = analysis['winner_percentages']
-    avg_positions = analysis['avg_finish_positions']
-    competitor_stats = analysis.get('competitor_time_stats', {})
+    winner_pcts = analysis["winner_percentages"]
+    avg_positions = analysis["avg_finish_positions"]
+    competitor_stats = analysis.get("competitor_time_stats", {})
 
     favorite_name = max(winner_pcts.items(), key=lambda x: x[1])[0]
     favorite_win_rate = winner_pcts[favorite_name]
 
-    pred_times = {p['name']: p['predicted_time'] for p in predictions}
+    pred_times = {p["name"]: p["predicted_time"] for p in predictions}
 
     matchups = []
     for i, p1 in enumerate(predictions):
-        for p2 in predictions[i + 1:]:
-            diff = abs(p1['predicted_time'] - p2['predicted_time'])
+        for p2 in predictions[i + 1 :]:
+            diff = abs(p1["predicted_time"] - p2["predicted_time"])
             if diff <= 2.0:
-                matchups.append((p1['name'], p2['name'], diff))
+                matchups.append((p1["name"], p2["name"], diff))
 
     dark_horses = [
-        (name, pct)
-        for name, pct in winner_pcts.items()
-        if pct >= 10.0 and name != favorite_name
+        (name, pct) for name, pct in winner_pcts.items() if pct >= 10.0 and name != favorite_name
     ]
 
     consistency_outliers = []
     for name, stats in competitor_stats.items():
-        std = stats.std_dev if hasattr(stats, 'std_dev') else stats.get('std_dev', 3.0)
+        std = stats.std_dev if hasattr(stats, "std_dev") else stats.get("std_dev", 3.0)
         if std <= 2.5:
-            consistency_outliers.append((name, 'very high', std))
+            consistency_outliers.append((name, "very high", std))
         elif std > 3.5:
-            consistency_outliers.append((name, 'very low', std))
+            consistency_outliers.append((name, "very low", std))
 
-    n_sims = analysis['num_simulations']
+    n_sims = analysis["num_simulations"]
     prompt = f"""You are a professional woodchopping race analyst providing an engaging race preview for a championship event. All competitors start together (no handicaps) - fastest time wins.
 
 SIMULATION RESULTS ({n_sims:,} races):
 
 WIN PROBABILITIES:
-{chr(10).join(f"- {name}: {pct:.1f}% (predicted time: {pred_times.get(name, 0):.1f}s, avg finish: {avg_positions.get(name, 0):.2f})" for name, pct in sorted(winner_pcts.items(), key=lambda x: x[1], reverse=True))}
+{
+        chr(10).join(
+            f"- {name}: {pct:.1f}% (predicted time: {pred_times.get(name, 0):.1f}s, avg finish: {avg_positions.get(name, 0):.2f})"
+            for name, pct in sorted(winner_pcts.items(), key=lambda x: x[1], reverse=True)
+        )
+    }
 
 INDIVIDUAL TIME STATISTICS:
 {chr(10).join(f"- {name}: {_stats_dict_to_str(stats)}" for name, stats in competitor_stats.items())}
 
 CLOSE MATCHUPS (within 2 seconds):
-{chr(10).join(f"- {n1} vs {n2} ({d:.1f}s difference)" for n1, n2, d in matchups) if matchups else "- No particularly close matchups"}
+{
+        chr(10).join(f"- {n1} vs {n2} ({d:.1f}s difference)" for n1, n2, d in matchups)
+        if matchups
+        else "- No particularly close matchups"
+    }
 
 DARK HORSE CANDIDATES (>10% win rate):
-{chr(10).join(f"- {name}: {pct:.1f}% win rate" for name, pct in dark_horses) if dark_horses else "- None identified"}
+{
+        chr(10).join(f"- {name}: {pct:.1f}% win rate" for name, pct in dark_horses)
+        if dark_horses
+        else "- None identified"
+    }
 
 CONSISTENCY OUTLIERS:
-{chr(10).join(f"- {name}: {rating} consistency (std_dev={std:.2f}s)" for name, rating, std in consistency_outliers) if consistency_outliers else "- All competitors show normal variance"}
+{
+        chr(10).join(
+            f"- {name}: {rating} consistency (std_dev={std:.2f}s)"
+            for name, rating, std in consistency_outliers
+        )
+        if consistency_outliers
+        else "- All competitors show normal variance"
+    }
 
 YOUR TASK:
 Provide an engaging championship race analysis in sports-commentary style with these sections:
@@ -548,21 +595,20 @@ def format_ai_assessment(assessment_text: str, width: int = 100) -> None:
         assessment_text: Raw assessment text.
         width: Maximum line width for wrapping.
     """
-    paragraphs = assessment_text.split('\n\n')
+    paragraphs = assessment_text.split("\n\n")
     for paragraph in paragraphs:
         if not paragraph.strip():
             continue
-        for line in paragraph.split('\n'):
+        for line in paragraph.split("\n"):
             stripped = line.strip()
             if not stripped:
                 continue
-            if ':' in stripped and (
-                stripped.isupper() or stripped.split(':')[0].isupper()
-            ):
+            if ":" in stripped and (stripped.isupper() or stripped.split(":")[0].isupper()):
                 print(stripped)
-            elif stripped.startswith(('-', '*', '\u2022', '\u25cf')):
-                for wl in textwrap.wrap(stripped, width=width,
-                                        initial_indent='  ', subsequent_indent='    '):
+            elif stripped.startswith(("-", "*", "\u2022", "\u25cf")):
+                for wl in textwrap.wrap(
+                    stripped, width=width, initial_indent="  ", subsequent_indent="    "
+                ):
                     print(wl)
             else:
                 for wl in textwrap.wrap(stripped, width=width):
@@ -599,7 +645,7 @@ def simulate_and_assess_handicaps(
     if not competitors_with_marks or len(competitors_with_marks) < 2:
         if show:
             print("Need at least 2 competitors to run simulation.")
-        return {'analysis': {}, 'summary': '', 'chart': '', 'assessment': ''}
+        return {"analysis": {}, "summary": "", "chart": "", "assessment": ""}
 
     if num_simulations is None:
         num_simulations = sim_config.NUM_SIMULATIONS
@@ -621,8 +667,8 @@ def simulate_and_assess_handicaps(
         print("=" * 70)
 
     return {
-        'analysis': analysis,
-        'summary': summary,
-        'chart': chart,
-        'assessment': assessment,
+        "analysis": analysis,
+        "summary": summary,
+        "chart": chart,
+        "assessment": assessment,
     }

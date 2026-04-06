@@ -4,9 +4,7 @@ Covers concurrent writes, import edge cases, date handling,
 duplicate detection, and DataFrame round-trips.
 """
 
-import tempfile
 from datetime import date
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -23,16 +21,21 @@ def store(tmp_path):
 @pytest.fixture
 def populated_store(store):
     """Store with 5 diverse results pre-loaded."""
-    store.record_result("Alice", "SB", 25.0, "S01", 300, 5,
-                        heat_id="H1", result_date=date(2025, 1, 15))
-    store.record_result("Alice", "SB", 26.5, "S01", 300, 5,
-                        heat_id="H2", result_date=date(2025, 2, 10))
-    store.record_result("Alice", "UH", 30.0, "S01", 300, 5,
-                        heat_id="H3", result_date=date(2025, 3, 5))
-    store.record_result("Bob", "SB", 35.0, "S03", 350, 7,
-                        heat_id="H1", result_date=date(2025, 1, 15))
-    store.record_result("Charlie", "SB", 40.0, "S05", 300, 3,
-                        heat_id="H1", result_date=date(2025, 1, 15))
+    store.record_result(
+        "Alice", "SB", 25.0, "S01", 300, 5, heat_id="H1", result_date=date(2025, 1, 15)
+    )
+    store.record_result(
+        "Alice", "SB", 26.5, "S01", 300, 5, heat_id="H2", result_date=date(2025, 2, 10)
+    )
+    store.record_result(
+        "Alice", "UH", 30.0, "S01", 300, 5, heat_id="H3", result_date=date(2025, 3, 5)
+    )
+    store.record_result(
+        "Bob", "SB", 35.0, "S03", 350, 7, heat_id="H1", result_date=date(2025, 1, 15)
+    )
+    store.record_result(
+        "Charlie", "SB", 40.0, "S05", 300, 3, heat_id="H1", result_date=date(2025, 1, 15)
+    )
     return store
 
 
@@ -117,54 +120,62 @@ class TestGetAllAsDataFrame:
 
 class TestImportFromDataFrame:
     def test_basic_import(self, store):
-        df = pd.DataFrame({
-            "competitor_name": ["X", "Y"],
-            "event_code": ["SB", "UH"],
-            "time_seconds": [20.0, 30.0],
-            "species": ["S01", "S01"],
-            "diameter_mm": [300, 300],
-            "quality": [5, 5],
-        })
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["X", "Y"],
+                "event_code": ["SB", "UH"],
+                "time_seconds": [20.0, 30.0],
+                "species": ["S01", "S01"],
+                "diameter_mm": [300, 300],
+                "quality": [5, 5],
+            }
+        )
         count = store.import_from_dataframe(df)
         assert count == 2
         assert store.count() == 2
 
     def test_skip_duplicates(self, store):
-        df = pd.DataFrame({
-            "competitor_name": ["X", "X"],
-            "event_code": ["SB", "SB"],
-            "time_seconds": [20.0, 20.0],
-            "species": ["S01", "S01"],
-            "diameter_mm": [300, 300],
-            "quality": [5, 5],
-            "heat_id": ["H1", "H1"],
-        })
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["X", "X"],
+                "event_code": ["SB", "SB"],
+                "time_seconds": [20.0, 20.0],
+                "species": ["S01", "S01"],
+                "diameter_mm": [300, 300],
+                "quality": [5, 5],
+                "heat_id": ["H1", "H1"],
+            }
+        )
         count = store.import_from_dataframe(df, skip_duplicates=True)
         assert store.count() == 1
 
     def test_missing_optional_columns(self, store):
         """Import should work without heat_id and result_date columns."""
-        df = pd.DataFrame({
-            "competitor_name": ["Z"],
-            "event_code": ["SB"],
-            "time_seconds": [25.0],
-            "species": ["S01"],
-            "diameter_mm": [300],
-            "quality": [5],
-        })
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["Z"],
+                "event_code": ["SB"],
+                "time_seconds": [25.0],
+                "species": ["S01"],
+                "diameter_mm": [300],
+                "quality": [5],
+            }
+        )
         count = store.import_from_dataframe(df)
         assert count == 1
 
     def test_column_aliases(self, store):
         """Import should accept common column name aliases."""
-        df = pd.DataFrame({
-            "competitor_name": ["W"],
-            "event": ["SB"],         # alias for event_code
-            "raw_time": [22.0],       # alias for time_seconds
-            "species": ["S01"],
-            "size_mm": [300],         # alias for diameter_mm
-            "quality": [5],
-        })
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["W"],
+                "event": ["SB"],  # alias for event_code
+                "raw_time": [22.0],  # alias for time_seconds
+                "species": ["S01"],
+                "size_mm": [300],  # alias for diameter_mm
+                "quality": [5],
+            }
+        )
         count = store.import_from_dataframe(df)
         assert count == 1
 
@@ -191,8 +202,7 @@ class TestEmptyStore:
 class TestDateHandling:
     def test_none_result_date(self, store):
         """result_date=None should not crash."""
-        assert store.record_result("A", "SB", 25.0, "S01", 300, 5,
-                                   result_date=None) is True
+        assert store.record_result("A", "SB", 25.0, "S01", 300, 5, result_date=None) is True
 
     def test_round_trip_preserves_date(self, store):
         d = date(2025, 6, 15)

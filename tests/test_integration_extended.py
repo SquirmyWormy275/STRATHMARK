@@ -6,7 +6,6 @@ Tests multi-event processing, store round-trips, and cross-module consistency.
 
 from datetime import date, timedelta
 
-import numpy as np
 import pytest
 
 from strathmark import (
@@ -15,7 +14,7 @@ from strathmark import (
     HistoricalResult,
     WoodProfile,
 )
-from strathmark.config import rules, sim_config
+from strathmark.config import rules
 from strathmark.store import ResultStore
 from strathmark.variance import audit_mark_sheet, run_monte_carlo_simulation
 
@@ -69,8 +68,12 @@ class TestFullPipeline:
 
         # Run fairness audit
         sim_input = [
-            {"name": r.name, "predicted_time": r.predicted_time,
-             "mark": r.mark, "std_dev": r.std_dev}
+            {
+                "name": r.name,
+                "predicted_time": r.predicted_time,
+                "mark": r.mark,
+                "std_dev": r.std_dev,
+            }
             for r in results
         ]
         audit = audit_mark_sheet(sim_input, num_simulations=50_000, verbose=False)
@@ -85,7 +88,9 @@ class TestFullPipeline:
         calc = HandicapCalculator()
         # Override B to be faster than A
         results = calc.calculate(
-            [c1, c2], wood, "SB",
+            [c1, c2],
+            wood,
+            "SB",
             manual_overrides={"B": 20.0},
         )
         b_result = next(r for r in results if r.name == "B")
@@ -157,8 +162,14 @@ class TestStoreRoundTrip:
         today = date.today()
         for i, t in enumerate([25.0, 26.0, 24.0, 25.5]):
             store.record_result(
-                "TestComp", "SB", t, "S01", 300, 5,
-                heat_id=f"H{i}", result_date=today - timedelta(days=i * 30),
+                "TestComp",
+                "SB",
+                t,
+                "S01",
+                300,
+                5,
+                heat_id=f"H{i}",
+                result_date=today - timedelta(days=i * 30),
             )
         # Retrieve and build competitor
         history = store.get_competitor_history("TestComp", event_code="SB")
@@ -216,10 +227,16 @@ class TestSimulationDeterminism:
             {"name": "B", "predicted_time": 30.0, "mark": 3, "std_dev": 3.0},
         ]
         r1 = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=123, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=123,
+            verbose=False,
         )
         r2 = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=123, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=123,
+            verbose=False,
         )
         assert r1["winner_percentages"] == r2["winner_percentages"]
 
@@ -229,10 +246,16 @@ class TestSimulationDeterminism:
             {"name": "B", "predicted_time": 30.0, "mark": 3, "std_dev": 3.0},
         ]
         r1 = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=123, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=123,
+            verbose=False,
         )
         r2 = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=456, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=456,
+            verbose=False,
         )
         # Very unlikely to be exactly the same with different seeds
         assert r1["winner_percentages"]["A"] != r2["winner_percentages"]["A"]
@@ -256,8 +279,12 @@ class TestAuditMarkSheetIntegration:
         results = calc.calculate(competitors, wood, "SB")
 
         sim_input = [
-            {"name": r.name, "predicted_time": r.predicted_time,
-             "mark": r.mark, "std_dev": r.std_dev}
+            {
+                "name": r.name,
+                "predicted_time": r.predicted_time,
+                "mark": r.mark,
+                "std_dev": r.std_dev,
+            }
             for r in results
         ]
         audit = audit_mark_sheet(sim_input, num_simulations=50_000, verbose=False)
@@ -295,7 +322,9 @@ class TestTournamentWeightingIntegration:
 
         # With much faster tournament result
         results_with_tourney = calc.calculate(
-            [record], wood, "SB",
+            [record],
+            wood,
+            "SB",
             tournament_results={"Champ": 22.0},
         )
 

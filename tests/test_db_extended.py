@@ -1,21 +1,18 @@
 """Extended tests for strathmark/db.py — _safe_date helper (no Supabase required)."""
 
-import math
 from datetime import date, datetime
 
 import pandas as pd
-import pytest
 
 from strathmark.db import _safe_date
 
 
 class TestSafeDate:
-
     def test_none_returns_none(self):
         assert _safe_date(None) is None
 
     def test_nan_returns_none(self):
-        assert _safe_date(float('nan')) is None
+        assert _safe_date(float("nan")) is None
 
     def test_nat_returns_none(self):
         assert _safe_date(pd.NaT) is None

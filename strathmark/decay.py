@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -74,6 +74,7 @@ MODERATE_MIN_RESULTS: int = decay_config.MODERATE_MIN_RESULTS
 # ---------------------------------------------------------------------------
 # Core decay functions
 # ---------------------------------------------------------------------------
+
 
 def calculate_performance_weight(
     result_date: Optional[date],
@@ -156,14 +157,14 @@ def calculate_performance_weight(
         # Normalize both to date objects to avoid datetime-date subtraction error
         if isinstance(result_date, datetime):
             result_date = result_date.date()
-        elif hasattr(result_date, 'date'):
+        elif hasattr(result_date, "date"):
             result_date = result_date.date()
         elif not isinstance(result_date, date):
             result_date = pd.to_datetime(result_date).date()
 
         if isinstance(reference_date, datetime):
             reference_date = reference_date.date()
-        elif hasattr(reference_date, 'date'):
+        elif hasattr(reference_date, "date"):
             reference_date = reference_date.date()
 
         days_old = (reference_date - result_date).days
@@ -235,11 +236,11 @@ def classify_activity_level(
             continue
 
     if count_in_window >= ACTIVE_MIN_RESULTS:
-        return 'active'
+        return "active"
     elif count_in_window >= MODERATE_MIN_RESULTS:
-        return 'moderate'
+        return "moderate"
     else:
-        return 'inactive'
+        return "inactive"
 
 
 def select_half_life(activity_level: str) -> int:
@@ -256,14 +257,13 @@ def select_half_life(activity_level: str) -> int:
         ValueError: If activity_level is not a recognized value.
     """
     mapping = {
-        'active': HALF_LIFE_ACTIVE_DAYS,
-        'moderate': HALF_LIFE_MODERATE_DAYS,
-        'inactive': HALF_LIFE_INACTIVE_DAYS,
+        "active": HALF_LIFE_ACTIVE_DAYS,
+        "moderate": HALF_LIFE_MODERATE_DAYS,
+        "inactive": HALF_LIFE_INACTIVE_DAYS,
     }
     if activity_level not in mapping:
         raise ValueError(
-            f"Unknown activity_level: '{activity_level}'. "
-            f"Must be one of: {list(mapping.keys())}"
+            f"Unknown activity_level: '{activity_level}'. Must be one of: {list(mapping.keys())}"
         )
     return mapping[activity_level]
 
@@ -294,8 +294,7 @@ def compute_weighted_average(
     """
     if len(times) != len(weights):
         raise ValueError(
-            f"times and weights must have equal length: "
-            f"{len(times)} vs {len(weights)}"
+            f"times and weights must have equal length: {len(times)} vs {len(weights)}"
         )
     if len(times) == 0:
         raise ValueError("times and weights must not be empty")
@@ -353,7 +352,4 @@ def compute_weights_for_results(
     else:
         half_life = HALF_LIFE_MODERATE_DAYS
 
-    return [
-        calculate_performance_weight(d, reference_date, half_life)
-        for d in result_dates
-    ]
+    return [calculate_performance_weight(d, reference_date, half_life) for d in result_dates]

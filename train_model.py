@@ -33,12 +33,11 @@ import argparse
 import hashlib
 import json
 import logging
-import math
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -72,6 +71,7 @@ MODELS_DIR = Path("models")
 # Data loading
 # ---------------------------------------------------------------------------
 
+
 def load_from_db() -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Load results and wood data from the Supabase database.
@@ -79,7 +79,7 @@ def load_from_db() -> Tuple[pd.DataFrame, pd.DataFrame]:
     Returns:
         (results_df, wood_df) DataFrames.
     """
-    from strathmark.db import pull_results, pull_competitors
+    from strathmark.db import pull_results
     from strathmark.loader import load_woodchopping_xlsx
 
     _log.info("Loading results from database...")
@@ -111,11 +111,14 @@ def load_from_xlsx(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
         (results_df, wood_df) DataFrames.
     """
     from strathmark.loader import load_woodchopping_xlsx
+
     _log.info("Loading legacy data from %s...", path)
     wood_df, competitor_df, results_df = load_woodchopping_xlsx(path)
     _log.info(
         "Loaded %d results, %d competitors, %d wood species from Excel.",
-        len(results_df), len(competitor_df), len(wood_df),
+        len(results_df),
+        len(competitor_df),
+        len(wood_df),
     )
     return results_df, wood_df
 
@@ -123,6 +126,7 @@ def load_from_xlsx(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 # ---------------------------------------------------------------------------
 # Feature engineering
 # ---------------------------------------------------------------------------
+
 
 def build_feature_matrix(
     results_df: pd.DataFrame,
@@ -171,12 +175,12 @@ def build_feature_matrix(
     from strathmark.wood import get_species_properties, get_species_time_multiplier
 
     df = standardize_results_columns(results_df).copy()
-    df = df.dropna(subset=['raw_time', 'event', 'competitor_name', 'size_mm'])
-    df = df[df['raw_time'] > 0]
+    df = df.dropna(subset=["raw_time", "event", "competitor_name", "size_mm"])
+    df = df[df["raw_time"] > 0]
 
     # Normalize event codes
-    df['event'] = df['event'].str.upper().str.strip()
-    df = df[df['event'].isin(['SB', 'UH'])]
+    df["event"] = df["event"].str.upper().str.strip()
+    df = df[df["event"].isin(["SB", "UH"])]
 
     if df.empty:
         raise ValueError("No valid training rows after filtering.")
@@ -184,178 +188,176 @@ def build_feature_matrix(
     _log.info("Building features for %d rows...", len(df))
 
     # Parse dates
-    if 'result_date' in df.columns:
-        df['result_date'] = pd.to_datetime(df['result_date'], errors='coerce')
+    if "result_date" in df.columns:
+        df["result_date"] = pd.to_datetime(df["result_date"], errors="coerce")
     else:
-        df['result_date'] = pd.NaT
+        df["result_date"] = pd.NaT
 
     # --- Wood properties ---
     _wood_cache: Dict[str, object] = {}
 
     def _get_props(species):
         if species not in _wood_cache:
-            _wood_cache[species] = get_species_properties(species, wood_df if not wood_df.empty else None)
+            _wood_cache[species] = get_species_properties(
+                species, wood_df if not wood_df.empty else None
+            )
         return _wood_cache[species]
 
-    df['_props'] = df['species'].apply(_get_props) if 'species' in df.columns else None
+    df["_props"] = df["species"].apply(_get_props) if "species" in df.columns else None
 
     def _prop(col, default):
-        if df['_props'] is None:
+        if df["_props"] is None:
             return default
-        return df['_props'].apply(lambda p: getattr(p, col, default) if p else default)
+        return df["_props"].apply(lambda p: getattr(p, col, default) if p else default)
 
-    df['janka_hard'] = _prop('janka_hardness', 1690.0) if 'species' in df.columns else 1690.0
-    df['spec_gravity'] = _prop('specific_gravity', 0.34) if 'species' in df.columns else 0.34
-    df['shear'] = _prop('shear_strength', 5.0) if 'species' in df.columns else 5.0
-    df['crush_strength'] = _prop('crush_strength', 30.0) if 'species' in df.columns else 30.0
-    df['MOR'] = _prop('mor', 50.0) if 'species' in df.columns else 50.0
-    df['MOE'] = _prop('moe', 8.0) if 'species' in df.columns else 8.0
+    df["janka_hard"] = _prop("janka_hardness", 1690.0) if "species" in df.columns else 1690.0
+    df["spec_gravity"] = _prop("specific_gravity", 0.34) if "species" in df.columns else 0.34
+    df["shear"] = _prop("shear_strength", 5.0) if "species" in df.columns else 5.0
+    df["crush_strength"] = _prop("crush_strength", 30.0) if "species" in df.columns else 30.0
+    df["MOR"] = _prop("mor", 50.0) if "species" in df.columns else 50.0
+    df["MOE"] = _prop("moe", 8.0) if "species" in df.columns else 8.0
 
     # Drop helper column
-    df = df.drop(columns=['_props'], errors='ignore')
+    df = df.drop(columns=["_props"], errors="ignore")
 
     # --- Species time multiplier ---
-    if 'species' in df.columns:
-        df['species_mult'] = df['species'].apply(get_species_time_multiplier)
+    if "species" in df.columns:
+        df["species_mult"] = df["species"].apply(get_species_time_multiplier)
     else:
-        df['species_mult'] = 1.0
+        df["species_mult"] = 1.0
 
     # --- Event encoding ---
-    df['event_encoded'] = (df['event'] == 'UH').astype(int)
+    df["event_encoded"] = (df["event"] == "UH").astype(int)
 
     # --- Gender encoding ---
-    if 'gender' in df.columns:
-        df['gender_encoded'] = df['gender'].map({'M': 1, 'F': 0, 'male': 1, 'female': 0}).fillna(0).astype(float)
+    if "gender" in df.columns:
+        df["gender_encoded"] = (
+            df["gender"].map({"M": 1, "F": 0, "male": 1, "female": 0}).fillna(0).astype(float)
+        )
     else:
-        df['gender_encoded'] = 0.0
+        df["gender_encoded"] = 0.0
 
     # --- Per-competitor aggregates (leave-one-out to avoid data leakage) ---
-    grp_event = df.groupby(['competitor_name', 'event'])['raw_time']
-    df['_comp_count'] = grp_event.transform('count')
-    df['_comp_sum'] = grp_event.transform('sum')
+    grp_event = df.groupby(["competitor_name", "event"])["raw_time"]
+    df["_comp_count"] = grp_event.transform("count")
+    df["_comp_sum"] = grp_event.transform("sum")
     # Leave-one-out mean: (sum - this_value) / (count - 1)
-    df['comp_weighted_avg'] = (
-        (df['_comp_sum'] - df['raw_time']) /
-        (df['_comp_count'] - 1).clip(lower=1)
+    df["comp_weighted_avg"] = (df["_comp_sum"] - df["raw_time"]) / (df["_comp_count"] - 1).clip(
+        lower=1
     )
-    df['comp_count'] = df['_comp_count'].astype(float)
+    df["comp_count"] = df["_comp_count"].astype(float)
 
     # Competitor variance
-    df['comp_std'] = df.groupby(['competitor_name', 'event'])['raw_time'].transform('std').fillna(3.0)
+    df["comp_std"] = (
+        df.groupby(["competitor_name", "event"])["raw_time"].transform("std").fillna(3.0)
+    )
 
     # Competitor best
-    df['comp_best'] = df.groupby(['competitor_name', 'event'])['raw_time'].transform('min')
+    df["comp_best"] = df.groupby(["competitor_name", "event"])["raw_time"].transform("min")
 
     # Median diameter for competitor
-    df['_comp_median_diam'] = df.groupby('competitor_name')['size_mm'].transform('median')
-    df['size_deviation'] = df['size_mm'] - df['_comp_median_diam']
+    df["_comp_median_diam"] = df.groupby("competitor_name")["size_mm"].transform("median")
+    df["size_deviation"] = df["size_mm"] - df["_comp_median_diam"]
 
     # Trend slope (linear regression on last 5 results per competitor/event)
     def _trend_slope(group):
         if len(group) < 3:
             return pd.Series(0.0, index=group.index)
         g = group.copy()
-        if 'result_date' in g.columns:
-            g = g.sort_values('result_date')
-        times = g['raw_time'].values
+        if "result_date" in g.columns:
+            g = g.sort_values("result_date")
+        times = g["raw_time"].values
         slopes = np.zeros(len(g))
         for i in range(len(g)):
-            window = times[max(0, i-4):i+1]
+            window = times[max(0, i - 4) : i + 1]
             if len(window) >= 3:
                 x = np.arange(len(window))
                 slope = np.polyfit(x, window, 1)[0]
                 slopes[i] = slope
         return pd.Series(slopes, index=g.index)
 
-    df['comp_trend'] = (
-        df.groupby(['competitor_name', 'event'], group_keys=False)
-        .apply(_trend_slope)
-        .fillna(0.0)
+    df["comp_trend"] = (
+        df.groupby(["competitor_name", "event"], group_keys=False).apply(_trend_slope).fillna(0.0)
     )
 
     # comp_recent and days_since_last (most recent time and interval)
     def _recent_and_gap(group):
         g = group.copy()
-        recent = pd.Series(g['raw_time'].mean(), index=g.index)
+        recent = pd.Series(g["raw_time"].mean(), index=g.index)
         gap = pd.Series(365.0, index=g.index)
-        if 'result_date' in g.columns:
-            g_sorted = g.dropna(subset=['result_date']).sort_values('result_date')
+        if "result_date" in g.columns:
+            g_sorted = g.dropna(subset=["result_date"]).sort_values("result_date")
             if len(g_sorted) > 0:
-                last_time = float(g_sorted.iloc[-1]['raw_time'])
+                last_time = float(g_sorted.iloc[-1]["raw_time"])
                 recent = pd.Series(last_time, index=g.index)
                 if len(g_sorted) >= 2:
-                    last_gap = float((g_sorted.iloc[-1]['result_date'] - g_sorted.iloc[-2]['result_date']).days)
+                    last_gap = float(
+                        (g_sorted.iloc[-1]["result_date"] - g_sorted.iloc[-2]["result_date"]).days
+                    )
                     last_gap = max(0.0, min(1000.0, last_gap))
                     gap = pd.Series(last_gap, index=g.index)
-        return pd.DataFrame({'comp_recent': recent, 'days_since_last': gap})
+        return pd.DataFrame({"comp_recent": recent, "days_since_last": gap})
 
-    recent_gap = (
-        df.groupby(['competitor_name', 'event'], group_keys=False)
-        .apply(_recent_and_gap)
-    )
-    df['comp_recent'] = recent_gap['comp_recent']
-    df['days_since_last'] = recent_gap['days_since_last']
+    recent_gap = df.groupby(["competitor_name", "event"], group_keys=False).apply(_recent_and_gap)
+    df["comp_recent"] = recent_gap["comp_recent"]
+    df["days_since_last"] = recent_gap["days_since_last"]
 
     # Peer event avg (UH<->SB cross-event)
-    peer_means = (
-        df.groupby(['competitor_name', 'event'])['raw_time']
-        .mean()
-    )
+    peer_means = df.groupby(["competitor_name", "event"])["raw_time"].mean()
     peer_map = {}
     for (name, evt), val in peer_means.items():
-        opposite = 'SB' if evt == 'UH' else 'UH'
+        opposite = "SB" if evt == "UH" else "UH"
         peer_map[(name, opposite)] = val
 
-    df['comp_cross_event_avg'] = df.apply(
-        lambda r: peer_map.get((r['competitor_name'], r['event']),
-                               r['comp_weighted_avg']),
+    df["comp_cross_event_avg"] = df.apply(
+        lambda r: peer_map.get((r["competitor_name"], r["event"]), r["comp_weighted_avg"]),
         axis=1,
     )
 
     # Block size features
-    df['size_mm_sq'] = df['size_mm'] ** 2
-    df['log_size'] = np.log(df['size_mm'].clip(lower=1.0))
+    df["size_mm_sq"] = df["size_mm"] ** 2
+    df["log_size"] = np.log(df["size_mm"].clip(lower=1.0))
 
     # Interaction features
-    df['event_x_size'] = df['event_encoded'] * df['size_mm']
-    df['species_mult_x_size'] = df['species_mult'] * df['size_mm']
-    df['comp_avg_x_species'] = df['comp_weighted_avg'] * df['species_mult']
-    df['comp_avg_x_size'] = df['comp_weighted_avg'] * df['size_mm'] / 300.0
+    df["event_x_size"] = df["event_encoded"] * df["size_mm"]
+    df["species_mult_x_size"] = df["species_mult"] * df["size_mm"]
+    df["comp_avg_x_species"] = df["comp_weighted_avg"] * df["species_mult"]
+    df["comp_avg_x_size"] = df["comp_weighted_avg"] * df["size_mm"] / 300.0
 
     # Seasonal features (from result_date)
-    df['_month'] = df['result_date'].dt.month.fillna(6).astype(float)
-    df['month_sin'] = np.sin(2 * np.pi * df['_month'] / 12)
-    df['month_cos'] = np.cos(2 * np.pi * df['_month'] / 12)
+    df["_month"] = df["result_date"].dt.month.fillna(6).astype(float)
+    df["month_sin"] = np.sin(2 * np.pi * df["_month"] / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["_month"] / 12)
 
     # --- Assemble feature matrix ---
     feature_cols = [
-        'comp_weighted_avg',
-        'comp_count',
-        'comp_std',
-        'comp_best',
-        'comp_recent',
-        'comp_trend',
-        'comp_cross_event_avg',
-        'days_since_last',
-        'size_deviation',
-        'event_encoded',
-        'gender_encoded',
-        'janka_hard',
-        'spec_gravity',
-        'crush_strength',
-        'shear',
-        'MOR',
-        'MOE',
-        'species_mult',
-        'size_mm',
-        'size_mm_sq',
-        'log_size',
-        'event_x_size',
-        'species_mult_x_size',
-        'comp_avg_x_species',
-        'comp_avg_x_size',
-        'month_sin',
-        'month_cos',
+        "comp_weighted_avg",
+        "comp_count",
+        "comp_std",
+        "comp_best",
+        "comp_recent",
+        "comp_trend",
+        "comp_cross_event_avg",
+        "days_since_last",
+        "size_deviation",
+        "event_encoded",
+        "gender_encoded",
+        "janka_hard",
+        "spec_gravity",
+        "crush_strength",
+        "shear",
+        "MOR",
+        "MOE",
+        "species_mult",
+        "size_mm",
+        "size_mm_sq",
+        "log_size",
+        "event_x_size",
+        "species_mult_x_size",
+        "comp_avg_x_species",
+        "comp_avg_x_size",
+        "month_sin",
+        "month_cos",
     ]
 
     missing = [c for c in feature_cols if c not in df.columns]
@@ -364,8 +366,8 @@ def build_feature_matrix(
         for c in missing:
             df[c] = 0.0
 
-    feature_df = df[feature_cols + ['result_date']].copy()
-    target = df['raw_time']
+    feature_df = df[feature_cols + ["result_date"]].copy()
+    target = df["raw_time"]
 
     return feature_df, target
 
@@ -373,6 +375,7 @@ def build_feature_matrix(
 # ---------------------------------------------------------------------------
 # Temporal cross-validation
 # ---------------------------------------------------------------------------
+
 
 def temporal_cv(
     feature_df: pd.DataFrame,
@@ -397,31 +400,37 @@ def temporal_cv(
         import xgboost as xgb
     except ImportError:
         _log.error("xgboost not installed. Run: pip install xgboost")
-        return {'overall_rmse': float('inf'), 'overall_mae': float('inf'), 'n_folds': 0, 'fold_results': []}
+        return {
+            "overall_rmse": float("inf"),
+            "overall_mae": float("inf"),
+            "n_folds": 0,
+            "fold_results": [],
+        }
 
-    dates = feature_df['result_date'].dropna()
+    dates = feature_df["result_date"].dropna()
     if dates.empty:
         _log.warning("No dates available for temporal CV. Using RMSE=0 placeholder.")
-        return {'overall_rmse': 0.0, 'overall_mae': 0.0, 'n_folds': 0, 'fold_results': []}
+        return {"overall_rmse": 0.0, "overall_mae": 0.0, "n_folds": 0, "fold_results": []}
 
     min_date = dates.min()
     max_date = dates.max()
 
-    feature_cols = [c for c in feature_df.columns if c not in ('result_date', 'sample_weight')]
+    feature_cols = [c for c in feature_df.columns if c not in ("result_date", "sample_weight")]
 
     fold_results = []
     all_errors = []
 
     # Start validation after CV_MIN_TRAIN_MONTHS of data
     from dateutil.relativedelta import relativedelta  # type: ignore
+
     val_start = min_date + relativedelta(months=CV_MIN_TRAIN_MONTHS)
 
     fold_idx = 0
     while val_start < max_date:
         val_end = val_start + relativedelta(months=CV_STEP_MONTHS)
 
-        train_mask = feature_df['result_date'] < val_start
-        val_mask = (feature_df['result_date'] >= val_start) & (feature_df['result_date'] < val_end)
+        train_mask = feature_df["result_date"] < val_start
+        val_mask = (feature_df["result_date"] >= val_start) & (feature_df["result_date"] < val_end)
 
         X_train = feature_df.loc[train_mask, feature_cols]
         y_train = target.loc[train_mask]
@@ -436,8 +445,8 @@ def temporal_cv(
             n_estimators=292,
             max_depth=4,
             learning_rate=0.0305,
-            objective='reg:squarederror',
-            tree_method='hist',
+            objective="reg:squarederror",
+            tree_method="hist",
             subsample=0.643,
             colsample_bytree=0.508,
             min_child_weight=7,
@@ -451,50 +460,62 @@ def temporal_cv(
         preds = np.exp(model.predict(X_val))
 
         errors = y_val.values - preds
-        rmse = float(np.sqrt(np.mean(errors ** 2)))
+        rmse = float(np.sqrt(np.mean(errors**2)))
         mae = float(np.mean(np.abs(errors)))
 
-        fold_results.append({
-            'fold': fold_idx,
-            'train_start': str(min_date.date()),
-            'val_start': str(val_start.date()),
-            'val_end': str(val_end.date()),
-            'n_train': len(X_train),
-            'n_val': len(X_val),
-            'rmse': round(rmse, 3),
-            'mae': round(mae, 3),
-        })
+        fold_results.append(
+            {
+                "fold": fold_idx,
+                "train_start": str(min_date.date()),
+                "val_start": str(val_start.date()),
+                "val_end": str(val_end.date()),
+                "n_train": len(X_train),
+                "n_val": len(X_val),
+                "rmse": round(rmse, 3),
+                "mae": round(mae, 3),
+            }
+        )
         all_errors.extend(errors.tolist())
 
         fold_idx += 1
         val_start = val_end
 
     if not all_errors:
-        return {'overall_rmse': 0.0, 'overall_mae': 0.0, 'n_folds': 0, 'fold_results': []}
+        return {"overall_rmse": 0.0, "overall_mae": 0.0, "n_folds": 0, "fold_results": []}
 
     overall_rmse = float(np.sqrt(np.mean(np.array(all_errors) ** 2)))
     overall_mae = float(np.mean(np.abs(np.array(all_errors))))
 
     _log.info(
         "Temporal CV: %d folds, overall RMSE=%.3f, MAE=%.3f",
-        len(fold_results), overall_rmse, overall_mae,
+        len(fold_results),
+        overall_rmse,
+        overall_mae,
     )
     for f in fold_results:
-        _log.info("  Fold %d [%s - %s]: n_train=%d n_val=%d RMSE=%.3f MAE=%.3f",
-                  f['fold'], f['val_start'], f['val_end'],
-                  f['n_train'], f['n_val'], f['rmse'], f['mae'])
+        _log.info(
+            "  Fold %d [%s - %s]: n_train=%d n_val=%d RMSE=%.3f MAE=%.3f",
+            f["fold"],
+            f["val_start"],
+            f["val_end"],
+            f["n_train"],
+            f["n_val"],
+            f["rmse"],
+            f["mae"],
+        )
 
     return {
-        'overall_rmse': round(overall_rmse, 3),
-        'overall_mae': round(overall_mae, 3),
-        'n_folds': len(fold_results),
-        'fold_results': fold_results,
+        "overall_rmse": round(overall_rmse, 3),
+        "overall_mae": round(overall_mae, 3),
+        "n_folds": len(fold_results),
+        "fold_results": fold_results,
     }
 
 
 # ---------------------------------------------------------------------------
 # Half-life tuning
 # ---------------------------------------------------------------------------
+
 
 def tune_halflife(
     feature_df: pd.DataFrame,
@@ -523,37 +544,46 @@ def tune_halflife(
 
         # Recompute sample weights with this half-life
         fdf = feature_df.copy()
-        fdf['sample_weight'] = fdf['result_date'].apply(
+        fdf["sample_weight"] = fdf["result_date"].apply(
             lambda d: 0.5 ** (max(0, (datetime.now() - d).days) / hl) if not pd.isna(d) else 0.5
         )
 
         cv = temporal_cv(fdf, target, half_life_days=hl)
-        results.append({
-            'half_life_months': round(months, 1),
-            'half_life_days': hl,
-            'overall_rmse': cv['overall_rmse'],
-            'overall_mae': cv['overall_mae'],
-            'n_folds': cv['n_folds'],
-        })
+        results.append(
+            {
+                "half_life_months": round(months, 1),
+                "half_life_days": hl,
+                "overall_rmse": cv["overall_rmse"],
+                "overall_mae": cv["overall_mae"],
+                "n_folds": cv["n_folds"],
+            }
+        )
 
     # Find optimal
-    valid = [r for r in results if r['n_folds'] > 0]
+    valid = [r for r in results if r["n_folds"] > 0]
     if valid:
-        optimal = min(valid, key=lambda r: r['overall_rmse'])
-        optimal_half_life = optimal['half_life_days']
+        optimal = min(valid, key=lambda r: r["overall_rmse"])
+        optimal_half_life = optimal["half_life_days"]
     else:
         optimal_half_life = DEFAULT_HALF_LIFE_DAYS
 
     _log.info("\nHalf-life tuning results:")
     _log.info("%-20s %-12s %-12s %s", "Half-life", "RMSE", "MAE", "Folds")
     for r in results:
-        _log.info("%-20s %-12.3f %-12.3f %d",
-                  f"{r['half_life_months']:.1f} months", r['overall_rmse'], r['overall_mae'], r['n_folds'])
-    _log.info("Optimal half-life: %d days (%.1f months)", optimal_half_life, optimal_half_life / 30.44)
+        _log.info(
+            "%-20s %-12.3f %-12.3f %d",
+            f"{r['half_life_months']:.1f} months",
+            r["overall_rmse"],
+            r["overall_mae"],
+            r["n_folds"],
+        )
+    _log.info(
+        "Optimal half-life: %d days (%.1f months)", optimal_half_life, optimal_half_life / 30.44
+    )
 
     return {
-        'summary_table': results,
-        'optimal_half_life_days': optimal_half_life,
+        "summary_table": results,
+        "optimal_half_life_days": optimal_half_life,
     }
 
 
@@ -561,12 +591,13 @@ def tune_halflife(
 # Model training
 # ---------------------------------------------------------------------------
 
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def _sha256_df(df: pd.DataFrame) -> str:
-    return _sha256_bytes(df.to_csv(index=False).encode('utf-8'))
+    return _sha256_bytes(df.to_csv(index=False).encode("utf-8"))
 
 
 def train_and_save(
@@ -595,7 +626,7 @@ def train_and_save(
     except ImportError:
         raise ImportError("xgboost not installed. Run: pip install xgboost>=2.0")
 
-    feature_cols = [c for c in feature_df.columns if c not in ('result_date', 'sample_weight')]
+    feature_cols = [c for c in feature_df.columns if c not in ("result_date", "sample_weight")]
     X = feature_df[feature_cols]
     y_raw = target
     y_log = np.log(y_raw)
@@ -611,8 +642,8 @@ def train_and_save(
         n_estimators=292,
         max_depth=4,
         learning_rate=0.0305,
-        objective='reg:squarederror',
-        tree_method='hist',
+        objective="reg:squarederror",
+        tree_method="hist",
         subsample=0.643,
         colsample_bytree=0.508,
         min_child_weight=7,
@@ -633,6 +664,7 @@ def train_and_save(
     lgb_mae = None
     try:
         import lightgbm as lgb
+
         lgb_model = lgb.LGBMRegressor(
             n_estimators=222,
             max_depth=4,
@@ -655,10 +687,11 @@ def train_and_save(
 
     # Serialize XGBoost model to get version hash
     import tempfile
-    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tmp:
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         tmp_path = tmp.name
     model_xgb.save_model(tmp_path)
-    with open(tmp_path, 'rb') as f:
+    with open(tmp_path, "rb") as f:
         model_bytes = f.read()
     model_version = _sha256_bytes(model_bytes)
     os.unlink(tmp_path)
@@ -667,7 +700,7 @@ def train_and_save(
     dataset_hash = _sha256_df(pd.concat([feature_df, target], axis=1))
 
     # Save to versioned directory
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_dir = MODELS_DIR / f"{event_type}_{timestamp}"
     model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -676,28 +709,33 @@ def train_and_save(
         lgb_model.booster_.save_model(str(model_dir / "model_lgb.txt"))
 
     metadata = {
-        'model_version': model_version,
-        'trained_at': datetime.now().isoformat(),
-        'dataset_hash': dataset_hash,
-        'rmse': cv_results['overall_rmse'],
-        'mae': cv_results['overall_mae'],
-        'n_training_rows': n_rows,
-        'event_type': event_type,
-        'half_life_days': half_life_days,
-        'log_target': True,
-        'has_lgb': lgb_model is not None,
-        'xgb_insample_mae': xgb_mae,
-        'lgb_insample_mae': lgb_mae,
-        'feature_names': feature_cols,
-        'cv_folds': cv_results['n_folds'],
-        'cv_fold_results': cv_results['fold_results'],
+        "model_version": model_version,
+        "trained_at": datetime.now().isoformat(),
+        "dataset_hash": dataset_hash,
+        "rmse": cv_results["overall_rmse"],
+        "mae": cv_results["overall_mae"],
+        "n_training_rows": n_rows,
+        "event_type": event_type,
+        "half_life_days": half_life_days,
+        "log_target": True,
+        "has_lgb": lgb_model is not None,
+        "xgb_insample_mae": xgb_mae,
+        "lgb_insample_mae": lgb_mae,
+        "feature_names": feature_cols,
+        "cv_folds": cv_results["n_folds"],
+        "cv_fold_results": cv_results["fold_results"],
     }
 
-    with open(model_dir / "metadata.json", 'w') as f:
+    with open(model_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
     _log.info("Saved %s model to %s (version %s...)", event_type, model_dir, model_version[:12])
-    _log.info("  CV RMSE=%.3f, MAE=%.3f over %d folds", cv_results['overall_rmse'], cv_results['overall_mae'], cv_results['n_folds'])
+    _log.info(
+        "  CV RMSE=%.3f, MAE=%.3f over %d folds",
+        cv_results["overall_rmse"],
+        cv_results["overall_mae"],
+        cv_results["n_folds"],
+    )
 
     return model_dir
 
@@ -706,25 +744,24 @@ def train_and_save(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Train STRATHMARK XGBoost prediction models."
-    )
+    parser = argparse.ArgumentParser(description="Train STRATHMARK XGBoost prediction models.")
     parser.add_argument(
-        '--legacy-import',
-        metavar='PATH',
+        "--legacy-import",
+        metavar="PATH",
         help="Path to Excel workbook for bootstrapping (skips database).",
     )
     parser.add_argument(
-        '--tune-halflife',
-        action='store_true',
+        "--tune-halflife",
+        action="store_true",
         help="Run half-life tuning and exit (does not save a model).",
     )
     parser.add_argument(
-        '--half-life',
+        "--half-life",
         type=int,
         default=DEFAULT_HALF_LIFE_DAYS,
-        metavar='DAYS',
+        metavar="DAYS",
         help=f"Exponential decay half-life in days (default: {DEFAULT_HALF_LIFE_DAYS}).",
     )
     args = parser.parse_args()
@@ -749,11 +786,9 @@ def main():
     half_life = args.half_life
 
     # Split by event type
-    sb_mask = feature_df.index.isin(
-        target.index[feature_df.index.map(lambda i: i in target.index)]
-    )
+    sb_mask = feature_df.index.isin(target.index[feature_df.index.map(lambda i: i in target.index)])
     # Get event encoding from feature matrix
-    event_col = feature_df['event_encoded'] if 'event_encoded' in feature_df.columns else None
+    event_col = feature_df["event_encoded"] if "event_encoded" in feature_df.columns else None
 
     if event_col is not None:
         sb_mask = event_col == 0
@@ -766,25 +801,33 @@ def main():
         _log.info("Dataset split: %d SB, %d UH, %d total", n_sb, n_uh, n_total)
 
         if n_sb >= MIN_RECORDS_PER_EVENT:
-            train_and_save(feature_df[sb_mask], target[sb_mask], 'SB', half_life)
+            train_and_save(feature_df[sb_mask], target[sb_mask], "SB", half_life)
         else:
-            _log.warning("Insufficient SB records (%d < %d), skipping SB model.", n_sb, MIN_RECORDS_PER_EVENT)
+            _log.warning(
+                "Insufficient SB records (%d < %d), skipping SB model.", n_sb, MIN_RECORDS_PER_EVENT
+            )
 
         if n_uh >= MIN_RECORDS_PER_EVENT:
-            train_and_save(feature_df[uh_mask], target[uh_mask], 'UH', half_life)
+            train_and_save(feature_df[uh_mask], target[uh_mask], "UH", half_life)
         else:
-            _log.warning("Insufficient UH records (%d < %d), skipping UH model.", n_uh, MIN_RECORDS_PER_EVENT)
+            _log.warning(
+                "Insufficient UH records (%d < %d), skipping UH model.", n_uh, MIN_RECORDS_PER_EVENT
+            )
 
     # Always train combined model
     if n_total >= MIN_RECORDS_COMBINED:
-        train_and_save(feature_df, target, 'combined', half_life)
+        train_and_save(feature_df, target, "combined", half_life)
     else:
-        _log.warning("Insufficient total records (%d < %d), skipping combined model.", n_total, MIN_RECORDS_COMBINED)
+        _log.warning(
+            "Insufficient total records (%d < %d), skipping combined model.",
+            n_total,
+            MIN_RECORDS_COMBINED,
+        )
         _log.error("No models trained. Add more data and retry.")
         sys.exit(1)
 
     _log.info("Training complete. Models saved to %s/", MODELS_DIR)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -8,7 +8,7 @@ wood.py, and fallback.py.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 
@@ -27,40 +27,40 @@ def standardize_results_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
     rename_map = {
-        'time': 'raw_time',
-        'actualtime': 'raw_time',
-        'actual_time': 'raw_time',
-        'time (seconds)': 'raw_time',
-        'time(seconds)': 'raw_time',
-        'competitorname': 'competitor_name',
-        'competitor name': 'competitor_name',
-        'name': 'competitor_name',
-        'competitorid': 'competitor_name',
-        'competitor_id': 'competitor_name',
-        'event_code': 'event',
-        'eventcode': 'event',
-        'diameter': 'size_mm',
-        'diameter_mm': 'size_mm',
-        'size': 'size_mm',
-        'size (mm)': 'size_mm',
-        'size(mm)': 'size_mm',
-        'wood_species': 'species',
-        'woodspecies': 'species',
-        'species code': 'species',
-        'speciescode': 'species',
-        'date': 'result_date',
-        'date (optional)': 'result_date',
-        'result date': 'result_date',
+        "time": "raw_time",
+        "actualtime": "raw_time",
+        "actual_time": "raw_time",
+        "time (seconds)": "raw_time",
+        "time(seconds)": "raw_time",
+        "competitorname": "competitor_name",
+        "competitor name": "competitor_name",
+        "name": "competitor_name",
+        "competitorid": "competitor_name",
+        "competitor_id": "competitor_name",
+        "event_code": "event",
+        "eventcode": "event",
+        "diameter": "size_mm",
+        "diameter_mm": "size_mm",
+        "size": "size_mm",
+        "size (mm)": "size_mm",
+        "size(mm)": "size_mm",
+        "wood_species": "species",
+        "woodspecies": "species",
+        "species code": "species",
+        "speciescode": "species",
+        "date": "result_date",
+        "date (optional)": "result_date",
+        "result date": "result_date",
     }
     df.rename(columns=rename_map, inplace=True)
-    for col in ['raw_time', 'size_mm', 'quality']:
+    for col in ["raw_time", "size_mm", "quality"]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    for col in ['competitor_name', 'event', 'species']:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ["competitor_name", "event", "species"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
-    if 'event' in df.columns:
-        df['event'] = df['event'].str.upper()
+    if "event" in df.columns:
+        df["event"] = df["event"].str.upper()
     return df
 
 
@@ -88,12 +88,12 @@ def load_woodchopping_xlsx(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     xl = pd.ExcelFile(path)
 
     wood_df = pd.DataFrame()
-    if 'Wood' in xl.sheet_names:
-        wood_df = xl.parse('Wood')
+    if "Wood" in xl.sheet_names:
+        wood_df = xl.parse("Wood")
 
     results_df = pd.DataFrame()
-    if 'Results' in xl.sheet_names:
-        results_df = xl.parse('Results')
+    if "Results" in xl.sheet_names:
+        results_df = xl.parse("Results")
 
     return wood_df, results_df
 
@@ -101,6 +101,7 @@ def load_woodchopping_xlsx(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 # ---------------------------------------------------------------------------
 # Phase 3B: score_prediction_accuracy
 # ---------------------------------------------------------------------------
+
 
 def score_prediction_accuracy(events: List[Dict]) -> Dict:
     """
@@ -132,59 +133,53 @@ def score_prediction_accuracy(events: List[Dict]) -> Dict:
     by_species_data: Dict[str, Dict] = {}
 
     for event in events:
-        event_type = str(event.get('event_type', 'UNKNOWN')).upper()
-        species = str(event.get('species', 'UNKNOWN'))
-        results = event.get('results', [])
+        event_type = str(event.get("event_type", "UNKNOWN")).upper()
+        species = str(event.get("species", "UNKNOWN"))
+        results = event.get("results", [])
 
         if event_type not in by_event:
-            by_event[event_type] = {'errors': [], 'sq_errors': []}
+            by_event[event_type] = {"errors": [], "sq_errors": []}
         if species not in by_species_data:
-            by_species_data[species] = {'errors': [], 'sq_errors': []}
+            by_species_data[species] = {"errors": [], "sq_errors": []}
 
         for r in results:
             try:
-                pred = float(r['predicted_time'])
-                actual = float(r['actual_time'])
+                pred = float(r["predicted_time"])
+                actual = float(r["actual_time"])
             except (KeyError, TypeError, ValueError):
                 continue
 
-            err = pred - actual          # signed error (positive = over-predicted)
-            sq_err = err ** 2
+            err = pred - actual  # signed error (positive = over-predicted)
+            sq_err = err**2
 
             all_errors.append(err)
             all_sq_errors.append(sq_err)
-            by_event[event_type]['errors'].append(err)
-            by_event[event_type]['sq_errors'].append(sq_err)
-            by_species_data[species]['errors'].append(err)
-            by_species_data[species]['sq_errors'].append(sq_err)
+            by_event[event_type]["errors"].append(err)
+            by_event[event_type]["sq_errors"].append(sq_err)
+            by_species_data[species]["errors"].append(err)
+            by_species_data[species]["sq_errors"].append(sq_err)
 
     def _stats(errors: List[float], sq_errors: List[float]) -> Dict:
         n = len(errors)
         if n == 0:
-            return {'rmse': None, 'mae': None, 'n': 0}
+            return {"rmse": None, "mae": None, "n": 0}
         rmse = math.sqrt(sum(sq_errors) / n)
         mae = sum(abs(e) for e in errors) / n
-        return {'rmse': round(rmse, 4), 'mae': round(mae, 4), 'n': n}
+        return {"rmse": round(rmse, 4), "mae": round(mae, 4), "n": n}
 
     overall = _stats(all_errors, all_sq_errors)
 
-    by_event_type = {
-        et: _stats(d['errors'], d['sq_errors'])
-        for et, d in by_event.items()
-    }
-    by_species = {
-        sp: _stats(d['errors'], d['sq_errors'])
-        for sp, d in by_species_data.items()
-    }
+    by_event_type = {et: _stats(d["errors"], d["sq_errors"]) for et, d in by_event.items()}
+    by_species = {sp: _stats(d["errors"], d["sq_errors"]) for sp, d in by_species_data.items()}
     systematic_biases = {
-        et: round(sum(d['errors']) / len(d['errors']), 4) if d['errors'] else None
+        et: round(sum(d["errors"]) / len(d["errors"]), 4) if d["errors"] else None
         for et, d in by_event.items()
     }
 
     return {
-        'overall_rmse': overall['rmse'],
-        'overall_mae': overall['mae'],
-        'by_event_type': by_event_type,
-        'by_species': by_species,
-        'systematic_biases': systematic_biases,
+        "overall_rmse": overall["rmse"],
+        "overall_mae": overall["mae"],
+        "by_event_type": by_event_type,
+        "by_species": by_species,
+        "systematic_biases": systematic_biases,
     }

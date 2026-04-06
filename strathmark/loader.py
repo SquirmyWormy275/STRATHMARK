@@ -12,8 +12,8 @@ Public API
 """
 
 import warnings
-import pandas as pd
 
+import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Required columns per sheet
@@ -28,12 +28,12 @@ _RESULTS_REQUIRED = {"CompetitorID", "Event", "Time (seconds)", "Size (mm)", "Sp
 # Internal sheet validators
 # ---------------------------------------------------------------------------
 
+
 def _validate_wood(df: pd.DataFrame) -> pd.DataFrame:
     unnamed = [c for c in df.columns if str(c).startswith("Unnamed")]
     if unnamed:
         raise ValueError(
-            f"Wood sheet contains unnamed columns: {unnamed}. "
-            "Remove or rename them before loading."
+            f"Wood sheet contains unnamed columns: {unnamed}. Remove or rename them before loading."
         )
     missing = _WOOD_REQUIRED - set(df.columns)
     if missing:
@@ -73,9 +73,12 @@ def _validate_results(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" in df.columns:
         date_col = df["Date"].dropna()
         # If any value is a plain integer it is likely a year
-        int_mask = date_col.apply(lambda v: isinstance(v, (int,)) or (
-            isinstance(v, float) and v == int(v) and 1900 <= v <= 2100
-        ))
+        int_mask = date_col.apply(
+            lambda v: (
+                isinstance(v, (int,))
+                or (isinstance(v, float) and v == int(v) and 1900 <= v <= 2100)
+            )
+        )
         if int_mask.any():
             raise ValueError(
                 "Results sheet Date column contains year-only integers. "
@@ -108,6 +111,7 @@ def _validate_results(df: pd.DataFrame) -> pd.DataFrame:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def load_woodchopping_xlsx(
     path: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -135,8 +139,7 @@ def load_woodchopping_xlsx(
     missing_sheets = required_sheets - set(xl.sheet_names)
     if missing_sheets:
         raise ValueError(
-            f"Excel file is missing required sheets: {missing_sheets}. "
-            f"Found: {xl.sheet_names}"
+            f"Excel file is missing required sheets: {missing_sheets}. Found: {xl.sheet_names}"
         )
 
     wood_df = pd.read_excel(xl, sheet_name="Wood")

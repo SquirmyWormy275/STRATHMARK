@@ -1,19 +1,16 @@
 """Tests for strathmark/wood.py — species properties, scaling, quality."""
 
-import pytest
-
 from strathmark.wood import (
-    calculate_scaling_factor,
-    calculate_effective_janka_hardness,
+    DEFAULT_SCALING_EXPONENT,
     apply_quality_multiplier_statistical,
+    calculate_effective_janka_hardness,
+    calculate_scaling_factor,
     get_event_scaling_exponent,
     get_species_properties,
-    DEFAULT_SCALING_EXPONENT,
 )
 
 
 class TestGetSpeciesProperties:
-
     def test_known_species_returns_properties(self):
         props = get_species_properties("poplar")
         assert props.janka_hardness > 0
@@ -30,7 +27,6 @@ class TestGetSpeciesProperties:
 
 
 class TestCalculateScalingFactor:
-
     def test_same_diameter_returns_1(self):
         assert calculate_scaling_factor(300, 300) == 1.0
 
@@ -53,7 +49,6 @@ class TestCalculateScalingFactor:
 
 
 class TestCalculateEffectiveJankaHardness:
-
     def test_quality_5_is_baseline(self):
         base = get_species_properties("poplar").janka_hardness
         effective = calculate_effective_janka_hardness("poplar", 5)
@@ -71,7 +66,6 @@ class TestCalculateEffectiveJankaHardness:
 
 
 class TestApplyQualityMultiplierStatistical:
-
     def test_quality_5_no_change(self):
         result = apply_quality_multiplier_statistical(50.0, 5)
         assert result == 50.0
@@ -91,7 +85,6 @@ class TestApplyQualityMultiplierStatistical:
 
 
 class TestGetEventScalingExponent:
-
     def test_sb_default(self):
         exp = get_event_scaling_exponent(None, "SB")
         assert 1.0 < exp < 3.0

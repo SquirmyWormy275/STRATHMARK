@@ -1,13 +1,11 @@
 """Tests for strathmark/utils.py — column standardization."""
 
 import pandas as pd
-import pytest
 
 from strathmark.utils import standardize_results_columns
 
 
 class TestStandardizeResultsColumns:
-
     def test_renames_time_to_raw_time(self):
         df = pd.DataFrame({"time": [45.0, 50.0], "name": ["A", "B"]})
         result = standardize_results_columns(df)

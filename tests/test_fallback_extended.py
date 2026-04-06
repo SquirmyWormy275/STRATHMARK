@@ -1,54 +1,55 @@
 """Extended tests for strathmark/fallback.py — cascade fallbacks, helpers, edge cases."""
 
-from datetime import date
-
-import numpy as np
 import pandas as pd
 import pytest
 
 from strathmark.fallback import (
-    get_panel_mark,
-    get_event_baseline,
-    get_competitor_historical_times_flexible,
-    _standardize_results_df,
-    _calculate_performance_weight_simple,
-    _normalize_time_for_baseline,
-    _compute_robust_mean,
-    PANEL_MARKS_300MM,
     PANEL_MARK_DEFAULT_UNKNOWN_DIVISION,
+    PANEL_MARKS_300MM,
+    _calculate_performance_weight_simple,
+    _compute_robust_mean,
+    _normalize_time_for_baseline,
+    _standardize_results_df,
+    get_competitor_historical_times_flexible,
+    get_event_baseline,
+    get_panel_mark,
 )
-from strathmark.config import rules
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_results_df(rows):
     """Build a results DataFrame from a list of dicts."""
     df = pd.DataFrame(rows)
-    if 'raw_time' in df.columns:
-        df['raw_time'] = pd.to_numeric(df['raw_time'], errors='coerce')
-    if 'size_mm' in df.columns:
-        df['size_mm'] = pd.to_numeric(df['size_mm'], errors='coerce')
+    if "raw_time" in df.columns:
+        df["raw_time"] = pd.to_numeric(df["raw_time"], errors="coerce")
+    if "size_mm" in df.columns:
+        df["size_mm"] = pd.to_numeric(df["size_mm"], errors="coerce")
     return df
 
 
 def _result_row(
-    name="Alice", event="SB", time=30.0, species="S01",
-    diameter=300, quality=5, result_date=None,
+    name="Alice",
+    event="SB",
+    time=30.0,
+    species="S01",
+    diameter=300,
+    quality=5,
+    result_date=None,
 ):
     """Build a single result row dict."""
     row = {
-        'competitor_name': name,
-        'event': event,
-        'raw_time': time,
-        'species': species,
-        'size_mm': diameter,
-        'quality': quality,
+        "competitor_name": name,
+        "event": event,
+        "raw_time": time,
+        "species": species,
+        "size_mm": diameter,
+        "quality": quality,
     }
     if result_date is not None:
-        row['date'] = result_date
+        row["date"] = result_date
     return row
 
 
@@ -56,19 +57,23 @@ def _result_row(
 # Panel mark extended tests
 # ---------------------------------------------------------------------------
 
+
 class TestPanelMarkDivisionAliases:
     """Division aliases should map to known keys."""
 
-    @pytest.mark.parametrize("alias,expected_key", [
-        ("masters", "Veterans"),
-        ("senior", "Veterans"),
-        ("women", "Womens"),
-        ("women's", "Womens"),
-        ("female", "Womens"),
-        ("youth", "Junior"),
-        ("elite", "Open"),
-        ("professional", "Open"),
-    ])
+    @pytest.mark.parametrize(
+        "alias,expected_key",
+        [
+            ("masters", "Veterans"),
+            ("senior", "Veterans"),
+            ("women", "Womens"),
+            ("women's", "Womens"),
+            ("female", "Womens"),
+            ("youth", "Junior"),
+            ("elite", "Open"),
+            ("professional", "Open"),
+        ],
+    )
     def test_division_alias(self, alias, expected_key):
         time_val, explanation = get_panel_mark("SB", alias)
         expected = PANEL_MARKS_300MM.get(("SB", expected_key), PANEL_MARK_DEFAULT_UNKNOWN_DIVISION)
@@ -90,8 +95,8 @@ class TestPanelMarkDivisionAliases:
 # _standardize_results_df
 # ---------------------------------------------------------------------------
 
-class TestStandardizeResultsDf:
 
+class TestStandardizeResultsDf:
     def test_none_input_returns_none(self):
         result = _standardize_results_df(None)
         assert result is None
@@ -101,20 +106,24 @@ class TestStandardizeResultsDf:
         assert result is None or result.empty
 
     def test_drops_rows_with_zero_time(self):
-        df = _make_results_df([
-            _result_row(time=30.0),
-            _result_row(time=0.0),
-            _result_row(time=-5.0),
-        ])
+        df = _make_results_df(
+            [
+                _result_row(time=30.0),
+                _result_row(time=0.0),
+                _result_row(time=-5.0),
+            ]
+        )
         result = _standardize_results_df(df)
         assert len(result) == 1
-        assert float(result.iloc[0]['raw_time']) == 30.0
+        assert float(result.iloc[0]["raw_time"]) == 30.0
 
     def test_drops_nan_time(self):
-        df = _make_results_df([
-            _result_row(time=30.0),
-            _result_row(time=float('nan')),
-        ])
+        df = _make_results_df(
+            [
+                _result_row(time=30.0),
+                _result_row(time=float("nan")),
+            ]
+        )
         result = _standardize_results_df(df)
         assert len(result) == 1
 
@@ -123,8 +132,8 @@ class TestStandardizeResultsDf:
 # _calculate_performance_weight_simple
 # ---------------------------------------------------------------------------
 
-class TestPerformanceWeightSimple:
 
+class TestPerformanceWeightSimple:
     def test_none_date_returns_1(self):
         assert _calculate_performance_weight_simple(None) == 1.0
 
@@ -133,11 +142,13 @@ class TestPerformanceWeightSimple:
 
     def test_recent_date_near_1(self):
         from datetime import datetime
+
         w = _calculate_performance_weight_simple(datetime.now())
         assert 0.99 <= w <= 1.0
 
     def test_old_date_decayed(self):
         from datetime import datetime
+
         old = datetime(2020, 1, 1)
         ref = datetime(2024, 1, 1)
         w = _calculate_performance_weight_simple(old, ref, half_life_days=730)
@@ -145,6 +156,7 @@ class TestPerformanceWeightSimple:
 
     def test_future_date_returns_1(self):
         from datetime import datetime
+
         future = datetime(2030, 1, 1)
         ref = datetime(2025, 1, 1)
         w = _calculate_performance_weight_simple(future, ref)
@@ -159,8 +171,8 @@ class TestPerformanceWeightSimple:
 # _normalize_time_for_baseline
 # ---------------------------------------------------------------------------
 
-class TestNormalizeTimeForBaseline:
 
+class TestNormalizeTimeForBaseline:
     def test_same_species_same_diameter_returns_similar(self):
         df = _make_results_df([_result_row()])
         result = _normalize_time_for_baseline(
@@ -199,8 +211,8 @@ class TestNormalizeTimeForBaseline:
 # _compute_robust_mean
 # ---------------------------------------------------------------------------
 
-class TestComputeRobustMean:
 
+class TestComputeRobustMean:
     def test_empty_returns_none(self):
         assert _compute_robust_mean([]) is None
 
@@ -231,8 +243,8 @@ class TestComputeRobustMean:
 # get_event_baseline — 4-level cascade
 # ---------------------------------------------------------------------------
 
-class TestGetEventBaseline:
 
+class TestGetEventBaseline:
     def test_none_results_returns_none(self):
         val, conf, expl = get_event_baseline("SB", "S01", 300, None)
         assert val is None
@@ -245,8 +257,7 @@ class TestGetEventBaseline:
     def test_level1_exact_species_diameter(self):
         """Level 1: exact event + species + diameter match."""
         rows = [
-            _result_row(name=f"C{i}", event="SB", time=30.0 + i,
-                        species="S01", diameter=300)
+            _result_row(name=f"C{i}", event="SB", time=30.0 + i, species="S01", diameter=300)
             for i in range(5)
         ]
         df = _make_results_df(rows)
@@ -258,8 +269,7 @@ class TestGetEventBaseline:
     def test_level2_same_diameter_any_species(self):
         """Level 2: event + diameter match, different species."""
         rows = [
-            _result_row(name=f"C{i}", event="SB", time=30.0 + i,
-                        species="S05", diameter=300)
+            _result_row(name=f"C{i}", event="SB", time=30.0 + i, species="S05", diameter=300)
             for i in range(5)
         ]
         df = _make_results_df(rows)
@@ -272,8 +282,7 @@ class TestGetEventBaseline:
     def test_level3_event_only(self):
         """Level 3: only event matches (different species and diameter)."""
         rows = [
-            _result_row(name=f"C{i}", event="SB", time=30.0 + i,
-                        species="S05", diameter=400)
+            _result_row(name=f"C{i}", event="SB", time=30.0 + i, species="S05", diameter=400)
             for i in range(5)
         ]
         df = _make_results_df(rows)
@@ -283,10 +292,7 @@ class TestGetEventBaseline:
 
     def test_level4_no_matching_event(self):
         """Level 4: no matching event at all."""
-        rows = [
-            _result_row(name=f"C{i}", event="UH", time=30.0 + i)
-            for i in range(5)
-        ]
+        rows = [_result_row(name=f"C{i}", event="UH", time=30.0 + i) for i in range(5)]
         df = _make_results_df(rows)
         val, conf, expl = get_event_baseline("SB", "S01", 300, df)
         assert val is None
@@ -329,8 +335,8 @@ class TestGetEventBaseline:
 # get_competitor_historical_times_flexible — 3-level cascade
 # ---------------------------------------------------------------------------
 
-class TestGetCompetitorHistoricalTimesFlexible:
 
+class TestGetCompetitorHistoricalTimesFlexible:
     def test_none_results_returns_none(self):
         times, conf, expl = get_competitor_historical_times_flexible(
             "Alice", "SB", "S01", 300, None
@@ -346,13 +352,10 @@ class TestGetCompetitorHistoricalTimesFlexible:
     def test_level1_exact_species_match(self):
         """Level 1: competitor + event + species exact match."""
         rows = [
-            _result_row(name="Alice", event="SB", time=25.0 + i, species="S01")
-            for i in range(3)
+            _result_row(name="Alice", event="SB", time=25.0 + i, species="S01") for i in range(3)
         ]
         df = _make_results_df(rows)
-        times, conf, expl = get_competitor_historical_times_flexible(
-            "Alice", "SB", "S01", 300, df
-        )
+        times, conf, expl = get_competitor_historical_times_flexible("Alice", "SB", "S01", 300, df)
         assert times is not None
         assert len(times) == 3
         assert conf == "HIGH"
@@ -361,13 +364,10 @@ class TestGetCompetitorHistoricalTimesFlexible:
     def test_level2_any_species(self):
         """Level 2: competitor + event match, different species."""
         rows = [
-            _result_row(name="Alice", event="SB", time=25.0 + i, species="S05")
-            for i in range(3)
+            _result_row(name="Alice", event="SB", time=25.0 + i, species="S05") for i in range(3)
         ]
         df = _make_results_df(rows)
-        times, conf, expl = get_competitor_historical_times_flexible(
-            "Alice", "SB", "S01", 300, df
-        )
+        times, conf, expl = get_competitor_historical_times_flexible("Alice", "SB", "S01", 300, df)
         assert times is not None
         assert len(times) == 3
         assert conf == "MEDIUM"
@@ -375,13 +375,9 @@ class TestGetCompetitorHistoricalTimesFlexible:
 
     def test_level3_no_competitor_history(self):
         """Level 3: no history for this competitor at all."""
-        rows = [
-            _result_row(name="Bob", event="SB", time=30.0)
-        ]
+        rows = [_result_row(name="Bob", event="SB", time=30.0)]
         df = _make_results_df(rows)
-        times, conf, expl = get_competitor_historical_times_flexible(
-            "Alice", "SB", "S01", 300, df
-        )
+        times, conf, expl = get_competitor_historical_times_flexible("Alice", "SB", "S01", 300, df)
         assert times is None
         assert conf == "LOW"
 
@@ -391,9 +387,7 @@ class TestGetCompetitorHistoricalTimesFlexible:
             _result_row(name="Alice Smith", event="SB", time=25.0, species="S01"),
         ]
         df = _make_results_df(rows)
-        times, _, _ = get_competitor_historical_times_flexible(
-            "alice smith", "SB", "S01", 300, df
-        )
+        times, _, _ = get_competitor_historical_times_flexible("alice smith", "SB", "S01", 300, df)
         assert times is not None
         assert len(times) == 1
 
@@ -406,9 +400,7 @@ class TestGetCompetitorHistoricalTimesFlexible:
             _result_row(name="Alice", event="SB", time=200.0, species="S01"),  # over limit
         ]
         df = _make_results_df(rows)
-        times, _, _ = get_competitor_historical_times_flexible(
-            "Alice", "SB", "S01", 300, df
-        )
+        times, _, _ = get_competitor_historical_times_flexible("Alice", "SB", "S01", 300, df)
         assert times is not None
         assert len(times) == 1
         assert times[0] == 25.0
@@ -419,7 +411,5 @@ class TestGetCompetitorHistoricalTimesFlexible:
             _result_row(name="Alice", event="UH", time=25.0, species="S01"),
         ]
         df = _make_results_df(rows)
-        times, _, _ = get_competitor_historical_times_flexible(
-            "Alice", "SB", "S01", 300, df
-        )
+        times, _, _ = get_competitor_historical_times_flexible("Alice", "SB", "S01", 300, df)
         assert times is None

@@ -15,22 +15,23 @@ Tests are organized in three groups:
 """
 
 import re
-import pytest
 from datetime import date
 
+import pytest
+
 from strathmark.calculator import HandicapCalculator, MarkResult, StartSheet
+from strathmark.config import rules
 from strathmark.predictor import (
     CompetitorRecord,
-    WoodProfile,
     HistoricalResult,
+    WoodProfile,
     predict_baseline,
 )
-from strathmark.config import rules
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
 
 def _mark_result(name: str, predicted_time: float) -> MarkResult:
     """Build a MarkResult with mark=0 (to be filled by _assign_marks)."""
@@ -71,6 +72,7 @@ PINE_300 = WoodProfile(species="Pine", diameter_mm=300, quality=5)
 # Mark floor invariant
 # ---------------------------------------------------------------------------
 
+
 class TestMarkFloor:
     """Mark floor = 3 seconds. Never lower under any circumstances."""
 
@@ -79,7 +81,7 @@ class TestMarkFloor:
         calc = HandicapCalculator()
         # Pass slowest first (expected order for _assign_marks)
         results = [
-            _mark_result("Alice", 60.0),   # slowest -> front marker
+            _mark_result("Alice", 60.0),  # slowest -> front marker
             _mark_result("Bob", 45.0),
         ]
         calc._assign_marks(results)
@@ -109,6 +111,7 @@ class TestMarkFloor:
 # Mark ceiling invariant
 # ---------------------------------------------------------------------------
 
+
 class TestMarkCeiling:
     """Mark ceiling = 183 seconds system-wide."""
 
@@ -119,8 +122,8 @@ class TestMarkCeiling:
         """
         calc = HandicapCalculator()
         results = [
-            _mark_result("Slow", 200.0),   # slowest -> mark 3
-            _mark_result("Fast", 3.0),     # gap=197 -> unclamped mark=200, clamped to 183
+            _mark_result("Slow", 200.0),  # slowest -> mark 3
+            _mark_result("Fast", 3.0),  # gap=197 -> unclamped mark=200, clamped to 183
         ]
         calc._assign_marks(results)
         fast = next(r for r in results if r.name == "Fast")
@@ -142,8 +145,8 @@ class TestMarkCeiling:
         """HandicapCalculator(event_ceiling=50) must clamp all marks at 50."""
         calc = HandicapCalculator(event_ceiling=50)
         results = [
-            _mark_result("Slow", 100.0),   # slowest -> mark 3
-            _mark_result("Fast", 40.0),    # gap=60 -> unclamped mark=63, clamped to 50
+            _mark_result("Slow", 100.0),  # slowest -> mark 3
+            _mark_result("Fast", 40.0),  # gap=60 -> unclamped mark=63, clamped to 50
         ]
         calc._assign_marks(results)
         fast = next(r for r in results if r.name == "Fast")
@@ -153,6 +156,7 @@ class TestMarkCeiling:
 # ---------------------------------------------------------------------------
 # Gap logic and ceiling arithmetic
 # ---------------------------------------------------------------------------
+
 
 class TestGapLogic:
     """Verify the gap formula: mark = 3 + int(gap + 0.999) (ceiling arithmetic)."""
@@ -164,8 +168,8 @@ class TestGapLogic:
         """
         calc = HandicapCalculator()
         results = [
-            _mark_result("Slow", 35.0),    # slowest -> mark 3
-            _mark_result("Fast", 30.0),    # gap=5.0 -> mark=8
+            _mark_result("Slow", 35.0),  # slowest -> mark 3
+            _mark_result("Fast", 30.0),  # gap=5.0 -> mark=8
         ]
         calc._assign_marks(results)
         assert results[0].mark == 3
@@ -229,6 +233,7 @@ class TestGapLogic:
 # Tournament result weighting
 # ---------------------------------------------------------------------------
 
+
 class TestTournamentWeighting:
     """Verify graduated tournament weighting (tested via predict_baseline)."""
 
@@ -267,6 +272,7 @@ class TestTournamentWeighting:
 # Start sheet
 # ---------------------------------------------------------------------------
 
+
 class TestStartSheet:
     """StartSheet ordering and rendering."""
 
@@ -291,23 +297,21 @@ class TestStartSheet:
         sheet = self._build_sheet()
         rendered = sheet.render()
         for i, line in enumerate(rendered.splitlines()):
-            assert len(line) <= 70, (
-                f"Line {i} has {len(line)} chars (max 70): {line!r}"
-            )
+            assert len(line) <= 70, f"Line {i} has {len(line)} chars (max 70): {line!r}"
 
     def test_start_sheet_render_plain_text(self):
         """render() output must contain no ANSI escape codes."""
         sheet = self._build_sheet()
         rendered = sheet.render()
         # ANSI escape sequences start with ESC (\x1b or \033)
-        ansi_pattern = re.compile(r'\x1b\[[\d;]*m')
-        assert not ansi_pattern.search(rendered), (
-            "render() output contains ANSI escape codes"
-        )
+        ansi_pattern = re.compile(r"\x1b\[[\d;]*m")
+        assert not ansi_pattern.search(rendered), "render() output contains ANSI escape codes"
+
 
 # ---------------------------------------------------------------------------
 # Phase 4A: Additional unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestDecayWeighting:
     """Older results should be down-weighted relative to recent ones."""
@@ -321,8 +325,9 @@ class TestDecayWeighting:
         (reference_datetime - result_datetime).days without type error.
         """
         from datetime import datetime
+
         today = datetime.now()
-        old_date = datetime(2019, 1, 1)   # ~6 years ago, near-zero decay weight
+        old_date = datetime(2019, 1, 1)  # ~6 years ago, near-zero decay weight
 
         # Three old slow results + one very recent fast result
         history = [
@@ -348,10 +353,7 @@ class TestLargeField:
         """All marks in a 20-competitor field must be in [3, 183]."""
         calc = HandicapCalculator()
         # Spread of 20 competitors from 15s to 110s
-        results = [
-            _mark_result(f"Comp{i}", 15.0 + i * 5.0)
-            for i in range(20)
-        ]
+        results = [_mark_result(f"Comp{i}", 15.0 + i * 5.0) for i in range(20)]
         # _assign_marks expects slowest first
         results.sort(key=lambda r: r.predicted_time, reverse=True)
         calc._assign_marks(results)
@@ -361,10 +363,7 @@ class TestLargeField:
     def test_large_field_monotonic_marks(self):
         """Marks must be non-decreasing from slowest to fastest."""
         calc = HandicapCalculator()
-        results = [
-            _mark_result(f"Comp{i}", 15.0 + i * 5.0)
-            for i in range(20)
-        ]
+        results = [_mark_result(f"Comp{i}", 15.0 + i * 5.0) for i in range(20)]
         results.sort(key=lambda r: r.predicted_time, reverse=True)
         calc._assign_marks(results)
         marks = [r.mark for r in results]
@@ -373,10 +372,7 @@ class TestLargeField:
     def test_large_field_front_marker_is_3(self):
         """Slowest competitor in a 20-person field gets exactly mark 3."""
         calc = HandicapCalculator()
-        results = [
-            _mark_result(f"Comp{i}", 15.0 + i * 5.0)
-            for i in range(20)
-        ]
+        results = [_mark_result(f"Comp{i}", 15.0 + i * 5.0) for i in range(20)]
         results.sort(key=lambda r: r.predicted_time, reverse=True)
         calc._assign_marks(results)
         assert results[0].mark == 3

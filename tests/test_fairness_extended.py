@@ -2,24 +2,21 @@
 
 from unittest.mock import patch
 
-import numpy as np
-import pytest
-
 from strathmark.fairness import (
+    _stats_dict_to_str,
+    _validate_fairness_assessment,
+    _variance_warning_text,
+    format_ai_assessment,
     get_ai_assessment_of_handicaps,
     get_championship_race_analysis,
-    format_ai_assessment,
     simulate_and_assess_handicaps,
-    _validate_fairness_assessment,
-    _stats_dict_to_str,
-    _variance_warning_text,
 )
-from strathmark.variance import run_monte_carlo_simulation, CompetitorTimeStats
-
+from strathmark.variance import CompetitorTimeStats, run_monte_carlo_simulation
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_analysis(n=3, num_sims=1_000, seed=42):
     """Build a minimal Monte Carlo analysis dict."""
@@ -34,8 +31,8 @@ def _make_analysis(n=3, num_sims=1_000, seed=42):
 # _validate_fairness_assessment
 # ---------------------------------------------------------------------------
 
-class TestValidateFairnessAssessment:
 
+class TestValidateFairnessAssessment:
     def test_valid_response_unchanged(self):
         """Response with all sections should pass through unchanged."""
         response = (
@@ -45,17 +42,13 @@ class TestValidateFairnessAssessment:
             "PREDICTION ACCURACY: Good.\n"
             "RECOMMENDATIONS: None needed."
         )
-        result = _validate_fairness_assessment(
-            response, 2.0, 33.3, "A", "C", {"A": 1.0, "C": -1.0}
-        )
+        result = _validate_fairness_assessment(response, 2.0, 33.3, "A", "C", {"A": 1.0, "C": -1.0})
         assert "[WARN]" not in result
 
     def test_missing_sections_appends_warning(self):
         """Response missing sections should get a warning appended."""
         response = "FAIRNESS RATING: Good\nSome text without other sections."
-        result = _validate_fairness_assessment(
-            response, 5.0, 33.3, "A", "C", {"A": 1.0, "C": -1.0}
-        )
+        result = _validate_fairness_assessment(response, 5.0, 33.3, "A", "C", {"A": 1.0, "C": -1.0})
         assert "[WARN]" in result
         assert "STATISTICAL ANALYSIS" in result
 
@@ -80,9 +73,7 @@ class TestValidateFairnessAssessment:
             "PREDICTION ACCURACY: stuff\n"
             "RECOMMENDATIONS: stuff"
         )
-        result = _validate_fairness_assessment(
-            response, 5.0, 33.3, "A", "C", {"A": 1.0, "C": -1.0}
-        )
+        result = _validate_fairness_assessment(response, 5.0, 33.3, "A", "C", {"A": 1.0, "C": -1.0})
         # Missing "FAIRNESS RATING:" section header triggers section warning
         assert "[WARN]" in result
 
@@ -91,16 +82,22 @@ class TestValidateFairnessAssessment:
 # _stats_dict_to_str
 # ---------------------------------------------------------------------------
 
-class TestStatsDictToStr:
 
+class TestStatsDictToStr:
     def test_none_returns_empty(self):
         assert _stats_dict_to_str(None) == ""
 
     def test_competitor_time_stats_dataclass(self):
         stats = CompetitorTimeStats(
-            name="Alice", mean=30.0, std_dev=2.5, min_time=25.0,
-            max_time=35.0, p25=28.0, p50=30.0, p75=32.0,
-            consistency_rating="High (expected variance)"
+            name="Alice",
+            mean=30.0,
+            std_dev=2.5,
+            min_time=25.0,
+            max_time=35.0,
+            p25=28.0,
+            p50=30.0,
+            p75=32.0,
+            consistency_rating="High (expected variance)",
         )
         result = _stats_dict_to_str(stats)
         assert "30.0s" in result
@@ -108,8 +105,13 @@ class TestStatsDictToStr:
         assert "25.0s" in result
 
     def test_plain_dict(self):
-        stats = {"mean": 30.0, "std_dev": 2.5, "min": 25.0, "max": 35.0,
-                 "consistency_rating": "High"}
+        stats = {
+            "mean": 30.0,
+            "std_dev": 2.5,
+            "min": 25.0,
+            "max": 35.0,
+            "consistency_rating": "High",
+        }
         result = _stats_dict_to_str(stats)
         assert "30.0s" in result
         assert "High" in result
@@ -119,8 +121,8 @@ class TestStatsDictToStr:
 # _variance_warning_text
 # ---------------------------------------------------------------------------
 
-class TestVarianceWarningText:
 
+class TestVarianceWarningText:
     def test_no_imbalance_returns_empty(self):
         analysis = {"variance_ratio": 1.0}
         assert _variance_warning_text(analysis) == ""
@@ -144,8 +146,8 @@ class TestVarianceWarningText:
 # get_ai_assessment_of_handicaps (with mocked Ollama)
 # ---------------------------------------------------------------------------
 
-class TestGetAiAssessmentOfHandicaps:
 
+class TestGetAiAssessmentOfHandicaps:
     def test_statistical_fallback_when_ollama_unavailable(self):
         """When Ollama is down, should return a statistical fallback."""
         analysis = _make_analysis(n=3, num_sims=5_000)
@@ -162,12 +164,9 @@ class TestGetAiAssessmentOfHandicaps:
         """Statistical fallback rating should match win rate spread."""
         # Equal competitors -> low spread -> EXCELLENT
         comps = [
-            {"name": f"C{i}", "mark": 3, "predicted_time": 30.0, "std_dev": 3.0}
-            for i in range(4)
+            {"name": f"C{i}", "mark": 3, "predicted_time": 30.0, "std_dev": 3.0} for i in range(4)
         ]
-        analysis = run_monte_carlo_simulation(
-            comps, num_simulations=10_000, seed=42, verbose=False
-        )
+        analysis = run_monte_carlo_simulation(comps, num_simulations=10_000, seed=42, verbose=False)
 
         with patch("strathmark.fairness.call_ollama", return_value=None):
             result = get_ai_assessment_of_handicaps(analysis)
@@ -178,13 +177,16 @@ class TestGetAiAssessmentOfHandicaps:
     def test_llm_response_parsed(self, mock_ollama):
         """Valid JSON LLM response should be formatted properly."""
         import json
-        mock_ollama.return_value = json.dumps({
-            "rating": "Good",
-            "statistical_analysis": "Win rates are acceptable.",
-            "pattern_diagnosis": "No clear bias.",
-            "prediction_accuracy": "Predictions within range.",
-            "recommendations": ["Keep monitoring.", "Collect more data."]
-        })
+
+        mock_ollama.return_value = json.dumps(
+            {
+                "rating": "Good",
+                "statistical_analysis": "Win rates are acceptable.",
+                "pattern_diagnosis": "No clear bias.",
+                "prediction_accuracy": "Predictions within range.",
+                "recommendations": ["Keep monitoring.", "Collect more data."],
+            }
+        )
         analysis = _make_analysis(n=3, num_sims=1_000)
         result = get_ai_assessment_of_handicaps(analysis)
 
@@ -207,8 +209,8 @@ class TestGetAiAssessmentOfHandicaps:
 # get_championship_race_analysis
 # ---------------------------------------------------------------------------
 
-class TestGetChampionshipRaceAnalysis:
 
+class TestGetChampionshipRaceAnalysis:
     def test_statistical_fallback(self):
         """When Ollama is down, should return a statistical fallback."""
         comps = [
@@ -216,13 +218,16 @@ class TestGetChampionshipRaceAnalysis:
             {"name": "B", "mark": 3, "predicted_time": 30.0, "std_dev": 3.0},
             {"name": "C", "mark": 3, "predicted_time": 35.0, "std_dev": 3.0},
         ]
-        analysis = run_monte_carlo_simulation(
-            comps, num_simulations=5_000, seed=42, verbose=False
-        )
+        analysis = run_monte_carlo_simulation(comps, num_simulations=5_000, seed=42, verbose=False)
         predictions = [
             {"name": "A", "predicted_time": 25.0, "method_used": "baseline", "confidence": "HIGH"},
             {"name": "B", "predicted_time": 30.0, "method_used": "baseline", "confidence": "HIGH"},
-            {"name": "C", "predicted_time": 35.0, "method_used": "baseline", "confidence": "MEDIUM"},
+            {
+                "name": "C",
+                "predicted_time": 35.0,
+                "method_used": "baseline",
+                "confidence": "MEDIUM",
+            },
         ]
 
         with patch("strathmark.fairness.call_ollama", return_value=None):
@@ -237,12 +242,20 @@ class TestGetChampionshipRaceAnalysis:
             {"name": "Favorite", "mark": 3, "predicted_time": 20.0, "std_dev": 2.0},
             {"name": "Underdog", "mark": 3, "predicted_time": 40.0, "std_dev": 2.0},
         ]
-        analysis = run_monte_carlo_simulation(
-            comps, num_simulations=5_000, seed=42, verbose=False
-        )
+        analysis = run_monte_carlo_simulation(comps, num_simulations=5_000, seed=42, verbose=False)
         predictions = [
-            {"name": "Favorite", "predicted_time": 20.0, "method_used": "baseline", "confidence": "HIGH"},
-            {"name": "Underdog", "predicted_time": 40.0, "method_used": "baseline", "confidence": "HIGH"},
+            {
+                "name": "Favorite",
+                "predicted_time": 20.0,
+                "method_used": "baseline",
+                "confidence": "HIGH",
+            },
+            {
+                "name": "Underdog",
+                "predicted_time": 40.0,
+                "method_used": "baseline",
+                "confidence": "HIGH",
+            },
         ]
 
         with patch("strathmark.fairness.call_ollama", return_value=None):
@@ -257,9 +270,7 @@ class TestGetChampionshipRaceAnalysis:
             {"name": "B", "mark": 3, "predicted_time": 31.0, "std_dev": 3.0},
             {"name": "C", "mark": 3, "predicted_time": 45.0, "std_dev": 3.0},
         ]
-        analysis = run_monte_carlo_simulation(
-            comps, num_simulations=1_000, seed=42, verbose=False
-        )
+        analysis = run_monte_carlo_simulation(comps, num_simulations=1_000, seed=42, verbose=False)
         predictions = [
             {"name": "A", "predicted_time": 30.0, "method_used": "baseline", "confidence": "HIGH"},
             {"name": "B", "predicted_time": 31.0, "method_used": "baseline", "confidence": "HIGH"},
@@ -277,8 +288,8 @@ class TestGetChampionshipRaceAnalysis:
 # format_ai_assessment
 # ---------------------------------------------------------------------------
 
-class TestFormatAiAssessment:
 
+class TestFormatAiAssessment:
     def test_does_not_crash(self, capsys):
         """format_ai_assessment should print without errors."""
         text = (
@@ -300,7 +311,7 @@ class TestFormatAiAssessment:
                 continue
             # Section headers (uppercase with colon) are not wrapped
             stripped = line.strip()
-            if ':' in stripped and stripped.split(':')[0].isupper():
+            if ":" in stripped and stripped.split(":")[0].isupper():
                 continue
             assert len(line) <= 65
 
@@ -314,27 +325,27 @@ class TestFormatAiAssessment:
 # simulate_and_assess_handicaps extended
 # ---------------------------------------------------------------------------
 
-class TestSimulateAndAssessHandicapsExtended:
 
+class TestSimulateAndAssessHandicapsExtended:
     def test_returns_all_keys(self):
         comps = [
             {"name": "A", "mark": 3, "predicted_time": 40.0},
             {"name": "B", "mark": 8, "predicted_time": 35.0},
         ]
         result = simulate_and_assess_handicaps(comps, num_simulations=1_000, show=False)
-        assert 'analysis' in result
-        assert 'summary' in result
-        assert 'chart' in result
-        assert 'assessment' in result
+        assert "analysis" in result
+        assert "summary" in result
+        assert "chart" in result
+        assert "assessment" in result
 
     def test_empty_competitors(self):
         result = simulate_and_assess_handicaps([], show=False)
-        assert result['analysis'] == {}
-        assert result['summary'] == ''
+        assert result["analysis"] == {}
+        assert result["summary"] == ""
 
     def test_single_competitor(self):
         result = simulate_and_assess_handicaps(
             [{"name": "A", "mark": 3, "predicted_time": 30.0}],
             show=False,
         )
-        assert result['analysis'] == {}
+        assert result["analysis"] == {}

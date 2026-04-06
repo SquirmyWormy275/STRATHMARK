@@ -10,11 +10,10 @@ They deliberately avoid mocking so that end-to-end regressions surface early.
 """
 
 import os
+
 import pytest
 
-WORKBOOK_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "woodchopping_clean.xlsx"
-)
+WORKBOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "woodchopping_clean.xlsx")
 
 
 @pytest.fixture(scope="module")
@@ -24,6 +23,7 @@ def loaded_data():
         pytest.skip("woodchopping_clean.xlsx not found — skipping integration tests")
 
     from strathmark.utils import load_woodchopping_xlsx
+
     wood_df, results_df = load_woodchopping_xlsx(WORKBOOK_PATH)
     return wood_df, results_df
 
@@ -34,42 +34,40 @@ def six_sb_competitors(loaded_data):
     Build 6 CompetitorRecord objects from the first 6 unique SB competitors
     found in the results DataFrame.
     """
-    from strathmark.utils import standardize_results_columns
     from strathmark.predictor import CompetitorRecord, HistoricalResult
+    from strathmark.utils import standardize_results_columns
 
     _, results_df = loaded_data
     df = standardize_results_columns(results_df)
 
-    sb_df = df[df['event'].str.upper() == 'SB'].dropna(subset=['raw_time'])
-    sb_df = sb_df[sb_df['raw_time'] > 0]
+    sb_df = df[df["event"].str.upper() == "SB"].dropna(subset=["raw_time"])
+    sb_df = sb_df[sb_df["raw_time"] > 0]
 
-    unique_names = sb_df['competitor_name'].dropna().unique()
+    unique_names = sb_df["competitor_name"].dropna().unique()
     if len(unique_names) < 2:
         pytest.skip("Fewer than 2 SB competitors found in workbook")
 
     names = list(unique_names[:6])
     competitors = []
     for name in names:
-        rows = sb_df[sb_df['competitor_name'] == name]
+        rows = sb_df[sb_df["competitor_name"] == name]
         history = []
         for _, row in rows.iterrows():
             try:
                 history.append(
                     HistoricalResult(
-                        event_code=str(row.get('event', 'SB')).upper(),
-                        time_seconds=float(row['raw_time']),
-                        species=str(row.get('species', 'Pine')),
-                        diameter_mm=float(row.get('size_mm', 300)),
-                        quality=int(row.get('quality', 5)),
-                        result_date=row.get('result_date'),
+                        event_code=str(row.get("event", "SB")).upper(),
+                        time_seconds=float(row["raw_time"]),
+                        species=str(row.get("species", "Pine")),
+                        diameter_mm=float(row.get("size_mm", 300)),
+                        quality=int(row.get("quality", 5)),
+                        result_date=row.get("result_date"),
                     )
                 )
             except (TypeError, ValueError):
                 continue
 
-        competitors.append(
-            CompetitorRecord(name=name, history=history)
-        )
+        competitors.append(CompetitorRecord(name=name, history=history))
 
     if not competitors:
         pytest.skip("Could not build any CompetitorRecord from workbook data")
@@ -93,8 +91,8 @@ def mark_results(loaded_data, six_sb_competitors):
 # Mark invariants
 # ---------------------------------------------------------------------------
 
-class TestIntegrationMarkInvariants:
 
+class TestIntegrationMarkInvariants:
     def test_all_marks_at_least_3(self, mark_results):
         for r in mark_results:
             assert r.mark >= 3, f"{r.name} mark {r.mark} is below floor"
@@ -123,8 +121,8 @@ class TestIntegrationMarkInvariants:
 # Monte Carlo fairness audit
 # ---------------------------------------------------------------------------
 
-class TestIntegrationFairnessAudit:
 
+class TestIntegrationFairnessAudit:
     def test_fairness_not_poor(self, mark_results):
         """
         The mark sheet must not be rated 'poor' by the fairness audit.
@@ -134,22 +132,21 @@ class TestIntegrationFairnessAudit:
 
         competitors_with_marks = [
             {
-                'name': r.name,
-                'predicted_time': r.predicted_time,
-                'mark': r.mark,
-                'std_dev': r.std_dev,
+                "name": r.name,
+                "predicted_time": r.predicted_time,
+                "mark": r.mark,
+                "std_dev": r.std_dev,
             }
             for r in mark_results
         ]
 
         audit = audit_mark_sheet(competitors_with_marks, num_simulations=50_000, verbose=False)
 
-        assert audit['fairness_rating'] != 'poor', (
+        assert audit["fairness_rating"] != "poor", (
             f"Mark sheet rated 'poor'. Win-rate spread: {audit['win_rate_spread']:.1f}%. "
             f"Per-competitor win rates: "
             + ", ".join(
-                f"{name}: {d['win_rate']:.1f}%"
-                for name, d in audit['per_competitor'].items()
+                f"{name}: {d['win_rate']:.1f}%" for name, d in audit["per_competitor"].items()
             )
         )
 
@@ -158,14 +155,17 @@ class TestIntegrationFairnessAudit:
         from strathmark.variance import audit_mark_sheet
 
         competitors_with_marks = [
-            {'name': r.name, 'predicted_time': r.predicted_time, 'mark': r.mark}
+            {"name": r.name, "predicted_time": r.predicted_time, "mark": r.mark}
             for r in mark_results
         ]
         audit = audit_mark_sheet(competitors_with_marks, num_simulations=10_000, verbose=False)
 
         required_keys = {
-            'per_competitor', 'front_marker_win_rate', 'back_marker_win_rate',
-            'win_rate_spread', 'fairness_rating',
+            "per_competitor",
+            "front_marker_win_rate",
+            "back_marker_win_rate",
+            "win_rate_spread",
+            "fairness_rating",
         }
         assert required_keys.issubset(set(audit.keys()))
-        assert audit['fairness_rating'] in ('excellent', 'good', 'fair', 'poor')
+        assert audit["fairness_rating"] in ("excellent", "good", "fair", "poor")

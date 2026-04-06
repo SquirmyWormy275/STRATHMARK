@@ -30,14 +30,17 @@ from strathmark.config import (
 class TestFrozenDataclasses:
     """All config objects must be immutable at runtime."""
 
-    @pytest.mark.parametrize("cls,instance", [
-        (Rules, rules),
-        (SimulationConfig, sim_config),
-        (DecayConfig, decay_config),
-        (MLConfig, ml_config),
-        (LLMConfig, llm_config),
-        (DataRequirements, data_req),
-    ])
+    @pytest.mark.parametrize(
+        "cls,instance",
+        [
+            (Rules, rules),
+            (SimulationConfig, sim_config),
+            (DecayConfig, decay_config),
+            (MLConfig, ml_config),
+            (LLMConfig, llm_config),
+            (DataRequirements, data_req),
+        ],
+    )
     def test_frozen(self, cls, instance):
         """Attempting to set an attribute via normal assignment should raise."""
         first_field = dataclasses.fields(instance)[0].name

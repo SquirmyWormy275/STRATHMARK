@@ -24,23 +24,23 @@ import requests
 
 from strathmark.config import llm_config
 
-
 # ---------------------------------------------------------------------------
 # Module-level connection state (thread-safe)
 # ---------------------------------------------------------------------------
 
 _ollama_lock = threading.Lock()
 _ollama_status: dict = {
-    'available': None,   # None = unknown, True = available, False = unavailable
-    'last_check': 0.0,
-    'error_shown': False,
-    'check_interval': 60,  # Re-check every 60 seconds
+    "available": None,  # None = unknown, True = available, False = unavailable
+    "last_check": 0.0,
+    "error_shown": False,
+    "check_interval": 60,  # Re-check every 60 seconds
 }
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def check_ollama_connection(
     base_url: str = "http://localhost:11434",
@@ -62,20 +62,20 @@ def check_ollama_connection(
         now = time.time()
         if (
             not force
-            and _ollama_status['available'] is not None
-            and now - _ollama_status['last_check'] < _ollama_status['check_interval']
+            and _ollama_status["available"] is not None
+            and now - _ollama_status["last_check"] < _ollama_status["check_interval"]
         ):
-            return _ollama_status['available']
+            return _ollama_status["available"]
 
         try:
             resp = requests.get(f"{base_url}/api/tags", timeout=5)
-            _ollama_status['available'] = resp.status_code == 200
-            _ollama_status['last_check'] = now
-            _ollama_status['error_shown'] = False
-            return _ollama_status['available']
+            _ollama_status["available"] = resp.status_code == 200
+            _ollama_status["last_check"] = now
+            _ollama_status["error_shown"] = False
+            return _ollama_status["available"]
         except Exception:
-            _ollama_status['available'] = False
-            _ollama_status['last_check'] = now
+            _ollama_status["available"] = False
+            _ollama_status["last_check"] = now
             return False
 
 
@@ -83,9 +83,9 @@ def reset_ollama_status() -> None:
     """Reset the connection status cache so the next call does a fresh check."""
     global _ollama_status
     with _ollama_lock:
-        _ollama_status['available'] = None
-        _ollama_status['last_check'] = 0.0
-        _ollama_status['error_shown'] = False
+        _ollama_status["available"] = None
+        _ollama_status["last_check"] = 0.0
+        _ollama_status["error_shown"] = False
 
 
 def call_ollama(
@@ -125,9 +125,9 @@ def call_ollama(
     global _ollama_status
 
     # Fast-path: if we recently confirmed unavailability, skip
-    if _ollama_status['available'] is False:
+    if _ollama_status["available"] is False:
         now = time.time()
-        if now - _ollama_status['last_check'] < _ollama_status['check_interval']:
+        if now - _ollama_status["last_check"] < _ollama_status["check_interval"]:
             return None
 
     if model is None:
@@ -167,24 +167,24 @@ def call_ollama(
             )
 
             if response.status_code == 200:
-                _ollama_status['available'] = True
-                _ollama_status['last_check'] = time.time()
-                _ollama_status['error_shown'] = False
-                return response.json()['response'].strip()
+                _ollama_status["available"] = True
+                _ollama_status["last_check"] = time.time()
+                _ollama_status["error_shown"] = False
+                return response.json()["response"].strip()
 
             # Non-200 response — retry
             if attempt < max_retries:
                 time.sleep(attempt + 1)
             else:
-                if not _ollama_status['error_shown']:
+                if not _ollama_status["error_shown"]:
                     print(f"\n[WARN] Ollama returned status {response.status_code}")
-                    _ollama_status['error_shown'] = True
+                    _ollama_status["error_shown"] = True
                 return None
 
         except requests.exceptions.ConnectionError:
-            _ollama_status['available'] = False
-            _ollama_status['last_check'] = time.time()
-            if not _ollama_status['error_shown']:
+            _ollama_status["available"] = False
+            _ollama_status["last_check"] = time.time()
+            if not _ollama_status["error_shown"]:
                 print("\n" + "=" * 60)
                 print("[WARN] OLLAMA NOT AVAILABLE")
                 print("=" * 60)
@@ -193,7 +193,7 @@ def call_ollama(
                 print("Then pull the model: ollama pull qwen3.5:9b")
                 print("System will continue with Baseline and ML predictions only.")
                 print("=" * 60 + "\n")
-                _ollama_status['error_shown'] = True
+                _ollama_status["error_shown"] = True
             return None
 
         except requests.exceptions.Timeout:
@@ -202,18 +202,18 @@ def call_ollama(
                     print("  [Ollama timeout, retrying...]")
                 time.sleep(2 * (attempt + 1))
             else:
-                if not _ollama_status['error_shown']:
+                if not _ollama_status["error_shown"]:
                     print(f"\n[WARN] Ollama timeout after {timeout}s")
-                    _ollama_status['error_shown'] = True
+                    _ollama_status["error_shown"] = True
                 return None
 
         except Exception as exc:
             if attempt < max_retries:
                 time.sleep(attempt + 1)
             else:
-                if not _ollama_status['error_shown']:
+                if not _ollama_status["error_shown"]:
                     print(f"\n[WARN] Ollama error: {exc}")
-                    _ollama_status['error_shown'] = True
+                    _ollama_status["error_shown"] = True
                 return None
 
     return None

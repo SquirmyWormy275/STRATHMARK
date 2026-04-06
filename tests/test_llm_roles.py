@@ -1,10 +1,10 @@
 """Tests for strathmark/llm_roles.py — extended LLM roles."""
 
 from strathmark.llm_roles import (
-    detect_result_anomaly,
+    ANOMALY_DETECTION_SCHEMA,
     COMPETITOR_PROFILE_SCHEMA,
     RACE_COMMENTARY_SCHEMA,
-    ANOMALY_DETECTION_SCHEMA,
+    detect_result_anomaly,
 )
 
 
@@ -29,10 +29,14 @@ class TestDetectResultAnomaly:
 
     def test_normal_result_not_anomalous(self):
         result = detect_result_anomaly(
-            name="Alice", event_code="SB",
-            actual_time=50.0, predicted_time=51.0,
-            historical_avg=50.0, historical_std=3.0,
-            wood_species="poplar", diameter_mm=300,
+            name="Alice",
+            event_code="SB",
+            actual_time=50.0,
+            predicted_time=51.0,
+            historical_avg=50.0,
+            historical_std=3.0,
+            wood_species="poplar",
+            diameter_mm=300,
         )
         # Result may be None if Ollama unavailable but statistical fallback exists
         if result is not None:
@@ -40,10 +44,14 @@ class TestDetectResultAnomaly:
 
     def test_extreme_result_flagged(self):
         result = detect_result_anomaly(
-            name="Alice", event_code="SB",
-            actual_time=100.0, predicted_time=50.0,
-            historical_avg=50.0, historical_std=3.0,
-            wood_species="poplar", diameter_mm=300,
+            name="Alice",
+            event_code="SB",
+            actual_time=100.0,
+            predicted_time=50.0,
+            historical_avg=50.0,
+            historical_std=3.0,
+            wood_species="poplar",
+            diameter_mm=300,
         )
         if result is not None:
             assert result["is_anomalous"] is True

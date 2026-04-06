@@ -3,19 +3,16 @@
 Tests that require the Excel file are skipped if the file is not present.
 """
 
-import os
 from pathlib import Path
 
 import pytest
 
 from strathmark.loader import load_woodchopping_xlsx
 
-
 _XLSX = Path(__file__).parent.parent / "woodchopping_clean.xlsx"
 
 
 class TestLoadWoodchoppingXlsx:
-
     @pytest.mark.skipif(not _XLSX.exists(), reason="Excel file not present")
     def test_loads_three_dataframes(self):
         wood_df, competitor_df, results_df = load_woodchopping_xlsx(str(_XLSX))

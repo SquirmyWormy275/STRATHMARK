@@ -1,19 +1,18 @@
 """Tests for strathmark/fairness.py — fairness assessment."""
 
-import pytest
-
 from strathmark.fairness import simulate_and_assess_handicaps
 
 
 class TestSimulateAndAssessHandicaps:
-
     def test_returns_dict_with_required_keys(self):
         competitors = [
             {"name": "A", "mark": 3, "predicted_time": 50.0, "variance": 3.0},
             {"name": "B", "mark": 13, "predicted_time": 40.0, "variance": 3.0},
         ]
         result = simulate_and_assess_handicaps(
-            competitors, num_simulations=1000, show=False,
+            competitors,
+            num_simulations=1000,
+            show=False,
         )
         assert isinstance(result, dict)
         assert "analysis" in result
@@ -32,7 +31,9 @@ class TestSimulateAndAssessHandicaps:
             {"name": "C", "mark": 3, "predicted_time": 65.0, "variance": 3.0},
         ]
         result = simulate_and_assess_handicaps(
-            competitors, num_simulations=5000, show=False,
+            competitors,
+            num_simulations=5000,
+            show=False,
         )
         assert "analysis" in result
         analysis = result["analysis"]

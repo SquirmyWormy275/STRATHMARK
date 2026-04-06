@@ -34,11 +34,15 @@ from typing import Any, Dict, List, Optional
 try:
     from fastapi import FastAPI, HTTPException
     from pydantic import BaseModel, Field
+
     _FASTAPI_AVAILABLE = True
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
+from strathmark import __version__
 from strathmark.calculator import HandicapCalculator
+from strathmark.config import llm_config
+from strathmark.llm import check_ollama_connection
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
@@ -46,12 +50,8 @@ from strathmark.predictor import (
     get_all_predictions,
     select_best_prediction,
 )
-from strathmark.variance import run_monte_carlo_simulation
 from strathmark.store import ResultStore
-from strathmark.llm import check_ollama_connection
-from strathmark.config import llm_config
-from strathmark import __version__
-
+from strathmark.variance import run_monte_carlo_simulation
 
 # ---------------------------------------------------------------------------
 # Raise a helpful error if FastAPI is not installed
@@ -69,13 +69,14 @@ if not _FASTAPI_AVAILABLE:
 # Pydantic request/response models
 # ---------------------------------------------------------------------------
 
+
 class HistoricalResultSchema(BaseModel):
     event_code: str
     time_seconds: float = Field(gt=0, description="Time in seconds (must be positive)")
     species: str
     diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
     quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
-    result_date: Optional[str] = None   # ISO 8601 date string
+    result_date: Optional[str] = None  # ISO 8601 date string
     heat_id: Optional[str] = None
 
 
@@ -122,7 +123,7 @@ class PredictResponse(BaseModel):
 
 
 class SimulateRequest(BaseModel):
-    competitors: List[Dict[str, Any]]   # [{name, mark, predicted_time, ...}]
+    competitors: List[Dict[str, Any]]  # [{name, mark, predicted_time, ...}]
     num_simulations: int = 250_000
     track_finish_orders: bool = False
     track_podium_margins: bool = False
@@ -136,7 +137,7 @@ class RecordResultRequest(BaseModel):
     diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
     quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
     heat_id: Optional[str] = None
-    result_date: Optional[str] = None   # ISO 8601 date string
+    result_date: Optional[str] = None  # ISO 8601 date string
 
 
 class RecordResultResponse(BaseModel):
@@ -199,10 +200,10 @@ def _prediction_result_to_dict(pr: Any) -> Optional[Dict[str, Any]]:
     if pr is None:
         return None
     return {
-        'value': pr.value,
-        'confidence': pr.confidence,
-        'method': pr.method,
-        'explanation': pr.explanation,
+        "value": pr.value,
+        "confidence": pr.confidence,
+        "method": pr.method,
+        "explanation": pr.explanation,
     }
 
 
@@ -318,27 +319,27 @@ def simulate(req: SimulateRequest) -> Dict[str, Any]:
 
     # Convert CompetitorTimeStats dataclasses to dicts for JSON serialization
     cts = {}
-    for name, stats in analysis.get('competitor_time_stats', {}).items():
-        if hasattr(stats, 'mean'):
+    for name, stats in analysis.get("competitor_time_stats", {}).items():
+        if hasattr(stats, "mean"):
             cts[name] = {
-                'mean': stats.mean,
-                'std_dev': stats.std_dev,
-                'min': stats.min_time,
-                'max': stats.max_time,
-                'p25': stats.p25,
-                'p50': stats.p50,
-                'p75': stats.p75,
-                'consistency_rating': stats.consistency_rating,
+                "mean": stats.mean,
+                "std_dev": stats.std_dev,
+                "min": stats.min_time,
+                "max": stats.max_time,
+                "p25": stats.p25,
+                "p50": stats.p50,
+                "p75": stats.p75,
+                "consistency_rating": stats.consistency_rating,
             }
         else:
             cts[name] = stats
-    analysis['competitor_time_stats'] = cts
+    analysis["competitor_time_stats"] = cts
 
     # Remove large list from JSON response (finish_spreads can be millions of floats)
-    analysis.pop('finish_spreads', None)
+    analysis.pop("finish_spreads", None)
     # most_common_order is a tuple; convert to list for JSON
-    if analysis.get('most_common_order') is not None:
-        analysis['most_common_order'] = list(analysis['most_common_order'])
+    if analysis.get("most_common_order") is not None:
+        analysis["most_common_order"] = list(analysis["most_common_order"])
 
     return analysis
 
@@ -371,13 +372,13 @@ def get_results(
     history = _store.get_competitor_history(competitor_name, event_code)
     return [
         {
-            'event_code': r.event_code,
-            'time_seconds': r.time_seconds,
-            'species': r.species,
-            'diameter_mm': r.diameter_mm,
-            'quality': r.quality,
-            'result_date': r.result_date.isoformat() if r.result_date else None,
-            'heat_id': r.heat_id,
+            "event_code": r.event_code,
+            "time_seconds": r.time_seconds,
+            "species": r.species,
+            "diameter_mm": r.diameter_mm,
+            "quality": r.quality,
+            "result_date": r.result_date.isoformat() if r.result_date else None,
+            "heat_id": r.heat_id,
         }
         for r in history
     ]

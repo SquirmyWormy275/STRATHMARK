@@ -15,8 +15,8 @@ pytestmark = pytest.mark.skipif(
 
 
 class TestSupabaseBackend:
-
     def test_import_module(self):
-        from strathmark.db import push_results, pull_results
+        from strathmark.db import pull_results, push_results
+
         assert callable(push_results)
         assert callable(pull_results)

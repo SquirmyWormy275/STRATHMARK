@@ -47,35 +47,40 @@ Live integration (editable install):
 """
 
 from strathmark.calculator import HandicapCalculator, process_competition_day
-from strathmark.predictor import (
-    CompetitorRecord,
-    WoodProfile,
-    HistoricalResult,
-    PredictionResult,
-    get_best_prediction,
-    get_all_predictions,
-    select_best_prediction,
-    predict_baseline,
+from strathmark.db import (
+    get_competitor_bias,
+    pull_competitors,
+    pull_results,
+    push_competitors,
+    push_results,
+    record_prediction_residuals,
 )
-from strathmark.store import ResultStore
-from strathmark.variance import run_monte_carlo_simulation, estimate_competitor_std_dev, audit_mark_sheet, quick_fairness_check
-from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
 from strathmark.fairness import (
     get_ai_assessment_of_handicaps,
     get_championship_race_analysis,
     simulate_and_assess_handicaps,
 )
 from strathmark.llm import call_ollama, check_ollama_connection
-from strathmark.loader import load_woodchopping_xlsx, load_results_for_competitor
-from strathmark.db import (
-    push_results,
-    pull_results,
-    push_competitors,
-    pull_competitors,
-    record_prediction_residuals,
-    get_competitor_bias,
+from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
+from strathmark.predictor import (
+    CompetitorRecord,
+    HistoricalResult,
+    PredictionResult,
+    WoodProfile,
+    get_all_predictions,
+    get_best_prediction,
+    predict_baseline,
+    select_best_prediction,
 )
+from strathmark.store import ResultStore
 from strathmark.utils import score_prediction_accuracy
+from strathmark.variance import (
+    audit_mark_sheet,
+    estimate_competitor_std_dev,
+    quick_fairness_check,
+    run_monte_carlo_simulation,
+)
+from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
 
 __all__ = [
     # Core calculation
@@ -122,4 +127,4 @@ __all__ = [
     "score_prediction_accuracy",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

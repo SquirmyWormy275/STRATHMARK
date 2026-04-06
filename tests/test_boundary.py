@@ -6,20 +6,17 @@ under unusual conditions across all core modules.
 
 from datetime import date, timedelta
 
-import numpy as np
 import pytest
 
 from strathmark import CompetitorRecord, HandicapCalculator, HistoricalResult, WoodProfile
 from strathmark.config import rules, sim_config
-from strathmark.decay import calculate_performance_weight, compute_weighted_average
+from strathmark.decay import calculate_performance_weight
 from strathmark.variance import (
     calculate_consistency_rating,
-    estimate_competitor_std_dev,
     run_monte_carlo_simulation,
 )
 from strathmark.wood import (
     apply_quality_multiplier_statistical,
-    calculate_effective_janka_hardness,
     calculate_scaling_factor,
     get_species_properties,
 )
@@ -139,8 +136,11 @@ class TestVarianceBoundaries:
         # 10 identical results → std_dev ≈ 0
         history = [
             HistoricalResult(
-                event_code="SB", time_seconds=25.0, species="S01",
-                diameter_mm=300, quality=5,
+                event_code="SB",
+                time_seconds=25.0,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
                 result_date=date.today() - timedelta(days=i),
             )
             for i in range(10)
@@ -157,8 +157,11 @@ class TestVarianceBoundaries:
         times = [10.0, 50.0, 15.0, 80.0, 20.0, 90.0, 12.0, 70.0]
         history = [
             HistoricalResult(
-                event_code="SB", time_seconds=t, species="S01",
-                diameter_mm=300, quality=5,
+                event_code="SB",
+                time_seconds=t,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
                 result_date=date.today() - timedelta(days=i * 30),
             )
             for i, t in enumerate(times)
@@ -172,13 +175,17 @@ class TestVarianceBoundaries:
         """With <3 results, std_dev = prediction * 0.12 (clamped)."""
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         record = CompetitorRecord(
-            name="Newbie", history=[], manual_time_override=50.0,
+            name="Newbie",
+            history=[],
+            manual_time_override=50.0,
         )
         calc = HandicapCalculator()
         results = calc.calculate([record], wood, "SB")
         expected = 50.0 * sim_config.DEFAULT_VARIANCE_SCALING_FACTOR
-        expected = max(sim_config.MIN_COMPETITOR_STD_SECONDS,
-                       min(expected, sim_config.MAX_COMPETITOR_STD_SECONDS))
+        expected = max(
+            sim_config.MIN_COMPETITOR_STD_SECONDS,
+            min(expected, sim_config.MAX_COMPETITOR_STD_SECONDS),
+        )
         assert results[0].std_dev == pytest.approx(expected, abs=0.5)
 
 
@@ -192,7 +199,10 @@ class TestMonteCarloEdgeCases:
             {"name": "Solo", "predicted_time": 25.0, "mark": 3, "std_dev": 3.0},
         ]
         result = run_monte_carlo_simulation(
-            competitors, num_simulations=1_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=1_000,
+            seed=42,
+            verbose=False,
         )
         assert result["winner_percentages"]["Solo"] == pytest.approx(100.0)
 
@@ -203,7 +213,10 @@ class TestMonteCarloEdgeCases:
             {"name": "B", "predicted_time": 25.0, "mark": 3, "std_dev": 3.0},
         ]
         result = run_monte_carlo_simulation(
-            competitors, num_simulations=50_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=50_000,
+            seed=42,
+            verbose=False,
         )
         assert result["winner_percentages"]["A"] == pytest.approx(50.0, abs=3.0)
 
@@ -214,7 +227,10 @@ class TestMonteCarloEdgeCases:
             {"name": "Slow", "predicted_time": 50.0, "mark": 3, "std_dev": 1.0},
         ]
         result = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=42,
+            verbose=False,
         )
         assert result["winner_percentages"]["Fast"] > 90.0
 
@@ -224,7 +240,10 @@ class TestMonteCarloEdgeCases:
             {"name": "X", "predicted_time": 5.0, "mark": 3, "std_dev": 10.0},
         ]
         result = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=42,
+            verbose=False,
         )
         stats = result["competitor_time_stats"]["X"]
         assert stats.min_time >= 0  # No negative times

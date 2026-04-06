@@ -2,26 +2,25 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from strathmark.variance import (
-    estimate_competitor_std_dev,
-    _pooled_std_dev_by_event,
-    _global_fallback_std_dev,
-    simulate_single_race,
-    run_monte_carlo_simulation,
-    audit_mark_sheet,
-    quick_fairness_check,
-    _get_competitor_variance_seconds,
-    MIN_COMPETITOR_STD_SECONDS,
-    MAX_COMPETITOR_STD_SECONDS,
-)
 from strathmark.config import rules
-
+from strathmark.variance import (
+    MAX_COMPETITOR_STD_SECONDS,
+    MIN_COMPETITOR_STD_SECONDS,
+    _get_competitor_variance_seconds,
+    _global_fallback_std_dev,
+    _pooled_std_dev_by_event,
+    audit_mark_sheet,
+    estimate_competitor_std_dev,
+    quick_fairness_check,
+    run_monte_carlo_simulation,
+    simulate_single_race,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _comp(name, mark, predicted_time, std_dev=None):
     d = {"name": name, "mark": mark, "predicted_time": predicted_time}
@@ -35,10 +34,7 @@ def _make_competitor_df(name="Alice", event="SB", times=None, n=10):
     if times is None:
         rng = np.random.RandomState(42)
         times = 30.0 + rng.normal(0, 2.5, n)
-    rows = [
-        {'competitor_name': name, 'event': event, 'raw_time': t}
-        for t in times
-    ]
+    rows = [{"competitor_name": name, "event": event, "raw_time": t} for t in times]
     return pd.DataFrame(rows)
 
 
@@ -46,8 +42,8 @@ def _make_competitor_df(name="Alice", event="SB", times=None, n=10):
 # _pooled_std_dev_by_event
 # ---------------------------------------------------------------------------
 
-class TestPooledStdDevByEvent:
 
+class TestPooledStdDevByEvent:
     def test_none_returns_none(self):
         assert _pooled_std_dev_by_event(None, 3) is None
 
@@ -55,19 +51,23 @@ class TestPooledStdDevByEvent:
         assert _pooled_std_dev_by_event(pd.DataFrame(), 3) is None
 
     def test_insufficient_samples_returns_none(self):
-        df = pd.DataFrame({
-            'raw_time': [30.0, 31.0],
-            'event': ['SB', 'SB'],
-        })
+        df = pd.DataFrame(
+            {
+                "raw_time": [30.0, 31.0],
+                "event": ["SB", "SB"],
+            }
+        )
         result = _pooled_std_dev_by_event(df, min_samples=5)
         assert result is None
 
     def test_single_event_group(self):
         times = [30.0, 31.0, 29.0, 30.5, 28.5, 32.0]
-        df = pd.DataFrame({
-            'raw_time': times,
-            'event': ['SB'] * len(times),
-        })
+        df = pd.DataFrame(
+            {
+                "raw_time": times,
+                "event": ["SB"] * len(times),
+            }
+        )
         result = _pooled_std_dev_by_event(df, min_samples=3)
         assert result is not None
         assert 0 < result < 5.0
@@ -76,17 +76,19 @@ class TestPooledStdDevByEvent:
         """Pooling SB and UH should combine within-group variances."""
         sb_times = [30.0, 31.0, 29.0, 30.5]
         uh_times = [40.0, 41.0, 39.0, 40.5]
-        df = pd.DataFrame({
-            'raw_time': sb_times + uh_times,
-            'event': ['SB'] * 4 + ['UH'] * 4,
-        })
+        df = pd.DataFrame(
+            {
+                "raw_time": sb_times + uh_times,
+                "event": ["SB"] * 4 + ["UH"] * 4,
+            }
+        )
         result = _pooled_std_dev_by_event(df, min_samples=3)
         assert result is not None
         # Pooled std should reflect within-group variance, not between-group
         assert result < 3.0  # each group has ~1s std
 
     def test_no_event_column_uses_overall_std(self):
-        df = pd.DataFrame({'raw_time': [30.0, 31.0, 29.0, 30.5]})
+        df = pd.DataFrame({"raw_time": [30.0, 31.0, 29.0, 30.5]})
         result = _pooled_std_dev_by_event(df, min_samples=3)
         assert result is not None
         assert result > 0
@@ -96,8 +98,8 @@ class TestPooledStdDevByEvent:
 # _global_fallback_std_dev
 # ---------------------------------------------------------------------------
 
-class TestGlobalFallbackStdDev:
 
+class TestGlobalFallbackStdDev:
     def test_none_returns_none(self):
         assert _global_fallback_std_dev(None, 3) is None
 
@@ -109,13 +111,13 @@ class TestGlobalFallbackStdDev:
         rows = []
         # Competitor A: low variance
         for t in [30.0, 30.5, 29.5, 31.0, 29.0]:
-            rows.append({'competitor_name': 'A', 'event': 'SB', 'raw_time': t})
+            rows.append({"competitor_name": "A", "event": "SB", "raw_time": t})
         # Competitor B: higher variance
         for t in [30.0, 35.0, 25.0, 33.0, 27.0]:
-            rows.append({'competitor_name': 'B', 'event': 'SB', 'raw_time': t})
+            rows.append({"competitor_name": "B", "event": "SB", "raw_time": t})
         # Competitor C: moderate variance
         for t in [30.0, 32.0, 28.0, 31.0, 29.0]:
-            rows.append({'competitor_name': 'C', 'event': 'SB', 'raw_time': t})
+            rows.append({"competitor_name": "C", "event": "SB", "raw_time": t})
 
         df = pd.DataFrame(rows)
         result = _global_fallback_std_dev(df, min_samples=3)
@@ -127,8 +129,8 @@ class TestGlobalFallbackStdDev:
 # estimate_competitor_std_dev — cascading fallback
 # ---------------------------------------------------------------------------
 
-class TestEstimateCompetitorStdDev:
 
+class TestEstimateCompetitorStdDev:
     def test_none_results_returns_default(self):
         std, rating = estimate_competitor_std_dev("Alice", "SB", None)
         assert std == rules.PERFORMANCE_VARIANCE_SECONDS
@@ -182,16 +184,20 @@ class TestEstimateCompetitorStdDev:
 # _get_competitor_variance_seconds edge cases
 # ---------------------------------------------------------------------------
 
-class TestGetCompetitorVarianceEdgeCases:
 
+class TestGetCompetitorVarianceEdgeCases:
     def test_nan_std_dev_uses_default(self):
-        comp = _comp("A", 3, 30.0, std_dev=float('nan'))
+        comp = _comp("A", 3, 30.0, std_dev=float("nan"))
         result = _get_competitor_variance_seconds(comp)
         assert result == rules.PERFORMANCE_VARIANCE_SECONDS
 
     def test_string_std_dev_uses_default(self):
-        comp = {"name": "A", "mark": 3, "predicted_time": 30.0,
-                "performance_std_dev": "not a number"}
+        comp = {
+            "name": "A",
+            "mark": 3,
+            "predicted_time": 30.0,
+            "performance_std_dev": "not a number",
+        }
         result = _get_competitor_variance_seconds(comp)
         assert result == rules.PERFORMANCE_VARIANCE_SECONDS
 
@@ -211,8 +217,8 @@ class TestGetCompetitorVarianceEdgeCases:
 # simulate_single_race
 # ---------------------------------------------------------------------------
 
-class TestSimulateSingleRace:
 
+class TestSimulateSingleRace:
     def test_returns_a_competitor_name(self):
         comps = [_comp("A", 3, 30.0), _comp("B", 10, 25.0)]
         rng = np.random.default_rng(42)
@@ -242,27 +248,24 @@ class TestSimulateSingleRace:
 # audit_mark_sheet
 # ---------------------------------------------------------------------------
 
-class TestAuditMarkSheet:
 
+class TestAuditMarkSheet:
     def test_basic_audit(self):
         comps = [
             {"name": "A", "predicted_time": 30.0, "mark": 3},
             {"name": "B", "predicted_time": 25.0, "mark": 8},
         ]
         result = audit_mark_sheet(comps, num_simulations=10_000, verbose=False)
-        assert 'per_competitor' in result
-        assert 'fairness_rating' in result
-        assert result['fairness_rating'] in ('excellent', 'good', 'fair', 'poor')
-        assert 'A' in result['per_competitor']
-        assert 'B' in result['per_competitor']
+        assert "per_competitor" in result
+        assert "fairness_rating" in result
+        assert result["fairness_rating"] in ("excellent", "good", "fair", "poor")
+        assert "A" in result["per_competitor"]
+        assert "B" in result["per_competitor"]
 
     def test_equal_handicaps_produce_excellent(self):
-        comps = [
-            {"name": f"C{i}", "predicted_time": 30.0, "mark": 3}
-            for i in range(4)
-        ]
+        comps = [{"name": f"C{i}", "predicted_time": 30.0, "mark": 3} for i in range(4)]
         result = audit_mark_sheet(comps, num_simulations=50_000, verbose=False)
-        assert result['fairness_rating'] == 'excellent'
+        assert result["fairness_rating"] == "excellent"
 
     def test_variance_override_applied(self):
         """Custom variance should be injected into competitors."""
@@ -278,33 +281,33 @@ class TestAuditMarkSheet:
 # quick_fairness_check
 # ---------------------------------------------------------------------------
 
-class TestQuickFairnessCheck:
 
+class TestQuickFairnessCheck:
     def test_returns_same_structure_as_audit(self):
         comps = [
             {"name": "A", "predicted_time": 30.0, "mark": 3},
             {"name": "B", "predicted_time": 25.0, "mark": 8},
         ]
         result = quick_fairness_check(comps)
-        assert 'fairness_rating' in result
-        assert 'win_rate_spread' in result
-        assert 'per_competitor' in result
+        assert "fairness_rating" in result
+        assert "win_rate_spread" in result
+        assert "per_competitor" in result
 
 
 # ---------------------------------------------------------------------------
 # Monte Carlo: variance ratio and imbalance detection
 # ---------------------------------------------------------------------------
 
-class TestVarianceRatioDetection:
 
+class TestVarianceRatioDetection:
     def test_balanced_variance_ratio_near_1(self):
         comps = [
             _comp("A", 3, 30.0, std_dev=3.0),
             _comp("B", 8, 25.0, std_dev=3.0),
         ]
         result = run_monte_carlo_simulation(comps, num_simulations=1_000, seed=42, verbose=False)
-        assert abs(result['variance_ratio'] - 1.0) < 0.01
-        assert result['variance_imbalanced'] is False
+        assert abs(result["variance_ratio"] - 1.0) < 0.01
+        assert result["variance_imbalanced"] is False
 
     def test_imbalanced_variance_flagged(self):
         comps = [
@@ -312,32 +315,30 @@ class TestVarianceRatioDetection:
             _comp("B", 8, 25.0, std_dev=6.0),
         ]
         result = run_monte_carlo_simulation(comps, num_simulations=1_000, seed=42, verbose=False)
-        assert result['variance_ratio'] == 6.0 / 1.5
-        assert result['variance_imbalanced'] is True
+        assert result["variance_ratio"] == 6.0 / 1.5
+        assert result["variance_imbalanced"] is True
 
 
 # ---------------------------------------------------------------------------
 # Monte Carlo: finish order tracking
 # ---------------------------------------------------------------------------
 
-class TestFinishOrderTracking:
 
+class TestFinishOrderTracking:
     def test_track_finish_orders(self):
         comps = [_comp(f"C{i}", 3, 30.0, std_dev=3.0) for i in range(3)]
         result = run_monte_carlo_simulation(
-            comps, num_simulations=1_000, seed=42,
-            track_finish_orders=True, verbose=False
+            comps, num_simulations=1_000, seed=42, track_finish_orders=True, verbose=False
         )
-        assert result['most_common_order'] is not None
-        assert result['most_common_order_pct'] is not None
-        assert result['most_common_order_pct'] > 0
+        assert result["most_common_order"] is not None
+        assert result["most_common_order_pct"] is not None
+        assert result["most_common_order_pct"] > 0
 
     def test_podium_margin_tracking(self):
         comps = [_comp(f"C{i}", 3, 30.0, std_dev=3.0) for i in range(3)]
         result = run_monte_carlo_simulation(
-            comps, num_simulations=1_000, seed=42,
-            track_podium_margins=True, verbose=False
+            comps, num_simulations=1_000, seed=42, track_podium_margins=True, verbose=False
         )
-        assert result['avg_podium_margin_12'] is not None
-        assert result['avg_podium_margin_12'] > 0
-        assert result['photo_finish_pct'] is not None
+        assert result["avg_podium_margin_12"] is not None
+        assert result["avg_podium_margin_12"] > 0
+        assert result["photo_finish_pct"] is not None

@@ -3,13 +3,15 @@
 import pytest
 
 from strathmark.config import (
-    rules, sim_config, decay_config, ml_config, llm_config,
-    baseline_config, get_event_encoding, get_confidence_level,
+    decay_config,
+    get_confidence_level,
+    get_event_encoding,
+    rules,
+    sim_config,
 )
 
 
 class TestRules:
-
     def test_mark_floor_is_3(self):
         assert rules.MIN_MARK_SECONDS == 3
 
@@ -31,7 +33,6 @@ class TestRules:
 
 
 class TestSimConfig:
-
     def test_num_simulations_positive(self):
         assert sim_config.NUM_SIMULATIONS > 0
         assert sim_config.NUM_SIMULATIONS_QUICK > 0
@@ -54,11 +55,12 @@ class TestSimConfig:
 
 
 class TestDecayConfig:
-
     def test_half_lives_ordered(self):
-        assert (decay_config.HALF_LIFE_ACTIVE_DAYS
-                < decay_config.HALF_LIFE_MODERATE_DAYS
-                < decay_config.HALF_LIFE_INACTIVE_DAYS)
+        assert (
+            decay_config.HALF_LIFE_ACTIVE_DAYS
+            < decay_config.HALF_LIFE_MODERATE_DAYS
+            < decay_config.HALF_LIFE_INACTIVE_DAYS
+        )
 
     def test_all_positive(self):
         assert decay_config.HALF_LIFE_ACTIVE_DAYS > 0
@@ -67,7 +69,6 @@ class TestDecayConfig:
 
 
 class TestEventEncoding:
-
     def test_sb_and_uh_exist(self):
         assert get_event_encoding("SB") is not None
         assert get_event_encoding("UH") is not None
@@ -78,7 +79,6 @@ class TestEventEncoding:
 
 
 class TestConfidenceLevel:
-
     def test_returns_string(self):
         level = get_confidence_level(5)
         assert isinstance(level, str)

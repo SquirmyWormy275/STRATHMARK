@@ -90,10 +90,10 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-
 # ---------------------------------------------------------------------------
 # Internal: date serialisation helper
 # ---------------------------------------------------------------------------
+
 
 def _safe_date(val) -> str | None:
     """
@@ -115,6 +115,7 @@ def _safe_date(val) -> str | None:
     if hasattr(val, "isoformat"):
         return val.isoformat()
     return str(val) if val else None
+
 
 _log = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ def _get_client():
         )
 
     from supabase import create_client  # type: ignore[import]
+
     _client = create_client(url, key)
     return _client
 
@@ -159,6 +161,7 @@ def _get_client():
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
+
 
 def push_results(
     results_df: pd.DataFrame,
@@ -198,14 +201,14 @@ def push_results(
         return 0
 
     col_map = {
-        "CompetitorID":                                     "competitor_id",
-        "Event":                                            "event",
-        "Time (seconds)":                                   "time_seconds",
-        "Size (mm)":                                        "size_mm",
-        "Species Code":                                     "species_code",
-        "Date (optional)":                                  "result_date",
+        "CompetitorID": "competitor_id",
+        "Event": "event",
+        "Time (seconds)": "time_seconds",
+        "Size (mm)": "size_mm",
+        "Species Code": "species_code",
+        "Date (optional)": "result_date",
         "Notes (Competition, special circumstances, etc.)": "notes",
-        "field_strength":                                   "field_strength",
+        "field_strength": "field_strength",
     }
 
     # Rename columns that exist in the DataFrame
@@ -233,11 +236,7 @@ def push_results(
 
     # Fetch existing rows to detect duplicates
     dedup_cols = ["competitor_id", "event", "time_seconds", "size_mm", "result_date"]
-    existing_response = (
-        client.table("results")
-        .select(", ".join(dedup_cols))
-        .execute()
-    )
+    existing_response = client.table("results").select(", ".join(dedup_cols)).execute()
     existing_rows = existing_response.data or []
     existing_keys = {
         (
@@ -301,33 +300,47 @@ def pull_results(
     rows = response.data or []
 
     if not rows:
-        return pd.DataFrame(columns=[
-            "competitor_id", "Event", "Time (seconds)", "Size (mm)",
-            "Species Code", "Date (optional)",
-            "Notes (Competition, special circumstances, etc.)",
-            "show_name", "source_app", "field_strength",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "competitor_id",
+                "Event",
+                "Time (seconds)",
+                "Size (mm)",
+                "Species Code",
+                "Date (optional)",
+                "Notes (Competition, special circumstances, etc.)",
+                "show_name",
+                "source_app",
+                "field_strength",
+            ]
+        )
 
     df = pd.DataFrame(rows)
 
     # Rename DB columns back to local Excel names
     rename = {
-        "event":          "Event",
-        "time_seconds":   "Time (seconds)",
-        "size_mm":        "Size (mm)",
-        "species_code":   "Species Code",
-        "result_date":    "Date (optional)",
-        "notes":          "Notes (Competition, special circumstances, etc.)",
+        "event": "Event",
+        "time_seconds": "Time (seconds)",
+        "size_mm": "Size (mm)",
+        "species_code": "Species Code",
+        "result_date": "Date (optional)",
+        "notes": "Notes (Competition, special circumstances, etc.)",
         # field_strength: same name in DB and output -- no rename needed
     }
     df = df.rename(columns=rename)
 
     # Ensure expected output columns exist
     output_cols = [
-        "competitor_id", "Event", "Time (seconds)", "Size (mm)",
-        "Species Code", "Date (optional)",
+        "competitor_id",
+        "Event",
+        "Time (seconds)",
+        "Size (mm)",
+        "Species Code",
+        "Date (optional)",
         "Notes (Competition, special circumstances, etc.)",
-        "show_name", "source_app", "field_strength",
+        "show_name",
+        "source_app",
+        "field_strength",
     ]
     for col in output_cols:
         if col not in df.columns:
@@ -360,12 +373,12 @@ def push_competitors(competitor_df: pd.DataFrame) -> int:
         return 0
 
     col_map = {
-        "CompetitorID":   "competitor_id",
-        "Name":           "name",
-        "Country":        "country",
+        "CompetitorID": "competitor_id",
+        "Name": "name",
+        "Country": "country",
         "State/Province": "state_province",
-        "Gender":         "gender",
-        "Region":         "region",
+        "Gender": "gender",
+        "Region": "region",
     }
 
     rename = {k: v for k, v in col_map.items() if k in competitor_df.columns}
@@ -401,19 +414,26 @@ def pull_competitors() -> pd.DataFrame:
     rows = response.data or []
 
     if not rows:
-        return pd.DataFrame(columns=[
-            "CompetitorID", "Name", "Country", "State/Province", "Gender", "Region",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "CompetitorID",
+                "Name",
+                "Country",
+                "State/Province",
+                "Gender",
+                "Region",
+            ]
+        )
 
     df = pd.DataFrame(rows)
 
     rename = {
-        "competitor_id":  "CompetitorID",
-        "name":           "Name",
-        "country":        "Country",
+        "competitor_id": "CompetitorID",
+        "name": "Name",
+        "country": "Country",
         "state_province": "State/Province",
-        "gender":         "Gender",
-        "region":         "Region",
+        "gender": "Gender",
+        "region": "Region",
     }
     df = df.rename(columns=rename)
 
@@ -460,15 +480,17 @@ def record_prediction_residuals(
                 continue
             act_time = actual[comp_id]
             residual = act_time - pred_time
-            rows.append({
-                "competitor_id":  comp_id,
-                "predicted_time": round(float(pred_time), 3),
-                "actual_time":    round(float(act_time), 3),
-                "residual":       round(float(residual), 3),
-                "show_name":      show_name,
-                "event_code":     str(event_code).strip().upper(),
-                "result_date":    date_str,
-            })
+            rows.append(
+                {
+                    "competitor_id": comp_id,
+                    "predicted_time": round(float(pred_time), 3),
+                    "actual_time": round(float(act_time), 3),
+                    "residual": round(float(residual), 3),
+                    "show_name": show_name,
+                    "event_code": str(event_code).strip().upper(),
+                    "result_date": date_str,
+                }
+            )
 
         if rows:
             client.table("prediction_residuals").insert(rows).execute()
@@ -534,10 +556,12 @@ def log_sync(show_name: str, source_app: str, records_written: int) -> None:
     """
     try:
         client = _get_client()
-        client.table("sync_log").insert({
-            "show_name":       show_name,
-            "source_app":      source_app,
-            "records_written": records_written,
-        }).execute()
+        client.table("sync_log").insert(
+            {
+                "show_name": show_name,
+                "source_app": source_app,
+                "records_written": records_written,
+            }
+        ).execute()
     except Exception as exc:  # pragma: no cover
         _log.warning("log_sync failed (non-fatal): %s", exc)

@@ -30,13 +30,13 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from strathmark.config import llm_config, sim_config
 from strathmark.predictor import (
     CompetitorRecord,
-    WoodProfile,
     PredictionResult,
+    WoodProfile,
     get_best_prediction,
 )
-from strathmark.config import rules, llm_config, sim_config
 
 _log = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class MarkResult:
@@ -80,10 +81,10 @@ class MarkResult:
         The key 'std_dev' is read by _get_competitor_variance_seconds() in variance.py.
         """
         return {
-            'name': self.name,
-            'mark': self.mark,
-            'predicted_time': self.predicted_time,
-            'std_dev': self.std_dev,
+            "name": self.name,
+            "mark": self.mark,
+            "predicted_time": self.predicted_time,
+            "std_dev": self.std_dev,
         }
 
 
@@ -124,22 +125,16 @@ class StartSheet:
         lines.append("|" + title + "|")
 
         # Wood info
-        wood_line = (
-            f"{self.species}  {self.diameter_mm:.0f}mm  Quality {self.quality}/10"
-        ).center(68)
+        wood_line = (f"{self.species}  {self.diameter_mm:.0f}mm  Quality {self.quality}/10").center(
+            68
+        )
         lines.append("|" + wood_line + "|")
 
         lines.append("|" + "-" * 68 + "|")
 
         # Column header
         # Format: MARK(6) | NAME(30) | PREDICTED(12) | METHOD(12) | CONFIDENCE(8)
-        header = (
-            f"{'MARK':<6}  "
-            f"{'COMPETITOR':<30}  "
-            f"{'PRED(s)':<9}  "
-            f"{'METHOD':<10}  "
-            f"{'CONF':<6}"
-        )
+        header = f"{'MARK':<6}  {'COMPETITOR':<30}  {'PRED(s)':<9}  {'METHOD':<10}  {'CONF':<6}"
         lines.append("|" + header[:68].center(68) + "|")
         lines.append("|" + "-" * 68 + "|")
 
@@ -170,6 +165,7 @@ class StartSheet:
 # ---------------------------------------------------------------------------
 # Main calculator class
 # ---------------------------------------------------------------------------
+
 
 class HandicapCalculator:
     """
@@ -283,6 +279,7 @@ class HandicapCalculator:
             )
 
         from strathmark.db import pull_results
+
         results_df = pull_results(competitor_ids=competitor_ids)
         return cls(wood_df=wood_df, results_df=results_df, **kwargs)
 
@@ -308,6 +305,7 @@ class HandicapCalculator:
             sheet = calc.calculate(competitors, wood_profile, event_code)
         """
         from strathmark.utils import load_woodchopping_xlsx
+
         wood_df, results_df = load_woodchopping_xlsx(path)
         return cls(wood_df=wood_df, results_df=results_df, **kwargs)
 
@@ -343,9 +341,7 @@ class HandicapCalculator:
         """
         event_code = str(event_code).strip().upper()
         if event_code not in ("SB", "UH"):
-            raise ValueError(
-                f"event_code must be 'SB' or 'UH', got '{event_code}'"
-            )
+            raise ValueError(f"event_code must be 'SB' or 'UH', got '{event_code}'")
         if not competitors:
             raise ValueError("competitors list must not be empty")
 
@@ -358,6 +354,7 @@ class HandicapCalculator:
         # and no model has been trained yet.
         if self._ml_model is None and self.results_df is not None:
             from strathmark.predictor import MLModel
+
             ml = MLModel()
             try:
                 trained = ml.train(self.results_df, self.wood_df)
@@ -370,8 +367,7 @@ class HandicapCalculator:
                     )
             except Exception as exc:
                 _log.warning(
-                    "HandicapCalculator: ML training failed (%s). "
-                    "Continuing with baseline.",
+                    "HandicapCalculator: ML training failed (%s). Continuing with baseline.",
                     exc,
                 )
 
@@ -383,6 +379,7 @@ class HandicapCalculator:
             effective_record = record
             if record.name in manual_overrides:
                 from dataclasses import replace
+
                 effective_record = replace(
                     record,
                     manual_time_override=manual_overrides[record.name],
@@ -392,6 +389,7 @@ class HandicapCalculator:
             # (takes precedence over record.tournament_time)
             if record.name in tournament_results:
                 from dataclasses import replace
+
                 effective_record = replace(
                     effective_record,
                     tournament_time=tournament_results[record.name],
@@ -399,9 +397,9 @@ class HandicapCalculator:
 
             # Run prediction cascade, forwarding stored data frames and ML model
             llm_client = {
-                'url': self._ollama_url,
-                'model': llm_config.PREDICTION_MODEL,
-                'timeout': llm_config.TIMEOUT_SECONDS,
+                "url": self._ollama_url,
+                "model": llm_config.PREDICTION_MODEL,
+                "timeout": llm_config.TIMEOUT_SECONDS,
             }
             prediction: PredictionResult = get_best_prediction(
                 effective_record,
@@ -418,8 +416,7 @@ class HandicapCalculator:
             # value regardless of which method (ML/LLM/baseline/panel) won.
             # Threshold: 3+ results -> clamped sample std; <3 -> flat 3.0.
             event_times = [
-                h.time_seconds for h in record.history
-                if h.event_code.upper() == event_code.upper()
+                h.time_seconds for h in record.history if h.event_code.upper() == event_code.upper()
             ]
             if len(event_times) >= 3:
                 raw_std = float(np.std(event_times, ddof=1))
@@ -428,14 +425,16 @@ class HandicapCalculator:
                 # Scale default variance with predicted time
                 competitor_std = max(
                     sim_config.MIN_COMPETITOR_STD_SECONDS,
-                    min(prediction.value * sim_config.DEFAULT_VARIANCE_SCALING_FACTOR,
-                        sim_config.MAX_COMPETITOR_STD_SECONDS),
+                    min(
+                        prediction.value * sim_config.DEFAULT_VARIANCE_SCALING_FACTOR,
+                        sim_config.MAX_COMPETITOR_STD_SECONDS,
+                    ),
                 )
 
             results.append(
                 MarkResult(
                     name=record.name,
-                    mark=self.MARK_FLOOR,       # placeholder; filled by _assign_marks
+                    mark=self.MARK_FLOOR,  # placeholder; filled by _assign_marks
                     predicted_time=prediction.value,
                     method_used=prediction.method,
                     confidence=prediction.confidence,
@@ -515,9 +514,11 @@ class HandicapCalculator:
             entries=list(results),
         )
 
+
 # ---------------------------------------------------------------------------
 # Phase 5E: process_competition_day -- batch helper
 # ---------------------------------------------------------------------------
+
 
 def process_competition_day(
     events,
@@ -559,38 +560,38 @@ def process_competition_day(
     day_results = []
 
     for event_spec in events:
-        event_name = event_spec['event_name']
-        event_code = event_spec['event_code']
-        competitors = event_spec['competitors']
+        event_name = event_spec["event_name"]
+        event_code = event_spec["event_code"]
+        competitors = event_spec["competitors"]
 
         wood = WoodProfile(
-            species=event_spec['species'],
-            diameter_mm=float(event_spec['diameter_mm']),
-            quality=int(event_spec.get('quality', 5)),
+            species=event_spec["species"],
+            diameter_mm=float(event_spec["diameter_mm"]),
+            quality=int(event_spec.get("quality", 5)),
         )
 
-        xlsx_path = event_spec.get('xlsx_path')
-        wood_df = event_spec.get('wood_df')
-        results_df = event_spec.get('results_df')
-        event_ceiling = event_spec.get('event_ceiling')
+        xlsx_path = event_spec.get("xlsx_path")
+        wood_df = event_spec.get("wood_df")
+        results_df = event_spec.get("results_df")
+        event_ceiling = event_spec.get("event_ceiling")
 
         if xlsx_path and wood_df is None:
-            kw = {'event_ceiling': event_ceiling} if event_ceiling else {}
+            kw = {"event_ceiling": event_ceiling} if event_ceiling else {}
             calc = HandicapCalculator.from_xlsx(xlsx_path, **kw)
         else:
             init_kwargs = {}
             if event_ceiling:
-                init_kwargs['event_ceiling'] = event_ceiling
+                init_kwargs["event_ceiling"] = event_ceiling
             if wood_df is not None:
-                init_kwargs['wood_df'] = wood_df
+                init_kwargs["wood_df"] = wood_df
             if results_df is not None:
-                init_kwargs['results_df'] = results_df
+                init_kwargs["results_df"] = results_df
             calc = HandicapCalculator(**init_kwargs)
 
         merged_overrides = dict(overrides)
-        merged_overrides.update(event_spec.get('overrides', {}))
+        merged_overrides.update(event_spec.get("overrides", {}))
 
-        tournament_results = event_spec.get('tournament_results')
+        tournament_results = event_spec.get("tournament_results")
 
         mark_results = calc.calculate(
             competitors=competitors,
@@ -607,11 +608,13 @@ def process_competition_day(
             wood=wood,
         )
 
-        day_results.append({
-            'event_name': event_name,
-            'event_code': event_code,
-            'results': mark_results,
-            'start_sheet': sheet,
-        })
+        day_results.append(
+            {
+                "event_name": event_name,
+                "event_code": event_code,
+                "results": mark_results,
+                "start_sheet": sheet,
+            }
+        )
 
     return day_results

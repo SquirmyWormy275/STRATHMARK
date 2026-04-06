@@ -48,7 +48,6 @@ import pandas as pd
 
 from strathmark.predictor import HistoricalResult
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -82,6 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_results_competitor
 # ---------------------------------------------------------------------------
 # ResultStore
 # ---------------------------------------------------------------------------
+
 
 class ResultStore:
     """
@@ -157,7 +157,7 @@ class ResultStore:
         Returns:
             True if a new row was inserted, False if it was a duplicate.
         """
-        _heat_id = heat_id if heat_id is not None else ''
+        _heat_id = heat_id if heat_id is not None else ""
         _result_date = result_date.isoformat() if result_date is not None else None
         _recorded_at = datetime.now(timezone.utc).isoformat()
 
@@ -212,72 +212,88 @@ class ResultStore:
         df = df.copy()
         df.columns = [str(c).strip().lower() for c in df.columns]
         col_map = {
-            'event': 'event_code',
-            'raw_time': 'time_seconds',
-            'size_mm': 'diameter_mm',
-            'date': 'result_date',
+            "event": "event_code",
+            "raw_time": "time_seconds",
+            "size_mm": "diameter_mm",
+            "date": "result_date",
         }
         df.rename(columns=col_map, inplace=True)
 
-        required = ['competitor_name', 'event_code', 'time_seconds', 'species',
-                    'diameter_mm', 'quality']
+        required = [
+            "competitor_name",
+            "event_code",
+            "time_seconds",
+            "species",
+            "diameter_mm",
+            "quality",
+        ]
         for col in required:
             if col not in df.columns:
                 return 0
 
         # Fill optional columns
-        if 'heat_id' not in df.columns:
-            df['heat_id'] = ''
+        if "heat_id" not in df.columns:
+            df["heat_id"] = ""
         else:
-            df['heat_id'] = df['heat_id'].fillna('').astype(str)
-        if 'result_date' not in df.columns:
-            df['result_date'] = None
+            df["heat_id"] = df["heat_id"].fillna("").astype(str)
+        if "result_date" not in df.columns:
+            df["result_date"] = None
 
         _recorded_at = datetime.now(timezone.utc).isoformat()
         insert_sql = (
-            "INSERT OR IGNORE INTO results "
-            "(competitor_name, event_code, time_seconds, species, "
-            "diameter_mm, quality, heat_id, result_date, recorded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ) if skip_duplicates else (
-            "INSERT INTO results "
-            "(competitor_name, event_code, time_seconds, species, "
-            "diameter_mm, quality, heat_id, result_date, recorded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            (
+                "INSERT OR IGNORE INTO results "
+                "(competitor_name, event_code, time_seconds, species, "
+                "diameter_mm, quality, heat_id, result_date, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            if skip_duplicates
+            else (
+                "INSERT INTO results "
+                "(competitor_name, event_code, time_seconds, species, "
+                "diameter_mm, quality, heat_id, result_date, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
         )
 
         inserted = 0
         with self._connect() as conn:
             for _, row in df.iterrows():
                 try:
-                    time_val = float(row['time_seconds'])
+                    time_val = float(row["time_seconds"])
                     if pd.isna(time_val):
                         continue
-                    quality_val = int(row['quality']) if not pd.isna(row['quality']) else 5
-                    diameter_val = float(row['diameter_mm']) if not pd.isna(row['diameter_mm']) else 300.0
+                    quality_val = int(row["quality"]) if not pd.isna(row["quality"]) else 5
+                    diameter_val = (
+                        float(row["diameter_mm"]) if not pd.isna(row["diameter_mm"]) else 300.0
+                    )
 
                     # Parse result_date
-                    rd = row.get('result_date')
-                    if pd.isna(rd) if hasattr(rd, '__class__') and rd.__class__.__name__ in ('float', 'NaT') else False:
+                    rd = row.get("result_date")
+                    if (
+                        pd.isna(rd)
+                        if hasattr(rd, "__class__") and rd.__class__.__name__ in ("float", "NaT")
+                        else False
+                    ):
                         rd = None
                     if rd is not None:
                         try:
-                            if hasattr(rd, 'isoformat'):
-                                rd = rd.date().isoformat() if hasattr(rd, 'date') else str(rd)[:10]
+                            if hasattr(rd, "isoformat"):
+                                rd = rd.date().isoformat() if hasattr(rd, "date") else str(rd)[:10]
                             else:
                                 rd = str(rd)[:10]
                         except Exception:
                             rd = None
 
-                    heat_id = str(row.get('heat_id', '') or '')
+                    heat_id = str(row.get("heat_id", "") or "")
 
                     cursor = conn.execute(
                         insert_sql,
                         (
-                            str(row['competitor_name']).strip(),
-                            str(row['event_code']).strip().upper(),
+                            str(row["competitor_name"]).strip(),
+                            str(row["event_code"]).strip().upper(),
                             time_val,
-                            str(row['species']).strip(),
+                            str(row["species"]).strip(),
                             diameter_val,
                             quality_val,
                             heat_id,
@@ -329,20 +345,20 @@ class ResultStore:
         results = []
         for row in rows:
             rd = None
-            if row['result_date']:
+            if row["result_date"]:
                 try:
-                    rd = date.fromisoformat(row['result_date'])
+                    rd = date.fromisoformat(row["result_date"])
                 except (ValueError, TypeError):
                     rd = None
             results.append(
                 HistoricalResult(
-                    event_code=row['event_code'],
-                    time_seconds=float(row['time_seconds']),
-                    species=row['species'],
-                    diameter_mm=float(row['diameter_mm']),
-                    quality=int(row['quality']),
+                    event_code=row["event_code"],
+                    time_seconds=float(row["time_seconds"]),
+                    species=row["species"],
+                    diameter_mm=float(row["diameter_mm"]),
+                    quality=int(row["quality"]),
                     result_date=rd,
-                    heat_id=row['heat_id'] or None,
+                    heat_id=row["heat_id"] or None,
                 )
             )
         return results
@@ -364,8 +380,8 @@ class ResultStore:
                 conn,
             )
         # Normalize event column alias for STRATHEX compatibility
-        if 'event_code' in df.columns:
-            df = df.rename(columns={'event_code': 'event'})
+        if "event_code" in df.columns:
+            df = df.rename(columns={"event_code": "event"})
         return df
 
     def get_competitors(self) -> List[str]:
@@ -374,13 +390,13 @@ class ResultStore:
             rows = conn.execute(
                 "SELECT DISTINCT competitor_name FROM results ORDER BY competitor_name"
             ).fetchall()
-        return [r['competitor_name'] for r in rows]
+        return [r["competitor_name"] for r in rows]
 
     def count(self) -> int:
         """Return the total number of result rows in the store."""
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS n FROM results").fetchone()
-        return int(row['n'])
+        return int(row["n"])
 
     def __repr__(self) -> str:
         return f"ResultStore(path={self._path!r}, rows={self.count()})"

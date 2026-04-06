@@ -17,9 +17,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional
 
-from strathmark.config import llm_config
 from strathmark.llm import call_ollama
-
 
 # ---------------------------------------------------------------------------
 # JSON schemas for each role
@@ -32,9 +30,9 @@ COMPETITOR_PROFILE_SCHEMA: dict = {
         "strengths": {"type": "array", "items": {"type": "string"}},
         "recent_form": {"type": "string"},
         "prediction_confidence": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
-        "watch_factors": {"type": "array", "items": {"type": "string"}}
+        "watch_factors": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["narrative", "strengths", "recent_form", "prediction_confidence"]
+    "required": ["narrative", "strengths", "recent_form", "prediction_confidence"],
 }
 
 RACE_COMMENTARY_SCHEMA: dict = {
@@ -43,9 +41,9 @@ RACE_COMMENTARY_SCHEMA: dict = {
         "headline": {"type": "string"},
         "commentary": {"type": "string"},
         "standout_performer": {"type": "string"},
-        "upset": {"type": "boolean"}
+        "upset": {"type": "boolean"},
     },
-    "required": ["headline", "commentary", "standout_performer", "upset"]
+    "required": ["headline", "commentary", "standout_performer", "upset"],
 }
 
 ANOMALY_DETECTION_SCHEMA: dict = {
@@ -54,15 +52,16 @@ ANOMALY_DETECTION_SCHEMA: dict = {
         "is_anomalous": {"type": "boolean"},
         "severity": {"type": "string", "enum": ["normal", "notable", "significant", "extreme"]},
         "explanation": {"type": "string"},
-        "recommended_action": {"type": "string"}
+        "recommended_action": {"type": "string"},
     },
-    "required": ["is_anomalous", "severity", "explanation"]
+    "required": ["is_anomalous", "severity", "explanation"],
 }
 
 
 # ---------------------------------------------------------------------------
 # Competitor profile generation
 # ---------------------------------------------------------------------------
+
 
 def generate_competitor_profile(
     name: str,
@@ -115,6 +114,7 @@ Include strengths, recent form assessment, and any watch factors."""
 # Post-heat race commentary
 # ---------------------------------------------------------------------------
 
+
 def generate_race_commentary(
     event_code: str,
     competitors: List[Dict],
@@ -139,7 +139,7 @@ def generate_race_commentary(
     )
     result_text = "\n".join(
         f"  {r['finish_position']}. {r['name']}: {r['actual_time']:.1f}s"
-        for r in sorted(results, key=lambda x: x['finish_position'])
+        for r in sorted(results, key=lambda x: x["finish_position"])
     )
 
     prompt = f"""Generate exciting sports commentary for a woodchopping heat result.
@@ -173,6 +173,7 @@ or tight finishes. Name the standout performer."""
 # ---------------------------------------------------------------------------
 # Anomaly detection
 # ---------------------------------------------------------------------------
+
 
 def detect_result_anomaly(
     name: str,
@@ -227,10 +228,14 @@ exceptional form, or handicapper prediction error. Rate severity and explain."""
     if response is None:
         # Statistical fallback when LLM unavailable
         return {
-            'is_anomalous': z_score > 2.5,
-            'severity': 'significant' if z_score > 3.0 else ('notable' if z_score > 2.0 else 'normal'),
-            'explanation': f"Statistical deviation: {z_score:.1f} standard deviations from expected.",
-            'recommended_action': 'Review prediction inputs' if z_score > 2.5 else 'No action needed',
+            "is_anomalous": z_score > 2.5,
+            "severity": "significant"
+            if z_score > 3.0
+            else ("notable" if z_score > 2.0 else "normal"),
+            "explanation": f"Statistical deviation: {z_score:.1f} standard deviations from expected.",
+            "recommended_action": "Review prediction inputs"
+            if z_score > 2.5
+            else "No action needed",
         }
 
     try:

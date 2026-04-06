@@ -21,14 +21,17 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import pandas as pd
 
-from strathmark.predictor import CompetitorRecord, HistoricalResult, WoodProfile, predict_baseline, get_best_prediction
-
+from strathmark.predictor import (
+    CompetitorRecord,
+    WoodProfile,
+    get_best_prediction,
+)
 
 # ---------------------------------------------------------------------------
 # Backtesting
 # ---------------------------------------------------------------------------
+
 
 def backtest_predictions(
     competitors: List[CompetitorRecord],
@@ -70,7 +73,9 @@ def backtest_predictions(
             continue
         actual = actuals[record.name]
         pred_result = get_best_prediction(
-            record, wood, event_code,
+            record,
+            wood,
+            event_code,
             wood_data_df=wood_df,
             results_df=results_df,
             ml_model=ml_model,
@@ -81,35 +86,41 @@ def backtest_predictions(
         error = predicted - actual
         abs_error = abs(error)
         errors.append(error)
-        results.append({
-            'name': record.name,
-            'predicted': predicted,
-            'actual': actual,
-            'error': error,
-            'abs_error': abs_error,
-            'confidence': pred_result.confidence,
-        })
+        results.append(
+            {
+                "name": record.name,
+                "predicted": predicted,
+                "actual": actual,
+                "error": error,
+                "abs_error": abs_error,
+                "confidence": pred_result.confidence,
+            }
+        )
 
     if not errors:
         return {
-            'results': results, 'mae': None, 'rmse': None,
-            'bias': None, 'within_3s_pct': None,
+            "results": results,
+            "mae": None,
+            "rmse": None,
+            "bias": None,
+            "within_3s_pct": None,
         }
 
     errors_arr = np.array(errors)
     within_3s = sum(1 for e in errors if abs(e) <= 3.0)
     return {
-        'results': results,
-        'mae': float(np.mean(np.abs(errors_arr))),
-        'rmse': float(np.sqrt(np.mean(errors_arr ** 2))),
-        'bias': float(np.mean(errors_arr)),
-        'within_3s_pct': within_3s / len(errors) * 100,
+        "results": results,
+        "mae": float(np.mean(np.abs(errors_arr))),
+        "rmse": float(np.sqrt(np.mean(errors_arr**2))),
+        "bias": float(np.mean(errors_arr)),
+        "within_3s_pct": within_3s / len(errors) * 100,
     }
 
 
 # ---------------------------------------------------------------------------
 # Competitor profiling
 # ---------------------------------------------------------------------------
+
 
 def profile_competitor(
     record: CompetitorRecord,
@@ -134,16 +145,16 @@ def profile_competitor(
 
     if not history:
         return {
-            'name': record.name,
-            'division': record.division,
-            'total_results': 0,
-            'events_contested': [],
-            'mean_time': None,
-            'std_dev': None,
-            'best_time': None,
-            'worst_time': None,
-            'most_recent_date': None,
-            'activity_level': 'inactive',
+            "name": record.name,
+            "division": record.division,
+            "total_results": 0,
+            "events_contested": [],
+            "mean_time": None,
+            "std_dev": None,
+            "best_time": None,
+            "worst_time": None,
+            "most_recent_date": None,
+            "activity_level": "inactive",
         }
 
     times = [r.time_seconds for r in history]
@@ -152,34 +163,32 @@ def profile_competitor(
     most_recent = max(dates) if dates else None
 
     today = date.today()
-    recent_count = sum(
-        1 for d in dates
-        if d is not None and (today - d).days <= 730
-    )
+    recent_count = sum(1 for d in dates if d is not None and (today - d).days <= 730)
     if recent_count >= 5:
-        activity = 'active'
+        activity = "active"
     elif recent_count >= 2:
-        activity = 'moderate'
+        activity = "moderate"
     else:
-        activity = 'inactive'
+        activity = "inactive"
 
     return {
-        'name': record.name,
-        'division': record.division,
-        'total_results': len(times),
-        'events_contested': events,
-        'mean_time': float(np.mean(times)),
-        'std_dev': float(np.std(times, ddof=1)) if len(times) >= 2 else None,
-        'best_time': float(min(times)),
-        'worst_time': float(max(times)),
-        'most_recent_date': most_recent,
-        'activity_level': activity,
+        "name": record.name,
+        "division": record.division,
+        "total_results": len(times),
+        "events_contested": events,
+        "mean_time": float(np.mean(times)),
+        "std_dev": float(np.std(times, ddof=1)) if len(times) >= 2 else None,
+        "best_time": float(min(times)),
+        "worst_time": float(max(times)),
+        "most_recent_date": most_recent,
+        "activity_level": activity,
     }
 
 
 # ---------------------------------------------------------------------------
 # Performance history summary
 # ---------------------------------------------------------------------------
+
 
 def summarise_performance_history(
     competitors: List[CompetitorRecord],
@@ -198,7 +207,7 @@ def summarise_performance_history(
         List of profile dicts (see profile_competitor()), sorted fastest first.
     """
     profiles = [profile_competitor(c, event_code) for c in competitors]
-    with_data = [p for p in profiles if p['mean_time'] is not None]
-    without_data = [p for p in profiles if p['mean_time'] is None]
-    with_data.sort(key=lambda p: p['mean_time'])
+    with_data = [p for p in profiles if p["mean_time"] is not None]
+    without_data = [p for p in profiles if p["mean_time"] is None]
+    with_data.sort(key=lambda p: p["mean_time"])
     return with_data + without_data

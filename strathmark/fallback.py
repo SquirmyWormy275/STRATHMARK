@@ -39,13 +39,12 @@ Source references (STRATHEX):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from strathmark.config import rules
-
 
 # ---------------------------------------------------------------------------
 # Panel mark defaults (book marks at 300mm standard, quality 5)
@@ -54,16 +53,16 @@ from strathmark.config import rules
 PANEL_MARKS_300MM: dict = {
     # (event_code, division) -> mark in seconds at 300mm, quality 5
     # STRATHEX development defaults
-    ("SB", "Open"):     20.0,
-    ("SB", "Novice"):   40.0,
-    ("SB", "Junior"):   30.0,
+    ("SB", "Open"): 20.0,
+    ("SB", "Novice"): 40.0,
+    ("SB", "Junior"): 30.0,
     ("SB", "Veterans"): 30.0,
-    ("SB", "Womens"):   30.0,
-    ("UH", "Open"):     20.0,
-    ("UH", "Novice"):   40.0,
-    ("UH", "Junior"):   30.0,
+    ("SB", "Womens"): 30.0,
+    ("UH", "Open"): 20.0,
+    ("UH", "Novice"): 40.0,
+    ("UH", "Junior"): 30.0,
     ("UH", "Veterans"): 30.0,
-    ("UH", "Womens"):   30.0,
+    ("UH", "Womens"): 30.0,
 }
 
 PANEL_MARK_DEFAULT_UNKNOWN_DIVISION: float = 20.0
@@ -74,6 +73,7 @@ PANEL_MARK_DEFAULT_UNKNOWN_DIVISION: float = 20.0
 # Private helpers
 # ---------------------------------------------------------------------------
 
+
 def _standardize_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
     """
     Standardize column names and coerce types; then drop invalid rows.
@@ -82,16 +82,19 @@ def _standardize_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
     removes rows with missing or non-positive raw_time.
     """
     from strathmark.utils import standardize_results_columns
+
     df = standardize_results_columns(results_df)
     if df is None or df.empty:
         return df
-    if 'raw_time' in df.columns:
-        df = df.dropna(subset=['raw_time'])
-        df = df[(df['raw_time'] > 0) & (df['raw_time'] <= rules.MAX_TIME_LIMIT_SECONDS)]
+    if "raw_time" in df.columns:
+        df = df.dropna(subset=["raw_time"])
+        df = df[(df["raw_time"] > 0) & (df["raw_time"] <= rules.MAX_TIME_LIMIT_SECONDS)]
     return df
 
 
-def _calculate_performance_weight_simple(result_date, reference_date=None, half_life_days: int = 730) -> float:
+def _calculate_performance_weight_simple(
+    result_date, reference_date=None, half_life_days: int = 730
+) -> float:
     """
     Calculate exponential time-decay weight for a historical result.
     Inline implementation to avoid circular imports within STRATHMARK.
@@ -117,10 +120,12 @@ def _calculate_performance_weight_simple(result_date, reference_date=None, half_
             reference_date = pd.to_datetime(reference_date)
 
         # Normalize both to date to avoid datetime-date subtraction error
-        if hasattr(result_date, 'date'):
+        if hasattr(result_date, "date"):
             result_date = result_date.date() if callable(result_date.date) else result_date
-        if hasattr(reference_date, 'date'):
-            reference_date = reference_date.date() if callable(reference_date.date) else reference_date
+        if hasattr(reference_date, "date"):
+            reference_date = (
+                reference_date.date() if callable(reference_date.date) else reference_date
+            )
 
         days_old = (reference_date - result_date).days
         if days_old < 0:
@@ -147,10 +152,15 @@ def _normalize_time_for_baseline(
     Applies quality normalization (to quality-5 reference), diameter scaling,
     and species time multiplier normalization.
     """
-    from strathmark.wood import get_event_scaling_exponent, calculate_scaling_factor
-    from strathmark.wood import get_species_time_multiplier
+    from strathmark.wood import (
+        calculate_scaling_factor,
+        get_event_scaling_exponent,
+        get_species_time_multiplier,
+    )
 
-    quality_val = max(1, min(10, int(quality) if quality is not None and not pd.isna(quality) else 5))
+    quality_val = max(
+        1, min(10, int(quality) if quality is not None and not pd.isna(quality) else 5)
+    )
 
     normalized = float(time_val)
 
@@ -197,6 +207,7 @@ def _compute_robust_mean(times: list) -> Optional[float]:
 # Panel mark functions
 # ---------------------------------------------------------------------------
 
+
 def get_panel_mark(
     event_code: str,
     division: Optional[str],
@@ -234,16 +245,16 @@ def get_panel_mark(
     div_key = None
     if division:
         div_lower = str(division).strip().lower()
-        if div_lower in ('novice',):
-            div_key = 'Novice'
-        elif div_lower in ('veterans', 'masters', 'senior'):
-            div_key = 'Veterans'
-        elif div_lower in ('womens', 'women', "women's", 'female'):
-            div_key = 'Womens'
-        elif div_lower in ('junior', 'youth'):
-            div_key = 'Junior'
-        elif div_lower in ('open', 'elite', 'professional'):
-            div_key = 'Open'
+        if div_lower in ("novice",):
+            div_key = "Novice"
+        elif div_lower in ("veterans", "masters", "senior"):
+            div_key = "Veterans"
+        elif div_lower in ("womens", "women", "women's", "female"):
+            div_key = "Womens"
+        elif div_lower in ("junior", "youth"):
+            div_key = "Junior"
+        elif div_lower in ("open", "elite", "professional"):
+            div_key = "Open"
 
     # Merge custom_marks with defaults (custom takes priority)
     marks_table = dict(PANEL_MARKS_300MM)
@@ -310,39 +321,33 @@ def get_event_baseline(
         return None, "LOW", "no data after standardization"
 
     event_upper = str(event_code).strip().upper()
-    event_match = df['event'].str.upper() == event_upper
+    event_match = df["event"].str.upper() == event_upper
 
     # Optionally exclude a specific competitor
-    if exclude_competitor and 'competitor_name' in df.columns:
-        excl = df['competitor_name'].str.strip().str.lower() != str(exclude_competitor).strip().lower()
+    if exclude_competitor and "competitor_name" in df.columns:
+        excl = (
+            df["competitor_name"].str.strip().str.lower() != str(exclude_competitor).strip().lower()
+        )
         event_match = event_match & excl
 
     # Level 1: species + diameter range + event
-    if (
-        species
-        and 'species' in df.columns
-        and 'size_mm' in df.columns
-    ):
-        species_match = (
-            df['species'].str.strip().str.lower() == str(species).strip().lower()
-        )
-        diameter_match = (
-            (df['size_mm'] >= diameter_mm - 25) & (df['size_mm'] <= diameter_mm + 25)
-        )
+    if species and "species" in df.columns and "size_mm" in df.columns:
+        species_match = df["species"].str.strip().str.lower() == str(species).strip().lower()
+        diameter_match = (df["size_mm"] >= diameter_mm - 25) & (df["size_mm"] <= diameter_mm + 25)
         exact_matches = df[species_match & diameter_match & event_match]
 
         times = []
         for _, row in exact_matches.iterrows():
-            time_val = row.get('raw_time')
+            time_val = row.get("raw_time")
             if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
                 continue
             if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
                 continue
-            hist_d = row.get('size_mm', diameter_mm)
-            hist_q = row.get('quality', 5.0)
+            hist_d = row.get("size_mm", diameter_mm)
+            hist_q = row.get("quality", 5.0)
             normalized = _normalize_time_for_baseline(
                 float(time_val),
-                str(row.get('species', species)).strip(),
+                str(row.get("species", species)).strip(),
                 float(hist_d) if hist_d is not None else diameter_mm,
                 str(species).strip(),
                 float(diameter_mm),
@@ -357,24 +362,22 @@ def get_event_baseline(
             return mean_val, "HIGH", f"species/size normalized average ({len(times)} performances)"
 
     # Level 2: diameter range + event (any species)
-    if 'size_mm' in df.columns:
-        diameter_match = (
-            (df['size_mm'] >= diameter_mm - 25) & (df['size_mm'] <= diameter_mm + 25)
-        )
+    if "size_mm" in df.columns:
+        diameter_match = (df["size_mm"] >= diameter_mm - 25) & (df["size_mm"] <= diameter_mm + 25)
         size_matches = df[diameter_match & event_match]
 
         times = []
         for _, row in size_matches.iterrows():
-            time_val = row.get('raw_time')
+            time_val = row.get("raw_time")
             if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
                 continue
             if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
                 continue
-            hist_d = row.get('size_mm', diameter_mm)
-            hist_q = row.get('quality', 5.0)
+            hist_d = row.get("size_mm", diameter_mm)
+            hist_q = row.get("quality", 5.0)
             normalized = _normalize_time_for_baseline(
                 float(time_val),
-                str(row.get('species', species)).strip(),
+                str(row.get("species", species)).strip(),
                 float(hist_d) if hist_d is not None else diameter_mm,
                 str(species).strip(),
                 float(diameter_mm),
@@ -392,16 +395,16 @@ def get_event_baseline(
     event_only = df[event_match]
     times = []
     for _, row in event_only.iterrows():
-        time_val = row.get('raw_time')
+        time_val = row.get("raw_time")
         if time_val is None or pd.isna(time_val) or float(time_val) <= 0:
             continue
         if float(time_val) > rules.MAX_TIME_LIMIT_SECONDS:
             continue
-        hist_d = row.get('size_mm', diameter_mm)
-        hist_q = row.get('quality', 5.0)
+        hist_d = row.get("size_mm", diameter_mm)
+        hist_q = row.get("quality", 5.0)
         normalized = _normalize_time_for_baseline(
             float(time_val),
-            str(row.get('species', species)).strip(),
+            str(row.get("species", species)).strip(),
             float(hist_d) if hist_d is not None else diameter_mm,
             str(species).strip(),
             float(diameter_mm),
@@ -455,22 +458,24 @@ def get_competitor_historical_times_flexible(
 
     # Match competitor and event (required)
     name_match = (
-        df['competitor_name'].str.strip().str.lower()
-        == str(competitor_name).strip().lower()
+        df["competitor_name"].str.strip().str.lower() == str(competitor_name).strip().lower()
     )
-    event_match = df['event'].str.upper() == event_upper
+    event_match = df["event"].str.upper() == event_upper
 
     # Level 1: Exact species match
-    if species and 'species' in df.columns:
-        species_match = (
-            df['species'].str.strip().str.lower() == str(species).strip().lower()
-        )
+    if species and "species" in df.columns:
+        species_match = df["species"].str.strip().str.lower() == str(species).strip().lower()
         exact_matches = df[name_match & event_match & species_match]
 
         times = []
         for _, row in exact_matches.iterrows():
-            time_val = row.get('raw_time')
-            if time_val is not None and not pd.isna(time_val) and float(time_val) > 0 and float(time_val) <= rules.MAX_TIME_LIMIT_SECONDS:
+            time_val = row.get("raw_time")
+            if (
+                time_val is not None
+                and not pd.isna(time_val)
+                and float(time_val) > 0
+                and float(time_val) <= rules.MAX_TIME_LIMIT_SECONDS
+            ):
                 times.append(float(time_val))
 
         if times:
@@ -480,8 +485,13 @@ def get_competitor_historical_times_flexible(
     any_species_matches = df[name_match & event_match]
     times = []
     for _, row in any_species_matches.iterrows():
-        time_val = row.get('raw_time')
-        if time_val is not None and not pd.isna(time_val) and float(time_val) > 0 and float(time_val) <= rules.MAX_TIME_LIMIT_SECONDS:
+        time_val = row.get("raw_time")
+        if (
+            time_val is not None
+            and not pd.isna(time_val)
+            and float(time_val) > 0
+            and float(time_val) <= rules.MAX_TIME_LIMIT_SECONDS
+        ):
             times.append(float(time_val))
 
     if times:

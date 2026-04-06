@@ -23,7 +23,10 @@ def two_competitor_analysis():
         {"name": "Bob", "predicted_time": 30.0, "mark": 3, "std_dev": 3.0},
     ]
     return run_monte_carlo_simulation(
-        competitors, num_simulations=10_000, seed=42, verbose=False,
+        competitors,
+        num_simulations=10_000,
+        seed=42,
+        verbose=False,
     )
 
 
@@ -38,8 +41,12 @@ def five_competitor_analysis():
         {"name": "Eve", "predicted_time": 35.0, "mark": 3, "std_dev": 4.0},
     ]
     return run_monte_carlo_simulation(
-        competitors, num_simulations=10_000, seed=42, verbose=False,
-        track_finish_orders=True, track_podium_margins=True,
+        competitors,
+        num_simulations=10_000,
+        seed=42,
+        verbose=False,
+        track_finish_orders=True,
+        track_podium_margins=True,
     )
 
 
@@ -147,7 +154,10 @@ class TestVisualizationEdgeCases:
             {"name": "Solo", "predicted_time": 25.0, "mark": 3, "std_dev": 3.0},
         ]
         analysis = run_monte_carlo_simulation(
-            competitors, num_simulations=1_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=1_000,
+            seed=42,
+            verbose=False,
         )
         summary = generate_simulation_summary(analysis)
         assert isinstance(summary, str)
@@ -163,7 +173,10 @@ class TestVisualizationEdgeCases:
             {"name": "Twin2", "predicted_time": 25.0, "mark": 3, "std_dev": 3.0},
         ]
         analysis = run_monte_carlo_simulation(
-            competitors, num_simulations=10_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=10_000,
+            seed=42,
+            verbose=False,
         )
         chart = visualize_simulation_results(analysis)
         assert "Twin1" in chart
@@ -176,12 +189,19 @@ class TestVisualizationEdgeCases:
     def test_large_field(self):
         """10 competitors should render without truncation."""
         competitors = [
-            {"name": f"Comp{i}", "predicted_time": 20 + i * 3,
-             "mark": max(3, 20 - i * 2), "std_dev": 3.0}
+            {
+                "name": f"Comp{i}",
+                "predicted_time": 20 + i * 3,
+                "mark": max(3, 20 - i * 2),
+                "std_dev": 3.0,
+            }
             for i in range(10)
         ]
         analysis = run_monte_carlo_simulation(
-            competitors, num_simulations=5_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=5_000,
+            seed=42,
+            verbose=False,
         )
         chart = visualize_simulation_results(analysis)
         for i in range(10):

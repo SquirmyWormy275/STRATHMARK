@@ -1,33 +1,30 @@
 """Extended tests for strathmark/predictor.py — MLModel, LLM, species affinity, edge cases."""
 
 from datetime import date, timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
-    PredictionResult,
-    WoodProfile,
-    MLModel,
     IsotonicCalibrator,
+    MLModel,
+    PredictionResult,
     VarianceScaler,
+    WoodProfile,
+    _competitor_history_to_df,
     get_best_prediction,
-    get_all_predictions,
-    select_best_prediction,
     predict_baseline,
     predict_with_llm,
-    _competitor_history_to_df,
+    select_best_prediction,
 )
-from strathmark.config import rules, data_req, ml_config
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _history(event_code="SB", n=5, base_time=50.0, days_apart=30, species="S01", diameter=300):
     """Build a list of HistoricalResult spanning *n* dates."""
@@ -58,16 +55,18 @@ def _make_training_df(n=200, seed=42):
         event = rng.choice(["SB", "UH"])
         diameter = rng.choice([275, 300, 325, 350])
         base_time = rng.uniform(15, 60)
-        rows.append({
-            'competitor_name': comp,
-            'event': event,
-            'raw_time': base_time,
-            'species': rng.choice(["S01", "S03", "S05"]),
-            'size_mm': diameter,
-            'quality': rng.randint(3, 8),
-            'date': date.today() - timedelta(days=rng.randint(1, 700)),
-            'gender': rng.choice(['M', 'F']),
-        })
+        rows.append(
+            {
+                "competitor_name": comp,
+                "event": event,
+                "raw_time": base_time,
+                "species": rng.choice(["S01", "S03", "S05"]),
+                "size_mm": diameter,
+                "quality": rng.randint(3, 8),
+                "date": date.today() - timedelta(days=rng.randint(1, 700)),
+                "gender": rng.choice(["M", "F"]),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -75,8 +74,8 @@ def _make_training_df(n=200, seed=42):
 # MLModel class
 # ---------------------------------------------------------------------------
 
-class TestMLModel:
 
+class TestMLModel:
     def test_untrained_predict_returns_none(self):
         """Prediction on untrained model should return None."""
         ml = MLModel()
@@ -154,8 +153,8 @@ class TestMLModel:
 # IsotonicCalibrator
 # ---------------------------------------------------------------------------
 
-class TestIsotonicCalibrator:
 
+class TestIsotonicCalibrator:
     def test_unfitted_returns_original(self):
         cal = IsotonicCalibrator()
         assert cal.calibrate(30.0, "SB") == 30.0
@@ -171,8 +170,8 @@ class TestIsotonicCalibrator:
 # VarianceScaler
 # ---------------------------------------------------------------------------
 
-class TestVarianceScaler:
 
+class TestVarianceScaler:
     def test_unfitted_returns_baseline(self):
         vs = VarianceScaler()
         assert vs.predict_std_dev({}, "SB") == 3.0
@@ -183,8 +182,8 @@ class TestVarianceScaler:
 # predict_with_llm
 # ---------------------------------------------------------------------------
 
-class TestPredictWithLLM:
 
+class TestPredictWithLLM:
     def test_quality_5_skips_llm_call(self):
         """Quality 5 should skip LLM entirely and return baseline directly."""
         comp = CompetitorRecord(name="A", history=_history())
@@ -199,11 +198,10 @@ class TestPredictWithLLM:
     def test_quality_above_5_calls_llm(self, mock_ollama):
         """Quality > 5 should call LLM for adjustment."""
         import json
-        mock_ollama.return_value = json.dumps({
-            "multiplier": 1.06,
-            "confidence": "HIGH",
-            "explanation": "Quality 8 is harder"
-        })
+
+        mock_ollama.return_value = json.dumps(
+            {"multiplier": 1.06, "confidence": "HIGH", "explanation": "Quality 8 is harder"}
+        )
         comp = CompetitorRecord(name="A", history=_history())
         wood = WoodProfile(species="S01", diameter_mm=300, quality=8)
         result = predict_with_llm(comp, wood, "SB", baseline_time=30.0)
@@ -226,8 +224,8 @@ class TestPredictWithLLM:
 # _competitor_history_to_df
 # ---------------------------------------------------------------------------
 
-class TestCompetitorHistoryToDf:
 
+class TestCompetitorHistoryToDf:
     def test_no_history_returns_none(self):
         comp = CompetitorRecord(name="A", history=[])
         assert _competitor_history_to_df(comp) is None
@@ -236,9 +234,9 @@ class TestCompetitorHistoryToDf:
         comp = CompetitorRecord(name="A", history=_history(n=3))
         df = _competitor_history_to_df(comp)
         assert df is not None
-        assert 'competitor_name' in df.columns
-        assert 'event' in df.columns
-        assert 'raw_time' in df.columns
+        assert "competitor_name" in df.columns
+        assert "event" in df.columns
+        assert "raw_time" in df.columns
         assert len(df) == 3
 
     def test_filters_zero_times(self):
@@ -255,8 +253,8 @@ class TestCompetitorHistoryToDf:
 # predict_baseline edge cases
 # ---------------------------------------------------------------------------
 
-class TestPredictBaselineEdgeCases:
 
+class TestPredictBaselineEdgeCases:
     def test_competitor_with_one_result(self):
         """Single result should still produce a prediction (low confidence)."""
         comp = CompetitorRecord(
@@ -295,12 +293,16 @@ class TestPredictBaselineEdgeCases:
     def test_tournament_time_round1_vs_round4(self):
         """More tournament rounds should give higher weight to tournament time."""
         comp_r1 = CompetitorRecord(
-            name="A", history=_history(n=3, base_time=30.0),
-            tournament_time=50.0, num_tournament_rounds=1,
+            name="A",
+            history=_history(n=3, base_time=30.0),
+            tournament_time=50.0,
+            num_tournament_rounds=1,
         )
         comp_r4 = CompetitorRecord(
-            name="A", history=_history(n=3, base_time=30.0),
-            tournament_time=50.0, num_tournament_rounds=4,
+            name="A",
+            history=_history(n=3, base_time=30.0),
+            tournament_time=50.0,
+            num_tournament_rounds=4,
         )
 
         result_r1 = predict_baseline(comp_r1, PINE_300, "SB")
@@ -324,8 +326,8 @@ class TestPredictBaselineEdgeCases:
 # Cascade priority ordering
 # ---------------------------------------------------------------------------
 
-class TestCascadePriority:
 
+class TestCascadePriority:
     def test_manual_beats_everything(self):
         preds = {
             "manual": PredictionResult(40.0, "VERY HIGH", "manual", "override"),
@@ -388,8 +390,8 @@ class TestCascadePriority:
 # get_best_prediction edge cases
 # ---------------------------------------------------------------------------
 
-class TestGetBestPredictionEdgeCases:
 
+class TestGetBestPredictionEdgeCases:
     def test_uh_event_code(self):
         """UH event code should work identically to SB."""
         comp = CompetitorRecord(name="A", history=_history(event_code="UH", n=5))

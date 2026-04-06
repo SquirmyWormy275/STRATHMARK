@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }
 authors = [
-    { name = "John Ruffato Startup Challenge" }
+    { name = "Alex Kaper" }
 ]
 keywords = ["woodchopping", "handicap", "axemen", "sports", "monte-carlo"]
 classifiers = [
@@ -23,17 +23,14 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 
+# Base dependencies — only what is imported at module load time by the
+# strathmark package and required for core handicap calculation.
+# Heavy ML/DB dependencies are lazily imported and live in optional extras.
 dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
-    "scipy>=1.10",
-    "xgboost>=2.0",
-    "lightgbm>=4.0",
-    "scikit-learn>=1.3",
     "requests>=2.28",
-    "supabase>=2.0",
     "openpyxl>=3.1",
-    "shap>=0.43",
 ]
 
 [project.optional-dependencies]
@@ -44,14 +41,23 @@ api = [
 llm = [
     "ollama",
 ]
+ml = [
+    "xgboost>=2.0",
+    "lightgbm>=4.0",
+    "scikit-learn>=1.3",
+]
+db = [
+    "supabase>=2.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "ruff>=0.4",
     "openpyxl>=3.1",
 ]
 
 [project.urls]
-"Source" = "https://github.com/placeholder/strathmark"
+"Source" = "https://github.com/SquirmyWormy275/STRATHMARK"
 
 [tool.hatch.build.targets.wheel]
 packages = ["strathmark"]
@@ -65,3 +71,22 @@ python_functions = ["test_*"]
 [tool.coverage.run]
 source = ["strathmark"]
 omit = ["tests/*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# E501: long lines that ruff format already shaped as best it can
+#       (long log strings, URLs, docstring tables)
+# E402: module-level imports placed after other statements
+#       (intentional late imports in predictor.py / variance.py / wood.py
+#        to avoid circular dependencies and to gate optional ML deps)
+# F841: assigned-but-unused locals
+#       (test cases that bind a result for clarity without asserting on it)
+ignore = ["E501", "E402", "F841"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-export shims and lazy import probes
+"strathmark/predictor.py" = ["F401"]

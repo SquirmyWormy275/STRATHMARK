@@ -10,11 +10,9 @@ from strathmark.decay import (
     compute_weighted_average,
     compute_weights_for_results,
 )
-from strathmark.config import decay_config
 
 
 class TestCalculatePerformanceWeight:
-
     def test_today_returns_1(self):
         today = date.today()
         w = calculate_performance_weight(today, today, half_life_days=730)
@@ -43,7 +41,6 @@ class TestCalculatePerformanceWeight:
 
 
 class TestClassifyActivityLevel:
-
     def test_active_5_plus_results(self):
         today = date.today()
         dates = [today - timedelta(days=i * 60) for i in range(6)]
@@ -66,7 +63,6 @@ class TestClassifyActivityLevel:
 
 
 class TestComputeWeightedAverage:
-
     def test_equal_weights(self):
         avg = compute_weighted_average([10.0, 20.0, 30.0], [1.0, 1.0, 1.0])
         assert avg == pytest.approx(20.0, abs=0.1)
@@ -81,7 +77,6 @@ class TestComputeWeightedAverage:
 
 
 class TestComputeWeightsForResults:
-
     def test_recent_dates_higher_weight(self):
         today = date.today()
         dates = [today - timedelta(days=730), today]

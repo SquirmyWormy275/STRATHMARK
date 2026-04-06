@@ -2,37 +2,32 @@
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from strathmark.wood import (
-    get_species_time_multiplier,
-    estimate_species_multiplier_from_shear,
-    calculate_scaling_factor,
-    scale_time,
-    scale_time_list,
-    adjust_confidence_for_scaling,
-    calibrate_scaling_exponent,
-    get_event_scaling_exponent,
-    get_species_properties,
-    calculate_effective_janka_hardness,
-    apply_quality_multiplier_statistical,
-    SpeciesProperties,
-    ScalingMetadata,
-    SPECIES_TIME_MULTIPLIERS,
     DEFAULT_SCALING_EXPONENT,
     DEFAULT_SCALING_EXPONENT_SB,
     DEFAULT_SCALING_EXPONENT_UH,
-    DIAMETER_TOLERANCE,
+    SPECIES_TIME_MULTIPLIERS,
+    ScalingMetadata,
     _event_exponent_cache,
+    adjust_confidence_for_scaling,
+    apply_quality_multiplier_statistical,
+    calculate_effective_janka_hardness,
+    calibrate_scaling_exponent,
+    estimate_species_multiplier_from_shear,
+    get_event_scaling_exponent,
+    get_species_properties,
+    get_species_time_multiplier,
+    scale_time,
+    scale_time_list,
 )
-
 
 # ---------------------------------------------------------------------------
 # get_species_time_multiplier
 # ---------------------------------------------------------------------------
 
-class TestGetSpeciesTimeMultiplier:
 
+class TestGetSpeciesTimeMultiplier:
     def test_s01_is_reference(self):
         assert get_species_time_multiplier("S01") == 1.0
 
@@ -59,8 +54,8 @@ class TestGetSpeciesTimeMultiplier:
 # estimate_species_multiplier_from_shear
 # ---------------------------------------------------------------------------
 
-class TestEstimateSpeciesMultiplierFromShear:
 
+class TestEstimateSpeciesMultiplierFromShear:
     def test_known_species_returns_empirical(self):
         """For known species, should return the empirical multiplier, not shear estimate."""
         mult = estimate_species_multiplier_from_shear("S05")
@@ -77,8 +72,8 @@ class TestEstimateSpeciesMultiplierFromShear:
 # scale_time
 # ---------------------------------------------------------------------------
 
-class TestScaleTime:
 
+class TestScaleTime:
     def test_same_diameter_no_scaling(self):
         scaled, note = scale_time(30.0, 300, 300)
         assert scaled == 30.0
@@ -112,8 +107,8 @@ class TestScaleTime:
 # scale_time_list
 # ---------------------------------------------------------------------------
 
-class TestScaleTimeList:
 
+class TestScaleTimeList:
     def test_empty_list(self):
         scaled, meta = scale_time_list([], 300, 350)
         assert scaled == []
@@ -149,8 +144,8 @@ class TestScaleTimeList:
 # adjust_confidence_for_scaling
 # ---------------------------------------------------------------------------
 
-class TestAdjustConfidenceForScaling:
 
+class TestAdjustConfidenceForScaling:
     def test_no_downgrade_preserves_confidence(self):
         meta = ScalingMetadata(True, 300, 315, 1.05, "", "")
         assert adjust_confidence_for_scaling("HIGH", meta) == "HIGH"
@@ -172,8 +167,8 @@ class TestAdjustConfidenceForScaling:
 # calibrate_scaling_exponent
 # ---------------------------------------------------------------------------
 
-class TestCalibrateScalingExponent:
 
+class TestCalibrateScalingExponent:
     def test_none_df_returns_none(self):
         assert calibrate_scaling_exponent(None, "SB") is None
 
@@ -181,24 +176,28 @@ class TestCalibrateScalingExponent:
         assert calibrate_scaling_exponent(pd.DataFrame(), "SB") is None
 
     def test_insufficient_data_returns_none(self):
-        df = pd.DataFrame({
-            'competitor_name': ['A', 'A'],
-            'event': ['SB', 'SB'],
-            'raw_time': [30.0, 35.0],
-            'size_mm': [300, 350],
-        })
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["A", "A"],
+                "event": ["SB", "SB"],
+                "raw_time": [30.0, 35.0],
+                "size_mm": [300, 350],
+            }
+        )
         # Only 2 rows, need min 5
         result = calibrate_scaling_exponent(df, "SB")
         assert result is None
 
     def test_single_diameter_returns_none(self):
         """If all results are at same diameter, can't compute exponent."""
-        df = pd.DataFrame({
-            'competitor_name': ['A'] * 10,
-            'event': ['SB'] * 10,
-            'raw_time': [30.0 + i for i in range(10)],
-            'size_mm': [300] * 10,
-        })
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["A"] * 10,
+                "event": ["SB"] * 10,
+                "raw_time": [30.0 + i for i in range(10)],
+                "size_mm": [300] * 10,
+            }
+        )
         result = calibrate_scaling_exponent(df, "SB")
         assert result is None
 
@@ -206,16 +205,18 @@ class TestCalibrateScalingExponent:
         """Multiple competitors with multiple diameters should produce a valid exponent."""
         rows = []
         # Generate data where time ∝ diameter^1.5
-        for comp in ['A', 'B', 'C', 'D']:
+        for comp in ["A", "B", "C", "D"]:
             for d in [275, 300, 325, 350]:
-                base = 30.0 if comp in ['A', 'B'] else 40.0
+                base = 30.0 if comp in ["A", "B"] else 40.0
                 time = base * (d / 300.0) ** 1.5
-                rows.append({
-                    'competitor_name': comp,
-                    'event': 'SB',
-                    'raw_time': time,
-                    'size_mm': d,
-                })
+                rows.append(
+                    {
+                        "competitor_name": comp,
+                        "event": "SB",
+                        "raw_time": time,
+                        "size_mm": d,
+                    }
+                )
         df = pd.DataFrame(rows)
         result = calibrate_scaling_exponent(df, "SB")
         assert result is not None
@@ -226,14 +227,16 @@ class TestCalibrateScalingExponent:
     def test_wrong_event_ignored(self):
         """Only data for the requested event should be used."""
         rows = []
-        for comp in ['A', 'B', 'C', 'D']:
+        for comp in ["A", "B", "C", "D"]:
             for d in [275, 300, 325, 350]:
-                rows.append({
-                    'competitor_name': comp,
-                    'event': 'UH',
-                    'raw_time': 30.0 * (d / 300.0) ** 2.0,
-                    'size_mm': d,
-                })
+                rows.append(
+                    {
+                        "competitor_name": comp,
+                        "event": "UH",
+                        "raw_time": 30.0 * (d / 300.0) ** 2.0,
+                        "size_mm": d,
+                    }
+                )
         df = pd.DataFrame(rows)
         # Request SB, but all data is UH
         result = calibrate_scaling_exponent(df, "SB")
@@ -244,8 +247,8 @@ class TestCalibrateScalingExponent:
 # get_event_scaling_exponent with cache
 # ---------------------------------------------------------------------------
 
-class TestGetEventScalingExponentCache:
 
+class TestGetEventScalingExponentCache:
     def setup_method(self):
         """Clear cache before each test."""
         _event_exponent_cache.clear()
@@ -267,8 +270,8 @@ class TestGetEventScalingExponentCache:
 # Quality edge cases
 # ---------------------------------------------------------------------------
 
-class TestQualityEdgeCases:
 
+class TestQualityEdgeCases:
     def test_quality_clamped_below_1(self):
         """Quality 0 should be clamped to 1."""
         result = calculate_effective_janka_hardness("S01", 0)
@@ -295,47 +298,53 @@ class TestQualityEdgeCases:
 # Species properties from DataFrame
 # ---------------------------------------------------------------------------
 
-class TestSpeciesPropertiesFromDf:
 
+class TestSpeciesPropertiesFromDf:
     def test_lookup_by_species_name(self):
-        wood_df = pd.DataFrame({
-            'species': ['TestWood'],
-            'speciesID': ['T01'],
-            'janka_hard': [2000.0],
-            'spec_gravity': [0.5],
-            'shear': [1200.0],
-            'crush_strength': [5000.0],
-            'MOR': [9000.0],
-            'MOE': [1200000.0],
-        })
+        wood_df = pd.DataFrame(
+            {
+                "species": ["TestWood"],
+                "speciesID": ["T01"],
+                "janka_hard": [2000.0],
+                "spec_gravity": [0.5],
+                "shear": [1200.0],
+                "crush_strength": [5000.0],
+                "MOR": [9000.0],
+                "MOE": [1200000.0],
+            }
+        )
         props = get_species_properties("TestWood", wood_df)
         assert props.janka_hardness == 2000.0
         assert props.specific_gravity == 0.5
 
     def test_lookup_by_species_id(self):
-        wood_df = pd.DataFrame({
-            'species': ['TestWood'],
-            'speciesID': ['T01'],
-            'janka_hard': [2000.0],
-            'spec_gravity': [0.5],
-            'shear': [1200.0],
-            'crush_strength': [5000.0],
-            'MOR': [9000.0],
-            'MOE': [1200000.0],
-        })
+        wood_df = pd.DataFrame(
+            {
+                "species": ["TestWood"],
+                "speciesID": ["T01"],
+                "janka_hard": [2000.0],
+                "spec_gravity": [0.5],
+                "shear": [1200.0],
+                "crush_strength": [5000.0],
+                "MOR": [9000.0],
+                "MOE": [1200000.0],
+            }
+        )
         props = get_species_properties("T01", wood_df)
         assert props.janka_hardness == 2000.0
 
     def test_nan_values_fallback_to_defaults(self):
-        wood_df = pd.DataFrame({
-            'species': ['NanWood'],
-            'janka_hard': [float('nan')],
-            'spec_gravity': [float('nan')],
-            'shear': [float('nan')],
-            'crush_strength': [float('nan')],
-            'MOR': [float('nan')],
-            'MOE': [float('nan')],
-        })
+        wood_df = pd.DataFrame(
+            {
+                "species": ["NanWood"],
+                "janka_hard": [float("nan")],
+                "spec_gravity": [float("nan")],
+                "shear": [float("nan")],
+                "crush_strength": [float("nan")],
+                "MOR": [float("nan")],
+                "MOE": [float("nan")],
+            }
+        )
         props = get_species_properties("NanWood", wood_df)
         # Should fall back to defaults, not NaN
         assert not np.isnan(props.janka_hardness)

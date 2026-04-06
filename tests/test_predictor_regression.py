@@ -5,7 +5,6 @@ and edge cases that have caused bugs in development.
 """
 
 from datetime import date, timedelta
-from unittest.mock import patch
 
 import pytest
 
@@ -22,8 +21,11 @@ def _make_history(times, event="SB", species="S01", diameter=300, quality=5):
     base = date.today()
     return [
         HistoricalResult(
-            event_code=event, time_seconds=t, species=species,
-            diameter_mm=diameter, quality=quality,
+            event_code=event,
+            time_seconds=t,
+            species=species,
+            diameter_mm=diameter,
+            quality=quality,
             result_date=base - timedelta(days=i * 30),
         )
         for i, t in enumerate(times)
@@ -169,7 +171,9 @@ class TestSelectBestPrediction:
 class TestConfidenceLevels:
     def test_manual_is_very_high(self):
         record = CompetitorRecord(
-            name="Test", history=[], manual_time_override=25.0,
+            name="Test",
+            history=[],
+            manual_time_override=25.0,
         )
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         pred = get_best_prediction(record, wood, "SB")
@@ -185,8 +189,11 @@ class TestConfidenceLevels:
             name="Sparse",
             history=[
                 HistoricalResult(
-                    event_code="SB", time_seconds=25.0, species="S01",
-                    diameter_mm=300, quality=5,
+                    event_code="SB",
+                    time_seconds=25.0,
+                    species="S01",
+                    diameter_mm=300,
+                    quality=5,
                     result_date=date.today() - timedelta(days=1500),
                 ),
             ],
@@ -197,7 +204,9 @@ class TestConfidenceLevels:
         if pred_rich is not None and pred_sparse is not None:
             # Rich history should have equal or higher confidence
             conf_order = {"VERY LOW": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "VERY HIGH": 4}
-            assert conf_order.get(pred_rich.confidence, 0) >= conf_order.get(pred_sparse.confidence, 0)
+            assert conf_order.get(pred_rich.confidence, 0) >= conf_order.get(
+                pred_sparse.confidence, 0
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,6 @@ from strathmark.llm import check_ollama_connection, reset_ollama_status
 
 
 class TestOllamaConnection:
-
     def test_check_returns_bool(self):
         result = check_ollama_connection()
         assert isinstance(result, bool)

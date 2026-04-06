@@ -29,6 +29,7 @@ ENV/
 .coverage
 htmlcov/
 .tox/
+.ruff_cache/
 
 # IDE
 .vscode/

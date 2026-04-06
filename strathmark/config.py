@@ -15,10 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-
 # =============================================================================
 # AAA Competition Rules
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class Rules:
@@ -46,6 +46,7 @@ class Rules:
 # =============================================================================
 # Data Requirements & Validation
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class DataRequirements:
@@ -90,6 +91,7 @@ class DataRequirements:
 # Machine Learning Configuration
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class MLConfig:
     """XGBoost + LightGBM ML model hyperparameters and settings"""
@@ -107,10 +109,10 @@ class MLConfig:
     RANDOM_STATE: int = 42
     """Random seed for reproducibility"""
 
-    OBJECTIVE: str = 'reg:squarederror'
+    OBJECTIVE: str = "reg:squarederror"
     """Loss function (applied to log-transformed target)"""
 
-    TREE_METHOD: str = 'hist'
+    TREE_METHOD: str = "hist"
     """Tree construction algorithm"""
 
     SUBSAMPLE: float = 0.643
@@ -173,38 +175,38 @@ class MLConfig:
     #   comp_weighted_avg (7%), species_mult (5%), shear (5%)
     FEATURE_NAMES: tuple = (
         # Competitor ability (temporal, leak-free)
-        'comp_weighted_avg',          # 1 - Time-decay weighted historical average
-        'comp_count',                 # 2 - Number of prior results for this event
-        'comp_std',                   # 3 - Historical performance std dev
-        'comp_best',                  # 4 - All-time best for this event (NEW)
-        'comp_recent',                # 5 - Most recent prior time
-        'comp_trend',                 # 6 - Linear slope of last 5 results (sec/day)
-        'comp_cross_event_avg',       # 7 - Average time in OTHER event (SB<->UH)
-        'days_since_last',            # 8 - Days since last competition
-        'size_deviation',             # 9 - Target size minus competitor's median size (NEW)
+        "comp_weighted_avg",  # 1 - Time-decay weighted historical average
+        "comp_count",  # 2 - Number of prior results for this event
+        "comp_std",  # 3 - Historical performance std dev
+        "comp_best",  # 4 - All-time best for this event (NEW)
+        "comp_recent",  # 5 - Most recent prior time
+        "comp_trend",  # 6 - Linear slope of last 5 results (sec/day)
+        "comp_cross_event_avg",  # 7 - Average time in OTHER event (SB<->UH)
+        "days_since_last",  # 8 - Days since last competition
+        "size_deviation",  # 9 - Target size minus competitor's median size (NEW)
         # Event and competitor attributes
-        'event_encoded',              # 10 - 0=SB, 1=UH
-        'gender_encoded',             # 11 - 0=F, 1=M (NEW — 9% importance)
+        "event_encoded",  # 10 - 0=SB, 1=UH
+        "gender_encoded",  # 11 - 0=F, 1=M (NEW — 9% importance)
         # Wood properties
-        'janka_hard',                 # 12
-        'spec_gravity',               # 13
-        'crush_strength',             # 14
-        'shear',                      # 15 - 5% importance
-        'MOR',                        # 16
-        'MOE',                        # 17
-        'species_mult',               # 18 - Empirical species time multiplier (NEW — 5%)
+        "janka_hard",  # 12
+        "spec_gravity",  # 13
+        "crush_strength",  # 14
+        "shear",  # 15 - 5% importance
+        "MOR",  # 16
+        "MOE",  # 17
+        "species_mult",  # 18 - Empirical species time multiplier (NEW — 5%)
         # Block size
-        'size_mm',                    # 19
-        'size_mm_sq',                 # 20
-        'log_size',                   # 21 - log(diameter) (NEW)
+        "size_mm",  # 19
+        "size_mm_sq",  # 20
+        "log_size",  # 21 - log(diameter) (NEW)
         # Interaction features (KEY for accuracy)
-        'event_x_size',               # 22 - event_encoded * size_mm
-        'species_mult_x_size',        # 23 - species_mult * size_mm (NEW)
-        'comp_avg_x_species',         # 24 - comp_weighted_avg * species_mult (NEW — 26% importance!)
-        'comp_avg_x_size',            # 25 - comp_weighted_avg * size_mm / 300.0 (NEW — 19% importance!)
+        "event_x_size",  # 22 - event_encoded * size_mm
+        "species_mult_x_size",  # 23 - species_mult * size_mm (NEW)
+        "comp_avg_x_species",  # 24 - comp_weighted_avg * species_mult (NEW — 26% importance!)
+        "comp_avg_x_size",  # 25 - comp_weighted_avg * size_mm / 300.0 (NEW — 19% importance!)
         # Seasonal
-        'month_sin',                  # 26
-        'month_cos',                  # 27
+        "month_sin",  # 26
+        "month_cos",  # 27
     )
 
     # Bayesian optimization parameters (NEW for Phase 2)
@@ -249,6 +251,7 @@ class MLConfig:
 # =============================================================================
 # Monte Carlo Simulation Configuration
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class SimulationConfig:
@@ -301,6 +304,7 @@ class SimulationConfig:
 # =============================================================================
 # Baseline V2 Hybrid Model Configuration
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class BaselineConfig:
@@ -417,6 +421,7 @@ class BaselineConfig:
 # Time-Decay Configuration (standalone subset for decay.py)
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class DecayConfig:
     """
@@ -451,6 +456,7 @@ class DecayConfig:
 # =============================================================================
 # LLM Configuration (Ollama)
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class LLMConfig:
@@ -499,6 +505,7 @@ class LLMConfig:
 # Event Codes
 # =============================================================================
 
+
 @dataclass(frozen=True)
 class EventCodes:
     """Valid event type codes"""
@@ -516,6 +523,7 @@ class EventCodes:
 # =============================================================================
 # Display & UI Configuration
 # =============================================================================
+
 
 @dataclass(frozen=True)
 class DisplayConfig:
@@ -540,6 +548,7 @@ class DisplayConfig:
 # =============================================================================
 # Confidence Level Strings
 # =============================================================================
+
 
 class ConfidenceLevels:
     """Confidence level string constants"""
@@ -571,6 +580,7 @@ confidence = ConfidenceLevels()
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
 
 def get_event_encoding(event_code: str) -> int:
     """

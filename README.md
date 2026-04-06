@@ -13,20 +13,26 @@ STRATHEX codebase.
 
 ## Status
 
-Version 0.3.0 - fully implemented. All modules complete. 48 tests passing
-(28 calculator + 13 variance + 7 integration).
+Version 0.3.1 - fully implemented. All modules complete. 667 tests passing
+across calculator, variance, integration, predictor, fairness, analytics,
+loader, store, db, llm, llm_roles, visualization, wood, decay, fallback,
+config, utils, api, and regression suites.
 
 ## Install
 
 ```bash
-pip install strathmark
-# With HTTP API:
-pip install strathmark[api]
-# With local LLM (Ollama):
-pip install strathmark[llm]
-# Development:
-pip install strathmark[dev]
+pip install strathmark          # Core engine (pandas/numpy + Ollama HTTP client)
+pip install strathmark[api]     # FastAPI REST server
+pip install strathmark[llm]     # Ollama Python client (optional, HTTP works without it)
+pip install strathmark[ml]      # XGBoost / LightGBM / scikit-learn ML predictor
+pip install strathmark[db]      # Supabase/PostgreSQL backend
+pip install strathmark[dev]     # Testing and lint tools (pytest, ruff)
 ```
+
+The base install only pulls in the core handicap engine. Heavy ML and DB
+dependencies are gated behind `[ml]` and `[db]` extras and lazily imported,
+so the cascade falls back to the panel/baseline predictor when they are
+not present.
 
 ## Quick start
 
@@ -125,12 +131,14 @@ scripts/
     import_legacy.py        Legacy Excel import with validation
 ```
 
-## Relationship to STRATHEX
+## Relationship to STRATHEX and downstream tournament managers
 
 STRATHMARK contains only the calculation engine. It has no UI, no Excel
 tournament management, no save/load state, and no championship simulator.
-STRATHEX imports STRATHMARK as a dependency (future plan) to keep the
-handicap logic in one maintainable place.
+STRATHEX imports STRATHMARK as a dependency to keep the handicap logic in
+one maintainable place. The Missoula-Pro-Am-Manager and future tournament
+manager projects will also depend on STRATHMARK as their shared handicap
+calculation core, so any change here propagates downstream.
 
 Source cross-reference table (STRATHEX -> STRATHMARK):
 
@@ -146,3 +154,22 @@ Source cross-reference table (STRATHEX -> STRATHMARK):
 | woodchopping/predictions/calibration.py | predictor.py |
 | woodchopping/data/preprocessing.py | predictor.py (ML feature engineering) |
 | config.py | config.py |
+
+## CI/CD
+
+STRATHMARK ships with GitHub Actions workflows under `.github/workflows/`:
+
+- `ci.yml` runs on every push to `main` and every pull request. It runs
+  three jobs: `lint` (ruff check + format), `test` (matrix of Python 3.10 /
+  3.12 / 3.13 across Ubuntu and Windows, with coverage), and `build`
+  (verifies the wheel installs cleanly and `from strathmark import
+  HandicapCalculator` works).
+- `publish.yml` is a manual `workflow_dispatch` workflow that builds and
+  publishes the package to PyPI via trusted publishing.
+
+Downstream tournament managers (STRATHEX, Missoula-Pro-Am-Manager, future
+projects) should depend on STRATHMARK by version pin and rely on the
+published wheels (or `pip install -e ./STRATHMARK` for live development).
+Any change here is gated by CI before it can be released.
+
+See `CONTRIBUTING.md` for the local dev loop.

@@ -2,8 +2,6 @@
 
 from datetime import date, timedelta
 
-import pytest
-
 from strathmark.analytics import profile_competitor, summarise_performance_history
 from strathmark.predictor import CompetitorRecord, HistoricalResult
 
@@ -12,8 +10,11 @@ def _make_record(name, n=5, base_time=50.0, event_code="SB"):
     today = date.today()
     history = [
         HistoricalResult(
-            event_code=event_code, time_seconds=base_time + i,
-            species="poplar", diameter_mm=300, quality=5,
+            event_code=event_code,
+            time_seconds=base_time + i,
+            species="poplar",
+            diameter_mm=300,
+            quality=5,
             result_date=today - timedelta(days=(n - i) * 30),
         )
         for i in range(n)
@@ -22,7 +23,6 @@ def _make_record(name, n=5, base_time=50.0, event_code="SB"):
 
 
 class TestProfileCompetitor:
-
     def test_basic_profile(self):
         record = _make_record("Alice", n=5, base_time=45.0)
         profile = profile_competitor(record)
@@ -45,7 +45,6 @@ class TestProfileCompetitor:
 
 
 class TestSummarisePerformanceHistory:
-
     def test_sorted_by_mean_time(self):
         records = [
             _make_record("Fast", base_time=40.0),

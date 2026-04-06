@@ -43,7 +43,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -103,19 +102,19 @@ SPECIES_TIME_MULTIPLIERS: Dict[str, float] = {
     # the same competitor takes 31.7% longer on that species vs S01.
     #
     # Keyed by speciesID code. The lookup function also resolves species names.
-    "S01": 1.000,   # eastern white pine (reference)
-    "S02": 1.100,   # yellow-poplar (estimated from hardness — no direct data)
-    "S03": 1.132,   # quaking aspen (n=14 comparisons)
-    "S04": 1.238,   # alder (n=16)
-    "S05": 1.317,   # ponderosa pine (n=20)
-    "S06": 1.195,   # western white pine (n=36)
-    "S07": 1.000,   # sugar pine (estimated — similar hardness to S01)
-    "S08": 1.034,   # cottonwood (n=6)
-    "S09": 1.131,   # poplar Hybrid (n=13)
-    "S10": 0.971,   # poplar European (n=81)
-    "S11": 1.050,   # poplar Lombardi (estimated from hardness)
-    "S12": 1.400,   # Monterey pine (estimated — highest Janka in table)
-    "S13": 1.050,   # basswood (estimated from hardness)
+    "S01": 1.000,  # eastern white pine (reference)
+    "S02": 1.100,  # yellow-poplar (estimated from hardness — no direct data)
+    "S03": 1.132,  # quaking aspen (n=14 comparisons)
+    "S04": 1.238,  # alder (n=16)
+    "S05": 1.317,  # ponderosa pine (n=20)
+    "S06": 1.195,  # western white pine (n=36)
+    "S07": 1.000,  # sugar pine (estimated — similar hardness to S01)
+    "S08": 1.034,  # cottonwood (n=6)
+    "S09": 1.131,  # poplar Hybrid (n=13)
+    "S10": 0.971,  # poplar European (n=81)
+    "S11": 1.050,  # poplar Lombardi (estimated from hardness)
+    "S12": 1.400,  # Monterey pine (estimated — highest Janka in table)
+    "S13": 1.050,  # basswood (estimated from hardness)
 }
 """
 Empirical species time multipliers relative to S01 (eastern white pine).
@@ -190,7 +189,7 @@ def estimate_species_multiplier_from_shear(
     ratio = props.shear_strength / S01_SHEAR
     if ratio <= 0:
         return 1.0
-    return float(ratio ** 0.97)
+    return float(ratio**0.97)
 
 
 # Cache calibrated exponents per event (mutable module-level dict)
@@ -200,6 +199,7 @@ _event_exponent_cache: Dict[str, float] = {}
 # ---------------------------------------------------------------------------
 # Species properties lookup
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SpeciesProperties:
@@ -219,6 +219,7 @@ class SpeciesProperties:
 @dataclass
 class ScalingMetadata:
     """Metadata about diameter scaling applied to a prediction."""
+
     was_scaled: bool
     original_diameter: Optional[float]
     target_diameter: Optional[float]
@@ -259,13 +260,17 @@ def get_species_properties(
 
     # Try matching by species name or speciesID
     row = None
-    if 'species' in wood_df.columns:
-        match = wood_df[wood_df['species'].astype(str).str.strip().str.lower() == str(species).strip().lower()]
+    if "species" in wood_df.columns:
+        match = wood_df[
+            wood_df["species"].astype(str).str.strip().str.lower() == str(species).strip().lower()
+        ]
         if not match.empty:
             row = match.iloc[0]
 
-    if row is None and 'speciesID' in wood_df.columns:
-        match = wood_df[wood_df['speciesID'].astype(str).str.strip().str.upper() == str(species).strip().upper()]
+    if row is None and "speciesID" in wood_df.columns:
+        match = wood_df[
+            wood_df["speciesID"].astype(str).str.strip().str.upper() == str(species).strip().upper()
+        ]
         if not match.empty:
             row = match.iloc[0]
 
@@ -280,18 +285,19 @@ def get_species_properties(
 
     return SpeciesProperties(
         species=species,
-        janka_hardness=_get('janka_hard', DEFAULT_JANKA_HARDNESS),
-        specific_gravity=_get('spec_gravity', DEFAULT_SPECIFIC_GRAVITY),
-        shear_strength=_get('shear', 1000.0),
-        crush_strength=_get('crush_strength', 4000.0),
-        mor=_get('MOR', 8000.0),
-        moe=_get('MOE', 1000000.0),
+        janka_hardness=_get("janka_hard", DEFAULT_JANKA_HARDNESS),
+        specific_gravity=_get("spec_gravity", DEFAULT_SPECIFIC_GRAVITY),
+        shear_strength=_get("shear", 1000.0),
+        crush_strength=_get("crush_strength", 4000.0),
+        mor=_get("MOR", 8000.0),
+        moe=_get("MOE", 1000000.0),
     )
 
 
 # ---------------------------------------------------------------------------
 # Diameter scaling
 # ---------------------------------------------------------------------------
+
 
 def calculate_scaling_factor(
     from_diameter_mm: float,
@@ -331,7 +337,7 @@ def calculate_scaling_factor(
     # Time scales with diameter^exponent
     # If target is smaller (ratio < 1), scaling_factor < 1 (faster)
     # If target is larger (ratio > 1), scaling_factor > 1 (slower)
-    scaling_factor = ratio ** exponent
+    scaling_factor = ratio**exponent
 
     return scaling_factor
 
@@ -445,11 +451,7 @@ def adjust_confidence_for_scaling(
     if metadata.confidence_adjustment != "downgrade":
         return original_confidence
 
-    confidence_map = {
-        "HIGH": "MEDIUM",
-        "MEDIUM": "LOW",
-        "LOW": "LOW"
-    }
+    confidence_map = {"HIGH": "MEDIUM", "MEDIUM": "LOW", "LOW": "LOW"}
     return confidence_map.get(original_confidence, original_confidence)
 
 
@@ -483,17 +485,17 @@ def calibrate_scaling_exponent(
 
     # Filter to this event
     event_data = results_df[
-        results_df['event'].astype(str).str.strip().str.upper() == event_code.strip().upper()
+        results_df["event"].astype(str).str.strip().str.upper() == event_code.strip().upper()
     ].copy()
 
     if len(event_data) < min_samples:
         return None
 
-    if 'size_mm' not in event_data.columns or 'raw_time' not in event_data.columns:
+    if "size_mm" not in event_data.columns or "raw_time" not in event_data.columns:
         return None
 
     # Find competitors with multiple diameter sizes
-    competitor_diameters = event_data.groupby('competitor_name')['size_mm'].nunique()
+    competitor_diameters = event_data.groupby("competitor_name")["size_mm"].nunique()
     multi_diameter_competitors = competitor_diameters[competitor_diameters >= 2].index
 
     if len(multi_diameter_competitors) == 0:
@@ -502,10 +504,10 @@ def calibrate_scaling_exponent(
     exponents = []
 
     for comp in multi_diameter_competitors:
-        comp_data = event_data[event_data['competitor_name'] == comp]
+        comp_data = event_data[event_data["competitor_name"] == comp]
 
         # Get average time for each diameter
-        diameter_times = comp_data.groupby('size_mm')['raw_time'].mean()
+        diameter_times = comp_data.groupby("size_mm")["raw_time"].mean()
 
         if len(diameter_times) < 2:
             continue
@@ -557,9 +559,9 @@ def get_event_scaling_exponent(
         return _event_exponent_cache[event_key]
 
     # Event-specific default fallback
-    if event_key == 'SB':
+    if event_key == "SB":
         default = DEFAULT_SCALING_EXPONENT_SB
-    elif event_key == 'UH':
+    elif event_key == "UH":
         default = DEFAULT_SCALING_EXPONENT_UH
     else:
         default = DEFAULT_SCALING_EXPONENT
@@ -581,10 +583,10 @@ def get_event_scaling_exponent(
 
 from strathmark.utils import standardize_results_columns as _standardize_results_columns
 
-
 # ---------------------------------------------------------------------------
 # Quality adjustment
 # ---------------------------------------------------------------------------
+
 
 def calculate_effective_janka_hardness(
     species: str,
@@ -668,4 +670,3 @@ def apply_quality_multiplier_statistical(
     quality = max(1, min(10, int(quality)))
     quality_adjustment = (quality - 5) * STATISTICAL_QUALITY_ADJUSTMENT_PER_POINT
     return baseline_time * (1.0 + quality_adjustment)
-

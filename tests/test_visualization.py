@@ -1,7 +1,5 @@
 """Tests for strathmark/visualization.py — plain-text output."""
 
-import pytest
-
 from strathmark.visualization import (
     generate_simulation_summary,
     visualize_simulation_results,
@@ -35,7 +33,6 @@ def _mock_analysis():
 
 
 class TestGenerateSimulationSummary:
-
     def test_returns_string(self):
         result = generate_simulation_summary(_mock_analysis())
         assert isinstance(result, str)
@@ -51,7 +48,6 @@ class TestGenerateSimulationSummary:
 
 
 class TestVisualizeSimulationResults:
-
     def test_returns_string(self):
         result = visualize_simulation_results(_mock_analysis())
         assert isinstance(result, str)

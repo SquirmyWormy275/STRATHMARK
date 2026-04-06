@@ -4,27 +4,21 @@ Each test documents a specific bug that was found and fixed.
 These prevent regressions if the code is refactored.
 """
 
-import math
 from datetime import date, timedelta
-from unittest.mock import patch
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from strathmark import CompetitorRecord, HandicapCalculator, WoodProfile
-from strathmark.calculator import MarkResult
-from strathmark.config import rules, sim_config
+from strathmark.config import sim_config
 from strathmark.decay import (
     calculate_performance_weight,
     classify_activity_level,
     compute_weighted_average,
     compute_weights_for_results,
-    select_half_life,
 )
-from strathmark.predictor import get_best_prediction, predict_baseline
+from strathmark.predictor import predict_baseline
 from strathmark.variance import (
-    estimate_competitor_std_dev,
     run_monte_carlo_simulation,
 )
 
@@ -122,25 +116,55 @@ class TestTimeoutFilteringRegression:
 
         today = date.today()
         history = [
-            HistoricalResult(event_code="SB", time_seconds=25.0, species="S01",
-                             diameter_mm=300, quality=5,
-                             result_date=today - timedelta(days=30)),
-            HistoricalResult(event_code="SB", time_seconds=26.0, species="S01",
-                             diameter_mm=300, quality=5,
-                             result_date=today - timedelta(days=60)),
-            HistoricalResult(event_code="SB", time_seconds=24.0, species="S01",
-                             diameter_mm=300, quality=5,
-                             result_date=today - timedelta(days=90)),
-            HistoricalResult(event_code="SB", time_seconds=25.5, species="S01",
-                             diameter_mm=300, quality=5,
-                             result_date=today - timedelta(days=120)),
-            HistoricalResult(event_code="SB", time_seconds=24.5, species="S01",
-                             diameter_mm=300, quality=5,
-                             result_date=today - timedelta(days=150)),
+            HistoricalResult(
+                event_code="SB",
+                time_seconds=25.0,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
+                result_date=today - timedelta(days=30),
+            ),
+            HistoricalResult(
+                event_code="SB",
+                time_seconds=26.0,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
+                result_date=today - timedelta(days=60),
+            ),
+            HistoricalResult(
+                event_code="SB",
+                time_seconds=24.0,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
+                result_date=today - timedelta(days=90),
+            ),
+            HistoricalResult(
+                event_code="SB",
+                time_seconds=25.5,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
+                result_date=today - timedelta(days=120),
+            ),
+            HistoricalResult(
+                event_code="SB",
+                time_seconds=24.5,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
+                result_date=today - timedelta(days=150),
+            ),
             # Timeout result — should be clipped by robust averaging
-            HistoricalResult(event_code="SB", time_seconds=180.0, species="S01",
-                             diameter_mm=300, quality=5,
-                             result_date=today - timedelta(days=180)),
+            HistoricalResult(
+                event_code="SB",
+                time_seconds=180.0,
+                species="S01",
+                diameter_mm=300,
+                quality=5,
+                result_date=today - timedelta(days=180),
+            ),
         ]
         record = CompetitorRecord(name="Test", history=history)
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
@@ -165,7 +189,10 @@ class TestAbsoluteVarianceRegression:
             {"name": "Slow", "predicted_time": 90.0, "mark": 3, "std_dev": 3.0},
         ]
         result = run_monte_carlo_simulation(
-            competitors, num_simulations=50_000, seed=42, verbose=False,
+            competitors,
+            num_simulations=50_000,
+            seed=42,
+            verbose=False,
         )
         fast_stats = result["competitor_time_stats"]["Fast"]
         slow_stats = result["competitor_time_stats"]["Slow"]
@@ -188,9 +215,7 @@ class TestMarkFloorNeverViolatedRegression:
         """If floating-point makes gap slightly negative, mark stays at 3."""
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         c1 = CompetitorRecord(name="A", history=[], manual_time_override=30.0)
-        c2 = CompetitorRecord(
-            name="B", history=[], manual_time_override=30.0000001
-        )
+        c2 = CompetitorRecord(name="B", history=[], manual_time_override=30.0000001)
         calc = HandicapCalculator()
         results = calc.calculate([c1, c2], wood, "SB")
         for r in results:

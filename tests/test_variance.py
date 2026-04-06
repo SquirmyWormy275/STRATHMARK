@@ -11,24 +11,21 @@ They also validate:
     - Fairness thresholds are correct
 """
 
-import pytest
-
 from strathmark.variance import (
-    simulate_single_race,
-    run_monte_carlo_simulation,
-    calculate_consistency_rating,
-    _get_competitor_variance_seconds,
-    MIN_COMPETITOR_STD_SECONDS,
-    MAX_COMPETITOR_STD_SECONDS,
-    CONSISTENCY_VERY_HIGH_THRESHOLD,
     CONSISTENCY_HIGH_THRESHOLD,
     CONSISTENCY_MODERATE_THRESHOLD,
+    CONSISTENCY_VERY_HIGH_THRESHOLD,
+    MAX_COMPETITOR_STD_SECONDS,
+    MIN_COMPETITOR_STD_SECONDS,
+    _get_competitor_variance_seconds,
+    calculate_consistency_rating,
+    run_monte_carlo_simulation,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _comp(name: str, mark: int, predicted_time: float, std_dev: float = None) -> dict:
     """Build a minimal competitor dict for simulation."""
@@ -41,6 +38,7 @@ def _comp(name: str, mark: int, predicted_time: float, std_dev: float = None) ->
 # ---------------------------------------------------------------------------
 # Absolute variance invariant
 # ---------------------------------------------------------------------------
+
 
 class TestAbsoluteVariance:
     """Variance must be absolute seconds, never proportional."""
@@ -93,6 +91,7 @@ class TestAbsoluteVariance:
 # Std-dev clamping
 # ---------------------------------------------------------------------------
 
+
 class TestStdDevClamping:
     """Per-competitor std-dev is clamped to [1.5, 6.0] seconds."""
 
@@ -122,6 +121,7 @@ class TestStdDevClamping:
 # ---------------------------------------------------------------------------
 # Consistency ratings
 # ---------------------------------------------------------------------------
+
 
 class TestConsistencyRating:
     """calculate_consistency_rating() thresholds."""
@@ -165,24 +165,20 @@ class TestConsistencyRating:
     def test_low_above_threshold(self):
         """std_dev = 4.0 -> 'Low'."""
         result = calculate_consistency_rating(4.0)
-        assert result.startswith("Low"), (
-            f"Expected 'Low' at 4.0s, got '{result}'"
-        )
+        assert result.startswith("Low"), f"Expected 'Low' at 4.0s, got '{result}'"
 
 
 # ---------------------------------------------------------------------------
 # Monte Carlo simulation
 # ---------------------------------------------------------------------------
 
+
 class TestMonteCarlo:
     """run_monte_carlo_simulation() statistical properties."""
 
     def _equal_field(self, n: int = 4, num_simulations: int = 10_000) -> dict:
         """All competitors with mark=3 and same predicted time -> equal win rates."""
-        competitors = [
-            _comp(f"Comp{i}", 3, 30.0, std_dev=3.0)
-            for i in range(n)
-        ]
+        competitors = [_comp(f"Comp{i}", 3, 30.0, std_dev=3.0) for i in range(n)]
         return run_monte_carlo_simulation(
             competitors, num_simulations=num_simulations, seed=42, verbose=False
         )
@@ -191,9 +187,7 @@ class TestMonteCarlo:
         """All winner_percentages values must sum to 100.0 (within floating point tolerance)."""
         result = self._equal_field(4, 10_000)
         total = sum(result["winner_percentages"].values())
-        assert abs(total - 100.0) < 0.01, (
-            f"Win rates sum to {total:.4f}, expected 100.0"
-        )
+        assert abs(total - 100.0) < 0.01, f"Win rates sum to {total:.4f}, expected 100.0"
 
     def test_each_competitor_can_win(self):
         """
