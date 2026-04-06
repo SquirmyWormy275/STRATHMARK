@@ -1,9 +1,15 @@
 """Tests for strathmark/api.py — FastAPI REST endpoints."""
 
 import pytest
-from fastapi.testclient import TestClient
 
-from strathmark.api import app
+pytest.importorskip(
+    "fastapi",
+    reason="FastAPI not installed -- install with: pip install -e '.[api]'",
+)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from strathmark.api import app  # noqa: E402
 
 
 @pytest.fixture

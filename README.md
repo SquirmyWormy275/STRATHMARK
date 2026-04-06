@@ -72,9 +72,20 @@ print(sheet.render())
 
 ```bash
 cd STRATHMARK
-pip install -e ".[dev]"
+pip install -e ".[dev]"                       # Core suite (skips API/LLM/DB tests)
 pytest tests/ -v
+
+# To exercise the optional subsystems, install the matching extras:
+pip install -e ".[dev,api]" && pytest tests/ -v       # Include FastAPI tests
+pip install -e ".[dev,llm]" && pytest tests/ -v       # Include Ollama LLM tests
+pip install -e ".[dev,api,llm,ml,db]" && pytest tests/ -v   # Full suite
 ```
+
+The base `[dev]` install runs the core handicap engine suite (~650
+tests). Tests that require optional extras (`fastapi`, `ollama`,
+`supabase`, etc.) skip gracefully via `pytest.importorskip` when those
+packages are not present, so CI on `[dev]`-only environments stays
+green.
 
 ## Design rules (enforced in all sessions)
 
