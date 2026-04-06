@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from strathmark.predictor import (
     CompetitorRecord,
@@ -100,6 +101,10 @@ class TestMLModel:
 
     def test_train_with_sufficient_data(self):
         """Training with enough data should succeed."""
+        pytest.importorskip(
+            "xgboost",
+            reason="xgboost not installed -- install with: pip install -e '.[ml]'",
+        )
         df = _make_training_df(n=250)
         ml = MLModel()
         result = ml.train(df)
