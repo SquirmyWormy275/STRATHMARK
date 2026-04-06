@@ -1,0 +1,39 @@
+name: Publish to PyPI
+
+# Manual-only for now. Alex triggers releases from the Actions tab.
+# To enable automatic publishing on tag push, uncomment the `push` block.
+on:
+  workflow_dispatch:
+  # push:
+  #   tags:
+  #     - "v*"
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    # PyPI trusted publishing requires this environment to be configured
+    # in the repo settings AND a matching publisher to be registered on
+    # PyPI for the strathmark project. See:
+    #   https://docs.pypi.org/trusted-publishers/
+    # Until that is wired up, this workflow will fail at the upload step.
+    environment: pypi
+    permissions:
+      # Required for PyPI trusted publishing (OIDC token exchange)
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
