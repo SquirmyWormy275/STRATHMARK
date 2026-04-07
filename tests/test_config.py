@@ -107,7 +107,8 @@ class TestLLMConfigEnvOverrides:
         cfg = self._reload_config()
         assert cfg.llm_config.OLLAMA_URL == "http://localhost:11434/api/generate"
         assert cfg.llm_config.TIMEOUT_SECONDS == 30
-        assert cfg.llm_config.MAX_RETRIES == 2
+        # Race-day fail-fast: default is now 0 retries (was 2 pre-V0.4.0).
+        assert cfg.llm_config.MAX_RETRIES == 0
 
     def test_url_override(self, monkeypatch):
         monkeypatch.setenv("STRATHMARK_OLLAMA_URL", "http://ollama.internal:9999/api/generate")
@@ -139,3 +140,64 @@ class TestLLMConfigEnvOverrides:
         import strathmark.config as cfg
 
         importlib.reload(cfg)
+
+
+class TestOllamaHostHelpers:
+    """get_ollama_url() / is_ollama_disabled() runtime resolution.
+
+    These helpers exist so OLLAMA_HOST can be flipped on Railway without a
+    redeploy and so tests can monkeypatch env vars without re-importing.
+    """
+
+    def test_default_host(self, monkeypatch):
+        monkeypatch.delenv("STRATHMARK_OLLAMA_URL", raising=False)
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        from strathmark.config import get_ollama_url, is_ollama_disabled
+
+        assert is_ollama_disabled() is False
+        assert get_ollama_url() == "http://localhost:11434/api/generate"
+
+    def test_ollama_host_override(self, monkeypatch):
+        monkeypatch.delenv("STRATHMARK_OLLAMA_URL", raising=False)
+        monkeypatch.setenv("OLLAMA_HOST", "http://tunnel.example.com:8080")
+        from strathmark.config import get_ollama_url
+
+        assert get_ollama_url() == "http://tunnel.example.com:8080/api/generate"
+
+    def test_legacy_full_url_wins(self, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_OLLAMA_URL", "http://legacy:1/api/generate")
+        monkeypatch.setenv("OLLAMA_HOST", "http://ignored:9999")
+        from strathmark.config import get_ollama_url, is_ollama_disabled
+
+        assert is_ollama_disabled() is False
+        assert get_ollama_url() == "http://legacy:1/api/generate"
+
+    def test_disabled_via_empty_host(self, monkeypatch):
+        monkeypatch.delenv("STRATHMARK_OLLAMA_URL", raising=False)
+        monkeypatch.setenv("OLLAMA_HOST", "")
+        from strathmark.config import get_ollama_url, is_ollama_disabled
+
+        assert is_ollama_disabled() is True
+        assert get_ollama_url() == ""
+
+    def test_disabled_via_keyword(self, monkeypatch):
+        monkeypatch.delenv("STRATHMARK_OLLAMA_URL", raising=False)
+        monkeypatch.setenv("OLLAMA_HOST", "disabled")
+        from strathmark.config import get_ollama_url, is_ollama_disabled
+
+        assert is_ollama_disabled() is True
+        assert get_ollama_url() == ""
+
+
+class TestGeminiKeyHelper:
+    def test_unset_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        from strathmark.config import get_gemini_api_key
+
+        assert get_gemini_api_key() == ""
+
+    def test_set_returns_value(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-123")
+        from strathmark.config import get_gemini_api_key
+
+        assert get_gemini_api_key() == "fake-key-123"
