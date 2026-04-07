@@ -68,6 +68,28 @@ sheet = calc.build_start_sheet(results, event_name="300mm SB", event_code="SB", 
 print(sheet.render())
 ```
 
+## Live Deployment
+
+```bash
+# Pre-event validation (read-only by default)
+python scripts/validate_deployment.py
+
+# Required environment variables for the Supabase backend
+export STRATHMARK_SUPABASE_URL=<your-supabase-project-url>
+export STRATHMARK_SUPABASE_KEY=<your-supabase-anon-key>
+
+# Optional: Ollama for the LLM cascade level
+ollama pull qwen3.5:9b
+ollama serve
+
+# Post-event result ingestion (dry run by default; use --commit to write)
+python scripts/ingest_proam_results.py --input results.csv --show "Missoula Pro-Am 2026"
+python scripts/ingest_proam_results.py --input results.csv --commit
+```
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full deployment guide,
+environment variable reference, and post-event checklist.
+
 ## Running tests
 
 ```bash
