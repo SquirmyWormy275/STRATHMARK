@@ -12,8 +12,34 @@ Import specific instances, not classes:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Final
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int from the environment, falling back to *default* on any error.
+
+    Used by LLMConfig so that deployments without a reachable Ollama (e.g. the
+    Pro-Am Manager on Railway) can dial down timeouts and retries to avoid
+    minute-long hangs in the cascade fall-through.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_str(name: str, default: str) -> str:
+    """Read a string from the environment, falling back to *default* if unset."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return raw
+
 
 # =============================================================================
 # AAA Competition Rules
@@ -468,14 +494,19 @@ class LLMConfig:
     PREDICTION_MODEL: str = "qwen3.5:9b"
     """Model for time predictions and quality adjustment (same as default)"""
 
-    OLLAMA_URL: str = "http://localhost:11434/api/generate"
-    """Ollama API endpoint — overridden at runtime via HandicapCalculator(ollama_url=...)"""
+    OLLAMA_URL: str = _env_str("STRATHMARK_OLLAMA_URL", "http://localhost:11434/api/generate")
+    """Ollama API endpoint — overridden at runtime via HandicapCalculator(ollama_url=...)
+    or at module-import time via STRATHMARK_OLLAMA_URL env var."""
 
-    TIMEOUT_SECONDS: int = 30
-    """Request timeout in seconds (reduced from 120 — 9B model responds in 1-5s)"""
+    TIMEOUT_SECONDS: int = _env_int("STRATHMARK_OLLAMA_TIMEOUT", 30)
+    """Request timeout in seconds (reduced from 120 — 9B model responds in 1-5s).
+    Overridable via STRATHMARK_OLLAMA_TIMEOUT env var.  Set to 2 on Railway to
+    fail-fast through the LLM tier when Ollama is not reachable."""
 
-    MAX_RETRIES: int = 2
-    """Maximum retry attempts for failed requests"""
+    MAX_RETRIES: int = _env_int("STRATHMARK_OLLAMA_MAX_RETRIES", 2)
+    """Maximum retry attempts for failed requests.
+    Overridable via STRATHMARK_OLLAMA_MAX_RETRIES env var.  Set to 0 on Railway
+    to skip retries entirely when Ollama is known-unreachable."""
 
     # Token limits for different use cases
     TOKENS_TIME_PREDICTION: int = 150

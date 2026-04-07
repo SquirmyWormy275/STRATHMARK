@@ -14,6 +14,14 @@ to any event that uses STRATHMARK as its handicap engine.
 | `STRATHMARK_SUPABASE_URL` | yes (DB writes/reads) | Supabase project URL |
 | `STRATHMARK_SUPABASE_KEY` | yes (DB writes/reads) | Supabase service or anon key |
 | `STRATHMARK_DB_PATH` | no | Override the local SQLite store path (default `~/.strathmark/results.db`) |
+| `STRATHMARK_OLLAMA_URL` | no | Override the Ollama endpoint (default `http://localhost:11434/api/generate`) |
+| `STRATHMARK_OLLAMA_TIMEOUT` | no | Per-request timeout in seconds (default `30`). Set to `2` on Railway / containers where Ollama is not reachable, so the cascade fails fast through the LLM tier instead of waiting on a TCP timeout. |
+| `STRATHMARK_OLLAMA_MAX_RETRIES` | no | Retry attempts for failed Ollama requests (default `2`). Set to `0` on Railway when Ollama is known-unreachable to skip retries entirely. |
+
+The three `STRATHMARK_OLLAMA_*` variables are read at module-import time
+into the frozen `LLMConfig` dataclass. Changing them after STRATHMARK is
+imported has no effect — set them in your process environment before the
+first `import strathmark` call.
 
 When `STRATHMARK_SUPABASE_*` are missing, the prediction cascade still
 works: it falls through to the local store, baseline, or panel-mark

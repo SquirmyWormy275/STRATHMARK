@@ -1,5 +1,7 @@
 """Tests for strathmark/config.py — configuration constants and invariants."""
 
+import importlib
+
 import pytest
 
 from strathmark.config import (
@@ -83,3 +85,57 @@ class TestConfidenceLevel:
         level = get_confidence_level(5)
         assert isinstance(level, str)
         assert level in ("VERY HIGH", "HIGH", "MEDIUM", "LOW", "VERY LOW")
+
+
+class TestLLMConfigEnvOverrides:
+    """LLMConfig reads STRATHMARK_OLLAMA_* env vars at module-import time.
+
+    These overrides exist so deployments without a reachable Ollama (e.g. the
+    Pro-Am Manager on Railway) can dial timeouts and retries down to fail-fast
+    through the LLM cascade level instead of hanging for minutes.
+    """
+
+    def _reload_config(self):
+        import strathmark.config as cfg
+
+        return importlib.reload(cfg)
+
+    def test_defaults_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("STRATHMARK_OLLAMA_URL", raising=False)
+        monkeypatch.delenv("STRATHMARK_OLLAMA_TIMEOUT", raising=False)
+        monkeypatch.delenv("STRATHMARK_OLLAMA_MAX_RETRIES", raising=False)
+        cfg = self._reload_config()
+        assert cfg.llm_config.OLLAMA_URL == "http://localhost:11434/api/generate"
+        assert cfg.llm_config.TIMEOUT_SECONDS == 30
+        assert cfg.llm_config.MAX_RETRIES == 2
+
+    def test_url_override(self, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_OLLAMA_URL", "http://ollama.internal:9999/api/generate")
+        cfg = self._reload_config()
+        assert cfg.llm_config.OLLAMA_URL == "http://ollama.internal:9999/api/generate"
+
+    def test_timeout_override(self, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_OLLAMA_TIMEOUT", "2")
+        cfg = self._reload_config()
+        assert cfg.llm_config.TIMEOUT_SECONDS == 2
+
+    def test_max_retries_override(self, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_OLLAMA_MAX_RETRIES", "0")
+        cfg = self._reload_config()
+        assert cfg.llm_config.MAX_RETRIES == 0
+
+    def test_invalid_int_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_OLLAMA_TIMEOUT", "not-a-number")
+        cfg = self._reload_config()
+        assert cfg.llm_config.TIMEOUT_SECONDS == 30
+
+    def test_empty_string_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_OLLAMA_URL", "")
+        cfg = self._reload_config()
+        assert cfg.llm_config.OLLAMA_URL == "http://localhost:11434/api/generate"
+
+    def teardown_method(self):
+        # Restore the unmodified module so other tests are not affected
+        import strathmark.config as cfg
+
+        importlib.reload(cfg)
