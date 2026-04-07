@@ -486,7 +486,7 @@ class DecayConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """Ollama LLM settings for AI-enhanced predictions"""
+    """Ollama + Gemini LLM settings for AI-enhanced predictions"""
 
     DEFAULT_MODEL: str = "qwen3.5:9b"
     """Default Ollama model (Qwen 3.5 9B — fits 8GB VRAM at Q4_K_M, released Feb 2026)"""
@@ -496,17 +496,41 @@ class LLMConfig:
 
     OLLAMA_URL: str = _env_str("STRATHMARK_OLLAMA_URL", "http://localhost:11434/api/generate")
     """Ollama API endpoint — overridden at runtime via HandicapCalculator(ollama_url=...)
-    or at module-import time via STRATHMARK_OLLAMA_URL env var."""
+    or at module-import time via STRATHMARK_OLLAMA_URL env var.  Note: prefer the
+    newer OLLAMA_HOST env var (host only, no path) which is composed at call time
+    by get_ollama_url() — see helpers below."""
 
     TIMEOUT_SECONDS: int = _env_int("STRATHMARK_OLLAMA_TIMEOUT", 30)
-    """Request timeout in seconds (reduced from 120 — 9B model responds in 1-5s).
-    Overridable via STRATHMARK_OLLAMA_TIMEOUT env var.  Set to 2 on Railway to
-    fail-fast through the LLM tier when Ollama is not reachable."""
+    """Legacy single-value request timeout (kept for backwards-compat with callers
+    that pass an int).  The new code path in llm.call_ollama() uses the explicit
+    (CONNECT, READ) tuple below, which is what race-day Railway needs."""
 
-    MAX_RETRIES: int = _env_int("STRATHMARK_OLLAMA_MAX_RETRIES", 2)
-    """Maximum retry attempts for failed requests.
-    Overridable via STRATHMARK_OLLAMA_MAX_RETRIES env var.  Set to 0 on Railway
-    to skip retries entirely when Ollama is known-unreachable."""
+    OLLAMA_CONNECT_TIMEOUT: int = _env_int("STRATHMARK_OLLAMA_CONNECT_TIMEOUT", 3)
+    """TCP connect timeout in seconds.  3s is enough for a healthy local Ollama
+    and short enough that a fail-fast cascade fall-through stays under 5s on
+    Railway when Ollama is unreachable."""
+
+    OLLAMA_READ_TIMEOUT: int = _env_int("STRATHMARK_OLLAMA_READ_TIMEOUT", 15)
+    """HTTP read timeout in seconds.  Qwen 3.5 9B at Q4_K_M typically responds
+    in 1-5s for short prompts; 15s leaves headroom for cold starts without
+    blocking the cascade for half a minute."""
+
+    MAX_RETRIES: int = _env_int("STRATHMARK_OLLAMA_MAX_RETRIES", 0)
+    """Race-day fail-fast: zero retries by default.  call_ollama() now does a
+    single attempt then falls through to Gemini / ML / Baseline.  Retries add
+    multi-second latency on race day when Ollama is the unreachable tier."""
+
+    GEMINI_MODEL: str = _env_str("GEMINI_MODEL", "gemini-2.0-flash-lite")
+    """Cloud LLM fallback model.  2.0 Flash-Lite is the cheapest tier and is
+    fast enough for the race-day cascade.  Only invoked when Ollama returns
+    None AND GEMINI_API_KEY is set."""
+
+    GEMINI_CONNECT_TIMEOUT: int = _env_int("GEMINI_CONNECT_TIMEOUT", 5)
+    """TCP connect timeout for Gemini cloud calls (5s — slightly longer than
+    Ollama because it's a real internet round-trip)."""
+
+    GEMINI_READ_TIMEOUT: int = _env_int("GEMINI_READ_TIMEOUT", 15)
+    """HTTP read timeout for Gemini cloud calls."""
 
     # Token limits for different use cases
     TOKENS_TIME_PREDICTION: int = 150
@@ -646,6 +670,55 @@ def is_valid_event(event_code: str) -> bool:
         True if valid, False otherwise
     """
     return event_code.upper() in events.VALID_EVENTS
+
+
+def get_ollama_url() -> str:
+    """
+    Resolve the Ollama API URL at call time (not import time).
+
+    Resolution order:
+        1. STRATHMARK_OLLAMA_URL (legacy full-URL override)
+        2. OLLAMA_HOST + "/api/generate" (new host-only env var)
+        3. http://localhost:11434/api/generate (default)
+
+    Reading at call time means tests can monkeypatch env vars without
+    re-importing the module, and Railway can switch hosts via OLLAMA_HOST
+    without a code change (e.g. point at a tunnel URL for Option B).
+
+    Returns:
+        Full Ollama generate-endpoint URL, or "" if the LLM tier is disabled.
+    """
+    if is_ollama_disabled():
+        return ""
+    legacy = os.environ.get("STRATHMARK_OLLAMA_URL")
+    if legacy:
+        return legacy
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    return f"{host.rstrip('/')}/api/generate"
+
+
+def is_ollama_disabled() -> bool:
+    """
+    Race-day kill switch — set OLLAMA_HOST to "" or "disabled" on Railway
+    to skip the Ollama tier entirely without touching code.
+
+    The legacy STRATHMARK_OLLAMA_URL env var, if set, always wins and is
+    treated as enabled.
+    """
+    if os.environ.get("STRATHMARK_OLLAMA_URL"):
+        return False
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    return host == "" or host.strip().lower() == "disabled"
+
+
+def get_gemini_api_key() -> str:
+    """
+    Read GEMINI_API_KEY at call time.
+
+    Returns empty string if unset, which signals the cloud LLM tier should
+    be skipped.  Never logged — treat as a secret.
+    """
+    return os.environ.get("GEMINI_API_KEY", "") or ""
 
 
 def get_confidence_level(num_events: int) -> str:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "0.3.1"
+version = "0.4.0"
 description = "Woodchopping handicap engine — pip-installable calculation core extracted from STRATHEX"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,9 @@ api = [
 ]
 llm = [
     "ollama",
+    # Cloud fallback for race-day deployments where Ollama is not reachable.
+    # Lazy-imported in strathmark/llm.py — missing package is a graceful no-op.
+    "google-generativeai>=0.8",
 ]
 ml = [
     "xgboost>=2.0",
