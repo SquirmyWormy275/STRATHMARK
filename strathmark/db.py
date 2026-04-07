@@ -542,6 +542,339 @@ def get_competitor_bias(competitor_id: str) -> Optional[float]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Live ingestion helpers (dict-based, for tournament managers)
+# ---------------------------------------------------------------------------
+
+
+_REQUIRED_RESULT_FIELDS = (
+    "competitor_id",
+    "event_code",
+    "time_seconds",
+    "size_mm",
+    "species_code",
+    "date",
+)
+_VALID_EVENTS = ("SB", "UH")
+_MIN_TIME_SECONDS = 3.0
+_MAX_TIME_SECONDS = 180.0
+
+
+def push_results_dicts(
+    results: list[dict],
+    source: str = "pro-am-manager",
+    show_name: str = "",
+    dry_run: bool = False,
+) -> dict:
+    """
+    Push new competition results to Supabase from a list-of-dicts payload.
+
+    This is the ingestion entrypoint for live tournament managers
+    (e.g. Missoula-Pro-Am-Manager) that don't already have a pandas
+    DataFrame. Internally validates every row and delegates the actual
+    insert to push_results().
+
+    Each result dict must contain at minimum:
+        competitor_id : str  -- must already exist in the competitors table
+        event_code    : str  -- 'SB' or 'UH'
+        time_seconds  : float -- must be in [3.0, 180.0]
+        size_mm       : int or float
+        species_code  : str  -- e.g. 'S01', 'S05'
+        date          : str  -- ISO 8601 (YYYY-MM-DD)
+
+    Optional keys:
+        notes         : str
+        field_strength: float
+        show_name     : str (overrides show_name argument)
+
+    Validation rules:
+        - Missing required field   -> errored (row description in errors[])
+        - Invalid event_code       -> errored
+        - time outside [3, 180]    -> errored
+        - Unknown competitor_id    -> errored (continues processing other rows)
+        - Duplicate (competitor_id+event+time+size+date) -> skipped
+
+    Args:
+        results:   List of result dicts (see schema above).
+        source:    Name of the calling application (logged to sync_log.source_app).
+        show_name: Tournament/show identifier; written to results.show_name.
+                   May be overridden per-row by including show_name in the dict.
+        dry_run:   If True, validate everything but DO NOT write to Supabase.
+                   The returned dict still reports inserted/skipped/errors counts
+                   as if the write had happened.
+
+    Returns:
+        {
+            'inserted': int,    # rows actually written (0 if dry_run)
+            'skipped':  int,    # duplicates rejected
+            'errors':   list[str],  # one entry per rejected row
+            'dry_run':  bool,
+        }
+
+    Never raises on validation failures -- a malformed row is always reported
+    in errors and processing continues. Network/Supabase exceptions DO propagate
+    so the caller can decide whether to retry.
+    """
+    out: dict = {"inserted": 0, "skipped": 0, "errors": [], "dry_run": dry_run}
+    if not results:
+        return out
+
+    # Pre-fetch known competitor IDs for validation. We try, but if Supabase
+    # is unreachable in dry_run mode we still want to validate field shapes.
+    known_ids: set = set()
+    try:
+        client = _get_client()
+        comp_resp = client.table("competitors").select("competitor_id").execute()
+        known_ids = {str(r.get("competitor_id", "")).strip() for r in (comp_resp.data or [])}
+    except Exception as exc:  # pragma: no cover
+        if not dry_run:
+            raise
+        out["errors"].append(f"WARN: competitor lookup failed in dry_run: {exc}")
+
+    valid_rows: list[dict] = []
+    for idx, row in enumerate(results):
+        # Required field presence
+        missing = [f for f in _REQUIRED_RESULT_FIELDS if row.get(f) in (None, "")]
+        if missing:
+            out["errors"].append(f"row {idx}: missing required fields {missing}")
+            continue
+
+        comp_id = str(row["competitor_id"]).strip()
+        event_code = str(row["event_code"]).strip().upper()
+        if event_code not in _VALID_EVENTS:
+            out["errors"].append(
+                f"row {idx} ({comp_id}): invalid event_code '{event_code}', "
+                f"must be one of {_VALID_EVENTS}"
+            )
+            continue
+
+        try:
+            t = float(row["time_seconds"])
+        except (TypeError, ValueError):
+            out["errors"].append(f"row {idx} ({comp_id}): time_seconds is not a number")
+            continue
+        if not (_MIN_TIME_SECONDS <= t <= _MAX_TIME_SECONDS):
+            out["errors"].append(
+                f"row {idx} ({comp_id}): time_seconds {t} outside "
+                f"[{_MIN_TIME_SECONDS}, {_MAX_TIME_SECONDS}]"
+            )
+            continue
+
+        try:
+            size_mm = float(row["size_mm"])
+        except (TypeError, ValueError):
+            out["errors"].append(f"row {idx} ({comp_id}): size_mm is not a number")
+            continue
+
+        if known_ids and comp_id not in known_ids:
+            out["errors"].append(
+                f"row {idx} ({comp_id}): competitor_id not found in competitors table; "
+                f"register first via register_competitor()"
+            )
+            continue
+
+        valid_rows.append(
+            {
+                "CompetitorID": comp_id,
+                "Event": event_code,
+                "Time (seconds)": t,
+                "Size (mm)": size_mm,
+                "Species Code": str(row["species_code"]).strip(),
+                "Date (optional)": str(row["date"]).strip(),
+                "Notes (Competition, special circumstances, etc.)": row.get("notes"),
+                "field_strength": row.get("field_strength"),
+            }
+        )
+
+    if dry_run or not valid_rows:
+        # Compute would-be-inserted = len(valid_rows). Duplicates not counted in dry_run.
+        out["inserted"] = 0
+        out["skipped"] = 0
+        if dry_run:
+            out["errors"].append(f"DRY RUN: validated {len(valid_rows)} rows, no writes performed")
+        return out
+
+    df = pd.DataFrame(valid_rows)
+    try:
+        inserted = push_results(df, show_name=show_name, source_app=source)
+    except Exception:
+        raise
+
+    out["inserted"] = int(inserted)
+    out["skipped"] = max(0, len(valid_rows) - int(inserted))
+    return out
+
+
+def register_competitor(
+    name: str,
+    country: str = "USA",
+    state: str = "",
+    gender: str = "",
+    region: str = "",
+) -> dict:
+    """
+    Register a new competitor in Supabase, or return the existing record.
+
+    A new CompetitorID is generated as the next integer in the sequence
+    'C0001', 'C0002', ... If a competitor with the exact same name (case
+    insensitive, trimmed) already exists, that record's competitor_id is
+    returned with status='existing' and no insert is performed.
+
+    Args:
+        name:    Display name. Required.
+        country: ISO country or free-text. Defaults to 'USA'.
+        state:   State/province (free text).
+        gender:  'M' or 'F' (free text accepted).
+        region:  Free-text region tag.
+
+    Returns:
+        {
+            'competitor_id': str,
+            'status':        'created' | 'existing',
+            'name':          str,
+        }
+
+    Raises:
+        ValueError: If name is empty or whitespace.
+        RuntimeError: From _get_client() if env vars are missing.
+    """
+    name_clean = (name or "").strip()
+    if not name_clean:
+        raise ValueError("register_competitor: name must not be empty")
+
+    client = _get_client()
+
+    # Check for an existing competitor by case-insensitive name match
+    existing_resp = (
+        client.table("competitors")
+        .select("competitor_id, name")
+        .ilike("name", name_clean)
+        .execute()
+    )
+    rows = existing_resp.data or []
+    for r in rows:
+        if str(r.get("name", "")).strip().lower() == name_clean.lower():
+            return {
+                "competitor_id": str(r["competitor_id"]),
+                "status": "existing",
+                "name": r.get("name", name_clean),
+            }
+
+    # Generate next competitor_id (highest numeric suffix + 1, prefix 'C')
+    all_resp = client.table("competitors").select("competitor_id").execute()
+    max_n = 0
+    for r in all_resp.data or []:
+        cid = str(r.get("competitor_id", ""))
+        digits = "".join(c for c in cid if c.isdigit())
+        if digits:
+            try:
+                max_n = max(max_n, int(digits))
+            except ValueError:
+                continue
+    new_id = f"C{max_n + 1:04d}"
+
+    record = {
+        "competitor_id": new_id,
+        "name": name_clean,
+        "country": country or None,
+        "state_province": state or None,
+        "gender": gender or None,
+        "region": region or None,
+    }
+    client.table("competitors").insert(record).execute()
+    log_sync(
+        show_name=f"register:{name_clean}", source_app="register_competitor", records_written=1
+    )
+
+    return {"competitor_id": new_id, "status": "created", "name": name_clean}
+
+
+def format_proam_results(
+    raw_results: list[dict],
+    competitor_lookup: Optional[Dict[str, str]] = None,
+    default_date: Optional[str] = None,
+) -> list[dict]:
+    """
+    Transform Pro-Am Manager result rows into push_results_dicts() input format.
+
+    Pro-Am Manager export rows typically contain:
+        competitor_name : str
+        event_name      : str   -- e.g. '275mm SB', '300 Underhand'
+        time            : float -- raw time in seconds
+        species         : str   -- e.g. 'S05', 'Ponderosa Pine'
+        date            : str   -- ISO date (optional, default_date used if absent)
+        heat            : str   -- ignored at this layer (sync_log only)
+
+    Args:
+        raw_results:        Pro-Am Manager rows.
+        competitor_lookup:  Mapping of competitor_name -> competitor_id.
+                            Names not in the lookup are skipped (returned in
+                            the output with competitor_id=None so the caller
+                            can prompt for manual mapping).
+        default_date:       ISO date string used when a row has no 'date'.
+
+    Returns:
+        List of dicts in push_results_dicts() schema. Rows with unmappable
+        names are emitted with competitor_id=None so the calling script can
+        present them for manual resolution.
+    """
+    competitor_lookup = competitor_lookup or {}
+    out: list[dict] = []
+    for row in raw_results:
+        name = str(row.get("competitor_name", "")).strip()
+        event_name = str(row.get("event_name", "")).strip()
+        event_code = _parse_event_code(event_name)
+        size_mm = _parse_diameter_mm(event_name)
+
+        comp_id = competitor_lookup.get(name) or competitor_lookup.get(name.lower())
+
+        out.append(
+            {
+                "competitor_id": comp_id,
+                "_competitor_name": name,  # passthrough for unmapped reporting
+                "event_code": event_code,
+                "time_seconds": row.get("time"),
+                "size_mm": size_mm,
+                "species_code": str(row.get("species", "")).strip(),
+                "date": str(row.get("date") or default_date or "").strip(),
+                "notes": row.get("notes"),
+            }
+        )
+    return out
+
+
+def _parse_event_code(event_name: str) -> str:
+    """Extract 'SB' or 'UH' from a free-text Pro-Am event label."""
+    s = event_name.lower()
+    if "underhand" in s or "uh" in s.split():
+        return "UH"
+    if "standing" in s or "sb" in s.split():
+        return "SB"
+    # Last resort: assume SB if neither token present
+    return "SB"
+
+
+def _parse_diameter_mm(event_name: str) -> Optional[float]:
+    """Extract a diameter (mm) from a free-text Pro-Am event label."""
+    digits = ""
+    for ch in event_name:
+        if ch.isdigit():
+            digits += ch
+        elif digits:
+            break
+    if not digits:
+        return None
+    try:
+        return float(digits)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Existing helper retained
+# ---------------------------------------------------------------------------
+
+
 def log_sync(show_name: str, source_app: str, records_written: int) -> None:
     """
     Insert one row into sync_log.

@@ -48,12 +48,15 @@ Live integration (editable install):
 
 from strathmark.calculator import HandicapCalculator, process_competition_day
 from strathmark.db import (
+    format_proam_results,
     get_competitor_bias,
     pull_competitors,
     pull_results,
     push_competitors,
     push_results,
+    push_results_dicts,
     record_prediction_residuals,
+    register_competitor,
 )
 from strathmark.fairness import (
     get_ai_assessment_of_handicaps,
@@ -118,9 +121,12 @@ __all__ = [
     "load_results_for_competitor",
     # Database (Supabase)
     "push_results",
+    "push_results_dicts",
     "pull_results",
     "push_competitors",
     "pull_competitors",
+    "register_competitor",
+    "format_proam_results",
     "record_prediction_residuals",
     "get_competitor_bias",
     # Scoring / accuracy
