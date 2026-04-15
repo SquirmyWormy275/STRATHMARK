@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: test-failure
+problem_type: test_failure
 severity: medium
 symptoms:
   - "Tests mocked predictor.call_ollama but code imported llm.call_ollama"

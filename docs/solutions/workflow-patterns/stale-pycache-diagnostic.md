@@ -1,6 +1,6 @@
 ---
 type: knowledge
-problem_type: workflow-pattern
+problem_type: workflow_pattern
 severity: medium
 tags:
   - "debugging"

@@ -6,6 +6,10 @@
 **What:** Run `backtest_predictions()` on existing historical data to measure current cascade MAE, RMSE, and within-3s percentage for competitors with 3+ results.
 **Why:** Without a baseline measurement, we don't know if the ensemble is the right approach. If current MAE is 1.2s, bias correction alone might suffice. If it's 4.0s, better individual methods are needed first.
 **Context:** Use `backtest_predictions()` in `analytics.py` with leave-one-out methodology. Record SB and UH separately. This determines implementation strategy.
+**Status (2026-04-15):** Script ready at `scripts/measure_baseline_mae.py`. Requires Supabase creds + historical data. Run on event laptop or any machine with `STRATHMARK_SUPABASE_*` env vars set:
+```
+python scripts/measure_baseline_mae.py --output baseline_mae_2026-04-15.json
+```
 **Effort:** S (human: ~2 hours / CC: ~15 min)
 **Priority:** P1
 **Depends on:** Nothing
@@ -24,8 +28,9 @@
 **What:** Add `prediction_date` to the ledger's unique constraint to prevent cross-competition matching when `heat_id` is empty string.
 **Why:** Current design key `(competitor_name, heat_id, event_code, method)` collides when heat_id is '' (the default). Results from different competitions would incorrectly match.
 **Context:** Change to `(competitor_name, heat_id, event_code, method, prediction_date)` or add a `competition_id` field.
+**Status (2026-04-15):** The prediction ledger table does NOT exist in the codebase yet. Existing tables: `results` (store.py, key `(competitor_name, heat_id, event_code, time_seconds)` — correct as-is) and `prediction_residuals` (db.py, Supabase, no unique constraint). This TODO is forward-looking design guidance for when the ensemble ledger is implemented — NOT an active bug. Apply the recommended key `(competitor_name, heat_id, event_code, method, prediction_date)` at table creation time.
 **Effort:** S (human: ~1 hour / CC: ~10 min)
-**Priority:** P1
+**Priority:** P1 (design-time)
 **Depends on:** Nothing
 **Source:** CEO review outside voice (2026-03-23)
 
@@ -51,8 +56,9 @@
 **What:** Verify that 97%/3% tournament weighting is not double-counted when blending baseline + ML predictions. Baseline already applies tournament weighting; ML features also include tournament-weighted averages.
 **Why:** Double-counting would distort predictions for competitors with tournament_time set — overweighting same-tournament data.
 **Context:** Trace tournament_time through `predict_baseline()` and ML feature engineering. Document which methods apply tournament weighting and how the blend handles it.
+**Status (2026-04-15):** RESOLVED for current code. Audit done — no double-counting today. `tournament_time` is applied ONLY in `predict_baseline()` ([predictor.py:1218](strathmark/predictor.py#L1218)); `train_model.py` has no tournament feature; cascade selects ONE method (no blend). Writeup and guardrails for future ensemble work in [docs/solutions/architecture-decisions/tournament-weighting-audit-todo-011.md](docs/solutions/architecture-decisions/tournament-weighting-audit-todo-011.md).
 **Effort:** S (human: ~2 hours / CC: ~15 min)
-**Priority:** P1
+**Priority:** P1 → resolved (reopens when ensemble ships)
 **Depends on:** Nothing
 **Source:** Eng review outside voice (2026-03-23)
 

@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: configuration-issue
+problem_type: configuration_issue
 severity: medium
 symptoms:
   - "Setting STRATHMARK_OLLAMA_URL after import had no effect"

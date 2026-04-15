@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: data-integrity
+problem_type: data_integrity
 severity: high
 symptoms:
   - "All time-decay weights silently defaulted to 1.0 regardless of age"

@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: test-failure
+problem_type: test_failure
 severity: high
 symptoms:
   - "Integration tests ran with empty competitor histories"

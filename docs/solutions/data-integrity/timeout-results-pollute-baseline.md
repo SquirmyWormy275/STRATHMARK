@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: data-integrity
+problem_type: data_integrity
 severity: high
 symptoms:
   - "Baseline predictions pulled toward 180s by timeout results"

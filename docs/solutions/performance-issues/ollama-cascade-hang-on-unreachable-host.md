@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: performance-issue
+problem_type: performance_issue
 severity: critical
 symptoms:
   - "Prediction cascade hung ~120s per call when Ollama was unreachable"

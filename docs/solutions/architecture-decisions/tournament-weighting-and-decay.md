@@ -1,6 +1,6 @@
 ---
 type: knowledge
-problem_type: architecture-decision
+problem_type: architecture_decision
 severity: high
 tags:
   - "predictor"

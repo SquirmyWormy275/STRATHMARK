@@ -1,6 +1,6 @@
 ---
 type: knowledge
-problem_type: best-practice
+problem_type: best_practice
 severity: medium
 tags:
   - "workflow"

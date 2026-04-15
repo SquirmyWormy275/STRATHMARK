@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: configuration-issue
+problem_type: configuration_issue
 severity: high
 symptoms:
   - "API accepted negative times, out-of-range diameters, invalid quality scores"

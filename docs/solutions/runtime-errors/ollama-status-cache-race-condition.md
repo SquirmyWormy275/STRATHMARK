@@ -1,6 +1,6 @@
 ---
 type: bug
-problem_type: runtime-error
+problem_type: runtime_error
 severity: medium
 symptoms:
   - "Concurrent FastAPI requests could read/write _ollama_status simultaneously"
