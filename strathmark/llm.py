@@ -252,7 +252,9 @@ def call_ollama(
         # Defensive: any other error (e.g. malformed JSON in response.json())
         # must not propagate — race day, the cascade is the safety net.
         if not _ollama_status["error_shown"]:
-            logger.warning("Ollama unexpected error (%s: %s); falling through", type(exc).__name__, exc)
+            logger.warning(
+                "Ollama unexpected error (%s: %s); falling through", type(exc).__name__, exc
+            )
             _ollama_status["error_shown"] = True
 
     # ----- Tier 2: Gemini -------------------------------------------------

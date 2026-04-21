@@ -73,9 +73,7 @@ def leave_one_out_backtest(
         event_history = [h for h in rec.history if h.event_code == event_code]
         if len(event_history) < 3:
             continue
-        event_history_sorted = sorted(
-            event_history, key=lambda h: h.result_date or date.min
-        )
+        event_history_sorted = sorted(event_history, key=lambda h: h.result_date or date.min)
         held_out = event_history_sorted[-1]
         training_history = [h for h in rec.history if h is not held_out]
         test_records.append(CompetitorRecord(name=rec.name, history=training_history))
@@ -117,13 +115,9 @@ def main() -> int:
 
     for evt in events:
         print(f"\n[INFO] Backtesting {evt}...")
-        records = build_records(
-            df[df.get("event", "SB").str.upper() == evt], args.min_results
-        )
+        records = build_records(df[df.get("event", "SB").str.upper() == evt], args.min_results)
         if not records:
-            print(
-                f"[WARN] {evt}: no competitors meet min-results >= {args.min_results}"
-            )
+            print(f"[WARN] {evt}: no competitors meet min-results >= {args.min_results}")
             summary[evt] = None
             continue
         result = leave_one_out_backtest(records, default_wood, evt, df)

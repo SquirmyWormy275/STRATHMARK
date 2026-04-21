@@ -78,9 +78,7 @@ class TestCallOllamaFailFast:
 
     def test_connection_refused_returns_none(self, monkeypatch):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        with mock.patch(
-            "strathmark.llm.requests.post", side_effect=ConnectionRefusedError()
-        ):
+        with mock.patch("strathmark.llm.requests.post", side_effect=ConnectionRefusedError()):
             assert call_ollama("hello") is None
 
     def test_explicit_timeout_tuple_passed_to_requests(self, monkeypatch):
