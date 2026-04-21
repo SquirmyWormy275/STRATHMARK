@@ -40,3 +40,7 @@ htmlcov/
 *.whl
 *.tar.gz
 .gstack/
+
+# Local secrets (env-var exports for Supabase, etc.) — never commit
+STRATHMARK API.txt
+*.secrets.txt
