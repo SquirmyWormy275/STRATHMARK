@@ -3,7 +3,6 @@
 import time
 from unittest import mock
 
-import pytest
 import requests
 
 from strathmark.llm import call_ollama, check_ollama_connection, reset_ollama_status
@@ -158,12 +157,21 @@ class TestGeminiFallback:
         fake_model.generate_content.return_value = fake_response
         fake_module.GenerativeModel.return_value = fake_model
 
+        # Mock both the `google` parent namespace and the submodule so that
+        # `import google.generativeai` resolves cleanly in CI environments
+        # where neither is installed.
+        fake_parent = mock.MagicMock()
+        fake_parent.generativeai = fake_module
+
         with (
             mock.patch(
                 "strathmark.llm.requests.post",
                 side_effect=requests.exceptions.ConnectionError(),
             ),
-            mock.patch.dict("sys.modules", {"google.generativeai": fake_module}),
+            mock.patch.dict(
+                "sys.modules",
+                {"google": fake_parent, "google.generativeai": fake_module},
+            ),
         ):
             result = call_ollama("hello")
 
@@ -177,13 +185,18 @@ class TestGeminiFallback:
 
         fake_module = mock.MagicMock()
         fake_module.GenerativeModel.side_effect = RuntimeError("quota exceeded")
+        fake_parent = mock.MagicMock()
+        fake_parent.generativeai = fake_module
 
         with (
             mock.patch(
                 "strathmark.llm.requests.post",
                 side_effect=requests.exceptions.ConnectionError(),
             ),
-            mock.patch.dict("sys.modules", {"google.generativeai": fake_module}),
+            mock.patch.dict(
+                "sys.modules",
+                {"google": fake_parent, "google.generativeai": fake_module},
+            ),
         ):
             result = call_ollama("hello")
 
