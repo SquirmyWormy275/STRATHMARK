@@ -86,7 +86,7 @@ how to turn historical results into a fair set of marks.
 
 ## Status
 
-Version 0.4.0. Fully implemented, 667 tests passing across calculator,
+Version 0.4.1. Fully implemented, 707 tests passing across calculator,
 variance, integration, predictor, fairness, analytics, loader, store,
 db, llm, llm_roles, visualization, wood, decay, fallback, config, utils,
 api, deployment-fallback, and regression suites.

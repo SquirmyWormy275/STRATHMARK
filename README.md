@@ -13,10 +13,15 @@ STRATHEX codebase.
 
 ## Status
 
-Version 0.3.1 - fully implemented. All modules complete. 667 tests passing
+Version 0.4.1 - fully implemented. All modules complete. 707 tests passing
 across calculator, variance, integration, predictor, fairness, analytics,
 loader, store, db, llm, llm_roles, visualization, wood, decay, fallback,
-config, utils, api, and regression suites.
+config, utils, api, deployment-fallback, and regression suites.
+
+New to the repo? See [ONBOARDING.md](ONBOARDING.md) — a routing hub for new
+contributors (bug fix, feature, deployment debug, AI agent). The
+[wiki](docs/wiki/) covers the architecture reference; [docs/solutions/](docs/solutions/)
+documents solved problems and institutional knowledge.
 
 ## Install
 

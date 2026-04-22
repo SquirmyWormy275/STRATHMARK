@@ -2,11 +2,13 @@
 
 Woodchopping handicap engine - pip-installable calculation core.
 
+New to the repo? Start at [ONBOARDING.md](ONBOARDING.md) — a routing hub that points at the right file for what you're trying to do (fix a bug, add a feature, debug a live deployment, etc.).
+
 ## Commands
 
 ```bash
 pip install -e ".[dev]"    # install with dev dependencies
-pytest tests/ -v           # run all tests (667 tests)
+pytest tests/ -v           # run all tests (707 tests, 1 skipped)
 python train_model.py      # train XGBoost model
 python evaluate_llm_prompts.py  # evaluate LLM prompt templates
 ```
@@ -61,6 +63,7 @@ scripts/
     train_model.py          XGBoost training pipeline (26 features, temporal CV)
     evaluate_llm_prompts.py Prompt template evaluation and selection
     import_legacy.py        Legacy Excel import with validation
+docs/solutions/             Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type)
 ```
 
 ## gstack

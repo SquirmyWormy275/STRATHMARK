@@ -10,6 +10,7 @@ tags:
 confidence: high
 created: 2026-04-15
 source: "knowledge-seed from CLAUDE.md and git history"
+last_updated: 2026-04-21
 ---
 
 # Prediction Cascade Order
@@ -34,7 +35,7 @@ Every tier must fail through cleanly (return None, not raise) so the cascade con
 - Baseline sits above panel because an individual's history beats a population average
 - Panel sits last because it's always available
 
-Gemini was added in V0.4.0 inside the LLM tier (not as a separate tier) because the cloud LLM produces the same JSON schema output as Ollama; they're interchangeable within the tier.
+JSON-schema-enforced output, `temperature=0.0` when schema is active, and the `quality==5` early-return were all introduced in v0.3.0 (Phase 3 LLM integration) — before that, the LLM path was a shadow `predict_with_llm()` that regex-parsed freeform responses and wasn't wired into the canonical cascade. Gemini was added in v0.4.0 inside the LLM tier (not as a separate tier) because the cloud LLM produces the same JSON schema output as Ollama; they're interchangeable within the tier. See [`../best-practices/llm-cascade-and-monte-carlo-tuning-2026-04-21.md`](../best-practices/llm-cascade-and-monte-carlo-tuning-2026-04-21.md) for the v0.3.0 hardening narrative.
 
 ## Examples
 Cascade priority test (`test_llm_beats_cascade_without_manual`): when no manual override is present and LLM is available, LLM output wins over ML. Note: ML has a confidence penalty such that ML beats LLM only in specific low-confidence LLM scenarios — see `select_best_prediction()` and `_expected_error()` in `predictor.py` for the tiebreaker logic.
