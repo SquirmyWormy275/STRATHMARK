@@ -178,18 +178,14 @@ def evaluate_drift(
         .execute()
     )
     recent_rows = res_resp.data or []
-    recent_residuals = [
-        float(r["residual"]) for r in recent_rows if r.get("residual") is not None
-    ]
+    recent_residuals = [float(r["residual"]) for r in recent_rows if r.get("residual") is not None]
 
     return _build_report(
         model_version_id=model_version_id,
         lookback_days=lookback_days,
         recent_residuals=recent_residuals,
         baseline_residuals=baseline_residuals,
-        baseline_coverage=(
-            float(baseline_coverage) if baseline_coverage is not None else None
-        ),
+        baseline_coverage=(float(baseline_coverage) if baseline_coverage is not None else None),
     )
 
 
@@ -276,9 +272,7 @@ def _build_report(
         and report.baseline_variance is not None
         and report.baseline_variance > 0
     ):
-        report.variance_ratio_change = (
-            report.recent_variance / report.baseline_variance - 1.0
-        )
+        report.variance_ratio_change = report.recent_variance / report.baseline_variance - 1.0
         if abs(report.variance_ratio_change) > VARIANCE_RATIO_THRESHOLD:
             report.variance_ratio_alert = True
             report.notes.append(

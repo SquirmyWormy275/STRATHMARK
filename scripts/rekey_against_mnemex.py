@@ -169,9 +169,7 @@ def main() -> int:
     from strathmark.mnemex import is_mnemex_configured
 
     if not is_mnemex_configured():
-        print(
-            "ERROR: MNEMEX is not configured. Set MNEMEX_SUPABASE_URL and MNEMEX_SUPABASE_KEY."
-        )
+        print("ERROR: MNEMEX is not configured. Set MNEMEX_SUPABASE_URL and MNEMEX_SUPABASE_KEY.")
         return 3
 
     from strathmark.db import _get_client
@@ -203,9 +201,7 @@ def main() -> int:
 
     name_by_id = _competitor_name_lookup(sm_client)
 
-    matched: List[Tuple[int, str, str]] = (
-        []
-    )  # (result_id, mnemex_id, competitor_mnemex_id)
+    matched: List[Tuple[int, str, str]] = []  # (result_id, mnemex_id, competitor_mnemex_id)
     orphans: List[dict] = []
     reason_counter: Counter = Counter()
 

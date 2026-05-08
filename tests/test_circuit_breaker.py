@@ -51,9 +51,7 @@ class TestBiasCircuitBreaker:
         breaker.record_failure()
         # Two more would still not trip because the deque only has 1 + 2 in window
         breaker.record_failure()
-        assert (
-            breaker.allow() is True
-        )  # 3 failures total but only 3 in window? Actually 3.
+        assert breaker.allow() is True  # 3 failures total but only 3 in window? Actually 3.
 
     def test_auto_reset_after_window(self, monkeypatch):
         breaker = _BiasCircuitBreaker()

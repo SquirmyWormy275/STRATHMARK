@@ -1205,9 +1205,9 @@ def set_active_model(model_version_id: str) -> None:
 
     # Retire any currently-active model of this type. Order matters: deactivate
     # first so the partial unique index doesn't reject the next update.
-    client.table("model_versions").update(
-        {"is_active": False, "retired_at": _now_iso()}
-    ).eq("model_type", model_type).eq("is_active", True).execute()
+    client.table("model_versions").update({"is_active": False, "retired_at": _now_iso()}).eq(
+        "model_type", model_type
+    ).eq("is_active", True).execute()
 
     # Activate the new one.
     client.table("model_versions").update({"is_active": True}).eq(

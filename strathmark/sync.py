@@ -311,16 +311,12 @@ def _map_mnemex_to_strathmark(df: pd.DataFrame) -> List[dict]:
         raise KeyError(f"MNEMEX results missing required columns: {missing}")
 
     # Resolve competitor_mnemex_id -> local competitor_id
-    competitor_lookup = _resolve_competitor_lookup(
-        df["competitor_mnemex_id"].unique().tolist()
-    )
+    competitor_lookup = _resolve_competitor_lookup(df["competitor_mnemex_id"].unique().tolist())
 
     now_iso = datetime.now(timezone.utc).isoformat()
     records: List[dict] = []
     for _, row in df.iterrows():
-        local_competitor_id = competitor_lookup.get(
-            str(row["competitor_mnemex_id"]).strip()
-        )
+        local_competitor_id = competitor_lookup.get(str(row["competitor_mnemex_id"]).strip())
         records.append(
             {
                 "mnemex_id": str(row["mnemex_id"]),
@@ -336,8 +332,7 @@ def _map_mnemex_to_strathmark(df: pd.DataFrame) -> List[dict]:
                 "notes": row.get("notes") if "notes" in df.columns else None,
                 "field_strength": (
                     float(row["field_strength"])
-                    if "field_strength" in df.columns
-                    and pd.notna(row.get("field_strength"))
+                    if "field_strength" in df.columns and pd.notna(row.get("field_strength"))
                     else None
                 ),
                 "last_synced_at": now_iso,
@@ -402,9 +397,7 @@ def _write_sync_log(result: SyncResult) -> None:
             "source_app": "mnemex_sync",
             "records_written": result.rows_upserted,
             "sync_path": result.sync_path,
-            "mnemex_cursor": (
-                result.mnemex_cursor.isoformat() if result.mnemex_cursor else None
-            ),
+            "mnemex_cursor": (result.mnemex_cursor.isoformat() if result.mnemex_cursor else None),
             "rows_pulled": result.rows_pulled,
             "rows_upserted": result.rows_upserted,
             "errors_jsonb": result.errors or None,

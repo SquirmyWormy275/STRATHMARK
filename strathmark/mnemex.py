@@ -138,9 +138,7 @@ def pull_canonical_results(
     updated_at.
     """
     if not is_mnemex_configured():
-        _log.info(
-            "pull_canonical_results: MNEMEX unconfigured, returning empty DataFrame"
-        )
+        _log.info("pull_canonical_results: MNEMEX unconfigured, returning empty DataFrame")
         return pd.DataFrame()
 
     client = _get_client()
@@ -171,9 +169,7 @@ def pull_canonical_competitors(since: Optional[datetime] = None) -> pd.DataFrame
     gender, region, updated_at.
     """
     if not is_mnemex_configured():
-        _log.info(
-            "pull_canonical_competitors: MNEMEX unconfigured, returning empty DataFrame"
-        )
+        _log.info("pull_canonical_competitors: MNEMEX unconfigured, returning empty DataFrame")
         return pd.DataFrame()
 
     client = _get_client()
@@ -226,10 +222,7 @@ def register_competitor_in_mnemex(
     # Deduplicate on case-insensitive name match. MNEMEX is the canonical
     # source so we trust its existing records.
     existing = (
-        client.table("competitors")
-        .select("mnemex_id, name")
-        .ilike("name", name_clean)
-        .execute()
+        client.table("competitors").select("mnemex_id, name").ilike("name", name_clean).execute()
     )
     for row in existing.data or []:
         if str(row.get("name", "")).strip().lower() == name_clean.lower():

@@ -136,9 +136,7 @@ class TestRecordPredictionValidation:
                 cascade_level_used="vibes",  # not allowed
             )
 
-    def test_record_prediction_returns_none_when_supabase_unreachable(
-        self, monkeypatch
-    ):
+    def test_record_prediction_returns_none_when_supabase_unreachable(self, monkeypatch):
         """Best-effort write must return None, never raise, on Supabase failure."""
         monkeypatch.delenv("STRATHMARK_SUPABASE_URL", raising=False)
         monkeypatch.delenv("STRATHMARK_SUPABASE_KEY", raising=False)
@@ -163,9 +161,7 @@ class TestRecordPredictionValidation:
 
 
 class TestSettlePredictionFailureMode:
-    def test_settle_prediction_returns_none_when_supabase_unreachable(
-        self, monkeypatch
-    ):
+    def test_settle_prediction_returns_none_when_supabase_unreachable(self, monkeypatch):
         monkeypatch.delenv("STRATHMARK_SUPABASE_URL", raising=False)
         monkeypatch.delenv("STRATHMARK_SUPABASE_KEY", raising=False)
         import strathmark.db as db
@@ -229,12 +225,7 @@ class TestSchemaExistsLive:
         from strathmark.db import _get_client
 
         client = _get_client()
-        resp = (
-            client.table("competitors")
-            .select("competitor_id,mnemex_id")
-            .limit(1)
-            .execute()
-        )
+        resp = client.table("competitors").select("competitor_id,mnemex_id").limit(1).execute()
         assert resp.data is not None
 
     def test_sync_log_has_operational_columns(self):
@@ -243,9 +234,7 @@ class TestSchemaExistsLive:
         client = _get_client()
         resp = (
             client.table("sync_log")
-            .select(
-                "sync_id,sync_path,mnemex_cursor,rows_pulled,rows_upserted,errors_jsonb"
-            )
+            .select("sync_id,sync_path,mnemex_cursor,rows_pulled,rows_upserted,errors_jsonb")
             .limit(1)
             .execute()
         )

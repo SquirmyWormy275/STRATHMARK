@@ -181,9 +181,7 @@ class TestModelVersionLifecycle:
 
         client = _get_client()
         # Delete test model_versions rows by recognizable model_type prefix
-        client.table("model_versions").delete().like(
-            "model_type", "test_lifecycle_%"
-        ).execute()
+        client.table("model_versions").delete().like("model_type", "test_lifecycle_%").execute()
 
     def test_register_then_activate(self):
         from strathmark.db import (
@@ -258,12 +256,8 @@ class TestCalibrationLifecycle:
         from strathmark.db import _get_client
 
         client = _get_client()
-        client.table("calibration_tables").delete().like(
-            "notes", "test_calibration_%"
-        ).execute()
-        client.table("model_versions").delete().like(
-            "model_type", "test_calibration_%"
-        ).execute()
+        client.table("calibration_tables").delete().like("notes", "test_calibration_%").execute()
+        client.table("model_versions").delete().like("model_type", "test_calibration_%").execute()
 
     def test_calibration_attaches_to_model(self):
         from strathmark.db import record_calibration, register_model_version
@@ -310,9 +304,7 @@ class TestFeatureStoreLifecycle:
         client.table("feature_store").delete().eq("competitor_id", "C001").like(
             "event_code", "TST_%"
         ).execute()
-        client.table("model_versions").delete().like(
-            "model_type", "test_feature_store_%"
-        ).execute()
+        client.table("model_versions").delete().like("model_type", "test_feature_store_%").execute()
 
     def test_feature_store_unique_constraint(self):
         from strathmark.db import register_model_version, store_features
@@ -371,12 +363,8 @@ class TestPredictionAndSettlement:
         from strathmark.db import _get_client
 
         client = _get_client()
-        client.table("predictions").delete().like(
-            "show_name", "test_settlement_%"
-        ).execute()
-        client.table("model_versions").delete().like(
-            "model_type", "test_settlement_%"
-        ).execute()
+        client.table("predictions").delete().like("show_name", "test_settlement_%").execute()
+        client.table("model_versions").delete().like("model_type", "test_settlement_%").execute()
 
     def test_record_then_settle_computes_residual(self):
         from strathmark.db import (

@@ -47,10 +47,7 @@ class TestInsufficientRecentSamples:
         )
         assert report.insufficient_recent_samples is True
         assert report.overall_alert is False
-        assert (
-            "insufficient" in report.summary().lower()
-            or "samples" in report.notes[0].lower()
-        )
+        assert "insufficient" in report.summary().lower() or "samples" in report.notes[0].lower()
 
 
 class TestNominalCase:
@@ -73,11 +70,7 @@ class TestNominalCase:
         assert report.recent_count == 50
         assert report.baseline_count == 100
         # Empirical recent coverage should sit in the [0.85, 0.95] band.
-        assert (
-            COVERAGE_LOW_THRESHOLD
-            <= report.recent_coverage_at_90
-            <= COVERAGE_HIGH_THRESHOLD
-        )
+        assert COVERAGE_LOW_THRESHOLD <= report.recent_coverage_at_90 <= COVERAGE_HIGH_THRESHOLD
 
 
 class TestMeanShift:
@@ -192,11 +185,7 @@ class TestCoverageAlert:
             baseline_coverage=0.90,
         )
         assert report.coverage_alert is False
-        assert (
-            COVERAGE_LOW_THRESHOLD
-            <= report.recent_coverage_at_90
-            <= COVERAGE_HIGH_THRESHOLD
-        )
+        assert COVERAGE_LOW_THRESHOLD <= report.recent_coverage_at_90 <= COVERAGE_HIGH_THRESHOLD
 
     def test_no_baseline_residuals_does_not_trigger(self):
         # Empty baseline -> early return; no coverage signal possible.
