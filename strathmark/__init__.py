@@ -49,15 +49,23 @@ Live integration (editable install):
 from strathmark.calculator import HandicapCalculator, process_competition_day
 from strathmark.db import (
     format_proam_results,
+    get_active_model_version,
     get_competitor_bias,
     pull_competitors,
     pull_results,
     push_competitors,
     push_results,
     push_results_dicts,
+    record_calibration,
+    record_prediction,
     record_prediction_residuals,
     register_competitor,
+    register_model_version,
+    set_active_model,
+    settle_prediction,
+    store_features,
 )
+from strathmark.drift import DriftReport, evaluate_drift, is_drifting
 from strathmark.fairness import (
     get_ai_assessment_of_handicaps,
     get_championship_race_analysis,
@@ -65,6 +73,12 @@ from strathmark.fairness import (
 )
 from strathmark.llm import call_ollama, check_ollama_connection
 from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
+from strathmark.mnemex import (
+    is_mnemex_configured,
+    pull_canonical_competitors,
+    pull_canonical_results,
+    register_competitor_in_mnemex,
+)
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
@@ -76,6 +90,12 @@ from strathmark.predictor import (
     select_best_prediction,
 )
 from strathmark.store import ResultStore
+from strathmark.sync import (
+    SyncResult,
+    manual_force_sync,
+    nightly_batch,
+    strathex_finalization,
+)
 from strathmark.utils import score_prediction_accuracy
 from strathmark.variance import (
     audit_mark_sheet,
@@ -129,6 +149,28 @@ __all__ = [
     "format_proam_results",
     "record_prediction_residuals",
     "get_competitor_bias",
+    # ML state (carve-out from controlled-write rule; STRATHMARK-internal)
+    "register_model_version",
+    "set_active_model",
+    "get_active_model_version",
+    "record_calibration",
+    "store_features",
+    "record_prediction",
+    "settle_prediction",
+    # MNEMEX (canonical archive client)
+    "is_mnemex_configured",
+    "pull_canonical_results",
+    "pull_canonical_competitors",
+    "register_competitor_in_mnemex",
+    # Sync (MNEMEX -> STRATHMARK Supabase)
+    "SyncResult",
+    "nightly_batch",
+    "strathex_finalization",
+    "manual_force_sync",
+    # Drift detection
+    "DriftReport",
+    "evaluate_drift",
+    "is_drifting",
     # Scoring / accuracy
     "score_prediction_accuracy",
 ]

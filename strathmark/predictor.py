@@ -41,6 +41,22 @@ from typing import Dict, List, Optional
 
 _log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Hot-path Supabase circuit breaker for bias correction
+# ---------------------------------------------------------------------------
+#
+# Policy (from docs/ml-persistence-policy.md section 5):
+# - Per-process counter, not per-session.
+# - On failure, log a warning AND retry on the next prediction.
+# - After 3 consecutive failures within a 60-second window, surface a single
+#   warning telemetry event (not log spam) and fall back to in-memory bias
+#   state for the remainder of the window.
+# - After 60 seconds with no further attempts, the circuit resets and the
+#   next call attempts Supabase again.
+# - Process restart resets the counter.
+import collections as _collections
+import threading as _threading
+
 import numpy as np
 import pandas as pd
 
@@ -69,6 +85,86 @@ from strathmark.wood import (
     get_species_properties,
     get_species_time_multiplier,
 )
+
+
+class _BiasCircuitBreaker:
+    """Per-process circuit breaker for the bias-correction Supabase read.
+
+    Uses a sliding window of failure timestamps. Trips when the third failure
+    in a 60-second window arrives. Auto-resets when 60 seconds pass with no
+    new attempts (the next call evaluates an empty window and is allowed
+    through).
+
+    Thread-safe; the lock guards both the failure deque and the trip state.
+    """
+
+    WINDOW_SECONDS: float = 60.0
+    THRESHOLD: int = 3
+
+    def __init__(self) -> None:
+        self._failures: _collections.deque[float] = _collections.deque()
+        self._tripped: bool = False
+        self._tripped_at: float = 0.0
+        self._lock = _threading.Lock()
+
+    def _purge(self, now: float) -> None:
+        cutoff = now - self.WINDOW_SECONDS
+        while self._failures and self._failures[0] < cutoff:
+            self._failures.popleft()
+
+    def allow(self) -> bool:
+        """Return True if the next call should attempt Supabase, False if tripped."""
+        with self._lock:
+            now = _time.monotonic()
+            self._purge(now)
+            if self._tripped:
+                # Auto-reset once the trip is older than the window
+                if now - self._tripped_at > self.WINDOW_SECONDS:
+                    self._tripped = False
+                    self._failures.clear()
+                    return True
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures.clear()
+            if self._tripped:
+                self._tripped = False
+                _log.info("bias circuit breaker: cleared after a success")
+
+    def record_failure(self) -> bool:
+        """Log the failure and update trip state. Returns True if newly tripped."""
+        with self._lock:
+            now = _time.monotonic()
+            self._purge(now)
+            self._failures.append(now)
+            if not self._tripped and len(self._failures) >= self.THRESHOLD:
+                self._tripped = True
+                self._tripped_at = now
+                _log.warning(
+                    "bias circuit breaker: tripped after %d failures in %.0fs window; "
+                    "falling back to in-memory bias state for the next %.0fs",
+                    self.THRESHOLD,
+                    self.WINDOW_SECONDS,
+                    self.WINDOW_SECONDS,
+                )
+                return True
+            _log.debug(
+                "bias circuit breaker: failure recorded (%d in window)",
+                len(self._failures),
+            )
+        return False
+
+    def reset(self) -> None:
+        """Test hook. Clears all state."""
+        with self._lock:
+            self._failures.clear()
+            self._tripped = False
+            self._tripped_at = 0.0
+
+
+_bias_breaker = _BiasCircuitBreaker()
 
 # ---------------------------------------------------------------------------
 # Value objects provided by the caller
@@ -1241,19 +1337,20 @@ def predict_baseline(
 
     # Apply bias correction from personal prediction residual history.
     # Subtracting the median residual adjusts for systematic over/under-prediction.
-    # Wrapped in try/except so Supabase unavailability never breaks local predictions.
-    # Uses module-level flag to avoid repeated failed network calls when Supabase is down.
-    if not getattr(predict_baseline, "_supabase_bias_unavailable", False):
+    # Circuit breaker absorbs transient Supabase failures without permanently
+    # disabling bias correction. See _BiasCircuitBreaker docstring and
+    # docs/ml-persistence-policy.md section 5 for the policy.
+    if _bias_breaker.allow():
         try:
             from strathmark.db import get_competitor_bias as _get_bias
 
             _bias = _get_bias(competitor.name)
+            _bias_breaker.record_success()
             if _bias is not None:
                 baseline -= _bias
                 data_source += f" [bias corrected {-_bias:+.1f}s]"
         except Exception:
-            predict_baseline._supabase_bias_unavailable = True
-            _log.debug("Supabase bias correction unavailable; disabling for this session")
+            _bias_breaker.record_failure()
 
     explanation = f"Predicted {baseline:.1f}s ({data_source})"
 
