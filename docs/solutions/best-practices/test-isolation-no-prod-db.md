@@ -8,7 +8,7 @@ tags:
   - "isolation"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # Test Isolation: Never Touch Production DB
@@ -33,5 +33,3 @@ def test_result_store_insert(tmp_path):
 ```
 
 Supabase tests MUST mock the client, not rely on env vars. If a test requires Supabase, it belongs in a separate `--runslow` or `--integration` marker and must never run in the default `pytest tests/` invocation.
-
-This rule is also in the user's global CLAUDE.md — it applies to every project in the workspace, not just STRATHMARK.

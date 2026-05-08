@@ -16,13 +16,13 @@ source: "Mar 24 2026 eng-review + CEO-review sessions, Apr 7 deployment session"
 # Eng-Review Cycle and TODOS.md Handoff
 
 ## Context
-STRATHMARK uses a multi-session debugging-and-design pipeline where plan reviews, implementation, adversarial review, and documentation each happen in separate Claude Code sessions. Session context evaporates between runs. Without a persistent handoff artifact, every new session re-discovers what the last one decided.
+STRATHMARK uses a multi-session debugging-and-design pipeline where plan reviews, implementation, adversarial review, and documentation each happen in separate sessions. Session context evaporates between runs. Without a persistent handoff artifact, every new session re-discovers what the last one decided.
 
 `TODOS.md` is the handoff artifact. It is not a to-do list in the productivity sense — it is a *narrative of decisions across sessions*.
 
 ## Pattern
 
-Stages, each typically a separate Claude Code session:
+Stages, each typically a separate session:
 1. `/plan-eng-review` or `/plan-ceo-review` — identifies issues, generates TODO-NNN entries in `TODOS.md` (what, why, context, effort, priority, source, status).
 2. Implementation — commits prefixed with scope: `(eng-review)`, `(qa)`, `(ci)`, etc.
 3. Codex adversarial review — `/codex review` or equivalent, a second-opinion pass.

@@ -44,3 +44,8 @@ htmlcov/
 # Local secrets (env-var exports for Supabase, etc.) — never commit
 STRATHMARK API.txt
 *.secrets.txt
+
+# Local agent / editor config (per-developer, not portfolio content)
+CLAUDE.md
+.claude/
+AGENTS.md

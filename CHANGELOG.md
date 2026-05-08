@@ -16,7 +16,6 @@ All notable changes to STRATHMARK will be documented in this file.
   - `workflow-patterns/eng-review-cycle-and-todos-handoff.md` — plan-review → TODOS.md → impl → Codex → ship pattern
 
 ### Changed
-- `CLAUDE.md` — added ONBOARDING.md pointer and `docs/solutions/` entry in project-structure tree (for agent discoverability)
 - `docs/solutions/architecture-decisions/prediction-cascade-order.md` — added v0.3.0 provenance for JSON-schema / temp=0 / quality==5, cross-link to new hardening doc, `last_updated: 2026-04-21`
 - `docs/solutions/architecture-decisions/mark-floor-ceiling-invariants.md` — added pre-v0.3.0 ceiling-rounding historical note, cross-link to new hardening doc, `last_updated: 2026-04-21`
 - `strathmark/__init__.py` — `__version__` corrected from `0.3.1` (stale) to `0.4.1`

@@ -43,7 +43,7 @@ The narrative includes:
 - Notes on any win-rate outlier (a competitor more than two standard
   deviations from the mean win rate).
 
-## AI-assisted commentary
+## LLM-based commentary
 
 When Ollama is reachable (or Gemini is configured), extended narrative
 is available:
