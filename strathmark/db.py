@@ -1,82 +1,141 @@
+# Schema verified against live Supabase 2026-05-04. Source of truth.
+# Verification artifact: docs/schema-reality-2026-05-04.md
+# Verification method: PostgREST OpenAPI spec + sampled rows + row counts.
+# pg_catalog (indexes, RLS, triggers) NOT verified in this pass; see report.
+
 """
 Database layer for STRATHMARK — Supabase/PostgreSQL backend.
 
-SQL Schema
-----------
+SQL Schema (verified 2026-05-04 against project iordtvxryrdhqvdkfgzf)
+---------------------------------------------------------------------
 All tables live in the Supabase project referenced by STRATHMARK_SUPABASE_URL.
+Column-level metadata reflects the live schema. Required columns are marked
+NOT NULL; default expressions are noted. Types use the actual Postgres types,
+not the previous docstring's approximations.
 
     competitors:
-        competitor_id  TEXT PRIMARY KEY,
-        name           TEXT,
+        competitor_id  TEXT  PRIMARY KEY  NOT NULL,
+        name           TEXT  NOT NULL,
         country        TEXT,
         state_province TEXT,
         gender         TEXT,
         region         TEXT,
         created_at     TIMESTAMPTZ DEFAULT now()
 
+        # Observed competitor_id format: 'C001'..'C085' (3-digit zero-padded).
+        # NOTE: register_competitor() in this module mints '4-digit' IDs
+        # (e.g. 'C0086'). That divergence is a known latent bug; rewrite is
+        # scheduled for the MNEMEX-roster follow-on PR.
+
     results:
-        result_id      SERIAL PRIMARY KEY,
-        competitor_id  TEXT REFERENCES competitors(competitor_id),
-        event          TEXT,
-        time_seconds   NUMERIC,
-        size_mm        NUMERIC,
-        species_code   TEXT,
+        result_id      INTEGER  PRIMARY KEY  NOT NULL,
+        competitor_id  TEXT     REFERENCES competitors(competitor_id),
+        event          TEXT     NOT NULL,        -- 'SB' or 'UH'
+        time_seconds   NUMERIC  NOT NULL,
+        size_mm        INTEGER  NOT NULL,        -- whole mm; not numeric
+        species_code   TEXT     NOT NULL,
         result_date    DATE,
-        show_name      TEXT,
+        show_name      TEXT     NOT NULL,
         source_app     TEXT,
         notes          TEXT,
-        created_at     TIMESTAMPTZ DEFAULT now()
+        created_at     TIMESTAMPTZ DEFAULT now(),
+        field_strength NUMERIC                   -- present in DB; was undocumented
+                                                  -- prior to 2026-05-04. 100% null in
+                                                  -- current data.
 
     wood_species:
-        species_id     TEXT PRIMARY KEY,
+        species_id      TEXT     PRIMARY KEY  NOT NULL,
         scientific_name TEXT,
-        common_name    TEXT,
-        janka_hard     NUMERIC,
-        spec_gravity   NUMERIC,
-        crush_strength NUMERIC,
-        shear          NUMERIC,
-        mor            NUMERIC,
-        moe            NUMERIC,
-        country        TEXT,
-        region         TEXT
+        common_name     TEXT     NOT NULL,
+        janka_hard      INTEGER,
+        spec_gravity    NUMERIC,
+        crush_strength  INTEGER,
+        shear           INTEGER,
+        mor             INTEGER,                  -- lowercase; was 'MOR' in old docstring
+        moe             INTEGER,                  -- lowercase; was 'MOE' in old docstring
+        country         TEXT,
+        region          TEXT
 
     sync_log:
-        sync_id         SERIAL PRIMARY KEY,
-        show_name       TEXT,
+        sync_id         INTEGER  PRIMARY KEY  NOT NULL,
+        show_name       TEXT     NOT NULL,
         source_app      TEXT,
         records_written INTEGER,
         synced_at       TIMESTAMPTZ DEFAULT now()
 
     prediction_residuals:
-        id              SERIAL PRIMARY KEY,
-        competitor_id   TEXT,
-        predicted_time  NUMERIC,
-        actual_time     NUMERIC,
-        residual        NUMERIC,
-        show_name       TEXT,
-        event_code      TEXT,
-        result_date     DATE,
-        created_at      TIMESTAMPTZ DEFAULT now()
+        residual_id      INTEGER  PRIMARY KEY  NOT NULL,   -- was 'id' in old docstring;
+                                                            -- live PK is 'residual_id'.
+        competitor_id    TEXT     REFERENCES competitors(competitor_id),
+        predicted_time   NUMERIC  NOT NULL,
+        actual_time      NUMERIC  NOT NULL,
+        residual         NUMERIC  NOT NULL,
+        show_name        TEXT     NOT NULL,
+        event_code       TEXT     NOT NULL,
+        result_date      DATE,
+        created_at       TIMESTAMPTZ DEFAULT now(),
+        -- Added by migration 20260504_002:
+        model_version_id TEXT     REFERENCES model_versions(model_version_id),
+        prediction_id    TEXT     REFERENCES predictions(prediction_id)
 
     -- residual = actual_time - predicted_time
     -- Positive: competitor was slower than predicted (undermarked)
     -- Negative: competitor was faster than predicted (overmarked)
 
-    -- CREATE TABLE prediction_residuals (
-    --     id             SERIAL PRIMARY KEY,
-    --     competitor_id  TEXT,
-    --     predicted_time NUMERIC,
-    --     actual_time    NUMERIC,
-    --     residual       NUMERIC,
-    --     show_name      TEXT,
-    --     event_code     TEXT,
-    --     result_date    DATE,
-    --     created_at     TIMESTAMPTZ DEFAULT now()
-    -- );
+ML state tables (added by migration 20260504_002):
+
+    model_versions:
+        model_version_id     TEXT         PRIMARY KEY,    -- ULID
+        model_type           TEXT         NOT NULL,        -- e.g. 'xgboost_lightgbm_ensemble'
+        trained_at           TIMESTAMPTZ  NOT NULL,
+        training_data_cutoff TIMESTAMPTZ  NOT NULL,
+        training_row_count   INTEGER      NOT NULL,
+        hyperparameters      JSONB        NOT NULL,
+        artifact_storage     TEXT         NOT NULL,        -- 'supabase_storage' | 'inline_jsonb'
+        artifact_ref         TEXT         NOT NULL,
+        artifact_size_bytes  INTEGER      NOT NULL,
+        is_active            BOOLEAN      NOT NULL DEFAULT FALSE,
+        retired_at           TIMESTAMPTZ,
+        notes                TEXT
+        -- Partial unique index: only one is_active=TRUE per model_type.
+
+    calibration_tables:
+        calibration_id     TEXT         PRIMARY KEY,                    -- ULID
+        model_version_id   TEXT         NOT NULL REFERENCES model_versions,
+        calibrated_at      TIMESTAMPTZ  NOT NULL,
+        calibration_method TEXT         NOT NULL,
+        calibration_data   JSONB        NOT NULL,
+        holdout_residuals  JSONB        NOT NULL,
+        crps_score         NUMERIC,
+        coverage_at_90     NUMERIC,
+        notes              TEXT
+
+    feature_store:
+        feature_set_id   TEXT         PRIMARY KEY,                    -- ULID
+        model_version_id TEXT         NOT NULL REFERENCES model_versions,
+        competitor_id    TEXT         NOT NULL REFERENCES competitors,
+        event_code       TEXT         NOT NULL,
+        features_jsonb   JSONB        NOT NULL,
+        computed_at      TIMESTAMPTZ  NOT NULL,
+        UNIQUE (model_version_id, competitor_id, event_code)
+
+    predictions:
+        prediction_id      TEXT         PRIMARY KEY,                  -- ULID
+        model_version_id   TEXT         NOT NULL REFERENCES model_versions,
+        competitor_id      TEXT         NOT NULL REFERENCES competitors,
+        event_code         TEXT         NOT NULL,
+        show_name          TEXT         NOT NULL,
+        predicted_time     NUMERIC      NOT NULL,
+        predicted_variance NUMERIC      NOT NULL,
+        cascade_level_used TEXT         NOT NULL,
+        predicted_at       TIMESTAMPTZ  NOT NULL,
+        result_id          INTEGER      REFERENCES results,           -- set by settle_prediction()
+        residual           NUMERIC,                                   -- set by settle_prediction()
+        notes              TEXT
 
 Environment variables required:
     STRATHMARK_SUPABASE_URL  — Supabase project URL
-    STRATHMARK_SUPABASE_KEY  — Supabase anon/service key
+    STRATHMARK_SUPABASE_KEY  — Supabase service-role key (writes) or anon key (reads)
 """
 
 from __future__ import annotations
@@ -126,9 +185,20 @@ _log = logging.getLogger(__name__)
 _client = None  # supabase.Client, created on first use
 
 
-def _get_client():
+# Bound HTTP timeout on every PostgREST call. Hot-path bias correction
+# would otherwise hang up to httpx's default (~30s) on a slow Supabase,
+# which the bias circuit breaker can't observe (it counts exceptions, not
+# hangs). 2 seconds is generous for a sub-second indexed lookup and short
+# enough that a stalled call surfaces as an exception the breaker can act
+# on. Operator action infrastructure (training, sync, ML state writes)
+# tolerates a longer timeout, so callers that need it pass an override
+# via reset_client(timeout=N).
+_DEFAULT_POSTGREST_TIMEOUT: float = 2.0
+
+
+def _get_client(timeout: float | None = None):
     """
-    Return (and cache) the Supabase client.
+    Return (and cache) the Supabase client with a bounded PostgREST timeout.
 
     Raises:
         RuntimeError: If STRATHMARK_SUPABASE_URL or STRATHMARK_SUPABASE_KEY
@@ -154,8 +224,36 @@ def _get_client():
 
     from supabase import create_client  # type: ignore[import]
 
-    _client = create_client(url, key)
+    effective_timeout = timeout if timeout is not None else _DEFAULT_POSTGREST_TIMEOUT
+    try:
+        from supabase.client import ClientOptions  # type: ignore[import]
+
+        options = ClientOptions(postgrest_client_timeout=effective_timeout)
+        _client = create_client(url, key, options=options)
+    except (ImportError, TypeError):
+        # Older supabase-py without ClientOptions: fall back to the
+        # default-timeout client. The breaker still protects via failure
+        # counting; only hangs slip through.
+        _client = create_client(url, key)
     return _client
+
+
+def reset_client(timeout: float | None = None) -> None:
+    """Test hook / operator hook. Forget the cached client and optionally
+    override the PostgREST timeout on the next instantiation.
+
+    `timeout=None` uses the default. Pass a larger value (e.g. 30.0) before
+    operator-action calls (training, sync, ML state writes) that legitimately
+    take longer than the hot-path 2-second budget.
+    """
+    global _client
+    _client = None
+    if timeout is not None:
+        # Stash the override so the next _get_client() picks it up. Simple
+        # approach: callers that need a non-default timeout pass it via
+        # _get_client(timeout=N) directly. We don't carry the value across
+        # reset boundaries.
+        _get_client(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +549,8 @@ def record_prediction_residuals(
     show_name: str,
     event_code: str,
     result_date: date,
+    model_version_id: Optional[str] = None,
+    prediction_ids: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     Insert per-competitor prediction residuals into the prediction_residuals table.
@@ -462,17 +562,25 @@ def record_prediction_residuals(
     Negative: competitor was faster than predicted (overmarked).
 
     Args:
-        predicted:   {competitor_id -> predicted_time_seconds}
-        actual:      {competitor_id -> actual_time_seconds}
-        show_name:   Name of the show/competition.
-        event_code:  'SB' or 'UH'.
-        result_date: Date of the event.
+        predicted:        {competitor_id -> predicted_time_seconds}
+        actual:           {competitor_id -> actual_time_seconds}
+        show_name:        Name of the show/competition.
+        event_code:       'SB' or 'UH'.
+        result_date:      Date of the event.
+        model_version_id: Optional ULID of the model that produced these
+                          predictions. Required by application convention going
+                          forward; nullable at the DB layer to keep the function
+                          backward-compatible while ML state wiring is rolled in.
+        prediction_ids:   Optional {competitor_id -> prediction_id} from
+                          record_prediction(). Lets the residual link back to
+                          the originating prediction row.
 
     Never raises on failure -- logs a warning so callers are not interrupted.
     """
     try:
         client = _get_client()
         date_str = _safe_date(result_date)
+        prediction_ids = prediction_ids or {}
 
         rows = []
         for comp_id, pred_time in predicted.items():
@@ -480,17 +588,21 @@ def record_prediction_residuals(
                 continue
             act_time = actual[comp_id]
             residual = act_time - pred_time
-            rows.append(
-                {
-                    "competitor_id": comp_id,
-                    "predicted_time": round(float(pred_time), 3),
-                    "actual_time": round(float(act_time), 3),
-                    "residual": round(float(residual), 3),
-                    "show_name": show_name,
-                    "event_code": str(event_code).strip().upper(),
-                    "result_date": date_str,
-                }
-            )
+            row = {
+                "competitor_id": comp_id,
+                "predicted_time": round(float(pred_time), 3),
+                "actual_time": round(float(act_time), 3),
+                "residual": round(float(residual), 3),
+                "show_name": show_name,
+                "event_code": str(event_code).strip().upper(),
+                "result_date": date_str,
+            }
+            if model_version_id is not None:
+                row["model_version_id"] = model_version_id
+            pid = prediction_ids.get(comp_id)
+            if pid is not None:
+                row["prediction_id"] = pid
+            rows.append(row)
 
         if rows:
             client.table("prediction_residuals").insert(rows).execute()
@@ -516,30 +628,32 @@ def get_competitor_bias(competitor_id: str) -> Optional[float]:
 
     Returns:
         Median residual in seconds, or None if fewer than 3 rows exist.
-        Never raises -- returns None on any DB error.
+
+    Raises:
+        Any Supabase / network exception. Callers on the prediction hot path
+        MUST wrap calls to this function in the bias-correction circuit
+        breaker so transient failures degrade gracefully without disabling
+        bias correction permanently. See `_BiasCircuitBreaker` in
+        `strathmark/predictor.py` and `docs/ml-persistence-policy.md`
+        section 5 for the policy.
     """
-    try:
-        client = _get_client()
-        response = (
-            client.table("prediction_residuals")
-            .select("residual")
-            .eq("competitor_id", competitor_id)
-            .execute()
-        )
-        rows = response.data or []
+    client = _get_client()
+    response = (
+        client.table("prediction_residuals")
+        .select("residual")
+        .eq("competitor_id", competitor_id)
+        .execute()
+    )
+    rows = response.data or []
 
-        if len(rows) < 3:
-            return None
-
-        residuals = [float(r["residual"]) for r in rows if r.get("residual") is not None]
-        if len(residuals) < 3:
-            return None
-
-        return statistics.median(residuals)
-
-    except Exception as exc:  # pragma: no cover
-        _log.debug("get_competitor_bias failed (non-fatal): %s", exc)
+    if len(rows) < 3:
         return None
+
+    residuals = [float(r["residual"]) for r in rows if r.get("residual") is not None]
+    if len(residuals) < 3:
+        return None
+
+    return statistics.median(residuals)
 
 
 # ---------------------------------------------------------------------------
@@ -711,68 +825,191 @@ def register_competitor(
     state: str = "",
     gender: str = "",
     region: str = "",
+    *,
+    wait_for_sync: bool = False,
+    sync_timeout_seconds: float = 30.0,
 ) -> dict:
-    """
-    Register a new competitor in Supabase, or return the existing record.
+    """Register a new competitor.
 
-    A new CompetitorID is generated as the next integer in the sequence
-    'C0001', 'C0002', ... If a competitor with the exact same name (case
-    insensitive, trimmed) already exists, that record's competitor_id is
-    returned with status='existing' and no insert is performed.
+    Behavior depends on whether MNEMEX is configured:
+
+    A. **MNEMEX configured (post-2026-05-04 controlled-write mode).** The
+       competitor is minted in MNEMEX. The MNEMEX competitor_id (a ULID) is
+       returned along with the local STRATHMARK `competitor_id` once the sync
+       function has propagated the row into the STRATHMARK cache.
+
+       If `wait_for_sync=True`, this function blocks for up to
+       `sync_timeout_seconds`, polling for the row to appear in the
+       STRATHMARK cache. On timeout, returns with `status='registered_in_mnemex_pending_sync'`.
+
+       If `wait_for_sync=False` (default), this function returns immediately
+       after the MNEMEX write with `status='registered_in_mnemex_pending_sync'`
+       and leaves propagation to the next sync run. Default flipped to False
+       in 2026-05-08: nothing in this function triggers a sync, so
+       wait_for_sync=True only ever times out. Operators that need the local
+       cache row before returning must opt in explicitly AND ensure a sync
+       path is running (cron, webhook, or manual_force_sync).
+
+    B. **MNEMEX not configured (transition mode).** Falls back to the legacy
+       behavior of minting a STRATHMARK-local competitor_id directly. Logs a
+       prominent deprecation warning. This path will be removed after MNEMEX
+       is universally available.
 
     Args:
-        name:    Display name. Required.
-        country: ISO country or free-text. Defaults to 'USA'.
-        state:   State/province (free text).
-        gender:  'M' or 'F' (free text accepted).
-        region:  Free-text region tag.
+        name:                 Display name. Required.
+        country:              ISO country or free-text. Defaults to 'USA'.
+        state:                State/province (free text).
+        gender:               'M' or 'F' (free text accepted).
+        region:               Free-text region tag.
+        wait_for_sync:        MNEMEX mode only. If True, block for sync to land.
+        sync_timeout_seconds: MNEMEX mode only. Maximum block duration.
 
-    Returns:
+    Returns dict shape (varies by mode):
         {
-            'competitor_id': str,
-            'status':        'created' | 'existing',
+            'competitor_id': str | None,    -- STRATHMARK local ID once synced
+            'mnemex_id':     str | None,    -- canonical MNEMEX ID
+            'status':        'created' | 'existing'
+                             | 'registered_in_mnemex_pending_sync'
+                             | 'created_in_strathmark_legacy',
             'name':          str,
         }
 
     Raises:
-        ValueError: If name is empty or whitespace.
-        RuntimeError: From _get_client() if env vars are missing.
+        ValueError:   If name is empty.
+        RuntimeError: If both MNEMEX and STRATHMARK Supabase are unreachable.
     """
     name_clean = (name or "").strip()
     if not name_clean:
         raise ValueError("register_competitor: name must not be empty")
 
+    from strathmark.mnemex import is_mnemex_configured
+
+    if is_mnemex_configured():
+        return _register_via_mnemex(
+            name_clean=name_clean,
+            country=country,
+            state=state,
+            gender=gender,
+            region=region,
+            wait_for_sync=wait_for_sync,
+            sync_timeout_seconds=sync_timeout_seconds,
+        )
+    return _register_legacy(
+        name_clean=name_clean,
+        country=country,
+        state=state,
+        gender=gender,
+        region=region,
+    )
+
+
+def _register_via_mnemex(
+    *,
+    name_clean: str,
+    country: str,
+    state: str,
+    gender: str,
+    region: str,
+    wait_for_sync: bool,
+    sync_timeout_seconds: float,
+) -> dict:
+    """MNEMEX path: mint canonical ID in MNEMEX, optionally wait for sync."""
+    from strathmark.mnemex import register_competitor_in_mnemex
+
+    mnemex_result = register_competitor_in_mnemex(
+        name=name_clean,
+        country=country,
+        state=state,
+        gender=gender,
+        region=region,
+    )
+    mnemex_id = mnemex_result["mnemex_id"]
     client = _get_client()
 
-    # Check for an existing competitor by case-insensitive name match
-    existing_resp = (
+    # An "existing" MNEMEX result is the only case where we expect to find
+    # the row in the cache immediately. For "created", skip straight to the
+    # wait-for-sync loop so we don't burn an extra round trip.
+    if mnemex_result["status"] == "existing":
+        cached = _lookup_cache_row(client, mnemex_id)
+        if cached is not None:
+            return _cache_hit_response(cached, mnemex_id, status="existing")
+
+    if wait_for_sync and sync_timeout_seconds > 0:
+        cached = _wait_for_cache_row(client, mnemex_id, sync_timeout_seconds)
+        if cached is not None:
+            return _cache_hit_response(cached, mnemex_id, status="created")
+
+    return {
+        "competitor_id": None,
+        "mnemex_id": mnemex_id,
+        "status": "registered_in_mnemex_pending_sync",
+        "name": name_clean,
+    }
+
+
+def _lookup_cache_row(client, mnemex_id: str) -> Optional[dict]:
+    """One-shot cache lookup by mnemex_id. Returns None if not present."""
+    resp = (
         client.table("competitors")
-        .select("competitor_id, name")
-        .ilike("name", name_clean)
+        .select("competitor_id, mnemex_id, name")
+        .eq("mnemex_id", mnemex_id)
+        .limit(1)
         .execute()
     )
-    rows = existing_resp.data or []
-    for r in rows:
-        if str(r.get("name", "")).strip().lower() == name_clean.lower():
-            return {
-                "competitor_id": str(r["competitor_id"]),
-                "status": "existing",
-                "name": r.get("name", name_clean),
-            }
+    rows = resp.data or []
+    return rows[0] if rows else None
 
-    # Generate next competitor_id (highest numeric suffix + 1, prefix 'C')
-    all_resp = client.table("competitors").select("competitor_id").execute()
-    max_n = 0
-    for r in all_resp.data or []:
-        cid = str(r.get("competitor_id", ""))
-        digits = "".join(c for c in cid if c.isdigit())
-        if digits:
-            try:
-                max_n = max(max_n, int(digits))
-            except ValueError:
-                continue
-    new_id = f"C{max_n + 1:04d}"
 
+def _wait_for_cache_row(client, mnemex_id: str, timeout_seconds: float) -> Optional[dict]:
+    """Poll the cache for a row matching mnemex_id, up to timeout_seconds."""
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+    poll_interval = min(2.0, max(0.5, timeout_seconds / 10.0))
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        cached = _lookup_cache_row(client, mnemex_id)
+        if cached is not None:
+            return cached
+    return None
+
+
+def _cache_hit_response(row: dict, mnemex_id: str, *, status: str) -> dict:
+    return {
+        "competitor_id": str(row["competitor_id"]),
+        "mnemex_id": mnemex_id,
+        "status": status,
+        "name": row.get("name", ""),
+    }
+
+
+def _register_legacy(
+    *,
+    name_clean: str,
+    country: str,
+    state: str,
+    gender: str,
+    region: str,
+) -> dict:
+    """Legacy path: mint a STRATHMARK-local competitor_id directly."""
+    _log.warning(
+        "register_competitor: MNEMEX is not configured; falling back to "
+        "legacy STRATHMARK-local mint. This path is deprecated and will be "
+        "removed after MNEMEX is universally available. Set MNEMEX_SUPABASE_URL "
+        "and MNEMEX_SUPABASE_KEY to use the canonical roster path."
+    )
+    client = _get_client()
+
+    existing = _find_existing_competitor_by_name(client, name_clean)
+    if existing is not None:
+        return {
+            "competitor_id": str(existing["competitor_id"]),
+            "mnemex_id": None,
+            "status": "existing",
+            "name": existing.get("name", name_clean),
+        }
+
+    new_id = _mint_next_competitor_id(client)
     record = {
         "competitor_id": new_id,
         "name": name_clean,
@@ -783,10 +1020,53 @@ def register_competitor(
     }
     client.table("competitors").insert(record).execute()
     log_sync(
-        show_name=f"register:{name_clean}", source_app="register_competitor", records_written=1
+        show_name=f"register:{name_clean}",
+        source_app="register_competitor",
+        records_written=1,
     )
+    return {
+        "competitor_id": new_id,
+        "mnemex_id": None,
+        "status": "created_in_strathmark_legacy",
+        "name": name_clean,
+    }
 
-    return {"competitor_id": new_id, "status": "created", "name": name_clean}
+
+def _find_existing_competitor_by_name(client, name_clean: str) -> Optional[dict]:
+    """Case-insensitive name lookup. Returns the row dict or None."""
+    resp = (
+        client.table("competitors")
+        .select("competitor_id, name")
+        .ilike("name", name_clean)
+        .execute()
+    )
+    target = name_clean.lower()
+    for row in resp.data or []:
+        if str(row.get("name", "")).strip().lower() == target:
+            return row
+    return None
+
+
+def _mint_next_competitor_id(client) -> str:
+    """Mint the next unused C-prefixed competitor ID.
+
+    Format matches existing seeded data (C### -- 3 digits) when we have
+    <1000 competitors; switches to 4 digits at C1000. This avoids the
+    latent format-divergence bug flagged in docs/schema-reality-2026-05-04.md.
+    """
+    resp = client.table("competitors").select("competitor_id").execute()
+    max_n = 0
+    for row in resp.data or []:
+        cid = str(row.get("competitor_id", ""))
+        digits = "".join(c for c in cid if c.isdigit())
+        if not digits:
+            continue
+        try:
+            max_n = max(max_n, int(digits))
+        except ValueError:
+            continue
+    next_n = max_n + 1
+    return f"C{next_n:03d}" if next_n < 1000 else f"C{next_n:04d}"
 
 
 def format_proam_results(
@@ -898,3 +1178,380 @@ def log_sync(show_name: str, source_app: str, records_written: int) -> None:
         ).execute()
     except Exception as exc:  # pragma: no cover
         _log.warning("log_sync failed (non-fatal): %s", exc)
+
+
+# ===========================================================================
+# ML state tables. Writes to these tables originate in STRATHMARK
+# itself, not from the MNEMEX sync function. This is the explicit
+# carve-out from the controlled-write rule. See migration
+# strathmark/migrations/20260504_002_ml_state_tables.sql for DDL and
+# docs/ml-persistence-policy.md for retraining cadence, model versioning,
+# calibration, and the non-blocking guarantee.
+# ===========================================================================
+
+
+def _new_ulid() -> str:
+    """Return a new 26-char ULID string. Lazy import so test fixtures can mock."""
+    import ulid
+
+    return str(ulid.new())
+
+
+def _now_iso() -> str:
+    """ISO-8601 UTC timestamp string for TIMESTAMPTZ columns."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def register_model_version(
+    model_type: str,
+    training_data_cutoff,
+    training_row_count: int,
+    hyperparameters: dict,
+    artifact_storage: str,
+    artifact_ref: str,
+    artifact_size_bytes: int,
+    notes: Optional[str] = None,
+) -> str:
+    """
+    Insert a new model_versions row and return its model_version_id (ULID).
+
+    The new row starts as is_active=FALSE. Use set_active_model() to flip it
+    on, which atomically retires whatever was previously active for the same
+    model_type.
+
+    Args:
+        model_type:           Free-text identifier (e.g. 'xgboost_lightgbm_ensemble').
+        training_data_cutoff: Latest result_date in the training set (date or
+                              datetime). Stored as TIMESTAMPTZ.
+        training_row_count:   Number of rows the model was trained on.
+        hyperparameters:      JSON-serializable dict of tuned params + feature list.
+        artifact_storage:     'supabase_storage' or 'inline_jsonb'.
+        artifact_ref:         Storage path or inline blob ID.
+        artifact_size_bytes:  Size of the serialized artifact.
+        notes:                Optional free-text notes.
+
+    Returns:
+        ULID of the new model_versions row.
+
+    Raises:
+        RuntimeError: If env vars are missing.
+        ValueError:   If artifact_storage is not one of the allowed values.
+    """
+    if artifact_storage not in ("supabase_storage", "inline_jsonb"):
+        raise ValueError(
+            f"artifact_storage must be 'supabase_storage' or 'inline_jsonb', "
+            f"got {artifact_storage!r}"
+        )
+    client = _get_client()
+    mv_id = _new_ulid()
+    cutoff = (
+        training_data_cutoff.isoformat()
+        if hasattr(training_data_cutoff, "isoformat")
+        else str(training_data_cutoff)
+    )
+    record = {
+        "model_version_id": mv_id,
+        "model_type": str(model_type),
+        "trained_at": _now_iso(),
+        "training_data_cutoff": cutoff,
+        "training_row_count": int(training_row_count),
+        "hyperparameters": hyperparameters,
+        "artifact_storage": artifact_storage,
+        "artifact_ref": str(artifact_ref),
+        "artifact_size_bytes": int(artifact_size_bytes),
+        "is_active": False,
+        "notes": notes,
+    }
+    client.table("model_versions").insert(record).execute()
+    return mv_id
+
+
+def set_active_model(model_version_id: str) -> None:
+    """
+    Mark the named model version as active and retire any previously active
+    model of the same model_type.
+
+    The "only one active per model_type" invariant is also enforced by a
+    partial unique index in the DB. This function provides the atomic flip
+    so callers don't have to manage it.
+
+    Args:
+        model_version_id: ULID of the model to activate.
+
+    Raises:
+        RuntimeError:  If env vars are missing.
+        LookupError:   If model_version_id does not exist.
+    """
+    client = _get_client()
+
+    # Preferred path: atomic server-side swap via the migration-installed
+    # set_active_model_atomic(target_model_version_id) function. The two
+    # updates run in one transaction, so there is no window in which the
+    # model_type has zero active rows.
+    try:
+        client.rpc(
+            "set_active_model_atomic",
+            {"target_model_version_id": model_version_id},
+        ).execute()
+        return
+    except Exception as exc:
+        # Distinguish "function doesn't exist yet" (migration 004 not applied)
+        # from a real error. Postgres returns 42883 for undefined function;
+        # supabase-py / postgrest-py propagate the message.
+        msg = str(exc).lower()
+        if "set_active_model_atomic" in msg and (
+            "does not exist" in msg or "42883" in msg or "not found" in msg
+        ):
+            _log.warning(
+                "set_active_model_atomic RPC not present (migration 004 not "
+                "applied yet); falling back to two-step swap. The fallback "
+                "leaves a brief window with no active model for this type."
+            )
+        else:
+            raise
+
+    # Fallback two-step path. Look up the new model's type.
+    resp = (
+        client.table("model_versions")
+        .select("model_version_id, model_type")
+        .eq("model_version_id", model_version_id)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        raise LookupError(f"model_version_id not found: {model_version_id}")
+    model_type = rows[0]["model_type"]
+
+    # Retire any currently-active model of this type EXCEPT the target.
+    client.table("model_versions").update({"is_active": False, "retired_at": _now_iso()}).eq(
+        "model_type", model_type
+    ).eq("is_active", True).neq("model_version_id", model_version_id).execute()
+
+    # Activate the target. retired_at=None clears any stale timestamp from
+    # a prior retirement cycle.
+    client.table("model_versions").update({"is_active": True, "retired_at": None}).eq(
+        "model_version_id", model_version_id
+    ).execute()
+
+
+def get_active_model_version(model_type: str) -> Optional[str]:
+    """
+    Return the model_version_id currently flagged active for the given type,
+    or None if no model of that type is active.
+    """
+    client = _get_client()
+    resp = (
+        client.table("model_versions")
+        .select("model_version_id")
+        .eq("model_type", model_type)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0]["model_version_id"] if rows else None
+
+
+def record_calibration(
+    model_version_id: str,
+    calibration_method: str,
+    calibration_data: dict,
+    holdout_residuals: list,
+    crps_score: Optional[float] = None,
+    coverage_at_90: Optional[float] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """
+    Insert a new calibration_tables row and return its calibration_id (ULID).
+
+    Args:
+        model_version_id:   ULID of the model this calibration applies to.
+        calibration_method: 'conformal_prediction', 'platt', 'isotonic',
+                            or 'uncertainty_toolbox'.
+        calibration_data:   JSON-serializable calibration table.
+        holdout_residuals:  JSON-serializable list of residuals on the
+                            calibration holdout.
+        crps_score:         Optional CRPS score (lower is better).
+        coverage_at_90:     Optional 90% conformal interval coverage.
+        notes:              Optional free-text notes.
+
+    Returns:
+        ULID of the new calibration_tables row.
+    """
+    if calibration_method not in (
+        "conformal_prediction",
+        "platt",
+        "isotonic",
+        "uncertainty_toolbox",
+    ):
+        raise ValueError(f"unknown calibration_method: {calibration_method!r}")
+    client = _get_client()
+    cal_id = _new_ulid()
+    record = {
+        "calibration_id": cal_id,
+        "model_version_id": model_version_id,
+        "calibrated_at": _now_iso(),
+        "calibration_method": calibration_method,
+        "calibration_data": calibration_data,
+        "holdout_residuals": holdout_residuals,
+        "crps_score": crps_score,
+        "coverage_at_90": coverage_at_90,
+        "notes": notes,
+    }
+    client.table("calibration_tables").insert(record).execute()
+    return cal_id
+
+
+def store_features(
+    model_version_id: str,
+    competitor_id: str,
+    event_code: str,
+    features: dict,
+) -> str:
+    """
+    Upsert a feature_store row for (model_version_id, competitor_id, event_code).
+
+    Idempotent: re-storing the same feature vector for the same key replaces it.
+
+    Args:
+        model_version_id: ULID of the model that consumed these features.
+        competitor_id:    Competitor.
+        event_code:       'SB' or 'UH'.
+        features:         JSON-serializable dict of feature name -> value.
+
+    Returns:
+        feature_set_id (ULID) of the row. On upsert of an existing row, the
+        returned ID is the existing row's ID, not a fresh one.
+    """
+    client = _get_client()
+
+    # Upsert by composite UNIQUE — supabase-py needs an existing on_conflict
+    # column list. The migration declared UNIQUE (model_version_id,
+    # competitor_id, event_code), so we tell PostgREST to use that.
+    fs_id = _new_ulid()
+    record = {
+        "feature_set_id": fs_id,
+        "model_version_id": model_version_id,
+        "competitor_id": competitor_id,
+        "event_code": str(event_code).strip().upper(),
+        "features_jsonb": features,
+        "computed_at": _now_iso(),
+    }
+    resp = (
+        client.table("feature_store")
+        .upsert(record, on_conflict="model_version_id,competitor_id,event_code")
+        .execute()
+    )
+    rows = resp.data or []
+    if rows and "feature_set_id" in rows[0]:
+        return rows[0]["feature_set_id"]
+    return fs_id
+
+
+def record_prediction(
+    model_version_id: str,
+    competitor_id: str,
+    event_code: str,
+    show_name: str,
+    predicted_time: float,
+    predicted_variance: float,
+    cascade_level_used: str,
+    notes: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Insert a predictions row capturing one prediction.
+
+    Best-effort: never raises on Supabase failure (returns None instead).
+    The non-blocking guarantee in docs/ml-persistence-policy.md requires that
+    a write failure here MUST NOT block the calling cascade from returning
+    its prediction.
+
+    Args:
+        model_version_id:   ULID of the active model.
+        competitor_id:      Competitor.
+        event_code:         'SB' or 'UH'.
+        show_name:          Tournament name.
+        predicted_time:     Predicted time in seconds.
+        predicted_variance: Predicted variance (per-competitor std-dev squared,
+                            or whatever the model emits).
+        cascade_level_used: 'manual', 'llm', 'ml', 'baseline', or 'panel'.
+        notes:              Optional free-text.
+
+    Returns:
+        prediction_id (ULID) on success, None on any failure (including
+        an unknown cascade_level_used). Validation runs inside the
+        try/except so the non-blocking guarantee on the prediction hot
+        path holds even when a caller passes a bad value.
+    """
+    pred_id = _new_ulid()
+    try:
+        if cascade_level_used not in ("manual", "llm", "ml", "baseline", "panel"):
+            raise ValueError(f"unknown cascade_level_used: {cascade_level_used!r}")
+        client = _get_client()
+        record = {
+            "prediction_id": pred_id,
+            "model_version_id": model_version_id,
+            "competitor_id": competitor_id,
+            "event_code": str(event_code).strip().upper(),
+            "show_name": show_name,
+            "predicted_time": round(float(predicted_time), 3),
+            "predicted_variance": round(float(predicted_variance), 6),
+            "cascade_level_used": cascade_level_used,
+            "predicted_at": _now_iso(),
+            "notes": notes,
+        }
+        client.table("predictions").insert(record).execute()
+        return pred_id
+    except Exception as exc:  # pragma: no cover
+        _log.warning("record_prediction failed (non-fatal): %s", exc)
+        return None
+
+
+def settle_prediction(
+    prediction_id: str,
+    result_id: int,
+    actual_time: float,
+) -> Optional[float]:
+    """
+    Update a predictions row with the actual result and computed residual.
+
+    Best-effort: never raises on Supabase failure (returns None instead).
+    Residual = actual_time - predicted_time. Looks up predicted_time from the
+    existing row so callers don't have to pass it back.
+
+    Args:
+        prediction_id: ULID returned from record_prediction().
+        result_id:     ID of the actual result row in the results table.
+        actual_time:   Observed time in seconds.
+
+    Returns:
+        Computed residual (float) on success, or None on Supabase failure or
+        if the prediction row is not found.
+    """
+    try:
+        client = _get_client()
+        resp = (
+            client.table("predictions")
+            .select("predicted_time")
+            .eq("prediction_id", prediction_id)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            _log.warning("settle_prediction: prediction_id not found: %s", prediction_id)
+            return None
+        predicted_time = float(rows[0]["predicted_time"])
+        residual = float(actual_time) - predicted_time
+        client.table("predictions").update(
+            {
+                "result_id": int(result_id),
+                "residual": round(residual, 3),
+            }
+        ).eq("prediction_id", prediction_id).execute()
+        return round(residual, 3)
+    except Exception as exc:  # pragma: no cover
+        _log.warning("settle_prediction failed (non-fatal): %s", exc)
+        return None

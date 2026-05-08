@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "0.4.1"
+version = "0.5.0"
 description = "Woodchopping handicap engine — pip-installable calculation core extracted from STRATHEX"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,6 +32,7 @@ dependencies = [
     "numpy>=1.24",
     "requests>=2.28",
     "openpyxl>=3.1",
+    "ulid-py>=1.1",
 ]
 
 [project.optional-dependencies]

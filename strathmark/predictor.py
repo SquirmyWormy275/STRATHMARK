@@ -32,17 +32,35 @@ Source references (STRATHEX):
 
 from __future__ import annotations
 
+import collections as _collections
 import logging
 import statistics as _statistics
+import threading as _threading
 import time as _time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Dict, List, Optional
 
-_log = logging.getLogger(__name__)
-
 import numpy as np
 import pandas as pd
+
+_log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Hot-path Supabase circuit breaker for bias correction
+# ---------------------------------------------------------------------------
+#
+# Policy (from docs/ml-persistence-policy.md section 5):
+# - Per-process counter, not per-session.
+# - On failure, log a warning AND retry on the next prediction.
+# - After 3 consecutive failures within a 60-second window, surface a single
+#   warning telemetry event (not log spam) and fall back to in-memory bias
+#   state for the remainder of the window.
+# - After the window, the breaker enters HALF-OPEN: it admits exactly one
+#   probe call. If the probe succeeds, the breaker fully closes. If the
+#   probe fails, the breaker re-trips and the cooldown restarts. This
+#   prevents a single stale-data success from hiding an ongoing outage.
+# - Process restart resets all state.
 
 from strathmark.config import (
     data_req,
@@ -69,6 +87,127 @@ from strathmark.wood import (
     get_species_properties,
     get_species_time_multiplier,
 )
+
+
+class _BiasCircuitBreaker:
+    """Per-process circuit breaker for the bias-correction Supabase read.
+
+    States:
+      CLOSED    -- normal operation. Failures accumulate in a sliding window.
+      OPEN      -- tripped. allow() returns False; calls fall back to in-memory.
+      HALF_OPEN -- cooldown elapsed. allow() admits exactly ONE probe call.
+                   The probe's outcome decides whether to fully close or
+                   re-open. While the probe is in flight, allow() returns
+                   False so a thundering herd doesn't all probe at once.
+
+    Trips when THRESHOLD failures land within WINDOW_SECONDS. After
+    WINDOW_SECONDS elapses post-trip, transitions OPEN -> HALF_OPEN.
+
+    Thread-safe; the lock guards every state transition.
+    """
+
+    WINDOW_SECONDS: float = 60.0
+    THRESHOLD: int = 3
+
+    # State constants
+    _CLOSED = "closed"
+    _OPEN = "open"
+    _HALF_OPEN = "half_open"
+
+    def __init__(self) -> None:
+        self._failures: _collections.deque[float] = _collections.deque()
+        self._state: str = self._CLOSED
+        self._tripped_at: float = 0.0
+        self._probe_in_flight: bool = False
+        self._lock = _threading.Lock()
+
+    @property
+    def _tripped(self) -> bool:
+        # Backwards-compat shim for tests that inspect ._tripped
+        return self._state == self._OPEN
+
+    def _purge(self, now: float) -> None:
+        cutoff = now - self.WINDOW_SECONDS
+        while self._failures and self._failures[0] < cutoff:
+            self._failures.popleft()
+
+    def allow(self) -> bool:
+        """Return True if the caller should attempt the protected operation.
+
+        In HALF_OPEN state, exactly one caller per cooldown receives True;
+        subsequent callers see False until the probe resolves via
+        record_success() or record_failure().
+        """
+        with self._lock:
+            now = _time.monotonic()
+            self._purge(now)
+            if self._state == self._OPEN:
+                if now - self._tripped_at > self.WINDOW_SECONDS:
+                    self._state = self._HALF_OPEN
+                    self._probe_in_flight = False
+                else:
+                    return False
+            if self._state == self._HALF_OPEN:
+                if self._probe_in_flight:
+                    return False
+                self._probe_in_flight = True
+                return True
+            return True
+
+    def record_success(self) -> None:
+        """Successful protected call. Resolves a probe (if any) and closes."""
+        with self._lock:
+            previously_open = self._state in (self._OPEN, self._HALF_OPEN)
+            self._failures.clear()
+            self._state = self._CLOSED
+            self._probe_in_flight = False
+            self._tripped_at = 0.0
+            if previously_open:
+                _log.info("bias circuit breaker: closed after probe success")
+
+    def record_failure(self) -> bool:
+        """Log the failure and update state. Returns True if newly opened."""
+        with self._lock:
+            now = _time.monotonic()
+            # If a half-open probe failed, re-open immediately and restart cooldown.
+            if self._state == self._HALF_OPEN:
+                self._state = self._OPEN
+                self._tripped_at = now
+                self._probe_in_flight = False
+                _log.warning(
+                    "bias circuit breaker: probe failed; re-opened for another %.0fs",
+                    self.WINDOW_SECONDS,
+                )
+                return True
+            self._purge(now)
+            self._failures.append(now)
+            if self._state == self._CLOSED and len(self._failures) >= self.THRESHOLD:
+                self._state = self._OPEN
+                self._tripped_at = now
+                _log.warning(
+                    "bias circuit breaker: tripped after %d failures in %.0fs window; "
+                    "falling back to in-memory bias state for the next %.0fs",
+                    self.THRESHOLD,
+                    self.WINDOW_SECONDS,
+                    self.WINDOW_SECONDS,
+                )
+                return True
+            _log.debug(
+                "bias circuit breaker: failure recorded (%d in window)",
+                len(self._failures),
+            )
+        return False
+
+    def reset(self) -> None:
+        """Test hook. Clears all state."""
+        with self._lock:
+            self._failures.clear()
+            self._state = self._CLOSED
+            self._tripped_at = 0.0
+            self._probe_in_flight = False
+
+
+_bias_breaker = _BiasCircuitBreaker()
 
 # ---------------------------------------------------------------------------
 # Value objects provided by the caller
@@ -1241,19 +1380,20 @@ def predict_baseline(
 
     # Apply bias correction from personal prediction residual history.
     # Subtracting the median residual adjusts for systematic over/under-prediction.
-    # Wrapped in try/except so Supabase unavailability never breaks local predictions.
-    # Uses module-level flag to avoid repeated failed network calls when Supabase is down.
-    if not getattr(predict_baseline, "_supabase_bias_unavailable", False):
+    # Circuit breaker absorbs transient Supabase failures without permanently
+    # disabling bias correction. See _BiasCircuitBreaker docstring and
+    # docs/ml-persistence-policy.md section 5 for the policy.
+    if _bias_breaker.allow():
         try:
             from strathmark.db import get_competitor_bias as _get_bias
 
             _bias = _get_bias(competitor.name)
+            _bias_breaker.record_success()
             if _bias is not None:
                 baseline -= _bias
                 data_source += f" [bias corrected {-_bias:+.1f}s]"
         except Exception:
-            predict_baseline._supabase_bias_unavailable = True
-            _log.debug("Supabase bias correction unavailable; disabling for this session")
+            _bias_breaker.record_failure()
 
     explanation = f"Predicted {baseline:.1f}s ({data_source})"
 
