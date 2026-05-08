@@ -113,9 +113,9 @@ def _read_last_sync_cursor() -> Optional[datetime]:
     wall-clock minus the lookback.
     """
     try:
-        from strathmark.db import _get_client
+        from strathmark.mnemex import _get_sync_client
 
-        client = _get_client()
+        client = _get_sync_client()
         resp = (
             client.table("sync_log")
             .select("mnemex_cursor")
@@ -285,9 +285,9 @@ def _do_sync(
     if dry_run:
         _log.info("%s: DRY RUN. would upsert %d rows", sync_path, len(records))
     else:
-        from strathmark.db import _get_client
+        from strathmark.mnemex import _get_sync_client
 
-        client = _get_client()
+        client = _get_sync_client()
         try:
             client.table("results").upsert(records, on_conflict="mnemex_id").execute()
             rows_upserted = len(records)
@@ -406,9 +406,9 @@ def _resolve_competitor_lookup(mnemex_competitor_ids: list[str]) -> dict[str, st
     """
     if not mnemex_competitor_ids:
         return {}
-    from strathmark.db import _get_client
+    from strathmark.mnemex import _get_sync_client
 
-    client = _get_client()
+    client = _get_sync_client()
     cleaned = [str(x).strip() for x in mnemex_competitor_ids if x is not None]
     out: dict[str, str] = {}
     for i in range(0, len(cleaned), _COMPETITOR_LOOKUP_CHUNK):
@@ -476,9 +476,9 @@ def _write_sync_log(result: SyncResult) -> None:
     nested try/except so a sync_log failure doesn't mask the original
     upsert exception.
     """
-    from strathmark.db import _get_client
+    from strathmark.mnemex import _get_sync_client
 
-    client = _get_client()
+    client = _get_sync_client()
     record = {
         "show_name": result.notes or result.sync_path,
         "source_app": "mnemex_sync",

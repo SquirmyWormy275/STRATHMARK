@@ -4,42 +4,16 @@ Two layers:
 
 1. Always-on tests covering input validation, the best-effort error contract,
    and exports.
-2. Live DB tests covering the full ML state lifecycle:
-   register_model_version -> set_active_model -> store_features ->
-   record_prediction -> settle_prediction -> record_prediction_residuals.
-   Live tests are gated by STRATHMARK_TEST_DB=1 AND a non-production project
-   ref. They write to and clean up after themselves on every run.
+2. Live DB tests covering the full ML state lifecycle. Gated by
+   STRATHMARK_TEST_DB=1 AND a non-production project ref. They write to and
+   clean up after themselves on every run.
 
-Live tests refuse to run against the production project ref iordtvxryrdhqvdkfgzf.
-Per the global Test Isolation rule, tests must use a separate test project.
+The live-DB guard lives in tests/conftest.py.
 """
-
-import os
 
 import pytest
 
-PRODUCTION_PROJECT_REF = "iordtvxryrdhqvdkfgzf"
-
-
-def _is_live_db_test_environment() -> tuple[bool, str]:
-    if not os.environ.get("STRATHMARK_TEST_DB"):
-        return False, "Live ML state tests require STRATHMARK_TEST_DB=1"
-    url = os.environ.get("STRATHMARK_SUPABASE_URL", "")
-    if not url:
-        return False, "STRATHMARK_SUPABASE_URL is unset"
-    if PRODUCTION_PROJECT_REF in url:
-        return (
-            False,
-            f"REFUSING to run live ML state tests against production project ref "
-            f"{PRODUCTION_PROJECT_REF!r}. Point STRATHMARK_SUPABASE_URL at an "
-            f"isolated test project before setting STRATHMARK_TEST_DB=1.",
-        )
-    return True, "live DB tests enabled"
-
-
-_LIVE_OK, _LIVE_REASON = _is_live_db_test_environment()
-live_db_required = pytest.mark.skipif(not _LIVE_OK, reason=_LIVE_REASON)
-
+from tests.conftest import PRODUCTION_PROJECT_REF, live_db_required  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Always-on lifecycle contract checks

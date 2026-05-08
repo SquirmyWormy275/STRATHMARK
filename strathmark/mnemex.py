@@ -93,8 +93,69 @@ def _get_client():
 
 def reset_client() -> None:
     """Test hook. Forget the cached client so env-var changes take effect."""
-    global _client
+    global _client, _sync_client
     _client = None
+    _sync_client = None
+
+
+# ---------------------------------------------------------------------------
+# Dedicated mnemex_sync-role client for the sync function
+# ---------------------------------------------------------------------------
+#
+# After migration 003 lands and the operator has rotated keys, the sync
+# function MUST authenticate as the `mnemex_sync` Postgres role (not the
+# generic STRATHMARK service-role key) so the controlled-write RLS policies
+# enforce on it. The two are kept distinct: `_get_client()` is the standard
+# MNEMEX read client; `_get_sync_client()` is the dedicated cache-write
+# client used only by `strathmark.sync`.
+#
+# Env vars:
+#   MNEMEX_SYNC_DB_URL  -- STRATHMARK Supabase URL (the cache target). Same
+#                          as STRATHMARK_SUPABASE_URL today; kept distinct
+#                          so the operator can move it without touching
+#                          the read path.
+#   MNEMEX_SYNC_DB_KEY  -- A JWT whose 'role' claim is mnemex_sync (NOT
+#                          service_role).
+#
+# When either is unset, falls back to STRATHMARK_SUPABASE_URL/KEY with a
+# warning. This lets the sync function ship and run before role plumbing
+# is complete.
+
+_sync_client = None  # supabase.Client for the mnemex_sync role
+
+
+def _get_sync_client():
+    """Return (and cache) the mnemex_sync-role Supabase client.
+
+    Falls back to the STRATHMARK service-role client when the dedicated
+    sync env vars are unset. Logs a one-line warning per process so the
+    operator notices that the controlled-write boundary is open.
+    """
+    global _sync_client
+    if _sync_client is not None:
+        return _sync_client
+
+    sync_url = os.environ.get("MNEMEX_SYNC_DB_URL", "").strip()
+    sync_key = os.environ.get("MNEMEX_SYNC_DB_KEY", "").strip()
+
+    if not sync_url or not sync_key:
+        _log.warning(
+            "MNEMEX_SYNC_DB_URL/KEY not configured; sync writes will use the "
+            "generic STRATHMARK service-role client. After RLS migration 003 "
+            "lands AND service_role has BYPASSRLS removed, this fallback "
+            "stops working and the sync function will hard-fail at upsert. "
+            "Provision a mnemex_sync-role JWT and set the env vars to close "
+            "the loop."
+        )
+        from strathmark.db import _get_client
+
+        _sync_client = _get_client()
+        return _sync_client
+
+    from supabase import create_client  # type: ignore[import]
+
+    _sync_client = create_client(sync_url, sync_key)
+    return _sync_client
 
 
 def is_mnemex_configured() -> bool:

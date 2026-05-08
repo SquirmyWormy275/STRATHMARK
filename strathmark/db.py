@@ -185,9 +185,20 @@ _log = logging.getLogger(__name__)
 _client = None  # supabase.Client, created on first use
 
 
-def _get_client():
+# Bound HTTP timeout on every PostgREST call. Hot-path bias correction
+# would otherwise hang up to httpx's default (~30s) on a slow Supabase,
+# which the bias circuit breaker can't observe (it counts exceptions, not
+# hangs). 2 seconds is generous for a sub-second indexed lookup and short
+# enough that a stalled call surfaces as an exception the breaker can act
+# on. Operator action infrastructure (training, sync, ML state writes)
+# tolerates a longer timeout, so callers that need it pass an override
+# via reset_client(timeout=N).
+_DEFAULT_POSTGREST_TIMEOUT: float = 2.0
+
+
+def _get_client(timeout: float | None = None):
     """
-    Return (and cache) the Supabase client.
+    Return (and cache) the Supabase client with a bounded PostgREST timeout.
 
     Raises:
         RuntimeError: If STRATHMARK_SUPABASE_URL or STRATHMARK_SUPABASE_KEY
@@ -213,8 +224,36 @@ def _get_client():
 
     from supabase import create_client  # type: ignore[import]
 
-    _client = create_client(url, key)
+    effective_timeout = timeout if timeout is not None else _DEFAULT_POSTGREST_TIMEOUT
+    try:
+        from supabase.client import ClientOptions  # type: ignore[import]
+
+        options = ClientOptions(postgrest_client_timeout=effective_timeout)
+        _client = create_client(url, key, options=options)
+    except (ImportError, TypeError):
+        # Older supabase-py without ClientOptions: fall back to the
+        # default-timeout client. The breaker still protects via failure
+        # counting; only hangs slip through.
+        _client = create_client(url, key)
     return _client
+
+
+def reset_client(timeout: float | None = None) -> None:
+    """Test hook / operator hook. Forget the cached client and optionally
+    override the PostgREST timeout on the next instantiation.
+
+    `timeout=None` uses the default. Pass a larger value (e.g. 30.0) before
+    operator-action calls (training, sync, ML state writes) that legitimately
+    take longer than the hot-path 2-second budget.
+    """
+    global _client
+    _client = None
+    if timeout is not None:
+        # Stash the override so the next _get_client() picks it up. Simple
+        # approach: callers that need a non-default timeout pass it via
+        # _get_client(timeout=N) directly. We don't carry the value across
+        # reset boundaries.
+        _get_client(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -839,118 +878,138 @@ def register_competitor(
         ValueError:   If name is empty.
         RuntimeError: If both MNEMEX and STRATHMARK Supabase are unreachable.
     """
-    import time as _t
-
     name_clean = (name or "").strip()
     if not name_clean:
         raise ValueError("register_competitor: name must not be empty")
 
-    from strathmark.mnemex import (
-        is_mnemex_configured,
-        register_competitor_in_mnemex,
-    )
+    from strathmark.mnemex import is_mnemex_configured
 
-    # ----- Path A: MNEMEX configured -----
     if is_mnemex_configured():
-        mnemex_result = register_competitor_in_mnemex(
-            name=name_clean,
+        return _register_via_mnemex(
+            name_clean=name_clean,
             country=country,
             state=state,
             gender=gender,
             region=region,
+            wait_for_sync=wait_for_sync,
+            sync_timeout_seconds=sync_timeout_seconds,
         )
-        mnemex_id = mnemex_result["mnemex_id"]
+    return _register_legacy(
+        name_clean=name_clean,
+        country=country,
+        state=state,
+        gender=gender,
+        region=region,
+    )
 
-        # Look for an already-synced cache row first (handles MNEMEX 'existing' case
-        # and the rare race where the sync function ran between the two calls).
-        client = _get_client()
-        cached = (
-            client.table("competitors")
-            .select("competitor_id, mnemex_id, name")
-            .eq("mnemex_id", mnemex_id)
-            .limit(1)
-            .execute()
-        )
-        if cached.data:
-            row = cached.data[0]
-            return {
-                "competitor_id": str(row["competitor_id"]),
-                "mnemex_id": mnemex_id,
-                "status": "existing" if mnemex_result["status"] == "existing" else "created",
-                "name": row.get("name", name_clean),
-            }
 
-        # Newly minted in MNEMEX; not yet in cache. Optionally wait for sync.
-        if wait_for_sync and sync_timeout_seconds > 0:
-            deadline = _t.monotonic() + sync_timeout_seconds
-            while _t.monotonic() < deadline:
-                _t.sleep(min(2.0, max(0.5, sync_timeout_seconds / 10.0)))
-                cached = (
-                    client.table("competitors")
-                    .select("competitor_id, mnemex_id, name")
-                    .eq("mnemex_id", mnemex_id)
-                    .limit(1)
-                    .execute()
-                )
-                if cached.data:
-                    row = cached.data[0]
-                    return {
-                        "competitor_id": str(row["competitor_id"]),
-                        "mnemex_id": mnemex_id,
-                        "status": "created",
-                        "name": row.get("name", name_clean),
-                    }
+def _register_via_mnemex(
+    *,
+    name_clean: str,
+    country: str,
+    state: str,
+    gender: str,
+    region: str,
+    wait_for_sync: bool,
+    sync_timeout_seconds: float,
+) -> dict:
+    """MNEMEX path: mint canonical ID in MNEMEX, optionally wait for sync."""
+    from strathmark.mnemex import register_competitor_in_mnemex
 
-        return {
-            "competitor_id": None,
-            "mnemex_id": mnemex_id,
-            "status": "registered_in_mnemex_pending_sync",
-            "name": name_clean,
-        }
+    mnemex_result = register_competitor_in_mnemex(
+        name=name_clean,
+        country=country,
+        state=state,
+        gender=gender,
+        region=region,
+    )
+    mnemex_id = mnemex_result["mnemex_id"]
+    client = _get_client()
 
-    # ----- Path B: MNEMEX not configured (transition mode) -----
+    # An "existing" MNEMEX result is the only case where we expect to find
+    # the row in the cache immediately. For "created", skip straight to the
+    # wait-for-sync loop so we don't burn an extra round trip.
+    if mnemex_result["status"] == "existing":
+        cached = _lookup_cache_row(client, mnemex_id)
+        if cached is not None:
+            return _cache_hit_response(cached, mnemex_id, status="existing")
+
+    if wait_for_sync and sync_timeout_seconds > 0:
+        cached = _wait_for_cache_row(client, mnemex_id, sync_timeout_seconds)
+        if cached is not None:
+            return _cache_hit_response(cached, mnemex_id, status="created")
+
+    return {
+        "competitor_id": None,
+        "mnemex_id": mnemex_id,
+        "status": "registered_in_mnemex_pending_sync",
+        "name": name_clean,
+    }
+
+
+def _lookup_cache_row(client, mnemex_id: str) -> Optional[dict]:
+    """One-shot cache lookup by mnemex_id. Returns None if not present."""
+    resp = (
+        client.table("competitors")
+        .select("competitor_id, mnemex_id, name")
+        .eq("mnemex_id", mnemex_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0] if rows else None
+
+
+def _wait_for_cache_row(client, mnemex_id: str, timeout_seconds: float) -> Optional[dict]:
+    """Poll the cache for a row matching mnemex_id, up to timeout_seconds."""
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+    poll_interval = min(2.0, max(0.5, timeout_seconds / 10.0))
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        cached = _lookup_cache_row(client, mnemex_id)
+        if cached is not None:
+            return cached
+    return None
+
+
+def _cache_hit_response(row: dict, mnemex_id: str, *, status: str) -> dict:
+    return {
+        "competitor_id": str(row["competitor_id"]),
+        "mnemex_id": mnemex_id,
+        "status": status,
+        "name": row.get("name", ""),
+    }
+
+
+def _register_legacy(
+    *,
+    name_clean: str,
+    country: str,
+    state: str,
+    gender: str,
+    region: str,
+) -> dict:
+    """Legacy path: mint a STRATHMARK-local competitor_id directly."""
     _log.warning(
         "register_competitor: MNEMEX is not configured; falling back to "
         "legacy STRATHMARK-local mint. This path is deprecated and will be "
         "removed after MNEMEX is universally available. Set MNEMEX_SUPABASE_URL "
         "and MNEMEX_SUPABASE_KEY to use the canonical roster path."
     )
-
     client = _get_client()
 
-    # Existing local row by case-insensitive name match
-    existing_resp = (
-        client.table("competitors")
-        .select("competitor_id, name")
-        .ilike("name", name_clean)
-        .execute()
-    )
-    rows = existing_resp.data or []
-    for r in rows:
-        if str(r.get("name", "")).strip().lower() == name_clean.lower():
-            return {
-                "competitor_id": str(r["competitor_id"]),
-                "mnemex_id": None,
-                "status": "existing",
-                "name": r.get("name", name_clean),
-            }
+    existing = _find_existing_competitor_by_name(client, name_clean)
+    if existing is not None:
+        return {
+            "competitor_id": str(existing["competitor_id"]),
+            "mnemex_id": None,
+            "status": "existing",
+            "name": existing.get("name", name_clean),
+        }
 
-    # Mint next ID. Format matches existing seeded data (C### -- 3 digits) when
-    # we have <1000 competitors; switches to 4 digits at C1000. This avoids the
-    # latent format-divergence bug flagged in docs/schema-reality-2026-05-04.md.
-    all_resp = client.table("competitors").select("competitor_id").execute()
-    max_n = 0
-    for r in all_resp.data or []:
-        cid = str(r.get("competitor_id", ""))
-        digits = "".join(c for c in cid if c.isdigit())
-        if digits:
-            try:
-                max_n = max(max_n, int(digits))
-            except ValueError:
-                continue
-    next_n = max_n + 1
-    new_id = f"C{next_n:03d}" if next_n < 1000 else f"C{next_n:04d}"
-
+    new_id = _mint_next_competitor_id(client)
     record = {
         "competitor_id": new_id,
         "name": name_clean,
@@ -965,13 +1024,49 @@ def register_competitor(
         source_app="register_competitor",
         records_written=1,
     )
-
     return {
         "competitor_id": new_id,
         "mnemex_id": None,
         "status": "created_in_strathmark_legacy",
         "name": name_clean,
     }
+
+
+def _find_existing_competitor_by_name(client, name_clean: str) -> Optional[dict]:
+    """Case-insensitive name lookup. Returns the row dict or None."""
+    resp = (
+        client.table("competitors")
+        .select("competitor_id, name")
+        .ilike("name", name_clean)
+        .execute()
+    )
+    target = name_clean.lower()
+    for row in resp.data or []:
+        if str(row.get("name", "")).strip().lower() == target:
+            return row
+    return None
+
+
+def _mint_next_competitor_id(client) -> str:
+    """Mint the next unused C-prefixed competitor ID.
+
+    Format matches existing seeded data (C### -- 3 digits) when we have
+    <1000 competitors; switches to 4 digits at C1000. This avoids the
+    latent format-divergence bug flagged in docs/schema-reality-2026-05-04.md.
+    """
+    resp = client.table("competitors").select("competitor_id").execute()
+    max_n = 0
+    for row in resp.data or []:
+        cid = str(row.get("competitor_id", ""))
+        digits = "".join(c for c in cid if c.isdigit())
+        if not digits:
+            continue
+        try:
+            max_n = max(max_n, int(digits))
+        except ValueError:
+            continue
+    next_n = max_n + 1
+    return f"C{next_n:03d}" if next_n < 1000 else f"C{next_n:04d}"
 
 
 def format_proam_results(
@@ -1191,7 +1286,33 @@ def set_active_model(model_version_id: str) -> None:
     """
     client = _get_client()
 
-    # Look up the new model's type
+    # Preferred path: atomic server-side swap via the migration-installed
+    # set_active_model_atomic(target_model_version_id) function. The two
+    # updates run in one transaction, so there is no window in which the
+    # model_type has zero active rows.
+    try:
+        client.rpc(
+            "set_active_model_atomic",
+            {"target_model_version_id": model_version_id},
+        ).execute()
+        return
+    except Exception as exc:
+        # Distinguish "function doesn't exist yet" (migration 004 not applied)
+        # from a real error. Postgres returns 42883 for undefined function;
+        # supabase-py / postgrest-py propagate the message.
+        msg = str(exc).lower()
+        if "set_active_model_atomic" in msg and (
+            "does not exist" in msg or "42883" in msg or "not found" in msg
+        ):
+            _log.warning(
+                "set_active_model_atomic RPC not present (migration 004 not "
+                "applied yet); falling back to two-step swap. The fallback "
+                "leaves a brief window with no active model for this type."
+            )
+        else:
+            raise
+
+    # Fallback two-step path. Look up the new model's type.
     resp = (
         client.table("model_versions")
         .select("model_version_id, model_type")
@@ -1203,19 +1324,13 @@ def set_active_model(model_version_id: str) -> None:
         raise LookupError(f"model_version_id not found: {model_version_id}")
     model_type = rows[0]["model_type"]
 
-    # Retire any currently-active model of this type EXCEPT the target. Order
-    # matters: deactivate first so the partial unique index doesn't reject
-    # the next update. PostgREST does not support `neq` chained with `eq` on
-    # the same column atomically; we issue two updates and accept that there
-    # is a brief window in which no model is active for this type. A future
-    # hardening pass moves both updates into a Postgres function (RPC) for
-    # true atomicity.
+    # Retire any currently-active model of this type EXCEPT the target.
     client.table("model_versions").update({"is_active": False, "retired_at": _now_iso()}).eq(
         "model_type", model_type
     ).eq("is_active", True).neq("model_version_id", model_version_id).execute()
 
-    # Activate the target. Set retired_at=None so a re-activated model
-    # doesn't carry a stale retired_at timestamp from a prior cycle.
+    # Activate the target. retired_at=None clears any stale timestamp from
+    # a prior retirement cycle.
     client.table("model_versions").update({"is_active": True, "retired_at": None}).eq(
         "model_version_id", model_version_id
     ).execute()

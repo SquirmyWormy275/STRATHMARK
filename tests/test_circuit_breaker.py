@@ -125,3 +125,66 @@ class TestBiasCircuitBreaker:
         for t in threads:
             t.join(timeout=10.0)
             assert not t.is_alive(), "thread deadlocked"
+
+
+class TestHalfOpenProbe:
+    """Half-open state lets exactly one probe through after the cooldown.
+
+    Without it, a single stale-data success can mask an ongoing outage.
+    With it, the breaker re-opens on probe failure for another full
+    cooldown.
+    """
+
+    def _trip_breaker(self, breaker, t):
+        for _ in range(_BiasCircuitBreaker.THRESHOLD):
+            breaker.record_failure()
+            t[0] += 1
+
+    def test_half_open_admits_one_probe(self, monkeypatch):
+        breaker = _BiasCircuitBreaker()
+        t = [1000.0]
+        monkeypatch.setattr("strathmark.predictor._time.monotonic", lambda: t[0])
+
+        self._trip_breaker(breaker, t)
+        # Advance past the cooldown so the next allow() transitions to half-open.
+        t[0] += 120
+        assert breaker.allow() is True  # probe admitted
+        # Second caller in half-open state with the probe still in flight is denied.
+        assert breaker.allow() is False
+
+    def test_probe_failure_re_opens_for_full_cooldown(self, monkeypatch):
+        breaker = _BiasCircuitBreaker()
+        t = [1000.0]
+        monkeypatch.setattr("strathmark.predictor._time.monotonic", lambda: t[0])
+
+        self._trip_breaker(breaker, t)
+        t[0] += 120
+        assert breaker.allow() is True  # probe admitted
+        # Probe fails -> re-open.
+        newly_opened = breaker.record_failure()
+        assert newly_opened is True
+        # Subsequent calls denied within the new cooldown window.
+        assert breaker.allow() is False
+        # Still denied just before the window expires.
+        t[0] += _BiasCircuitBreaker.WINDOW_SECONDS - 1
+        assert breaker.allow() is False
+        # Past the window -> probe admitted again.
+        t[0] += 5
+        assert breaker.allow() is True
+
+    def test_probe_success_fully_closes(self, monkeypatch):
+        breaker = _BiasCircuitBreaker()
+        t = [1000.0]
+        monkeypatch.setattr("strathmark.predictor._time.monotonic", lambda: t[0])
+
+        self._trip_breaker(breaker, t)
+        t[0] += 120
+        assert breaker.allow() is True  # probe admitted
+        breaker.record_success()
+        # Fully closed: subsequent calls all admit.
+        assert breaker.allow() is True
+        assert breaker.allow() is True
+        # And the failure window is fresh -- two more failures don't trip.
+        breaker.record_failure()
+        breaker.record_failure()
+        assert breaker.allow() is True

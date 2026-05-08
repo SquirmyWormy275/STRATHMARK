@@ -1,4 +1,4 @@
-"""Tests for strathmark/db.py — Supabase/PostgreSQL backend.
+"""Tests for strathmark/db.py -- Supabase/PostgreSQL backend.
 
 Two modes:
 
@@ -6,40 +6,13 @@ Two modes:
 2. Live Supabase tests. Gated by STRATHMARK_TEST_DB=1 AND a non-production
    project ref. Run only against an isolated test project.
 
-The TEST_DB gate enforces project isolation per the global Test Isolation rule:
-"Tests MUST NEVER write to or pollute the production database." A test that
-runs with STRATHMARK_TEST_DB=1 but STRATHMARK_SUPABASE_URL pointing at the
-production ref iordtvxryrdhqvdkfgzf is treated as a configuration error and
-skipped with a loud message.
+The live-DB guard lives in tests/conftest.py and is shared with other
+test files that touch real Supabase.
 """
-
-import os
 
 import pytest
 
-PRODUCTION_PROJECT_REF = "iordtvxryrdhqvdkfgzf"
-
-
-def _is_live_db_test_environment() -> tuple[bool, str]:
-    """Return (eligible, reason). Eligible only if explicit opt-in AND non-prod."""
-    if not os.environ.get("STRATHMARK_TEST_DB"):
-        return False, "Supabase live tests require STRATHMARK_TEST_DB=1"
-    url = os.environ.get("STRATHMARK_SUPABASE_URL", "")
-    if not url:
-        return False, "STRATHMARK_SUPABASE_URL is unset"
-    if PRODUCTION_PROJECT_REF in url:
-        return (
-            False,
-            f"REFUSING to run live tests against production project ref "
-            f"{PRODUCTION_PROJECT_REF!r}. Point STRATHMARK_SUPABASE_URL at "
-            f"an isolated test project before setting STRATHMARK_TEST_DB=1.",
-        )
-    return True, "live DB tests enabled"
-
-
-_LIVE_OK, _LIVE_REASON = _is_live_db_test_environment()
-live_db_required = pytest.mark.skipif(not _LIVE_OK, reason=_LIVE_REASON)
-
+from tests.conftest import PRODUCTION_PROJECT_REF, live_db_required  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Always-on: imports and exports
