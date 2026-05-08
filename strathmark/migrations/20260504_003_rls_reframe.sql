@@ -22,23 +22,39 @@
 -- Reads remain unrestricted across all tables for both anon and
 -- service_role keys.
 --
--- IMPORTANT pre-application step
--- ------------------------------
--- The Supabase service-role JWT does NOT inherit a custom Postgres role
--- by default. Before applying this migration:
+-- IMPORTANT pre-application steps (all required before this migration enforces anything)
+-- ---------------------------------------------------------------------------------------
+-- The Supabase service_role role has the BYPASSRLS attribute by default.
+-- ENABLE ROW LEVEL SECURITY alone does NOT constrain it. To make the
+-- controlled-write policies actually enforce, all of the following are
+-- required, in order:
 --
 -- 1. Create the mnemex_sync role in the Supabase dashboard's Database
---    Settings -> Roles. Mark it as a member of authenticated.
--- 2. Update the JWT for the sync function's service-role key so that the
---    'role' claim is 'mnemex_sync' (not 'service_role'). Use Supabase's
---    custom JWT signing, OR use a dedicated database password and connect
---    via psycopg2 with role-set after connect.
--- 3. Verify the sync function can connect AS mnemex_sync before flipping
---    these policies on. The migration will succeed regardless, but the
---    sync function will be locked out until the role is wired.
+--    Settings -> Roles. Mark it as a member of authenticated. Do NOT
+--    grant BYPASSRLS to it. Grant USAGE on schema public; GRANT SELECT,
+--    INSERT, UPDATE, DELETE ON results, competitors, sync_log TO
+--    mnemex_sync;.
+-- 2. Create a wood_admin role similarly for reference-data maintenance.
+--    Grant SELECT, INSERT, UPDATE, DELETE ON wood_species TO wood_admin;.
+-- 3. Provision a dedicated MNEMEX_SYNC_DB_URL/KEY for the sync function
+--    that authenticates AS mnemex_sync (not service_role). Update
+--    strathmark.sync to use this client instead of _get_client() from db.py.
+-- 4. Remove BYPASSRLS from service_role for the duration this enforcement
+--    is desired:
+--        ALTER ROLE service_role NOBYPASSRLS;
+--    OR rotate STRATHMARK_SUPABASE_KEY to a non-BYPASSRLS role used solely
+--    for ML-state writes (preferred -- keeps service_role for emergency
+--    operator access).
+-- 5. Apply this migration. The FORCE ROW LEVEL SECURITY directives below
+--    ensure the policies enforce even on table owners; combined with
+--    NOBYPASSRLS on service_role, this closes the loop.
+-- 6. Verify by attempting a write to results from the STRATHMARK service-
+--    role client and asserting a permission-denied error.
 --
--- If the role plumbing is not ready, run only the policies that DO NOT
--- depend on mnemex_sync (the ML-state carve-out is independent).
+-- If steps 1-4 are NOT complete, applying this migration will silently
+-- succeed but the policies will be a no-op against any BYPASSRLS role.
+-- The migration does not refuse to apply in that state -- the operator
+-- is responsible for verifying the role plumbing first.
 
 BEGIN;
 
@@ -46,15 +62,27 @@ BEGIN;
 -- Enable RLS on every table touched by this migration
 -- ---------------------------------------------------------------------------
 
+-- ENABLE + FORCE: FORCE ensures policies apply even to the table owner,
+-- which (combined with NOBYPASSRLS on service_role) closes the BYPASSRLS
+-- bypass that would otherwise render these policies a no-op.
 ALTER TABLE competitors           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE competitors           FORCE  ROW LEVEL SECURITY;
 ALTER TABLE results               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE results               FORCE  ROW LEVEL SECURITY;
 ALTER TABLE sync_log              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sync_log              FORCE  ROW LEVEL SECURITY;
 ALTER TABLE wood_species          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE wood_species          FORCE  ROW LEVEL SECURITY;
 ALTER TABLE model_versions        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE model_versions        FORCE  ROW LEVEL SECURITY;
 ALTER TABLE calibration_tables    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_tables    FORCE  ROW LEVEL SECURITY;
 ALTER TABLE feature_store         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feature_store         FORCE  ROW LEVEL SECURITY;
 ALTER TABLE predictions           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE predictions           FORCE  ROW LEVEL SECURITY;
 ALTER TABLE prediction_residuals  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE prediction_residuals  FORCE  ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Universal read policy (anon + authenticated + service_role can SELECT)
@@ -108,11 +136,16 @@ CREATE POLICY sync_log_write_sync ON sync_log
 -- wood_species (operator maintenance only; rare)
 -- ---------------------------------------------------------------------------
 
+-- wood_admin only. Header intent (line 19) was 'wood_admin only'; the
+-- previous draft also allowed service_role which contradicts that intent.
+-- If an operator needs emergency access without the wood_admin role,
+-- they can grant the role temporarily rather than relying on a permanent
+-- service_role bypass.
 DROP POLICY IF EXISTS wood_species_write_admin ON wood_species;
 CREATE POLICY wood_species_write_admin ON wood_species
     FOR ALL
-    USING (current_user = 'wood_admin' OR current_user = 'service_role')
-    WITH CHECK (current_user = 'wood_admin' OR current_user = 'service_role');
+    USING (current_user = 'wood_admin')
+    WITH CHECK (current_user = 'wood_admin');
 
 -- ---------------------------------------------------------------------------
 -- ML state tables (STRATHMARK-internal carve-out)

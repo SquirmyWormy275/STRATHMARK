@@ -589,30 +589,32 @@ def get_competitor_bias(competitor_id: str) -> Optional[float]:
 
     Returns:
         Median residual in seconds, or None if fewer than 3 rows exist.
-        Never raises -- returns None on any DB error.
+
+    Raises:
+        Any Supabase / network exception. Callers on the prediction hot path
+        MUST wrap calls to this function in the bias-correction circuit
+        breaker so transient failures degrade gracefully without disabling
+        bias correction permanently. See `_BiasCircuitBreaker` in
+        `strathmark/predictor.py` and `docs/ml-persistence-policy.md`
+        section 5 for the policy.
     """
-    try:
-        client = _get_client()
-        response = (
-            client.table("prediction_residuals")
-            .select("residual")
-            .eq("competitor_id", competitor_id)
-            .execute()
-        )
-        rows = response.data or []
+    client = _get_client()
+    response = (
+        client.table("prediction_residuals")
+        .select("residual")
+        .eq("competitor_id", competitor_id)
+        .execute()
+    )
+    rows = response.data or []
 
-        if len(rows) < 3:
-            return None
-
-        residuals = [float(r["residual"]) for r in rows if r.get("residual") is not None]
-        if len(residuals) < 3:
-            return None
-
-        return statistics.median(residuals)
-
-    except Exception as exc:  # pragma: no cover
-        _log.debug("get_competitor_bias failed (non-fatal): %s", exc)
+    if len(rows) < 3:
         return None
+
+    residuals = [float(r["residual"]) for r in rows if r.get("residual") is not None]
+    if len(residuals) < 3:
+        return None
+
+    return statistics.median(residuals)
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +787,7 @@ def register_competitor(
     gender: str = "",
     region: str = "",
     *,
-    wait_for_sync: bool = True,
+    wait_for_sync: bool = False,
     sync_timeout_seconds: float = 30.0,
 ) -> dict:
     """Register a new competitor.
@@ -797,13 +799,17 @@ def register_competitor(
        returned along with the local STRATHMARK `competitor_id` once the sync
        function has propagated the row into the STRATHMARK cache.
 
-       If `wait_for_sync=True` (default), this function blocks for up to
+       If `wait_for_sync=True`, this function blocks for up to
        `sync_timeout_seconds`, polling for the row to appear in the
        STRATHMARK cache. On timeout, returns with `status='registered_in_mnemex_pending_sync'`.
 
-       If `wait_for_sync=False`, this function returns immediately after the
-       MNEMEX write with `status='registered_in_mnemex_pending_sync'` and
-       leaves propagation to the next sync run.
+       If `wait_for_sync=False` (default), this function returns immediately
+       after the MNEMEX write with `status='registered_in_mnemex_pending_sync'`
+       and leaves propagation to the next sync run. Default flipped to False
+       in 2026-05-08: nothing in this function triggers a sync, so
+       wait_for_sync=True only ever times out. Operators that need the local
+       cache row before returning must opt in explicitly AND ensure a sync
+       path is running (cron, webhook, or manual_force_sync).
 
     B. **MNEMEX not configured (transition mode).** Falls back to the legacy
        behavior of minting a STRATHMARK-local competitor_id directly. Logs a

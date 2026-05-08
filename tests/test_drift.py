@@ -55,12 +55,10 @@ class TestInsufficientRecentSamples:
 
 class TestNominalCase:
     def test_no_alert_when_distributions_match(self):
-        # Same five-value pattern for both, so mean and variance match exactly.
-        # This is the canonical nominal case: model behavior on recent traffic
-        # mirrors what calibration expected.
-        pattern = [0.1, -0.05, 0.0, 0.2, -0.1]
-        recent = pattern * 10  # n=50
-        baseline = pattern * 20  # n=100
+        # Recent and baseline drawn from identical uniform distribution on
+        # [-1, 1]. Mean, variance, and 90% coverage all sit in nominal bands.
+        baseline = [-1.0 + 2.0 * i / 99 for i in range(100)]
+        recent = [-1.0 + 2.0 * i / 49 for i in range(50)]
         report = _build_report(
             model_version_id="01H...",
             lookback_days=30,
@@ -74,6 +72,12 @@ class TestNominalCase:
         assert report.coverage_alert is False
         assert report.recent_count == 50
         assert report.baseline_count == 100
+        # Empirical recent coverage should sit in the [0.85, 0.95] band.
+        assert (
+            COVERAGE_LOW_THRESHOLD
+            <= report.recent_coverage_at_90
+            <= COVERAGE_HIGH_THRESHOLD
+        )
 
 
 class TestMeanShift:
@@ -136,35 +140,50 @@ class TestVarianceShift:
 
 
 class TestCoverageAlert:
-    def test_coverage_below_low_threshold(self):
-        recent = [0.0] * 30
-        baseline = [0.0] * 100
+    """Coverage drift compares EMPIRICAL coverage of recent residuals against
+    a 90% prediction interval derived from baseline residual quantiles.
+    `baseline_coverage` (the static calibration-time number) is informational
+    only -- it is NOT the trigger. Reason: a model with good baseline
+    calibration of 0.90 still drifts as recent traffic shifts; only the
+    empirical-on-recent number detects that shift."""
+
+    def test_recent_coverage_below_threshold_triggers_alert(self):
+        # Baseline 5th-95th percentile interval is roughly [-1.8, 1.8].
+        # Recent residuals all fall outside that interval -> coverage = 0.0.
+        baseline = [-2.0 + 4.0 * i / 99 for i in range(100)]
+        recent = [10.0] * 30
         report = _build_report(
             model_version_id="01H...",
             lookback_days=30,
             recent_residuals=recent,
             baseline_residuals=baseline,
-            baseline_coverage=COVERAGE_LOW_THRESHOLD - 0.01,
+            baseline_coverage=0.90,
         )
         assert report.coverage_alert is True
         assert report.overall_alert is True
+        assert report.recent_coverage_at_90 < COVERAGE_LOW_THRESHOLD
 
-    def test_coverage_above_high_threshold(self):
+    def test_recent_coverage_above_threshold_triggers_alert(self):
+        # Recent residuals all sit at the baseline median -> coverage = 1.0.
+        # Variance has collapsed; the empirical 90% interval is too wide
+        # for the actual recent traffic, surfacing as coverage > 0.95.
+        baseline = [-2.0 + 4.0 * i / 99 for i in range(100)]
         recent = [0.0] * 30
-        baseline = [0.0] * 100
         report = _build_report(
             model_version_id="01H...",
             lookback_days=30,
             recent_residuals=recent,
             baseline_residuals=baseline,
-            baseline_coverage=COVERAGE_HIGH_THRESHOLD + 0.01,
+            baseline_coverage=0.90,
         )
         assert report.coverage_alert is True
         assert report.overall_alert is True
+        assert report.recent_coverage_at_90 > COVERAGE_HIGH_THRESHOLD
 
-    def test_coverage_at_target_does_not_trigger(self):
-        recent = [0.0] * 30
-        baseline = [0.0] * 100
+    def test_matching_distributions_do_not_trigger(self):
+        # Same distribution for recent and baseline -> coverage in band.
+        baseline = [-1.0 + 2.0 * i / 99 for i in range(100)]
+        recent = [-1.0 + 2.0 * i / 49 for i in range(50)]
         report = _build_report(
             model_version_id="01H...",
             lookback_days=30,
@@ -173,16 +192,23 @@ class TestCoverageAlert:
             baseline_coverage=0.90,
         )
         assert report.coverage_alert is False
+        assert (
+            COVERAGE_LOW_THRESHOLD
+            <= report.recent_coverage_at_90
+            <= COVERAGE_HIGH_THRESHOLD
+        )
 
-    def test_missing_coverage_does_not_trigger(self):
+    def test_no_baseline_residuals_does_not_trigger(self):
+        # Empty baseline -> early return; no coverage signal possible.
         report = _build_report(
             model_version_id="01H...",
             lookback_days=30,
             recent_residuals=[0.0] * 30,
-            baseline_residuals=[0.0] * 100,
+            baseline_residuals=[],
             baseline_coverage=None,
         )
         assert report.coverage_alert is False
+        assert report.recent_coverage_at_90 is None
 
 
 class TestDriftReportSummary:

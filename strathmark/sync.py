@@ -246,8 +246,25 @@ def _do_sync(
             client.table("results").upsert(records, on_conflict="mnemex_id").execute()
             rows_upserted = len(records)
         except Exception as exc:
+            # Audit-trail-then-raise: write a sync_log row marking the
+            # failure (best-effort -- don't mask the original exception
+            # if logging itself fails), then re-raise so cron / webhook
+            # callers see a non-zero exit per the module docstring.
             errors.append(f"upsert into results failed: {exc}")
             _log.error("%s: upsert failed: %s", sync_path, exc)
+            failure_result = SyncResult(
+                sync_path=sync_path,
+                dry_run=False,
+                rows_pulled=rows_pulled,
+                rows_upserted=0,
+                errors=list(errors),
+                mnemex_cursor=since,
+            )
+            try:
+                _write_sync_log(failure_result)
+            except Exception:  # pragma: no cover
+                pass
+            raise
 
     result = SyncResult(
         sync_path=sync_path,

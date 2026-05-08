@@ -129,7 +129,7 @@ ALTER TABLE predictions
     DROP CONSTRAINT IF EXISTS predictions_cascade_level_check;
 ALTER TABLE predictions
     ADD CONSTRAINT predictions_cascade_level_check
-    CHECK (cascade_level_used IN ('manual', 'llm', 'ml', 'baseline', 'panel_fallback'));
+    CHECK (cascade_level_used IN ('manual', 'llm', 'ml', 'baseline', 'panel'));
 
 CREATE INDEX IF NOT EXISTS idx_predictions_competitor_event
     ON predictions (competitor_id, event_code);

@@ -23,7 +23,6 @@ Public API:
 from __future__ import annotations
 
 import logging
-import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -62,6 +61,10 @@ class DriftReport:
 
     # Coverage at 90% from the calibration_tables row, if available
     baseline_coverage_at_90: Optional[float] = None
+    # Empirical 90% coverage on the recent residual window. This is the
+    # number compared against [COVERAGE_LOW_THRESHOLD, COVERAGE_HIGH_THRESHOLD]
+    # to surface drift -- baseline_coverage_at_90 is informational context.
+    recent_coverage_at_90: Optional[float] = None
 
     # Boolean flags for each rule
     mean_shift_alert: bool = False
@@ -283,16 +286,42 @@ def _build_report(
                 f"(threshold |x| > {VARIANCE_RATIO_THRESHOLD:.0%})"
             )
 
-    # Coverage
-    if baseline_coverage is not None and not math.isnan(baseline_coverage):
+    # Coverage drift: compute empirical 90% coverage on recent residuals
+    # against the 90% prediction interval derived from the baseline residual
+    # distribution (5th-95th percentile). Compare empirical coverage against
+    # [COVERAGE_LOW_THRESHOLD, COVERAGE_HIGH_THRESHOLD]. This detects drift
+    # in coverage on recent traffic, which is what the policy actually
+    # specifies. The baseline coverage_at_90 stored in calibration_tables is
+    # informational only -- it's a static calibration-time number, not a
+    # drift signal.
+    if len(baseline_residuals) >= 2:
+        sorted_baseline = sorted(baseline_residuals)
+        n = len(sorted_baseline)
+        # Linear interpolation between the bracketing samples for the 5th
+        # and 95th percentiles.
+        lo_pos = 0.05 * (n - 1)
+        hi_pos = 0.95 * (n - 1)
+        lo_idx = int(lo_pos)
+        hi_idx = int(hi_pos)
+        lo_frac = lo_pos - lo_idx
+        hi_frac = hi_pos - hi_idx
+        baseline_lo = sorted_baseline[lo_idx] + lo_frac * (
+            sorted_baseline[min(lo_idx + 1, n - 1)] - sorted_baseline[lo_idx]
+        )
+        baseline_hi = sorted_baseline[hi_idx] + hi_frac * (
+            sorted_baseline[min(hi_idx + 1, n - 1)] - sorted_baseline[hi_idx]
+        )
+        inside = sum(1 for r in recent_residuals if baseline_lo <= r <= baseline_hi)
+        report.recent_coverage_at_90 = inside / len(recent_residuals)
         if (
-            baseline_coverage < COVERAGE_LOW_THRESHOLD
-            or baseline_coverage > COVERAGE_HIGH_THRESHOLD
+            report.recent_coverage_at_90 < COVERAGE_LOW_THRESHOLD
+            or report.recent_coverage_at_90 > COVERAGE_HIGH_THRESHOLD
         ):
             report.coverage_alert = True
             report.notes.append(
-                f"baseline 90% coverage {baseline_coverage:.2f} outside "
-                f"[{COVERAGE_LOW_THRESHOLD:.2f}, {COVERAGE_HIGH_THRESHOLD:.2f}]"
+                f"recent 90% coverage {report.recent_coverage_at_90:.2f} outside "
+                f"[{COVERAGE_LOW_THRESHOLD:.2f}, {COVERAGE_HIGH_THRESHOLD:.2f}] "
+                f"(baseline interval [{baseline_lo:+.2f}, {baseline_hi:+.2f}]s)"
             )
 
     report.overall_alert = (
