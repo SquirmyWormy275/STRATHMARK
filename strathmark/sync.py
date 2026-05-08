@@ -91,7 +91,9 @@ def nightly_batch(
     Returns:
         SyncResult with sync_path='nightly_batch'.
     """
-    cursor = datetime.now(timezone.utc) - timedelta(hours=cursor_lookback_hours)
+    cursor = _read_last_sync_cursor() or (
+        datetime.now(timezone.utc) - timedelta(hours=cursor_lookback_hours)
+    )
     return _do_sync(
         sync_path="nightly_batch",
         since=cursor,
@@ -99,6 +101,42 @@ def nightly_batch(
         show_name=None,
         dry_run=dry_run,
     )
+
+
+def _read_last_sync_cursor() -> Optional[datetime]:
+    """Return the mnemex_cursor of the most-recent successful nightly_batch row.
+
+    Reading the cursor from sync_log (rather than computing it from
+    wall-clock) means a cron outage longer than the lookback window doesn't
+    silently lose the rows MNEMEX accumulated during the gap. Returns None
+    on first run, error, or empty sync_log; the caller falls back to
+    wall-clock minus the lookback.
+    """
+    try:
+        from strathmark.db import _get_client
+
+        client = _get_client()
+        resp = (
+            client.table("sync_log")
+            .select("mnemex_cursor")
+            .eq("sync_path", "nightly_batch")
+            .order("synced_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return None
+        cursor_str = rows[0].get("mnemex_cursor")
+        if not cursor_str:
+            return None
+        cursor = datetime.fromisoformat(cursor_str)
+        if cursor.tzinfo is None:
+            cursor = cursor.replace(tzinfo=timezone.utc)
+        return cursor
+    except Exception as exc:
+        _log.warning("could not read last sync cursor (%s); falling back to wall clock", exc)
+        return None
 
 
 def strathex_finalization(event_id: str, dry_run: bool = False) -> SyncResult:
@@ -221,7 +259,7 @@ def _do_sync(
 
     # Map MNEMEX columns to STRATHMARK schema
     try:
-        records = _map_mnemex_to_strathmark(df)
+        records, unresolved_count = _map_mnemex_to_strathmark(df)
     except KeyError as exc:
         # Surfaces missing required columns from MNEMEX
         return SyncResult(
@@ -234,7 +272,15 @@ def _do_sync(
         )
 
     rows_upserted = 0
-    errors: List[str] = []
+    errors: list[str] = []
+    if unresolved_count > 0:
+        msg = (
+            f"{unresolved_count} of {len(records)} rows had unresolved "
+            f"competitor_mnemex_id and were upserted with NULL competitor_id; "
+            f"run register_competitor or rekey_against_mnemex to backfill."
+        )
+        errors.append(msg)
+        _log.warning("%s: %s", sync_path, msg)
 
     if dry_run:
         _log.info("%s: DRY RUN. would upsert %d rows", sync_path, len(records))
@@ -279,7 +325,7 @@ def _do_sync(
     return result
 
 
-def _map_mnemex_to_strathmark(df: pd.DataFrame) -> List[dict]:
+def _map_mnemex_to_strathmark(df: pd.DataFrame) -> tuple[list[dict], int]:
     """Map MNEMEX-side columns to STRATHMARK results-table columns.
 
     Required MNEMEX columns:
@@ -293,8 +339,12 @@ def _map_mnemex_to_strathmark(df: pd.DataFrame) -> List[dict]:
     competitors table, distinct from competitor_mnemex_id). This function
     looks up the local competitor_id from the competitors.mnemex_id column.
     Rows whose competitor cannot be resolved are written with NULL
-    competitor_id (since the FK is nullable in the STRATHMARK schema) and
-    flagged in errors.
+    competitor_id (the FK is nullable) and counted in `unresolved`. Callers
+    surface the count in the SyncResult so operators see how many rows are
+    waiting for a competitor sync.
+
+    Returns:
+        (records, unresolved_count)
     """
     required = (
         "mnemex_id",
@@ -314,9 +364,12 @@ def _map_mnemex_to_strathmark(df: pd.DataFrame) -> List[dict]:
     competitor_lookup = _resolve_competitor_lookup(df["competitor_mnemex_id"].unique().tolist())
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    records: List[dict] = []
+    records: list[dict] = []
+    unresolved = 0
     for _, row in df.iterrows():
         local_competitor_id = competitor_lookup.get(str(row["competitor_mnemex_id"]).strip())
+        if local_competitor_id is None:
+            unresolved += 1
         records.append(
             {
                 "mnemex_id": str(row["mnemex_id"]),
@@ -338,70 +391,102 @@ def _map_mnemex_to_strathmark(df: pd.DataFrame) -> List[dict]:
                 "last_synced_at": now_iso,
             }
         )
-    return records
+    return records, unresolved
 
 
-def _resolve_competitor_lookup(mnemex_competitor_ids: List[str]) -> dict:
-    """Build {mnemex_competitor_id -> strathmark competitor_id} from STRATHMARK."""
+_COMPETITOR_LOOKUP_CHUNK = 200
+
+
+def _resolve_competitor_lookup(mnemex_competitor_ids: list[str]) -> dict[str, str]:
+    """Build {mnemex_competitor_id -> strathmark competitor_id} from STRATHMARK.
+
+    Chunks the .in_() query so large pulls don't exceed PostgREST's URL
+    length limit. With ULID-shaped IDs (~26 chars) and chunk size 200,
+    each request URL stays well under the typical 8 KB limit.
+    """
     if not mnemex_competitor_ids:
         return {}
     from strathmark.db import _get_client
 
     client = _get_client()
-    resp = (
-        client.table("competitors")
-        .select("competitor_id, mnemex_id")
-        .in_(
-            "mnemex_id",
-            [str(x).strip() for x in mnemex_competitor_ids if x is not None],
+    cleaned = [str(x).strip() for x in mnemex_competitor_ids if x is not None]
+    out: dict[str, str] = {}
+    for i in range(0, len(cleaned), _COMPETITOR_LOOKUP_CHUNK):
+        chunk = cleaned[i : i + _COMPETITOR_LOOKUP_CHUNK]
+        resp = (
+            client.table("competitors")
+            .select("competitor_id, mnemex_id")
+            .in_("mnemex_id", chunk)
+            .execute()
         )
-        .execute()
-    )
-    out: dict = {}
-    for row in resp.data or []:
-        if row.get("mnemex_id") and row.get("competitor_id"):
-            out[str(row["mnemex_id"]).strip()] = str(row["competitor_id"]).strip()
+        for row in resp.data or []:
+            if row.get("mnemex_id") and row.get("competitor_id"):
+                out[str(row["mnemex_id"]).strip()] = str(row["competitor_id"]).strip()
     return out
 
 
+_EVENT_NORMALIZATION = {
+    "SB": "SB",
+    "STR_SB": "SB",
+    "STANDING_BLOCK": "SB",
+    "UH": "UH",
+    "STR_UH": "UH",
+    "UNDERHAND": "UH",
+    "JACK_AND_JILL": "JACK_AND_JILL",
+}
+
+
 def _normalize_event(raw) -> str:
-    """MNEMEX may use 'STR_SB' or 'SB'; STRATHMARK schema uses 'SB'/'UH'."""
-    s = str(raw).strip().upper()
-    if "UH" in s or "UNDERHAND" in s:
-        return "UH"
-    if "SB" in s or "STANDING" in s:
-        return "SB"
-    return s  # let the constraint or downstream catch unexpected codes
+    """Normalize a MNEMEX event_type code to STRATHMARK's canonical form.
+
+    Uses an exact-match dispatch table (not substring) so codes like 'PUSH',
+    'CRUSH', or future MNEMEX additions don't accidentally collide with
+    'UH'. Unknown codes pass through uppercased; downstream constraints
+    will surface them.
+    """
+    s = str(raw).strip().upper().replace(" ", "_")
+    return _EVENT_NORMALIZATION.get(s, s)
 
 
 def _safe_date_str(val) -> Optional[str]:
+    """Coerce a date-ish value to an ISO date string (YYYY-MM-DD).
+
+    Catches only the narrow set of exceptions a malformed datetime can raise
+    so genuine programmer errors propagate. A logged warning surfaces the
+    offending value so MNEMEX data quality issues are visible to operators.
+    """
     if val is None:
         return None
     if hasattr(val, "isoformat"):
         try:
             return val.isoformat()[:10]
-        except Exception:
+        except (TypeError, ValueError, AttributeError) as exc:
+            _log.warning("malformed date in MNEMEX row %r: %s", val, exc)
             return None
     s = str(val).strip()
     return s[:10] if s else None
 
 
 def _write_sync_log(result: SyncResult) -> None:
-    """Append the sync_log row reflecting this run."""
-    try:
-        from strathmark.db import _get_client
+    """Append the sync_log row reflecting this run.
 
-        client = _get_client()
-        record = {
-            "show_name": result.notes or result.sync_path,
-            "source_app": "mnemex_sync",
-            "records_written": result.rows_upserted,
-            "sync_path": result.sync_path,
-            "mnemex_cursor": (result.mnemex_cursor.isoformat() if result.mnemex_cursor else None),
-            "rows_pulled": result.rows_pulled,
-            "rows_upserted": result.rows_upserted,
-            "errors_jsonb": result.errors or None,
-        }
-        client.table("sync_log").insert(record).execute()
-    except Exception as exc:  # pragma: no cover
-        _log.warning("sync_log write failed (non-fatal): %s", exc)
+    Raises on Supabase failure. Loss of audit trail is a real failure
+    operators must see, matching the module's overall raise-on-failure
+    contract. The failure path inside `_do_sync` wraps this call in a
+    nested try/except so a sync_log failure doesn't mask the original
+    upsert exception.
+    """
+    from strathmark.db import _get_client
+
+    client = _get_client()
+    record = {
+        "show_name": result.notes or result.sync_path,
+        "source_app": "mnemex_sync",
+        "records_written": result.rows_upserted,
+        "sync_path": result.sync_path,
+        "mnemex_cursor": (result.mnemex_cursor.isoformat() if result.mnemex_cursor else None),
+        "rows_pulled": result.rows_pulled,
+        "rows_upserted": result.rows_upserted,
+        "errors_jsonb": result.errors or None,
+    }
+    client.table("sync_log").insert(record).execute()

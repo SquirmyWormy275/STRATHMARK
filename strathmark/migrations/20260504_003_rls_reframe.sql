@@ -59,6 +59,37 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------------
+-- Pre-flight role guard
+-- ---------------------------------------------------------------------------
+-- Refuse to apply if the dedicated roles don't exist. Without them, the
+-- cache-write policies created below become an unrecoverable lockout that
+-- requires dashboard access to undo. Operators run this before applying:
+--
+--   CREATE ROLE mnemex_sync NOLOGIN;
+--   GRANT mnemex_sync TO authenticator;
+--   GRANT USAGE ON SCHEMA public TO mnemex_sync;
+--   GRANT SELECT, INSERT, UPDATE, DELETE ON results, competitors, sync_log
+--         TO mnemex_sync;
+--   CREATE ROLE wood_admin NOLOGIN;
+--   GRANT wood_admin TO authenticator;
+--   GRANT USAGE ON SCHEMA public TO wood_admin;
+--   GRANT SELECT, INSERT, UPDATE, DELETE ON wood_species TO wood_admin;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mnemex_sync') THEN
+        RAISE EXCEPTION
+            'mnemex_sync Postgres role missing. Create it (and the wood_admin '
+            'role) before applying this migration. See the IMPORTANT '
+            'pre-application steps at the top of this file.';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'wood_admin') THEN
+        RAISE EXCEPTION
+            'wood_admin Postgres role missing. Create it before applying '
+            'this migration.';
+    END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
 -- Enable RLS on every table touched by this migration
 -- ---------------------------------------------------------------------------
 

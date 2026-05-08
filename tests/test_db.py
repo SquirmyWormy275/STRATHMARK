@@ -122,19 +122,23 @@ class TestRecordCalibrationValidation:
 
 
 class TestRecordPredictionValidation:
-    def test_unknown_cascade_level_raises(self):
+    def test_unknown_cascade_level_returns_none(self):
+        """Validation runs inside the function's try/except so the non-blocking
+        guarantee on the prediction hot path holds even when a caller passes
+        a bad value. The function logs a warning and returns None rather
+        than raising into the cascade."""
         from strathmark.db import record_prediction
 
-        with pytest.raises(ValueError, match="cascade_level_used"):
-            record_prediction(
-                model_version_id="01HXXXXXXXXXXXXXXXXXXXXXXX",
-                competitor_id="C001",
-                event_code="SB",
-                show_name="Test Show",
-                predicted_time=42.0,
-                predicted_variance=2.5,
-                cascade_level_used="vibes",  # not allowed
-            )
+        result = record_prediction(
+            model_version_id="01HXXXXXXXXXXXXXXXXXXXXXXX",
+            competitor_id="C001",
+            event_code="SB",
+            show_name="Test Show",
+            predicted_time=42.0,
+            predicted_variance=2.5,
+            cascade_level_used="vibes",  # not allowed
+        )
+        assert result is None
 
     def test_record_prediction_returns_none_when_supabase_unreachable(self, monkeypatch):
         """Best-effort write must return None, never raise, on Supabase failure."""

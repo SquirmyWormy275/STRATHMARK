@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Iterable, Optional
 
 import pandas as pd
@@ -141,23 +141,24 @@ def pull_canonical_results(
         _log.info("pull_canonical_results: MNEMEX unconfigured, returning empty DataFrame")
         return pd.DataFrame()
 
+    if since is not None and since.tzinfo is None:
+        raise ValueError(
+            "pull_canonical_results: `since` must be timezone-aware "
+            "(use datetime.now(timezone.utc) or attach a tzinfo). "
+            "Naive datetimes were previously reinterpreted as UTC, which "
+            "produced silent timezone bugs; that behavior is now rejected."
+        )
+
     client = _get_client()
     types = tuple(event_types) if event_types is not None else CHOPPING_DISCIPLINE_CODES
 
-    query = client.table("results").select("*").in_("event_type", list(types))
+    base_query = client.table("results").select("*").in_("event_type", list(types))
     if not include_provisional:
-        query = query.eq("provisional", False)
+        base_query = base_query.eq("provisional", False)
     if since is not None:
-        # Normalize to UTC ISO so MNEMEX's timestamptz comparisons are stable
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        query = query.gte("updated_at", since.isoformat())
+        base_query = base_query.gte("updated_at", since.isoformat())
 
-    resp = query.execute()
-    rows = resp.data or []
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows)
+    return _paginated_pull(base_query)
 
 
 def pull_canonical_competitors(since: Optional[datetime] = None) -> pd.DataFrame:
@@ -172,15 +173,39 @@ def pull_canonical_competitors(since: Optional[datetime] = None) -> pd.DataFrame
         _log.info("pull_canonical_competitors: MNEMEX unconfigured, returning empty DataFrame")
         return pd.DataFrame()
 
+    if since is not None and since.tzinfo is None:
+        raise ValueError(
+            "pull_canonical_competitors: `since` must be timezone-aware "
+            "(use datetime.now(timezone.utc) or attach a tzinfo)."
+        )
+
     client = _get_client()
-    query = client.table("competitors").select("*")
+    base_query = client.table("competitors").select("*")
     if since is not None:
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        query = query.gte("updated_at", since.isoformat())
-    resp = query.execute()
-    rows = resp.data or []
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+        base_query = base_query.gte("updated_at", since.isoformat())
+    return _paginated_pull(base_query)
+
+
+_PAGE_SIZE = 1000
+
+
+def _paginated_pull(base_query) -> pd.DataFrame:
+    """Pull a PostgREST query in 1000-row pages until exhausted.
+
+    PostgREST defaults to a 1000-row limit per response; without paging,
+    pulls of populated tables silently truncate. We loop with .range() until
+    a page returns fewer rows than the page size.
+    """
+    all_rows: list[dict] = []
+    offset = 0
+    while True:
+        page = base_query.range(offset, offset + _PAGE_SIZE - 1).execute()
+        rows = page.data or []
+        all_rows.extend(rows)
+        if len(rows) < _PAGE_SIZE:
+            break
+        offset += _PAGE_SIZE
+    return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
 # ---------------------------------------------------------------------------
@@ -232,38 +257,31 @@ def register_competitor_in_mnemex(
                 "name": row.get("name", name_clean),
             }
 
-    # MNEMEX-side ULID minting. We let MNEMEX assign the canonical ID by
-    # passing nothing for mnemex_id; the MNEMEX schema is expected to default
-    # it via a column DEFAULT (e.g. gen_ulid() if MNEMEX has that extension,
-    # or a trigger). If MNEMEX requires the client to supply the ID, we mint
-    # a ULID locally here. This branch handles both shapes.
-    try:
-        import ulid
+    # Client-side ULID minting. We supply mnemex_id ourselves so insertion is
+    # idempotent against MNEMEX schemas without a column DEFAULT and so the
+    # caller can correlate without a round trip. ulid-py is a hard runtime
+    # dependency since 0.5.0 — no try/except needed.
+    import ulid
 
-        candidate_id = str(ulid.new())
-    except ImportError:
-        candidate_id = None
+    candidate_id = str(ulid.new())
 
     record = {
+        "mnemex_id": candidate_id,
         "name": name_clean,
         "country": country or None,
         "state_province": state or None,
         "gender": gender or None,
         "region": region or None,
     }
-    if candidate_id is not None:
-        record["mnemex_id"] = candidate_id
 
     resp = client.table("competitors").insert(record).execute()
     inserted = (resp.data or [{}])[0]
     new_id = inserted.get("mnemex_id") or candidate_id
     if not new_id:
-        # MNEMEX neither defaulted nor returned the ID. This is a contract
-        # violation worth surfacing rather than papering over.
         raise RuntimeError(
             "MNEMEX did not return a mnemex_id for the newly registered "
-            "competitor. Check that the MNEMEX competitors table has either "
-            "a default ID generator or returns the ID on INSERT."
+            "competitor and the client-supplied ULID was lost. Check the "
+            "MNEMEX competitors table schema."
         )
 
     return {"mnemex_id": str(new_id), "status": "created", "name": name_clean}

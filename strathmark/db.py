@@ -1203,14 +1203,20 @@ def set_active_model(model_version_id: str) -> None:
         raise LookupError(f"model_version_id not found: {model_version_id}")
     model_type = rows[0]["model_type"]
 
-    # Retire any currently-active model of this type. Order matters: deactivate
-    # first so the partial unique index doesn't reject the next update.
+    # Retire any currently-active model of this type EXCEPT the target. Order
+    # matters: deactivate first so the partial unique index doesn't reject
+    # the next update. PostgREST does not support `neq` chained with `eq` on
+    # the same column atomically; we issue two updates and accept that there
+    # is a brief window in which no model is active for this type. A future
+    # hardening pass moves both updates into a Postgres function (RPC) for
+    # true atomicity.
     client.table("model_versions").update({"is_active": False, "retired_at": _now_iso()}).eq(
         "model_type", model_type
-    ).eq("is_active", True).execute()
+    ).eq("is_active", True).neq("model_version_id", model_version_id).execute()
 
-    # Activate the new one.
-    client.table("model_versions").update({"is_active": True}).eq(
+    # Activate the target. Set retired_at=None so a re-activated model
+    # doesn't carry a stale retired_at timestamp from a prior cycle.
+    client.table("model_versions").update({"is_active": True, "retired_at": None}).eq(
         "model_version_id", model_version_id
     ).execute()
 
@@ -1355,17 +1361,19 @@ def record_prediction(
         predicted_time:     Predicted time in seconds.
         predicted_variance: Predicted variance (per-competitor std-dev squared,
                             or whatever the model emits).
-        cascade_level_used: 'manual', 'llm', 'ml', 'baseline', or 'panel_fallback'.
+        cascade_level_used: 'manual', 'llm', 'ml', 'baseline', or 'panel'.
         notes:              Optional free-text.
 
     Returns:
-        prediction_id (ULID) on success, None on Supabase failure.
+        prediction_id (ULID) on success, None on any failure (including
+        an unknown cascade_level_used). Validation runs inside the
+        try/except so the non-blocking guarantee on the prediction hot
+        path holds even when a caller passes a bad value.
     """
-    if cascade_level_used not in ("manual", "llm", "ml", "baseline", "panel_fallback"):
-        raise ValueError(f"unknown cascade_level_used: {cascade_level_used!r}")
-
     pred_id = _new_ulid()
     try:
+        if cascade_level_used not in ("manual", "llm", "ml", "baseline", "panel"):
+            raise ValueError(f"unknown cascade_level_used: {cascade_level_used!r}")
         client = _get_client()
         record = {
             "prediction_id": pred_id,
