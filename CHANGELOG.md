@@ -2,6 +2,32 @@
 
 All notable changes to STRATHMARK will be documented in this file.
 
+## [0.5.0] - 2026-05-08
+
+### Added
+- MNEMEX integration: STRATHMARK Supabase becomes a hydrated cache of canonical results held in a separate MNEMEX project. Sync runs in dry-run mode until `MNEMEX_SUPABASE_URL`/`MNEMEX_SUPABASE_KEY` are configured.
+- `strathmark/mnemex.py` — read-only MNEMEX client plus competitor registration helper. Reads canonical results, looks up canonical competitors, mints new ones via ULID.
+- `strathmark/sync.py` — three sync paths sharing one upsert core: `nightly_batch()` (cron at 03:00 UTC), `strathex_finalization(event_id)` (webhook), `manual_force_sync(show_name=None, since=None)` (admin button / CLI). Failures raise after writing an audit-trail row to `sync_log`.
+- `strathmark/drift.py` — calibration drift detection. `evaluate_drift(model_version_id, lookback_days=30)` returns a `DriftReport` with mean-shift, variance-ratio, and empirical-coverage alerts. Advisory only; never auto-deactivates a model.
+- `strathmark/db.py` ML state writes: `register_model_version()`, `set_active_model()`, `record_calibration()`, `store_features()`, `record_prediction()`, `settle_prediction()`. Best-effort vs raise-on-failure discipline matches the policy doc.
+- `_BiasCircuitBreaker` in `strathmark/predictor.py` — 60-second sliding window, 3-strike threshold, auto-reset. Replaces the prior session-level disable so transient Supabase blips don't permanently degrade bias correction.
+- Three SQL migrations under `strathmark/migrations/`: `001` adds source-tracking columns (`source_type`, `mnemex_id`), `002` creates ML state tables (`model_versions`, `calibration_tables`, `feature_store`, `predictions`, `prediction_residuals` extensions), `003` reframes RLS for controlled-write enforcement (FORCE ROW LEVEL SECURITY plus a dedicated `mnemex_sync` role plumbing checklist).
+- `scripts/rekey_against_mnemex.py` — idempotent re-keying script that fills in `mnemex_id` on existing STRATHMARK competitor rows from MNEMEX. Refuses to commit below the 95% match-rate threshold without `--force`.
+- `docs/ml-persistence-policy.md` — policy doc covering retraining cadence, model versioning, calibration drift, feature store, hot-path circuit breaker, non-blocking guarantee.
+- `docs/schema-reality-2026-05-04.md`, `docs/cleanup-candidates-2026-05-04.md`, `docs/ml-research-questions.md` — Phase 1 schema verification plus a cleanup audit confirming zero stray validation rows.
+- 65 new tests across `tests/test_mnemex.py`, `tests/test_sync.py`, `tests/test_drift.py`, `tests/test_circuit_breaker.py`, `tests/test_ml_state.py`, plus 277 lines of additions to `tests/test_db.py`.
+
+### Changed
+- `register_competitor()` rewrite: routes through MNEMEX when configured, falls back to STRATHMARK-local mint with a deprecation warning when MNEMEX is unset. Default `wait_for_sync=False`; opting in to blocking requires explicit kwarg.
+- `get_competitor_bias()` no longer swallows DB exceptions internally. Callers on the prediction hot path wrap in `_BiasCircuitBreaker`; the policy is documented in `docs/ml-persistence-policy.md` section 5.
+- `_do_sync` writes a failure sync_log row before re-raising on Supabase upsert error, so the audit trail is preserved AND callers see a non-zero exit (matches the module docstring).
+- Added `ulid-py>=1.1` to base dependencies.
+
+### Fixed
+- Cascade naming mismatch: `record_prediction` validator and the `predictions_cascade_level_check` constraint now accept `'panel'` instead of `'panel_fallback'`, matching the canonical emitter strings in `strathmark/predictor.py`.
+- Drift detection's coverage rule now compares empirical coverage of recent residuals against a 90% prediction interval derived from baseline residual quantiles, replacing a check that compared the static calibration-time `coverage_at_90` value against a fixed band.
+- RLS migration `003` now adds `FORCE ROW LEVEL SECURITY` to all governed tables, closing the BYPASSRLS bypass on `service_role`. Pre-application checklist expanded to require role plumbing AND `NOBYPASSRLS` rotation. The `wood_species_write_admin` policy no longer ORs in `service_role` (contradicted the header's "wood_admin only" intent).
+
 ## [0.4.1] - 2026-04-21
 
 ### Added
