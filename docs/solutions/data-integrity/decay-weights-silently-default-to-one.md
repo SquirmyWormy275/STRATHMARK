@@ -13,7 +13,7 @@ tags:
   - "silent-failure"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # Decay Weights Silently Default to 1.0

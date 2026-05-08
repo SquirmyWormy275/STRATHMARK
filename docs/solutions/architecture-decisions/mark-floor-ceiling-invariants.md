@@ -9,7 +9,7 @@ tags:
   - "domain-rules"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 last_updated: 2026-04-21
 ---
 
@@ -29,7 +29,7 @@ The floor exists because no competitor can reasonably react and start in under ~
 
 ## Examples
 ```python
-# From CLAUDE.md Design Rules
+# Design rules
 gap = predicted_time(competitor) - predicted_time(front_marker)
 mark = 3 + round(gap)     # round half-to-even
 mark = min(mark, 183)     # system-wide ceiling

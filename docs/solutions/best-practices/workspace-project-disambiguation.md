@@ -8,7 +8,7 @@ tags:
   - "multi-project"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # Workspace Project Disambiguation
@@ -19,7 +19,7 @@ The user's workspace contains multiple related projects in sibling directories: 
 ## Pattern
 Before making any code changes, confirm which project/subdirectory the user is referring to. If the referenced code isn't found in the current working directory, check sibling directories AND check for separate GitHub repos (some projects are only on GitHub, not in the local workspace yet).
 
-When the user references a business, feature, or prior decision by name ("Pyramid Lumber", "MT/PNW pivot", "Pro-Am Manager"), search the current repo's CLAUDE.md, DESIGN.md, README, and recent git log before claiming ignorance.
+When a developer references a business, feature, or prior decision by name ("Pyramid Lumber", "MT/PNW pivot", "Pro-Am Manager"), search the current repo's README, DESIGN.md, and recent git log before claiming ignorance.
 
 ## Rationale
 - STRATHEX and STRATHMARK share heritage (STRATHMARK migrated from STRATHEX in commit 5416342) — code patterns look similar but diverged

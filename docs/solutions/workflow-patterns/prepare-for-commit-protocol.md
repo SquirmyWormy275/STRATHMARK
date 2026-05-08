@@ -8,7 +8,7 @@ tags:
   - "release"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # PREPARE FOR COMMIT and COMMIT PATCH Protocols
@@ -20,7 +20,7 @@ STRATHMARK uses two standing orders (defined in `MEMORY.md`) that define the rel
 
 **PREPARE FOR COMMIT** — full release cycle:
 1. Scan the entire codebase (source, tests, config)
-2. Update docs (CLAUDE.md, DEVELOPMENT.md, README)
+2. Update docs (DEVELOPMENT.md, README)
 3. Scrub `__pycache__`, `.pyc`, temp artifacts — list before deleting
 4. Reorganize misplaced files — confirm with user before moving
 5. Bump version (patch/minor/major based on scope); record in MEMORY.md

@@ -11,8 +11,8 @@ pytest tests/ -v     # ~650 tests, green in 30–40 seconds
 
 Read in this order:
 1. [`README.md`](README.md) — library usage, public API, design rules, package structure
-2. [`CLAUDE.md`](CLAUDE.md) — design rules and project structure (same rules, agent-angle)
-3. [`docs/wiki/Home.md`](docs/wiki/Home.md) — architecture overview, invariants, where STRATHMARK fits vs. STRATHEX / Missoula-Pro-Am-Manager
+2. [`docs/wiki/Home.md`](docs/wiki/Home.md) — architecture overview, invariants, where STRATHMARK fits vs. STRATHEX / Missoula-Pro-Am-Manager
+3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module structure and design decisions
 
 The design rules (mark floor=3, ceiling=183, absolute variance only, cascade order, plain-text output) are non-negotiable. They are enforced in code and in review.
 
@@ -46,31 +46,17 @@ Most common failure modes and their docs:
 
 Always run `python scripts/validate_deployment.py` before an event. If it fails any check, do not start the event.
 
-## If you're an AI agent
-
-Start with [`CLAUDE.md`](CLAUDE.md) — it contains the project structure, design rules, and the gstack skill inventory. Then read the global rules in `~/.claude/CLAUDE.md` if you have access (test isolation, workspace layout, stale cache diagnostic, git workflow).
-
-Standing orders (defined in MEMORY.md):
-- **PREPARE FOR COMMIT** — 8-step full release cycle. Use for multi-file work.
-- **COMMIT PATCH** — 5-step fast lane. Use for single-file patches.
-
-Never mix the two — see [`docs/solutions/workflow-patterns/prepare-for-commit-protocol.md`](docs/solutions/workflow-patterns/prepare-for-commit-protocol.md).
-
-Before implementing or debugging in a documented area, scan [`docs/solutions/`](docs/solutions/) — it's the institutional-knowledge store. Each entry has YAML frontmatter with `module`, `tags`, and `problem_type` for search.
-
 ## Reference map
 
 | File | What it's for |
 |---|---|
 | [`README.md`](README.md) | Library usage, public API, design rules, package structure, downstream relationships |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev install, lint, CI, test loop |
-| [`CLAUDE.md`](CLAUDE.md) | Agent-facing design rules and project structure |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history (v0.1.0 → v0.4.0) |
 | [`TODOS.md`](TODOS.md) | Active design work (ensemble predictor, P1/P2 items) |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Live-event deployment guide |
 | [`docs/wiki/`](docs/wiki/) | Architecture reference (19 pages: cascade, variance, wood, decay, etc.) |
 | [`docs/solutions/`](docs/solutions/) | Learnings database — organized by category |
-| `~/.claude/projects/.../memory/MEMORY.md` | Auto-memory across AI sessions (user/project/feedback/reference) |
 
 ## Design-rule cross-reference
 

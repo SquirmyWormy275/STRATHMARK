@@ -25,7 +25,7 @@ strathmark/
     loader.py           Excel workbook loader (woodchopping_clean.xlsx)
     utils.py            Column standardisation, prediction accuracy scoring
     analytics.py        Backtesting, competitor profiling, performance history
-    fairness.py         AI-assisted fairness assessment
+    fairness.py         LLM-based fairness assessment (Ollama / Gemini)
     visualization.py    Plain-text simulation summaries, ASCII bar charts
     llm.py              Ollama + Gemini connection management and prompt
                         execution

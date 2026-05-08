@@ -52,8 +52,8 @@ workflow definitions live under [`.github/workflows/`](.github/workflows/).
 
 ## Design rules (non-negotiable)
 
-These are enforced in code and in review. See `CLAUDE.md` for the full
-list, but the load-bearing ones are:
+These are enforced in code and in review. See the README's *Design rules*
+section for the full list, but the load-bearing ones are:
 
 - Mark floor: 3 seconds
 - Mark ceiling: 183 seconds system-wide

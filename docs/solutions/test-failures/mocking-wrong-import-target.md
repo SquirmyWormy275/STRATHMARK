@@ -12,7 +12,7 @@ tags:
   - "imports"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # Mocking the Wrong Import Target

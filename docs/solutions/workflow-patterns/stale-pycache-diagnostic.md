@@ -9,7 +9,7 @@ tags:
   - "windows"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # Stale __pycache__ as First Diagnostic Step
@@ -30,7 +30,7 @@ Get-ChildItem -Path . -Recurse -Directory -Filter "__pycache__" | Remove-Item -R
 ```
 
 ## Rationale
-This is a 5-second check that resolves a non-trivial fraction of "weird Python behavior" reports. Doing it BEFORE a long debugging dive saves hours. The STRATHMARK session-start hook in `.claude/settings.json` automatically clears `__pycache__` on every Claude Code session start for this reason.
+This is a 5-second check that resolves a non-trivial fraction of "weird Python behavior" reports. Doing it BEFORE a long debugging dive saves hours.
 
 ## Examples
 Symptoms that should trigger a pycache clear first:

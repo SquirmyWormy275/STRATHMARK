@@ -13,7 +13,7 @@ tags:
   - "integration"
 confidence: high
 created: 2026-04-15
-source: "knowledge-seed from CLAUDE.md and git history"
+source: "internal knowledge"
 ---
 
 # Integration Test Fixture Silent TypeError
