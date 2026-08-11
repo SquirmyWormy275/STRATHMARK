@@ -1,0 +1,50 @@
+{
+  "schema_version": "prediction-v2-benchmark/v1",
+  "source": "woodchopping_clean.xlsx",
+  "source_sha256": "61344dda5a5aa84f99a9936f3710b3532f0faf3c373082314be1b1c6bf84c330",
+  "canonicalization_version": "v2.0.0",
+  "events": ["SB", "UH"],
+  "eligibility": {
+    "dated_before_or_on_source_max": true,
+    "positive_finite_time": true,
+    "positive_finite_diameter": true,
+    "known_event": true,
+    "notes_are_not_status": true,
+    "undated_rows_excluded": true
+  },
+  "roles": {
+    "fit": {"start": "1900-01-01", "end_exclusive": "2024-01-01"},
+    "selection": {"start": "2024-01-01", "end_exclusive": "2025-01-01"},
+    "calibration": {"start": "2025-01-01", "end_exclusive": "2025-07-01"},
+    "locked_test": {"start": "2025-07-01", "end_exclusive": "2026-02-07"}
+  },
+  "observed_role_counts_before_modeling": {
+    "fit": 782,
+    "selection": 231,
+    "calibration": 150,
+    "locked_test": 128,
+    "undated_excluded": 20
+  },
+  "primary_metric": "mae_seconds",
+  "secondary_metrics": [
+    "rmse_seconds",
+    "median_absolute_error_seconds",
+    "coverage_90",
+    "mean_interval_width_seconds"
+  ],
+  "minimum_counts": {"global": 100, "cohort": 30},
+  "core_gate": {
+    "minimum_mae_relative_improvement": 0.01,
+    "maximum_rmse_relative_worsening": 0.005
+  },
+  "residual_gate": {
+    "minimum_mae_relative_improvement": 0.01,
+    "minimum_rmse_relative_improvement": 0.01,
+    "maximum_coverage_distance_increase": 0.02,
+    "maximum_cohort_mae_relative_worsening": 0.05,
+    "paired_bootstrap_resamples": 2000,
+    "seed": 20260811,
+    "ties": "reject"
+  },
+  "locked_test_policy": "Open once after implementation and selection thresholds are fixed."
+}
