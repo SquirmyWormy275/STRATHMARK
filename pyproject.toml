@@ -4,23 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "0.5.0"
+version = "1.0.0"
 description = "Woodchopping handicap engine — pip-installable calculation core extracted from STRATHEX"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Alex Kaper" }
+    { name = "Alex Kaper", email = "alex.j.kaper@gmail.com" }
 ]
 keywords = ["woodchopping", "handicap", "axemen", "sports", "monte-carlo"]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries",
     "Intended Audience :: Developers",
 ]
 
@@ -38,10 +42,11 @@ dependencies = [
 [project.optional-dependencies]
 api = [
     "fastapi>=0.110",
+    "httpx2>=2.0",
     "uvicorn[standard]>=0.29",
 ]
 llm = [
-    "ollama",
+    "ollama>=0.3",
     # Cloud fallback for race-day deployments where Ollama is not reachable.
     # Lazy-imported in strathmark/llm.py — missing package is a graceful no-op.
     "google-generativeai>=0.8",
@@ -62,7 +67,11 @@ dev = [
 ]
 
 [project.urls]
+"Homepage" = "https://github.com/SquirmyWormy275/STRATHMARK"
 "Source" = "https://github.com/SquirmyWormy275/STRATHMARK"
+"Issues" = "https://github.com/SquirmyWormy275/STRATHMARK/issues"
+"Documentation" = "https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki"
+"Changelog" = "https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["strathmark"]

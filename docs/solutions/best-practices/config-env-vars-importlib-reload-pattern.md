@@ -23,7 +23,8 @@ The trap:
 def test_timeout_override(self, monkeypatch):
     monkeypatch.setenv("STRATHMARK_OLLAMA_TIMEOUT", "2")
     from strathmark.config import llm_config
-    assert llm_config.TIMEOUT_SECONDS == 2   # FAILS — still shows the default 30
+
+    assert llm_config.TIMEOUT_SECONDS == 2  # FAILS — still shows the default 30
 ```
 
 Python caches modules in `sys.modules`. The `@dataclass(frozen=True)` for `LLMConfig` ran once, at first import, before the monkeypatch took effect. All later imports return the same cached instance.
@@ -36,9 +37,11 @@ Use `importlib.reload` to re-execute the module after setting the env var:
 # tests/test_config.py:90-142
 import importlib
 
+
 class TestLLMConfigEnvOverrides:
     def _reload_config(self):
         import strathmark.config as cfg
+
         return importlib.reload(cfg)
 
     def test_timeout_override(self, monkeypatch):
@@ -54,6 +57,7 @@ class TestLLMConfigEnvOverrides:
     def teardown_method(self):
         # Restore the unmodified module so later tests see clean config
         import strathmark.config as cfg
+
         importlib.reload(cfg)
 ```
 

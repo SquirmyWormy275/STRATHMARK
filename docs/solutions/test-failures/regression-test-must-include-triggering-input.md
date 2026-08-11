@@ -36,14 +36,16 @@ Include the triggering input explicitly, and comment it as such.
 Fixed form (current `tests/test_regression.py:159-168`):
 ```python
 # Timeout result — should be clipped by robust averaging
-HistoricalResult(
-    event_code="SB",
-    time_seconds=180.0,
-    species="S01",
-    diameter_mm=300,
-    quality=5,
-    result_date=today - timedelta(days=180),
-),
+(
+    HistoricalResult(
+        event_code="SB",
+        time_seconds=180.0,
+        species="S01",
+        diameter_mm=300,
+        quality=5,
+        result_date=today - timedelta(days=180),
+    ),
+)
 ```
 
 The `# Timeout result — should be clipped` comment is load-bearing: a future refactor that deletes the 180s entry "because it looks like an outlier" would unknowingly defeat the regression. The comment tells the reviewer *why* it's there.

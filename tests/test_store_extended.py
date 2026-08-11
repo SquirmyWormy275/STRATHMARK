@@ -4,6 +4,7 @@ Covers concurrent writes, import edge cases, date handling,
 duplicate detection, and DataFrame round-trips.
 """
 
+import sqlite3
 from datetime import date
 
 import pandas as pd
@@ -61,6 +62,86 @@ class TestRecordResult:
         result = store.record_result("A", "SB", 26.0, "S01", 300, 5, heat_id="H1")
         assert result is True
 
+    def test_same_heat_in_different_competitions_is_not_duplicate(self, store):
+        first = store.record_result(
+            "A",
+            "SB",
+            25.0,
+            "S01",
+            300,
+            5,
+            heat_id="H1",
+            competition_id="show-2025",
+        )
+        second = store.record_result(
+            "A",
+            "SB",
+            25.0,
+            "S01",
+            300,
+            5,
+            heat_id="H1",
+            competition_id="show-2026",
+        )
+
+        assert first is True
+        assert second is True
+        assert store.count() == 2
+
+    @pytest.mark.parametrize(
+        ("event_code", "time_seconds", "diameter_mm", "quality"),
+        [
+            ("INVALID", 25.0, 300, 5),
+            ("SB", 181.0, 300, 5),
+            ("SB", 25.0, 200, 5),
+            ("SB", 25.0, 300, 11),
+        ],
+    )
+    def test_rejects_invalid_result_data(
+        self, store, event_code, time_seconds, diameter_mm, quality
+    ):
+        with pytest.raises(ValueError):
+            store.record_result("A", event_code, time_seconds, "S01", diameter_mm, quality)
+
+
+class TestSchemaMigration:
+    def test_preserves_legacy_rows_and_adds_competition_identity(self, tmp_path):
+        db_path = tmp_path / "legacy.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    competitor_name TEXT NOT NULL,
+                    event_code TEXT NOT NULL,
+                    time_seconds REAL NOT NULL,
+                    species TEXT NOT NULL,
+                    diameter_mm REAL NOT NULL,
+                    quality INTEGER NOT NULL,
+                    heat_id TEXT NOT NULL DEFAULT '',
+                    result_date TEXT,
+                    recorded_at TEXT NOT NULL,
+                    UNIQUE(competitor_name, heat_id, event_code, time_seconds)
+                );
+                CREATE INDEX idx_results_competitor ON results(competitor_name, event_code);
+                INSERT INTO results (
+                    competitor_name, event_code, time_seconds, species,
+                    diameter_mm, quality, heat_id, result_date, recorded_at
+                ) VALUES ('A', 'SB', 25.0, 'S01', 300, 5, 'H1', '2025-06-01', '2025-06-01T00:00:00+00:00');
+                """
+            )
+
+        store = ResultStore(db_path=db_path)
+
+        assert store.count() == 1
+        with sqlite3.connect(db_path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
+            competition_id = conn.execute(
+                "SELECT competition_id FROM results WHERE competitor_name = 'A'"
+            ).fetchone()[0]
+        assert "competition_id" in columns
+        assert competition_id == "legacy:2025-06-01"
+
 
 class TestGetCompetitorHistory:
     def test_returns_all_results(self, populated_store):
@@ -116,6 +197,25 @@ class TestGetAllAsDataFrame:
         df = populated_store.get_all_as_dataframe()
         # Store renames event_code → event for STRATHEX compatibility
         assert "competitor_name" in df.columns or "name" in df.columns
+        assert "competition_id" in df.columns
+
+    def test_round_trip_preserves_competition_identity(self, tmp_path):
+        source = ResultStore(db_path=tmp_path / "source.db")
+        source.record_result(
+            "Alice",
+            "SB",
+            25.0,
+            "S01",
+            300,
+            5,
+            heat_id="H1",
+            result_date=date(2025, 1, 15),
+            competition_id="show-2025",
+        )
+
+        target = ResultStore(db_path=tmp_path / "target.db")
+        assert target.import_from_dataframe(source.get_all_as_dataframe()) == 1
+        assert target.get_all_as_dataframe().loc[0, "competition_id"] == "show-2025"
 
 
 class TestImportFromDataFrame:
@@ -178,6 +278,23 @@ class TestImportFromDataFrame:
         )
         count = store.import_from_dataframe(df)
         assert count == 1
+
+    def test_missing_competition_id_uses_the_legacy_date_key(self, store):
+        df = pd.DataFrame(
+            {
+                "competitor_name": ["W"],
+                "event_code": ["SB"],
+                "time_seconds": [22.0],
+                "species": ["S01"],
+                "diameter_mm": [300],
+                "quality": [5],
+                "competition_id": [pd.NA],
+                "result_date": ["2025-01-15"],
+            }
+        )
+
+        assert store.import_from_dataframe(df) == 1
+        assert store.get_all_as_dataframe().loc[0, "competition_id"] == "legacy:2025-01-15"
 
 
 # ---------------------------------------------------------------------------

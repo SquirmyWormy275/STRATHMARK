@@ -68,6 +68,7 @@ handicap engine.
 5. Verify:
    ```python
    from strathmark.db import pull_results
+
    df = pull_results()
    print(df[df["show_name"] == "Missoula Pro-Am 2026"].shape)
    ```

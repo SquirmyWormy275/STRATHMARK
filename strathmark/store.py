@@ -28,16 +28,19 @@ Schema (table: results):
     species         TEXT NOT NULL
     diameter_mm     REAL NOT NULL
     quality         INTEGER NOT NULL
+    competition_id  TEXT NOT NULL              (stable show/source identity)
     heat_id         TEXT NOT NULL DEFAULT ''  (empty string, never NULL)
     result_date     TEXT              (ISO 8601 date, e.g. '2025-06-14', nullable)
     recorded_at     TEXT NOT NULL     (ISO 8601 datetime of when row was inserted)
 
-Unique constraint: (competitor_name, heat_id, event_code, time_seconds)
-Using empty string for heat_id (not NULL) makes the unique constraint reliable.
+Unique constraint: (competitor_name, competition_id, heat_id, event_code,
+time_seconds). A competition identity keeps the same heat label in two shows
+from being treated as a duplicate.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 from datetime import date, datetime, timezone
@@ -46,6 +49,7 @@ from typing import List, Optional
 
 import pandas as pd
 
+from strathmark.config import data_req, events, is_valid_event, rules
 from strathmark.predictor import HistoricalResult
 
 # ---------------------------------------------------------------------------
@@ -65,10 +69,11 @@ CREATE TABLE IF NOT EXISTS results (
     species         TEXT NOT NULL,
     diameter_mm     REAL NOT NULL,
     quality         INTEGER NOT NULL,
+    competition_id  TEXT NOT NULL,
     heat_id         TEXT NOT NULL DEFAULT '',
     result_date     TEXT,
     recorded_at     TEXT NOT NULL,
-    UNIQUE(competitor_name, heat_id, event_code, time_seconds)
+    UNIQUE(competitor_name, competition_id, heat_id, event_code, time_seconds)
 );
 """
 
@@ -119,9 +124,38 @@ class ResultStore:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(results)").fetchall()}
+            if columns and "competition_id" not in columns:
+                self._migrate_results_schema(conn)
             conn.execute(_CREATE_TABLE_SQL)
             conn.execute(_CREATE_INDEX_SQL)
             conn.commit()
+
+    @staticmethod
+    def _migrate_results_schema(conn: sqlite3.Connection) -> None:
+        """Rebuild the legacy table with competition-aware deduplication."""
+        conn.execute("DROP INDEX IF EXISTS idx_results_competitor")
+        conn.execute("ALTER TABLE results RENAME TO results_legacy")
+        conn.execute(_CREATE_TABLE_SQL)
+        conn.execute(
+            """
+            INSERT INTO results (
+                id, competitor_name, event_code, time_seconds, species,
+                diameter_mm, quality, competition_id, heat_id, result_date, recorded_at
+            )
+            SELECT
+                id, competitor_name, event_code, time_seconds, species,
+                diameter_mm, quality,
+                CASE
+                    WHEN result_date IS NOT NULL AND TRIM(result_date) != ''
+                    THEN 'legacy:' || result_date
+                    ELSE 'legacy:unknown'
+                END,
+                heat_id, result_date, recorded_at
+            FROM results_legacy
+            """
+        )
+        conn.execute("DROP TABLE results_legacy")
 
     # ------------------------------------------------------------------
     # Write API
@@ -137,12 +171,13 @@ class ResultStore:
         quality: int,
         heat_id: Optional[str] = None,
         result_date: Optional[date] = None,
+        competition_id: Optional[str] = None,
     ) -> bool:
         """
         Append a single tournament result to the store.
 
-        Duplicate results (same competitor_name + heat_id + event_code + time_seconds)
-        are silently ignored via INSERT OR IGNORE.
+        Duplicate results (same competitor_name + competition_id + heat_id +
+        event_code + time_seconds) are silently ignored via INSERT OR IGNORE.
 
         Args:
             competitor_name: Competitor display name.
@@ -153,12 +188,30 @@ class ResultStore:
             quality: Wood quality (1-10).
             heat_id: Optional heat/round identifier (e.g. 'SB-225mmSB-Heat1').
             result_date: Date of competition. None if unknown.
+            competition_id: Stable show or source identifier. New callers should
+                always provide it. Legacy callers fall back to a date-derived key.
 
         Returns:
             True if a new row was inserted, False if it was a duplicate.
         """
-        _heat_id = heat_id if heat_id is not None else ""
+        (
+            _competitor_name,
+            _event_code,
+            _time_seconds,
+            _species,
+            _diameter_mm,
+            _quality,
+        ) = self._validate_result_fields(
+            competitor_name,
+            event_code,
+            time_seconds,
+            species,
+            diameter_mm,
+            quality,
+        )
+        _heat_id = str(heat_id or "").strip()
         _result_date = result_date.isoformat() if result_date is not None else None
+        _competition_id = self._competition_key(competition_id, _result_date)
         _recorded_at = datetime.now(timezone.utc).isoformat()
 
         with self._connect() as conn:
@@ -166,16 +219,17 @@ class ResultStore:
                 """
                 INSERT OR IGNORE INTO results
                     (competitor_name, event_code, time_seconds, species,
-                     diameter_mm, quality, heat_id, result_date, recorded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     diameter_mm, quality, competition_id, heat_id, result_date, recorded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(competitor_name).strip(),
-                    str(event_code).strip().upper(),
-                    float(time_seconds),
-                    str(species).strip(),
-                    float(diameter_mm),
-                    int(quality),
+                    _competitor_name,
+                    _event_code,
+                    _time_seconds,
+                    _species,
+                    _diameter_mm,
+                    _quality,
+                    _competition_id,
                     _heat_id,
                     _result_date,
                     _recorded_at,
@@ -183,6 +237,69 @@ class ResultStore:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    @staticmethod
+    def _competition_key(competition_id: Optional[str], result_date: Optional[str]) -> str:
+        """Return a stable key while retaining safe legacy-call behavior."""
+        if competition_id is not None:
+            try:
+                if pd.isna(competition_id):
+                    competition_id = None
+            except (TypeError, ValueError):
+                pass
+        key = str(competition_id).strip() if competition_id is not None else ""
+        if key:
+            return key
+        return f"legacy:{result_date or 'unknown'}"
+
+    @staticmethod
+    def _validate_result_fields(
+        competitor_name: str,
+        event_code: str,
+        time_seconds: float,
+        species: str,
+        diameter_mm: float,
+        quality: int,
+    ) -> tuple[str, str, float, str, float, int]:
+        """Validate raw result data before it can affect future predictions."""
+        name = str(competitor_name or "").strip()
+        if not name:
+            raise ValueError("competitor_name must not be empty")
+
+        event = str(event_code or "").strip().upper()
+        if not is_valid_event(event):
+            raise ValueError(f"event_code must be one of {events.VALID_EVENTS}")
+
+        try:
+            time_value = float(time_seconds)
+            diameter_value = float(diameter_mm)
+            quality_value = int(quality)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("time_seconds, diameter_mm, and quality must be numeric") from exc
+
+        if (
+            not math.isfinite(time_value)
+            or not rules.MIN_MARK_SECONDS <= time_value <= rules.MAX_TIME_LIMIT_SECONDS
+        ):
+            raise ValueError(
+                f"time_seconds must be between {rules.MIN_MARK_SECONDS} and "
+                f"{rules.MAX_TIME_LIMIT_SECONDS}"
+            )
+        if not math.isfinite(diameter_value) or not (
+            data_req.MIN_DIAMETER_MM <= diameter_value <= data_req.MAX_DIAMETER_MM
+        ):
+            raise ValueError(
+                f"diameter_mm must be between {data_req.MIN_DIAMETER_MM} and "
+                f"{data_req.MAX_DIAMETER_MM}"
+            )
+        if not 1 <= quality_value <= 10:
+            raise ValueError("quality must be between 1 and 10")
+
+        species_value = str(species or "").strip()
+        if not species_value:
+            raise ValueError("species must not be empty")
+
+        return name, event, time_value, species_value, diameter_value, quality_value
 
     def import_from_dataframe(
         self,
@@ -216,6 +333,8 @@ class ResultStore:
             "raw_time": "time_seconds",
             "size_mm": "diameter_mm",
             "date": "result_date",
+            "show_id": "competition_id",
+            "tournament_id": "competition_id",
         }
         df.rename(columns=col_map, inplace=True)
 
@@ -238,21 +357,25 @@ class ResultStore:
             df["heat_id"] = df["heat_id"].fillna("").astype(str)
         if "result_date" not in df.columns:
             df["result_date"] = None
+        if "competition_id" not in df.columns:
+            df["competition_id"] = ""
+        else:
+            df["competition_id"] = df["competition_id"].fillna("").astype(str)
 
         _recorded_at = datetime.now(timezone.utc).isoformat()
         insert_sql = (
             (
                 "INSERT OR IGNORE INTO results "
                 "(competitor_name, event_code, time_seconds, species, "
-                "diameter_mm, quality, heat_id, result_date, recorded_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "diameter_mm, quality, competition_id, heat_id, result_date, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             if skip_duplicates
             else (
                 "INSERT INTO results "
                 "(competitor_name, event_code, time_seconds, species, "
-                "diameter_mm, quality, heat_id, result_date, recorded_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "diameter_mm, quality, competition_id, heat_id, result_date, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
         )
 
@@ -260,14 +383,6 @@ class ResultStore:
         with self._connect() as conn:
             for _, row in df.iterrows():
                 try:
-                    time_val = float(row["time_seconds"])
-                    if pd.isna(time_val):
-                        continue
-                    quality_val = int(row["quality"]) if not pd.isna(row["quality"]) else 5
-                    diameter_val = (
-                        float(row["diameter_mm"]) if not pd.isna(row["diameter_mm"]) else 300.0
-                    )
-
                     # Parse result_date
                     rd = row.get("result_date")
                     if (
@@ -285,17 +400,34 @@ class ResultStore:
                         except Exception:
                             rd = None
 
-                    heat_id = str(row.get("heat_id", "") or "")
+                    (
+                        competitor_name,
+                        event_code,
+                        time_val,
+                        species,
+                        diameter_val,
+                        quality_val,
+                    ) = self._validate_result_fields(
+                        row["competitor_name"],
+                        row["event_code"],
+                        row["time_seconds"],
+                        row["species"],
+                        row["diameter_mm"],
+                        row["quality"],
+                    )
+                    heat_id = str(row.get("heat_id", "") or "").strip()
+                    competition_id = self._competition_key(row.get("competition_id"), rd)
 
                     cursor = conn.execute(
                         insert_sql,
                         (
-                            str(row["competitor_name"]).strip(),
-                            str(row["event_code"]).strip().upper(),
+                            competitor_name,
+                            event_code,
                             time_val,
-                            str(row["species"]).strip(),
+                            species,
                             diameter_val,
                             quality_val,
+                            competition_id,
                             heat_id,
                             rd,
                             _recorded_at,
@@ -369,12 +501,12 @@ class ResultStore:
 
         Column names match the STRATHEX results_df format:
             competitor_name, event_code, raw_time, species, size_mm, quality,
-            heat_id, result_date, recorded_at.
+            competition_id, heat_id, result_date, recorded_at.
         """
         with self._connect() as conn:
             df = pd.read_sql_query(
                 "SELECT competitor_name, event_code, time_seconds AS raw_time, "
-                "species, diameter_mm AS size_mm, quality, heat_id, "
+                "species, diameter_mm AS size_mm, quality, competition_id, heat_id, "
                 "result_date, recorded_at FROM results "
                 "ORDER BY result_date ASC, recorded_at ASC",
                 conn,

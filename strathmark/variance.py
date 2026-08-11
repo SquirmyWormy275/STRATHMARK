@@ -384,6 +384,7 @@ def run_monte_carlo_simulation(
     seed: Optional[int] = None,
     track_finish_orders: bool = False,
     track_podium_margins: bool = False,
+    include_finish_spreads: bool = True,
     show_live_leaders: bool = False,  # kept for API compatibility; not used in vectorized path
     progress_interval: int = 50000,  # kept for API compatibility; not used in vectorized path
     verbose: bool = True,
@@ -404,6 +405,8 @@ def run_monte_carlo_simulation(
         num_simulations: Number of race iterations (default 2M for high precision).
         heat_variance_seconds: Shared heat-level noise std-dev.
         seed: Optional random seed for reproducibility.
+        include_finish_spreads: Include the per-race spread list in the returned
+            analysis. Disable this for callers that only need aggregate metrics.
 
     Returns:
         Analysis dict with keys:
@@ -421,6 +424,7 @@ def run_monte_carlo_simulation(
             competitor_time_stats   -- {name: CompetitorTimeStats}
             heat_variance_seconds   -- float
             finish_spreads          -- list of per-race finish spread values
+                                       (when include_finish_spreads is True)
             avg_spread              -- float
             median_spread           -- float
             min_spread              -- float
@@ -445,7 +449,6 @@ def run_monte_carlo_simulation(
         rng = None  # Use module-level numpy random state for speed
 
     # Track statistics
-    finish_spreads = []
     winner_counts = {comp["name"]: 0 for comp in competitors}
     podium_counts = {comp["name"]: 0 for comp in competitors}
     finish_position_sums = {comp["name"]: 0 for comp in competitors}
@@ -504,7 +507,6 @@ def run_monte_carlo_simulation(
 
     # Finish spreads per simulation
     finish_spreads_arr = np.max(finish_times_matrix, axis=0) - np.min(finish_times_matrix, axis=0)
-    finish_spreads = finish_spreads_arr.tolist()
 
     # rank_matrix[pos, sim] = competitor index finishing at position pos in sim
     rank_matrix = np.argsort(finish_times_matrix, axis=0)  # (n_comp, num_simulations)
@@ -576,7 +578,7 @@ def run_monte_carlo_simulation(
             consistency_rating=calculate_consistency_rating(std),
         )
 
-    spreads_arr = np.array(finish_spreads)
+    spreads_arr = finish_spreads_arr
 
     # Derive optional tracking results
     most_common_order = None
@@ -601,7 +603,6 @@ def run_monte_carlo_simulation(
 
     analysis = {
         "num_simulations": num_simulations,
-        "finish_spreads": finish_spreads,
         "avg_spread": float(np.mean(spreads_arr)),
         "median_spread": float(np.median(spreads_arr)),
         "min_spread": float(np.min(spreads_arr)),
@@ -637,6 +638,8 @@ def run_monte_carlo_simulation(
         "photo_finish_pct": photo_finish_pct,
         "photo_finish_threshold": photo_finish_threshold,
     }
+    if include_finish_spreads:
+        analysis["finish_spreads"] = finish_spreads_arr.tolist()
 
     return analysis
 

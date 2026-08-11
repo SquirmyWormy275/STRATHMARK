@@ -24,10 +24,10 @@ Optional extras you may also want while working on specific subsystems:
 pytest tests/ -v
 ```
 
-The full suite is 707 tests. Supabase-backed db tests are gated behind
-`STRATHMARK_TEST_DB=1` and skip by default. ML predictor paths fall back
-to baseline when the `[ml]` extras are not installed, so you do not need
-them to get a green run.
+Supabase-backed db tests are gated behind `STRATHMARK_TEST_DB=1` and skip
+by default. ML predictor paths fall back to baseline when the `[ml]` extras
+are not installed, so you do not need them to get a green run. Install
+`.[dev,api]` to run the REST API contract tests locally.
 
 ## Linting and formatting
 

@@ -31,8 +31,8 @@ The floor exists because no competitor can reasonably react and start in under ~
 ```python
 # Design rules
 gap = predicted_time(competitor) - predicted_time(front_marker)
-mark = 3 + round(gap)     # round half-to-even
-mark = min(mark, 183)     # system-wide ceiling
+mark = 3 + round(gap)  # round half-to-even
+mark = min(mark, 183)  # system-wide ceiling
 ```
 
 Integration test `test_all_marks_at_most_183` was changed from 180 to 183 in commit df2fe3a — the 180 value was wrong, the system ceiling is 183.
