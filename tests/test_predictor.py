@@ -7,6 +7,8 @@ import pytest
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
+    PredictionContext,
+    PredictionInterval,
     PredictionResult,
     WoodProfile,
     _apply_form_trajectory,
@@ -14,6 +16,25 @@ from strathmark.predictor import (
     get_best_prediction,
     select_best_prediction,
 )
+
+
+def test_public_dataclasses_preserve_old_positional_constructors_and_add_v2_fields():
+    history = HistoricalResult("SB", 40.0, "S01", 300.0, 5)
+    competitor = CompetitorRecord("Alex", [history])
+    wood = WoodProfile("S01", 300.0, 5)
+    prediction = PredictionResult(40.0, "HIGH", "baseline", "legacy constructor")
+
+    assert competitor.competitor_id is None
+    assert wood.quality == 5
+    assert prediction.interval is None
+    assert prediction.engine_version is None
+    assert prediction.metadata == {}
+
+    interval = PredictionInterval(35.0, 47.0, 0.9, "calibrated", "event")
+    context = PredictionContext(prediction_as_of=date(2026, 8, 11), request_id="request-1")
+    assert interval.lower == 35.0
+    assert interval.upper == 47.0
+    assert context.prediction_as_of == date(2026, 8, 11)
 
 
 def _history(event_code="SB", n=5, base_time=50.0, days_apart=30):

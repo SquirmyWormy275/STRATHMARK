@@ -71,6 +71,12 @@ from strathmark.fairness import (
     get_championship_race_analysis,
     simulate_and_assess_handicaps,
 )
+from strathmark.features import (
+    ExclusionDiagnostics,
+    PriorEvidence,
+    build_prior_evidence,
+    normalize_prediction_as_of,
+)
 from strathmark.llm import call_ollama, check_ollama_connection
 from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
 from strathmark.mnemex import (
@@ -82,6 +88,8 @@ from strathmark.mnemex import (
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
+    PredictionContext,
+    PredictionInterval,
     PredictionResult,
     WoodProfile,
     get_all_predictions,
@@ -114,11 +122,17 @@ __all__ = [
     "WoodProfile",
     "HistoricalResult",
     "PredictionResult",
+    "PredictionContext",
+    "PredictionInterval",
+    "PriorEvidence",
+    "ExclusionDiagnostics",
     # Prediction API
     "get_best_prediction",
     "get_all_predictions",
     "select_best_prediction",
     "predict_baseline",
+    "build_prior_evidence",
+    "normalize_prediction_as_of",
     # Persistence
     "ResultStore",
     # Simulation

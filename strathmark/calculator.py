@@ -24,7 +24,10 @@ Source references (STRATHEX):
 from __future__ import annotations
 
 import logging
+import math
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
@@ -33,12 +36,22 @@ import pandas as pd
 from strathmark.config import llm_config, sim_config
 from strathmark.predictor import (
     CompetitorRecord,
+    PredictionContext,
+    PredictionInterval,
     PredictionResult,
     WoodProfile,
     get_best_prediction,
 )
 
 _log = logging.getLogger(__name__)
+
+
+def _is_positive_finite(value: object) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(number) and number > 0
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +86,18 @@ class MarkResult:
     Computed directly from competitor event history (3+ results -> clamped sample std;
     <3 results -> 3.0 flat). Independent of which cascade level won the prediction.
     Clamped to [1.5, 6.0]. Default 3.0 (PERFORMANCE_VARIANCE_SECONDS)."""
+
+    competitor_id: Optional[str] = None
+    interval: Optional[PredictionInterval] = None
+    engine_version: Optional[str] = None
+    model_version: Optional[str] = None
+    calibration_version: Optional[str] = None
+    evidence_cutoff: Optional[date] = None
+    optimizer: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    prediction_id: Optional[str] = None
+    ledger_recorded: Optional[bool] = None
+    degraded: bool = False
 
     def to_simulation_dict(self) -> dict:
         """Return a dict suitable for passing to run_monte_carlo_simulation().
@@ -316,6 +341,7 @@ class HandicapCalculator:
         event_code: str,
         tournament_results: Optional[Dict[str, float]] = None,
         manual_overrides: Optional[Dict[str, float]] = None,
+        context: Optional[PredictionContext] = None,
     ) -> List[MarkResult]:
         """
         Compute handicap marks for all competitors in a heat/round.
@@ -349,6 +375,15 @@ class HandicapCalculator:
             manual_overrides = {}
         if tournament_results is None:
             tournament_results = {}
+
+        self._validate_field_inputs(
+            competitors,
+            wood,
+            event_code,
+            tournament_results=tournament_results,
+            manual_overrides=manual_overrides,
+            context=context,
+        )
 
         # Lazy ML training: attempt once per instance when results_df is available
         # and no model has been trained yet.
@@ -440,6 +475,15 @@ class HandicapCalculator:
                     confidence=prediction.confidence,
                     explanation=prediction.explanation,
                     std_dev=competitor_std,
+                    competitor_id=record.competitor_id,
+                    interval=prediction.interval,
+                    engine_version=prediction.engine_version,
+                    model_version=prediction.model_version,
+                    calibration_version=prediction.calibration_version,
+                    evidence_cutoff=prediction.evidence_cutoff,
+                    warnings=list(prediction.warnings),
+                    prediction_id=prediction.prediction_id,
+                    degraded=prediction.degraded,
                 )
             )
 
@@ -450,6 +494,78 @@ class HandicapCalculator:
         results = self._assign_marks(results)
 
         return results
+
+    @staticmethod
+    def _validate_field_inputs(
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        *,
+        tournament_results: Dict[str, float],
+        manual_overrides: Dict[str, float],
+        context: Optional[PredictionContext],
+    ) -> None:
+        """Validate a complete field before model or persistence work begins."""
+
+        from strathmark.features import normalize_prediction_as_of
+
+        normalize_prediction_as_of(context.prediction_as_of if context else None)
+
+        if not str(wood.species or "").strip():
+            raise ValueError("wood species must not be empty")
+        if not math.isfinite(float(wood.diameter_mm)) or float(wood.diameter_mm) <= 0:
+            raise ValueError("wood diameter_mm must be positive and finite")
+        if not isinstance(wood.quality, int) or not 1 <= wood.quality <= 10:
+            raise ValueError("wood quality must be an integer from 1 to 10")
+
+        names = [str(record.name or "").strip() for record in competitors]
+        if any(not name for name in names):
+            raise ValueError("competitor names must not be empty")
+        duplicate_names = {name for name, count in Counter(names).items() if count > 1}
+        ambiguous = duplicate_names.intersection(manual_overrides)
+        if ambiguous:
+            joined = ", ".join(sorted(ambiguous))
+            raise ValueError(f"ambiguous name-keyed manual override for: {joined}")
+        ambiguous_tournament = duplicate_names.intersection(tournament_results)
+        if ambiguous_tournament:
+            joined = ", ".join(sorted(ambiguous_tournament))
+            raise ValueError(f"ambiguous name-keyed tournament result for: {joined}")
+
+        stable_ids = [
+            str(record.competitor_id).strip()
+            for record in competitors
+            if record.competitor_id is not None and str(record.competitor_id).strip()
+        ]
+        duplicate_ids = sorted(
+            identity for identity, count in Counter(stable_ids).items() if count > 1
+        )
+        if duplicate_ids:
+            raise ValueError(f"duplicate competitor_id values in field: {duplicate_ids}")
+
+        for label, values in (
+            ("manual override", manual_overrides),
+            ("tournament result", tournament_results),
+        ):
+            for name, value in values.items():
+                if not str(name).strip() or not _is_positive_finite(value):
+                    raise ValueError(f"{label} values must have a name and positive finite time")
+
+        for record in competitors:
+            if record.manual_time_override is not None and not _is_positive_finite(
+                record.manual_time_override
+            ):
+                raise ValueError("manual_time_override must be positive and finite")
+            if record.tournament_time is not None and not _is_positive_finite(
+                record.tournament_time
+            ):
+                raise ValueError("tournament_time must be positive and finite")
+            for historical in record.history:
+                if str(historical.event_code).strip().upper() not in {"SB", "UH"}:
+                    raise ValueError("historical event_code must be 'SB' or 'UH'")
+                if not _is_positive_finite(historical.time_seconds):
+                    raise ValueError("historical time_seconds must be positive and finite")
+                if not _is_positive_finite(historical.diameter_mm):
+                    raise ValueError("historical diameter_mm must be positive and finite")
 
     def _assign_marks(self, results: List[MarkResult]) -> List[MarkResult]:
         """

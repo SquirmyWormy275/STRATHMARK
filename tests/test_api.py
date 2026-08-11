@@ -179,6 +179,41 @@ class TestCalculateEndpoint:
         )
         assert resp.status_code == 422
 
+    def test_additive_identity_cutoff_and_provenance_fields(self, client):
+        resp = client.post(
+            "/calculate",
+            json={
+                "competitors": [{"name": "A", "competitor_id": "C-1", "history": []}],
+                "wood": {"species": "poplar", "diameter_mm": 300, "quality": 5},
+                "event_code": "SB",
+                "prediction_as_of": "2026-08-11",
+            },
+        )
+
+        assert resp.status_code == 200
+        result = resp.json()[0]
+        assert "interval" in result
+        assert "engine_version" in result
+        assert "prediction_id" in result
+        assert "ledger_recorded" in result
+
+    def test_duplicate_name_keyed_override_is_rejected(self, client):
+        resp = client.post(
+            "/calculate",
+            json={
+                "competitors": [
+                    {"name": "Alex", "competitor_id": "C-1", "history": []},
+                    {"name": "Alex", "competitor_id": "C-2", "history": []},
+                ],
+                "wood": {"species": "poplar", "diameter_mm": 300, "quality": 5},
+                "event_code": "SB",
+                "manual_overrides": {"Alex": 40.0},
+            },
+        )
+
+        assert resp.status_code == 422
+        assert "ambiguous" in resp.json()["detail"].lower()
+
 
 class TestPredictEndpoint:
     def test_valid_request(self, client):

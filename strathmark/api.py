@@ -49,6 +49,8 @@ from strathmark.llm import check_ollama_connection
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
+    PredictionContext,
+    PredictionInterval,
     WoodProfile,
     get_all_predictions,
     select_best_prediction,
@@ -101,6 +103,7 @@ class CompetitorSchema(BaseModel):
     tournament_time: Optional[float] = Field(
         default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
     )
+    competitor_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class WoodSchema(BaseModel):
@@ -119,6 +122,15 @@ class CalculateRequest(BaseModel):
     event_code: Literal["SB", "UH"]
     tournament_results: Optional[Dict[str, float]] = None
     manual_overrides: Optional[Dict[str, float]] = None
+    prediction_as_of: Optional[date] = None
+
+
+class PredictionIntervalResponse(BaseModel):
+    lower: float
+    upper: float
+    nominal_coverage: float
+    calibration_state: str
+    scope: str
 
 
 class MarkResultResponse(BaseModel):
@@ -129,12 +141,24 @@ class MarkResultResponse(BaseModel):
     confidence: str
     explanation: str
     std_dev: Optional[float] = None
+    competitor_id: Optional[str] = None
+    interval: Optional[PredictionIntervalResponse] = None
+    engine_version: Optional[str] = None
+    model_version: Optional[str] = None
+    calibration_version: Optional[str] = None
+    evidence_cutoff: Optional[date] = None
+    optimizer: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+    prediction_id: Optional[str] = None
+    ledger_recorded: Optional[bool] = None
+    degraded: bool = False
 
 
 class PredictRequest(BaseModel):
     competitor: CompetitorSchema
     wood: WoodSchema
     event_code: Literal["SB", "UH"]
+    prediction_as_of: Optional[date] = None
 
 
 class PredictResponse(BaseModel):
@@ -221,6 +245,7 @@ def _to_competitor_record(schema: CompetitorSchema) -> CompetitorRecord:
         division=schema.division,
         manual_time_override=schema.manual_time_override,
         tournament_time=schema.tournament_time,
+        competitor_id=schema.competitor_id,
     )
 
 
@@ -235,12 +260,37 @@ def _to_wood_profile(schema: WoodSchema) -> WoodProfile:
 def _prediction_result_to_dict(pr: Any) -> Optional[Dict[str, Any]]:
     if pr is None:
         return None
+    interval = _interval_to_response(pr.interval)
     return {
         "value": pr.value,
         "confidence": pr.confidence,
         "method": pr.method,
         "explanation": pr.explanation,
+        "interval": interval.model_dump() if interval else None,
+        "engine_version": pr.engine_version,
+        "model_version": pr.model_version,
+        "calibration_version": pr.calibration_version,
+        "evidence_cutoff": pr.evidence_cutoff,
+        "prediction_id": pr.prediction_id,
+        "provenance": pr.provenance,
+        "warnings": pr.warnings,
+        "ignored_factors": pr.ignored_factors,
+        "degraded": pr.degraded,
     }
+
+
+def _interval_to_response(
+    interval: Optional[PredictionInterval],
+) -> Optional[PredictionIntervalResponse]:
+    if interval is None:
+        return None
+    return PredictionIntervalResponse(
+        lower=interval.lower,
+        upper=interval.upper,
+        nominal_coverage=interval.nominal_coverage,
+        calibration_state=interval.calibration_state,
+        scope=interval.scope,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +342,7 @@ def calculate(req: CalculateRequest) -> List[MarkResultResponse]:
             event_code=req.event_code,
             tournament_results=req.tournament_results or {},
             manual_overrides=req.manual_overrides or {},
+            context=PredictionContext(prediction_as_of=req.prediction_as_of),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -305,6 +356,17 @@ def calculate(req: CalculateRequest) -> List[MarkResultResponse]:
             confidence=r.confidence,
             explanation=r.explanation,
             std_dev=r.std_dev,
+            competitor_id=r.competitor_id,
+            interval=_interval_to_response(r.interval),
+            engine_version=r.engine_version,
+            model_version=r.model_version,
+            calibration_version=r.calibration_version,
+            evidence_cutoff=r.evidence_cutoff,
+            optimizer=r.optimizer,
+            warnings=r.warnings,
+            prediction_id=r.prediction_id,
+            ledger_recorded=r.ledger_recorded,
+            degraded=r.degraded,
         )
         for r in mark_results
     ]
@@ -332,6 +394,15 @@ def predict(req: PredictRequest) -> PredictResponse:
             confidence=best_pred.confidence,
             explanation=best_pred.explanation,
             std_dev=best_pred.metadata.get("std_dev"),
+            competitor_id=record.competitor_id,
+            interval=_interval_to_response(best_pred.interval),
+            engine_version=best_pred.engine_version,
+            model_version=best_pred.model_version,
+            calibration_version=best_pred.calibration_version,
+            evidence_cutoff=best_pred.evidence_cutoff,
+            warnings=best_pred.warnings,
+            prediction_id=best_pred.prediction_id,
+            degraded=best_pred.degraded,
         ),
         all_predictions={k: _prediction_result_to_dict(v) for k, v in all_preds.items()},
     )

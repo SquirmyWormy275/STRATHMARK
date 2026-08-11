@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import collections as _collections
 import logging
+import math
 import statistics as _statistics
 import threading as _threading
 import time as _time
@@ -311,6 +312,13 @@ class CompetitorRecord:
     produces slightly conservative predictions for unknown-gender competitors).
     """
 
+    competitor_id: Optional[str] = None
+    """Stable identity for V2 population state and trusted persistence.
+
+    This field is intentionally appended so all historical positional
+    constructors remain valid. ``name`` remains a request-local display value.
+    """
+
 
 @dataclass
 class WoodProfile:
@@ -347,6 +355,38 @@ class WoodProfile:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class PredictionContext:
+    """Request-level context shared by every prediction in one field.
+
+    ``prediction_as_of`` is an exclusive UTC date cutoff. ``None`` lets the V2
+    boundary resolve the current UTC date once when a request begins.
+    """
+
+    prediction_as_of: Optional[date] = None
+    request_id: Optional[str] = None
+    seed: int = 20260811
+
+
+@dataclass(frozen=True)
+class PredictionInterval:
+    """Forecast interval, separate from race-performance ``std_dev``."""
+
+    lower: float
+    upper: float
+    nominal_coverage: float = 0.90
+    calibration_state: str = "uncalibrated"
+    scope: str = "analytic"
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.lower) or not math.isfinite(self.upper):
+            raise ValueError("prediction interval bounds must be finite")
+        if self.lower <= 0 or self.upper <= 0 or self.lower > self.upper:
+            raise ValueError("prediction interval must have 0 < lower <= upper")
+        if not math.isfinite(self.nominal_coverage) or not 0 < self.nominal_coverage < 1:
+            raise ValueError("nominal_coverage must be between 0 and 1")
+
+
 @dataclass
 class PredictionResult:
     """Output of a single prediction method."""
@@ -369,6 +409,19 @@ class PredictionResult:
     For baseline predictions: includes 'std_dev' (competitor variance estimate).
     For LLM predictions: includes raw multiplier and quality context.
     """
+
+    interval: Optional[PredictionInterval] = None
+    """Calibrated forecast uncertainty; never performance variability."""
+
+    engine_version: Optional[str] = None
+    model_version: Optional[str] = None
+    calibration_version: Optional[str] = None
+    evidence_cutoff: Optional[date] = None
+    prediction_id: Optional[str] = None
+    provenance: Dict = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+    ignored_factors: List[str] = field(default_factory=list)
+    degraded: bool = False
 
 
 # ---------------------------------------------------------------------------
