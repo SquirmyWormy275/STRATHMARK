@@ -14,14 +14,18 @@ to any event that uses STRATHMARK as its handicap engine.
 | `STRATHMARK_SUPABASE_URL` | yes (DB writes/reads) | Supabase project URL |
 | `STRATHMARK_SUPABASE_KEY` | yes (DB writes/reads) | Supabase service or anon key |
 | `STRATHMARK_DB_PATH` | no | Override the local SQLite store path (default `~/.strathmark/results.db`) |
-| `STRATHMARK_OLLAMA_URL` | no | Override the Ollama endpoint (default `http://localhost:11434/api/generate`) |
-| `STRATHMARK_OLLAMA_TIMEOUT` | no | Per-request timeout in seconds (default `30`). Set to `2` on Railway / containers where Ollama is not reachable, so the cascade fails fast through the LLM tier instead of waiting on a TCP timeout. |
-| `STRATHMARK_OLLAMA_MAX_RETRIES` | no | Retry attempts for failed Ollama requests (default `2`). Set to `0` on Railway when Ollama is known-unreachable to skip retries entirely. |
+| `STRATHMARK_API_TOKEN` | yes for REST `/results` endpoints | Bearer token that enables protected local-history reads and writes |
+| `OLLAMA_HOST` | no | Ollama host, default `http://localhost:11434`; set to `disabled` to skip Ollama completely |
+| `STRATHMARK_OLLAMA_URL` | no, legacy | Full Ollama generate URL, takes precedence over `OLLAMA_HOST` |
+| `STRATHMARK_OLLAMA_CONNECT_TIMEOUT` | no | Ollama TCP-connect timeout, default `3` seconds |
+| `STRATHMARK_OLLAMA_READ_TIMEOUT` | no | Ollama response timeout, default `15` seconds |
+| `STRATHMARK_OLLAMA_MAX_RETRIES` | no | Retry attempts for failed Ollama requests, default `0` for race-day fail-fast behavior |
+| `GEMINI_API_KEY` | no | Enables Gemini cloud fallback when Ollama is unavailable |
 
-The three `STRATHMARK_OLLAMA_*` variables are read at module-import time
-into the frozen `LLMConfig` dataclass. Changing them after STRATHMARK is
-imported has no effect — set them in your process environment before the
-first `import strathmark` call.
+The Ollama timeout and retry settings are read into `LLMConfig` at import
+time, so set them before the first `import strathmark`. `OLLAMA_HOST` and
+`GEMINI_API_KEY` are read when the cascade runs and can be changed by a
+controlled process restart.
 
 When `STRATHMARK_SUPABASE_*` are missing, the prediction cascade still
 works: it falls through to the local store, baseline, or panel-mark
@@ -54,10 +58,19 @@ mark generation.
 
 ### Cloud fallback
 
-When the event laptop has no GPU or Ollama crashes mid-event, the LLM
-level can be skipped entirely (set `llm_client=None`). A future revision
-will route to Gemini 2.0 Flash-Lite as a cloud fallback; until that ships,
-treat the cascade as Manual -> ML -> Baseline -> Panel only.
+When the event laptop has no GPU or Ollama crashes mid-event, set
+`OLLAMA_HOST=disabled` to skip the local LLM tier. If `GEMINI_API_KEY` is
+configured, STRATHMARK then makes one bounded Gemini fallback attempt before
+continuing to ML, baseline, and panel prediction.
+
+## REST API safety
+
+The calculation endpoints can be exposed behind a reverse proxy with normal
+rate limiting. The `/results` endpoints are disabled until
+`STRATHMARK_API_TOKEN` is configured and require
+`Authorization: Bearer <token>` on every request. Do not expose the API
+directly to the public internet without TLS, authentication, and request-size
+limits. See [`wiki/REST-API.md`](wiki/REST-API.md) for the exact contract.
 
 ## Pre-event checklist (run morning of Day 1)
 

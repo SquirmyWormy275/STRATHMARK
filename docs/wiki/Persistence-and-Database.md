@@ -123,12 +123,13 @@ fully operational on event day even if every cloud tier goes dark.
 Two tables:
 
 - `results` — one row per historical chop. Columns: `competitor_name`,
-  `event_code`, `raw_time`, `species`, `size_mm`, `quality`,
-  `result_date`, `heat_id`, `field_strength`.
+  `event_code`, `time_seconds`, `species`, `diameter_mm`, `quality`,
+  `competition_id`, `result_date`, `heat_id`, and `recorded_at`.
 - `competitors` — lightweight roster.
 
-Both tables use simple TEXT/REAL types; no foreign keys. Permissive by
-design — accepts whatever the cascade emits.
+The local store validates event, time, diameter, quality, and required text
+before a row can influence future predictions. `competition_id` separates the
+same heat label at different shows; new callers should always provide it.
 
 ### Typical usage
 
@@ -142,10 +143,11 @@ history = store.get_competitor_history("Alice Smith", "SB")
 store.record_result(
     competitor_name="Alice Smith",
     event_code="SB",
-    raw_time=28.4,
+    time_seconds=28.4,
     species="Pine",
-    size_mm=300,
+    diameter_mm=300,
     quality=5,
+    competition_id="missoula-pro-am-2026",
     result_date=date(2026, 4, 25),
 )
 ```

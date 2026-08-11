@@ -2,6 +2,28 @@
 
 All notable changes to STRATHMARK will be documented in this file.
 
+## [1.0.0] - 2026-05-08
+
+First public PyPI release. No API changes relative to 0.5.0; the 1.0.0 designation marks publication readiness, not a redesign. The library has been production-tested for multiple seasons across STRATHEX and the Missoula Pro-Am tournament manager.
+
+### Added
+- PyPI distribution metadata: `Development Status :: 5 - Production/Stable`, `License :: OSI Approved :: Apache Software License`, `Operating System :: OS Independent`, and `Topic :: Software Development :: Libraries` classifiers.
+- `[project.urls]` entries for Homepage, Issues, Documentation, and Changelog (in addition to the existing Source URL).
+- Author email field in `[project.authors]`.
+- Lower bound on the `ollama` optional dependency (`ollama>=0.3`) in the `[llm]` extra; previously unconstrained.
+
+### Changed
+- Version bumped from 0.5.0 to 1.0.0 to mark the first stable PyPI release. `__version__` in `strathmark/__init__.py` updated to match.
+- README image and inter-doc links rewritten as absolute GitHub URLs (`https://raw.githubusercontent.com/.../main/...` for the logo, `https://github.com/SquirmyWormy275/STRATHMARK/blob/main/...` and `.../tree/main/...` for documents and directories) so they render correctly on the PyPI project page.
+- README test-count figure updated from 708 to 759 to match the current suite.
+- `.gitignore` virtual-environment block extended with `.venv*/` so per-purpose venvs (e.g. `.venv-pypi-readiness`) are ignored without relying on Python's venv-internal `.gitignore`.
+
+### Fixed
+- README "Usage" prose claimed `HandicapCalculator().calculate()` returns `CalculationResult` objects with a `gap` attribute. The actual return type is `MarkResult` (defined in `strathmark.calculator`) with fields `name`, `mark`, `predicted_time`, `method_used`, `confidence`, `explanation`, `std_dev`. README rewritten to match the real API. Discovered by running the README example against the built wheel.
+
+### Removed
+- Placeholder LinkedIn line in the README "About the author" section.
+
 ## [0.5.0] - 2026-05-08
 
 ### Added

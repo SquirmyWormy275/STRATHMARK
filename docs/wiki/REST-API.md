@@ -1,57 +1,62 @@
 # REST API
 
-STRATHMARK ships with an optional HTTP REST API built on FastAPI.
-Python clients (STRATHEX, the Missoula Pro-Am Manager) use the direct
-Python import API for zero-overhead calls. The REST API is aimed at
-web apps, mobile apps, or non-Python clients that cannot embed the
-engine directly.
+STRATHMARK ships with an optional FastAPI service for clients that cannot use
+the Python package directly. Python consumers such as STRATHEX use the import
+API instead.
 
-## Install
+## Install and run
 
 ```bash
 pip install strathmark[api]
+export STRATHMARK_API_TOKEN="replace-with-a-long-random-secret"
+uvicorn strathmark.api:app --host 127.0.0.1 --port 8000 --workers 2
 ```
 
-## Run
-
-```bash
-uvicorn strathmark.api:app --host 0.0.0.0 --port 8000 --workers 2
-```
-
-Swagger / OpenAPI UI is auto-generated at
-`http://localhost:8000/docs`.
+Deploy the service behind TLS and a reverse proxy. Bind to `0.0.0.0` only when
+the network boundary is controlled. FastAPI publishes the complete, generated
+contract at `http://localhost:8000/docs`; that schema is authoritative when it
+differs from an example below.
 
 ## Endpoints
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET    | `/health`                 | check store availability and Ollama connection |
-| POST   | `/calculate`              | compute handicap marks for a field of competitors |
-| POST   | `/predict`                | return every cascade level's prediction for one competitor |
-| POST   | `/simulate`               | run Monte Carlo fairness simulation |
-| POST   | `/results`                | record a tournament result to the local store |
-| GET    | `/results/{competitor}`   | return that competitor's history from the local store |
+| --- | --- | --- |
+| GET | `/health` | Liveness, store availability, and Ollama status |
+| POST | `/calculate` | Calculate marks for a field |
+| POST | `/predict` | Return cascade predictions for one competitor |
+| POST | `/simulate` | Run a bounded Monte Carlo fairness simulation |
+| POST | `/results` | Record a protected, competition-identified result |
+| GET | `/results/{competitor_name}` | Retrieve protected result history |
 
-All request and response bodies are JSON. The FastAPI-generated
-Swagger UI is the canonical reference — the examples below are the
-common shapes.
+## Validation rules
+
+All result and historical-time inputs must use event code `SB` or `UH`, a time
+from 3 through 180 seconds, a diameter from 225 through 500 mm, and wood
+quality from 1 through 10. ISO dates are parsed by FastAPI, so malformed dates
+return HTTP 422 rather than silently becoming undated history.
+
+`/simulate` accepts 2 through 64 competitors and 1 through 250,000
+simulations. The product of competitors and simulations cannot exceed
+4,000,000. These limits protect the service from an allocation that would
+degrade other live-event requests. Each worker admits at most two simulations
+at once; when a worker is at capacity, `/simulate` returns HTTP 429 and
+callers should retry shortly.
 
 ## GET /health
 
 ```json
 {
-  "version": "0.4.0",
-  "store_available": true,
+  "status": "ok",
   "ollama_available": false,
-  "ollama_url": "http://localhost:11434/api/generate"
+  "ollama_model": "qwen3.5:9b",
+  "store_available": true,
+  "store_results_count": 42
 }
 ```
 
-Use this as the liveness probe for containerised deployments.
+The response intentionally does not expose the server's local database path.
 
 ## POST /calculate
-
-Request:
 
 ```json
 {
@@ -67,158 +72,97 @@ Request:
           "quality": 5,
           "result_date": "2025-03-01"
         }
-      ],
-      "division": "Open"
+      ]
     }
   ],
-  "wood": {
-    "species": "Pine",
-    "diameter_mm": 300,
-    "quality": 5
-  },
-  "event_code": "SB",
-  "event_ceiling": null,
-  "manual_overrides": {}
-}
-```
-
-Response:
-
-```json
-{
-  "start_sheet_text": "+===...",
-  "results": [
-    {
-      "name": "Alice Smith",
-      "mark": 3,
-      "predicted_time": 28.47,
-      "method_used": "baseline",
-      "confidence": "MEDIUM",
-      "std_dev": 2.1,
-      "explanation": "Weighted historical average adjusted for Pine 300 mm quality 5."
-    }
-  ]
-}
-```
-
-`start_sheet_text` is the 70-character-wide plain-text render ready to
-pipe to a thermal printer. `results` is the structured equivalent.
-
-## POST /predict
-
-Returns every cascade level's prediction for a single competitor —
-useful for side-by-side operator views.
-
-```json
-{
-  "competitor": { ... same schema as above ... },
-  "wood": { ... },
+  "wood": {"species": "Pine", "diameter_mm": 300, "quality": 5},
   "event_code": "SB"
 }
 ```
 
-Response:
+The response is an array ordered slowest to fastest:
 
 ```json
-{
-  "best": {"value": 28.47, "method": "baseline", "confidence": "MEDIUM"},
-  "all": [
-    {"value": 28.47, "method": "baseline", "confidence": "MEDIUM"},
-    {"value": null, "method": "llm", "confidence": "LOW", "explanation": "Ollama unreachable"},
-    {"value": null, "method": "ml", "confidence": "LOW", "explanation": "insufficient training data"},
-    {"value": 28.50, "method": "panel", "confidence": "VERY LOW"}
-  ]
-}
+[
+  {
+    "name": "Alice Smith",
+    "mark": 3,
+    "predicted_time": 28.47,
+    "method_used": "baseline",
+    "confidence": "MEDIUM",
+    "explanation": "Weighted historical average.",
+    "std_dev": 2.1
+  }
+]
 ```
+
+## POST /predict
+
+Use the same competitor, wood, and event-code shapes as `/calculate`. The
+response contains `best` plus an `all_predictions` object keyed by prediction
+method. `best.mark` is always `3` because a mark is relative to a field and is
+only meaningful after calling `/calculate`.
 
 ## POST /simulate
 
 ```json
 {
-  "entries": [
-    {"name": "Alice", "mark": 3, "predicted_time": 28.47, "std_dev": 2.1}
+  "competitors": [
+    {"name": "Alice", "mark": 3, "predicted_time": 28.47, "std_dev": 2.1},
+    {"name": "Bob", "mark": 8, "predicted_time": 33.47, "std_dev": 2.4}
   ],
   "num_simulations": 100000
 }
 ```
 
-Response:
+The response includes winner and podium counts, percentages, finish-position
+statistics, spread statistics, and a fairness assessment. Large raw
+finish-spread arrays are omitted from the HTTP response.
 
-```json
-{
-  "rating": "Very Good",
-  "spread_percent": 3.4,
-  "win_rates": {"Alice": 0.203, "Bob": 0.195, ...},
-  "summary": "..."
-}
+## Protected result endpoints
+
+Both `/results` endpoints require this header:
+
+```text
+Authorization: Bearer <STRATHMARK_API_TOKEN>
 ```
 
-## POST /results
+If `STRATHMARK_API_TOKEN` is absent, the endpoints return HTTP 503. An absent
+or incorrect bearer token returns HTTP 401.
 
-Record a single tournament result to the local SQLite store.
+### POST /results
+
+`competition_id` is required. It must identify the source show or a stable
+upstream competition record so the same heat label at different events is not
+discarded as a duplicate.
 
 ```json
 {
   "competitor_name": "Alice Smith",
   "event_code": "SB",
-  "raw_time": 28.4,
+  "time_seconds": 28.4,
   "species": "Pine",
-  "size_mm": 300,
+  "diameter_mm": 300,
   "quality": 5,
-  "result_date": "2026-04-25",
-  "heat_id": "SB-H3"
+  "competition_id": "missoula-pro-am-2026",
+  "heat_id": "SB-H3",
+  "result_date": "2026-04-25"
 }
 ```
 
-Response:
-
 ```json
-{"inserted": true, "duplicate": false}
+{"inserted": true, "message": "Result recorded."}
 ```
 
-Duplicates are silently accepted (returned as `"duplicate": true,
-"inserted": false`).
+### GET /results/{competitor_name}
 
-## GET /results/{competitor}
-
-Query parameters: `event_code=SB` (optional), `limit=50` (optional,
-default 100).
-
-```json
-{
-  "competitor": "Alice Smith",
-  "results": [
-    {"event_code": "SB", "time_seconds": 28.4, "species": "Pine",
-     "diameter_mm": 300, "quality": 5, "result_date": "2026-04-25"}
-  ]
-}
-```
-
-## Deployment shape
-
-The REST API is designed to run behind a reverse proxy (nginx,
-caddy). Typical Docker shape:
-
-```
-FROM python:3.12-slim
-RUN pip install strathmark[api,llm,ml,db]
-CMD ["uvicorn", "strathmark.api:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Set the env vars from [Installation](Installation#environment-variables)
-before the container starts — they are read at module-import time.
+Pass optional `event_code=SB` to filter the returned JSON array. The endpoint
+returns every matching stored result; consumers that need pagination should
+apply it locally until a versioned pagination contract is introduced.
 
 ## Testing
 
-- `tests/test_api.py` — FastAPI `TestClient` coverage of every
-  endpoint, including 400/422/500 paths.
-
-The suite skips gracefully when `fastapi` is not installed (`pytest.
-importorskip("fastapi")`).
-
-## Security note
-
-The API does not implement authentication. Deploy it behind a reverse
-proxy with an auth layer (JWT, basic auth, network-level ACL) or
-inside a private network. Posting random competitor histories from
-the open internet will pollute the local store.
+`tests/test_api.py` runs the API contract against a temporary SQLite store and
+never touches `~/.strathmark/results.db`. CI installs the `api` extra before
+running that test file, and separately imports the built wheel in an isolated
+environment.

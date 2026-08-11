@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/strathmark_logo.png" alt="STRATHMARK" width="480"/>
+  <img src="https://raw.githubusercontent.com/SquirmyWormy275/STRATHMARK/main/assets/strathmark_logo.png" alt="STRATHMARK" width="480"/>
 </p>
 
 # STRATHMARK
 
-Pip-installable Python library for AAA-compliant woodchopping handicap calculation. 708 tests passing across the full module set. Production-tested across multiple tournament management consumers.
+Pip-installable Python library for AAA-compliant woodchopping handicap calculation. Production-tested across multiple tournament management consumers and covered by an automated cross-platform test suite.
 
 Originally extracted from [STRATHEX](https://github.com/SquirmyWormy275/STRATHEX), the public AI-powered handicap calculator. STRATHMARK now powers handicap mark generation across STRATHEX and multiple private timbersports applications that need AAA-compliant marks without the full STRATHEX runtime footprint (XGBoost, Ollama, the 500K-race Monte Carlo engine).
 
@@ -52,7 +52,7 @@ wood = WoodProfile(species="Pine", diameter_mm=300, quality=5)
 results = HandicapCalculator().calculate(competitors, wood, event_code="SB")
 ```
 
-`results` is a list of `CalculationResult` objects, one per competitor, carrying the predicted time, the gap to front mark, and the assigned mark in seconds.
+`results` is a list of `MarkResult` objects (defined in `strathmark.calculator`), one per competitor, carrying `name`, `predicted_time`, `mark` (assigned handicap in seconds, AAA-clamped to the 3-to-183 second range), `method_used` (which tier of the cascade produced the prediction), `confidence`, `explanation`, and `std_dev`.
 
 ## API reference
 
@@ -65,11 +65,11 @@ The public surface is exposed at the package root:
 - `ResultStore`: local SQLite history at `~/.strathmark/results.db`
 - `push_results` / `pull_results`: Supabase sync for tournament-day backends
 
-See `strathmark/__init__.py` for the full `__all__` list and the [wiki](docs/wiki/) for module-level reference.
+See `strathmark/__init__.py` for the full `__all__` list and the [wiki](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki) for module-level reference.
 
 ## How it relates to STRATHEX
 
-STRATHMARK is the calculation core. STRATHEX is one consumer of that core and the largest public reference implementation. The two repositories share heritage (STRATHMARK was extracted from STRATHEX in commit `5416342`) and stay synchronized through a cross-reference table documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). When a STRATHMARK module changes, the table identifies which STRATHEX file consumes it, so a behavior change cannot silently drift across the boundary.
+STRATHMARK is the calculation core. STRATHEX is one consumer of that core and the largest public reference implementation. The two repositories share heritage (STRATHMARK was extracted from STRATHEX in commit `5416342`) and stay synchronized through a cross-reference table documented in [`docs/ARCHITECTURE.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md). When a STRATHMARK module changes, the table identifies which STRATHEX file consumes it, so a behavior change cannot silently drift across the boundary.
 
 ## Production usage
 
@@ -77,15 +77,15 @@ STRATHMARK powers handicap mark generation in production at AAA-sanctioned timbe
 
 ## Testing
 
-`pytest tests/ -v` runs 708 tests across calculator invariants, variance, predictor cascade, integration, fairness, persistence, LLM, ML, and regression suites. Tests requiring optional extras (FastAPI, Ollama, Supabase, XGBoost) skip gracefully when those packages are not installed, so a `[dev]`-only environment runs green. CI runs the full matrix on Ubuntu and Windows across Python 3.10, 3.12, and 3.13.
+`pytest tests/ -v` runs the calculator invariants, variance, predictor cascade, integration, fairness, persistence, LLM, ML, and regression suites. Tests requiring optional extras skip gracefully when those packages are not installed. CI runs the core matrix on Ubuntu and Windows across Python 3.10, 3.12, and 3.13, plus an API contract job with the `api` extra and an isolated built-wheel smoke test.
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): module structure, design decisions, and the STRATHEX cross-reference table
-- [`docs/wiki/`](docs/wiki/): 19 reference pages covering cascade, variance, wood, decay, fairness, deployment
-- [`docs/solutions/`](docs/solutions/): institutional knowledge organized by category (bugs solved, decisions made, patterns followed)
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): local development loop, lint, CI
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): race-day deployment guide
+- [`docs/ARCHITECTURE.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md): module structure, design decisions, and the STRATHEX cross-reference table
+- [`docs/wiki/`](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki): 19 reference pages covering cascade, variance, wood, decay, fairness, deployment
+- [`docs/solutions/`](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/solutions): institutional knowledge organized by category (bugs solved, decisions made, patterns followed)
+- [`CONTRIBUTING.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CONTRIBUTING.md): local development loop, lint, CI
+- [`docs/DEPLOYMENT.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md): race-day deployment guide
 
 ## Design rules
 
@@ -102,7 +102,7 @@ These invariants are enforced in `strathmark/config.py` and read by every mark-p
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/LICENSE).
 
 The Apache patent grant matters because STRATHMARK has multiple production consumers; the patent protection extends to those consumers (including future external adopters) against patent claims related to the calculation methods.
 
@@ -112,4 +112,3 @@ Alex Kaper, MIS senior at the University of Montana, graduating May 2026. I buil
 
 - GitHub: [SquirmyWormy275](https://github.com/SquirmyWormy275)
 - Email: <alex.j.kaper@gmail.com>
-- LinkedIn: *(placeholder URL)*

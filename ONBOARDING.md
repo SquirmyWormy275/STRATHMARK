@@ -6,7 +6,7 @@ STRATHMARK is a pip-installable woodchopping handicap engine. This doc is a rout
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v     # ~650 tests, green in 30–40 seconds
+pytest tests/ -v     # core test suite
 ```
 
 Read in this order:
@@ -52,7 +52,7 @@ Always run `python scripts/validate_deployment.py` before an event. If it fails 
 |---|---|
 | [`README.md`](README.md) | Library usage, public API, design rules, package structure, downstream relationships |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev install, lint, CI, test loop |
-| [`CHANGELOG.md`](CHANGELOG.md) | Release history (v0.1.0 → v0.4.0) |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history, including the 1.0.0 publication release |
 | [`TODOS.md`](TODOS.md) | Active design work (ensemble predictor, P1/P2 items) |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Live-event deployment guide |
 | [`docs/wiki/`](docs/wiki/) | Architecture reference (19 pages: cascade, variance, wood, decay, etc.) |

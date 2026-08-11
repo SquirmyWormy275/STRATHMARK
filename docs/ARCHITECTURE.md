@@ -67,7 +67,7 @@ The cascade design (Manual > LLM > ML > Panel) means the prediction quality degr
 
 A few decisions look different in hindsight.
 
-**Pre-1.0 versioning despite production use.** STRATHMARK is at v0.4.1 even though it powers AAA-sanctioned events through STRATHEX. Pre-1.0 in semver implies "API may break in any minor release," which the production usage has effectively contradicted for the past two release cycles. The right move is to tag v1.0.0 once the polish branch lands, with the understanding that the public API is stable.
+**Versioning after the 1.0.0 release.** STRATHMARK reached 1.0.0 after production use established its public calculator API as stable. Future behavior changes to the documented public surface now require normal semantic-versioning discipline and downstream-consumer review.
 
 **Manual cross-reference table maintenance.** The mapping in *Cross-reference with STRATHEX* lives in this document and in the developer's head. With one maintainer, that is enough. With two or more, it is not. The durable fix would be a script that parses STRATHEX imports, resolves them against STRATHMARK's `__all__`, and reports any STRATHEX file referencing a STRATHMARK module that the table does not list.
 

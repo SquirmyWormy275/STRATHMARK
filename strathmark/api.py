@@ -28,11 +28,14 @@ Optional dependency:
 
 from __future__ import annotations
 
+import hmac
+import os
+import threading
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import Depends, FastAPI, Header, HTTPException
     from pydantic import BaseModel, Field
 
     _FASTAPI_AVAILABLE = True
@@ -41,7 +44,7 @@ except ImportError:
 
 from strathmark import __version__
 from strathmark.calculator import HandicapCalculator
-from strathmark.config import llm_config
+from strathmark.config import data_req, llm_config, rules, sim_config
 from strathmark.llm import check_ollama_connection
 from strathmark.predictor import (
     CompetitorRecord,
@@ -71,33 +74,49 @@ if not _FASTAPI_AVAILABLE:
 
 
 class HistoricalResultSchema(BaseModel):
-    event_code: str
-    time_seconds: float = Field(gt=0, description="Time in seconds (must be positive)")
-    species: str
-    diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
+    event_code: Literal["SB", "UH"]
+    time_seconds: float = Field(
+        ge=rules.MIN_MARK_SECONDS,
+        le=rules.MAX_TIME_LIMIT_SECONDS,
+        description="Time in seconds (3-180)",
+    )
+    species: str = Field(min_length=1, max_length=100)
+    diameter_mm: float = Field(
+        ge=data_req.MIN_DIAMETER_MM,
+        le=data_req.MAX_DIAMETER_MM,
+        description="Log diameter in mm (225-500)",
+    )
     quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
-    result_date: Optional[str] = None  # ISO 8601 date string
-    heat_id: Optional[str] = None
+    result_date: Optional[date] = None
+    heat_id: Optional[str] = Field(default=None, max_length=100)
 
 
 class CompetitorSchema(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     history: List[HistoricalResultSchema] = Field(default_factory=list)
-    division: Optional[str] = None
-    manual_time_override: Optional[float] = None
-    tournament_time: Optional[float] = None
+    division: Optional[str] = Field(default=None, max_length=100)
+    manual_time_override: Optional[float] = Field(
+        default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
+    )
+    tournament_time: Optional[float] = Field(
+        default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
+    )
 
 
 class WoodSchema(BaseModel):
-    species: str
-    diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
+    species: str = Field(min_length=1, max_length=100)
+    diameter_mm: float = Field(
+        ge=data_req.MIN_DIAMETER_MM,
+        le=data_req.MAX_DIAMETER_MM,
+        description="Log diameter in mm (225-500)",
+    )
     quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
 
 
 class CalculateRequest(BaseModel):
-    competitors: List[CompetitorSchema]
+    competitors: List[CompetitorSchema] = Field(max_length=64)
     wood: WoodSchema
-    event_code: str
+    event_code: Literal["SB", "UH"]
     tournament_results: Optional[Dict[str, float]] = None
     manual_overrides: Optional[Dict[str, float]] = None
 
@@ -109,12 +128,13 @@ class MarkResultResponse(BaseModel):
     method_used: str
     confidence: str
     explanation: str
+    std_dev: Optional[float] = None
 
 
 class PredictRequest(BaseModel):
     competitor: CompetitorSchema
     wood: WoodSchema
-    event_code: str
+    event_code: Literal["SB", "UH"]
 
 
 class PredictResponse(BaseModel):
@@ -122,22 +142,27 @@ class PredictResponse(BaseModel):
     all_predictions: Dict[str, Optional[Dict[str, Any]]]
 
 
+class SimulationCompetitorSchema(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    mark: int = Field(ge=rules.MIN_MARK_SECONDS, le=rules.MAX_MARK_SECONDS)
+    predicted_time: float = Field(gt=0, le=rules.MAX_TIME_LIMIT_SECONDS)
+    std_dev: Optional[float] = Field(default=None, gt=0, le=sim_config.MAX_COMPETITOR_STD_SECONDS)
+    performance_std_dev: Optional[float] = Field(
+        default=None, gt=0, le=sim_config.MAX_COMPETITOR_STD_SECONDS
+    )
+    variance: Optional[float] = Field(default=None, gt=0, le=sim_config.MAX_COMPETITOR_STD_SECONDS)
+
+
 class SimulateRequest(BaseModel):
-    competitors: List[Dict[str, Any]]  # [{name, mark, predicted_time, ...}]
-    num_simulations: int = 250_000
+    competitors: List[SimulationCompetitorSchema] = Field(min_length=2, max_length=64)
+    num_simulations: int = Field(default=250_000, ge=1, le=250_000)
     track_finish_orders: bool = False
     track_podium_margins: bool = False
 
 
-class RecordResultRequest(BaseModel):
-    competitor_name: str
-    event_code: str
-    time_seconds: float = Field(gt=0, description="Time in seconds (must be positive)")
-    species: str
-    diameter_mm: float = Field(gt=0, description="Log diameter in mm (must be positive)")
-    quality: int = Field(ge=1, le=10, description="Wood quality 1-10")
-    heat_id: Optional[str] = None
-    result_date: Optional[str] = None  # ISO 8601 date string
+class RecordResultRequest(HistoricalResultSchema):
+    competitor_name: str = Field(min_length=1, max_length=100)
+    competition_id: str = Field(min_length=1, max_length=128)
 
 
 class RecordResultResponse(BaseModel):
@@ -149,21 +174,32 @@ class RecordResultResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-_store = ResultStore()
+_store: Optional[ResultStore] = None
+_MAX_SIMULATION_CELLS = 4_000_000
+_SIMULATION_SLOTS = threading.BoundedSemaphore(value=2)
 
 
-def _parse_date(s: Optional[str], *, strict: bool = False) -> Optional[date]:
-    if s is None:
-        return None
-    try:
-        return date.fromisoformat(s)
-    except (ValueError, TypeError):
-        if strict:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid date format: '{s}'. Use ISO 8601 (YYYY-MM-DD).",
-            )
-        return None
+def get_store() -> ResultStore:
+    """Lazily create the default store so imports never touch user data."""
+    global _store
+    if _store is None:
+        _store = ResultStore()
+    return _store
+
+
+def require_results_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """Protect persisted athlete histories when the API is deployed remotely."""
+    expected_token = os.environ.get("STRATHMARK_API_TOKEN", "")
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Results endpoints are disabled until STRATHMARK_API_TOKEN is configured.",
+        )
+    supplied_token = (authorization or "").removeprefix("Bearer ")
+    if not hmac.compare_digest(supplied_token, expected_token):
+        raise HTTPException(
+            status_code=401, detail="Valid bearer token required for results endpoints."
+        )
 
 
 def _to_competitor_record(schema: CompetitorSchema) -> CompetitorRecord:
@@ -174,7 +210,7 @@ def _to_competitor_record(schema: CompetitorSchema) -> CompetitorRecord:
             species=h.species,
             diameter_mm=h.diameter_mm,
             quality=h.quality,
-            result_date=_parse_date(h.result_date),
+            result_date=h.result_date,
             heat_id=h.heat_id,
         )
         for h in schema.history
@@ -222,15 +258,15 @@ app = FastAPI(
 
 
 @app.get("/health")
-def health() -> Dict[str, Any]:
+def health(store: ResultStore = Depends(get_store)) -> Dict[str, Any]:
     """Check Ollama connectivity and store availability."""
     ollama_ok = check_ollama_connection()
-    store_count = _store.count()
+    store_count = store.count()
     return {
         "status": "ok",
         "ollama_available": ollama_ok,
         "ollama_model": llm_config.DEFAULT_MODEL,
-        "store_path": str(_store._path),
+        "store_available": True,
         "store_results_count": store_count,
     }
 
@@ -268,6 +304,7 @@ def calculate(req: CalculateRequest) -> List[MarkResultResponse]:
             method_used=r.method_used,
             confidence=r.confidence,
             explanation=r.explanation,
+            std_dev=r.std_dev,
         )
         for r in mark_results
     ]
@@ -294,6 +331,7 @@ def predict(req: PredictRequest) -> PredictResponse:
             method_used=best_pred.method,
             confidence=best_pred.confidence,
             explanation=best_pred.explanation,
+            std_dev=best_pred.metadata.get("std_dev"),
         ),
         all_predictions={k: _prediction_result_to_dict(v) for k, v in all_preds.items()},
     )
@@ -307,15 +345,32 @@ def simulate(req: SimulateRequest) -> Dict[str, Any]:
     Input competitors format:
         [{"name": "...", "mark": 3, "predicted_time": 60.0, ...}, ...]
     """
-    if len(req.competitors) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 competitors")
+    if len(req.competitors) * req.num_simulations > _MAX_SIMULATION_CELLS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Simulation workload is too large. Reduce competitors or num_simulations so "
+                f"their product is at most {_MAX_SIMULATION_CELLS:,}."
+            ),
+        )
 
-    analysis = run_monte_carlo_simulation(
-        competitors=req.competitors,
-        num_simulations=req.num_simulations,
-        track_finish_orders=req.track_finish_orders,
-        track_podium_margins=req.track_podium_margins,
-    )
+    if not _SIMULATION_SLOTS.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="Simulation capacity is busy. Retry the request shortly.",
+        )
+    try:
+        analysis = run_monte_carlo_simulation(
+            competitors=[
+                competitor.model_dump(exclude_none=True) for competitor in req.competitors
+            ],
+            num_simulations=req.num_simulations,
+            track_finish_orders=req.track_finish_orders,
+            track_podium_margins=req.track_podium_margins,
+            include_finish_spreads=False,
+        )
+    finally:
+        _SIMULATION_SLOTS.release()
 
     # Convert CompetitorTimeStats dataclasses to dicts for JSON serialization
     cts = {}
@@ -335,8 +390,6 @@ def simulate(req: SimulateRequest) -> Dict[str, Any]:
             cts[name] = stats
     analysis["competitor_time_stats"] = cts
 
-    # Remove large list from JSON response (finish_spreads can be millions of floats)
-    analysis.pop("finish_spreads", None)
     # most_common_order is a tuple; convert to list for JSON
     if analysis.get("most_common_order") is not None:
         analysis["most_common_order"] = list(analysis["most_common_order"])
@@ -344,10 +397,16 @@ def simulate(req: SimulateRequest) -> Dict[str, Any]:
     return analysis
 
 
-@app.post("/results", response_model=RecordResultResponse)
-def record_result(req: RecordResultRequest) -> RecordResultResponse:
+@app.post(
+    "/results",
+    response_model=RecordResultResponse,
+    dependencies=[Depends(require_results_token)],
+)
+def record_result(
+    req: RecordResultRequest, store: ResultStore = Depends(get_store)
+) -> RecordResultResponse:
     """Record a tournament result to the persistent store."""
-    inserted = _store.record_result(
+    inserted = store.record_result(
         competitor_name=req.competitor_name,
         event_code=req.event_code,
         time_seconds=req.time_seconds,
@@ -355,7 +414,8 @@ def record_result(req: RecordResultRequest) -> RecordResultResponse:
         diameter_mm=req.diameter_mm,
         quality=req.quality,
         heat_id=req.heat_id,
-        result_date=_parse_date(req.result_date, strict=True),
+        result_date=req.result_date,
+        competition_id=req.competition_id,
     )
     return RecordResultResponse(
         inserted=inserted,
@@ -363,13 +423,14 @@ def record_result(req: RecordResultRequest) -> RecordResultResponse:
     )
 
 
-@app.get("/results/{competitor_name}")
+@app.get("/results/{competitor_name}", dependencies=[Depends(require_results_token)])
 def get_results(
     competitor_name: str,
     event_code: Optional[str] = None,
+    store: ResultStore = Depends(get_store),
 ) -> List[Dict[str, Any]]:
     """Retrieve all stored results for a competitor."""
-    history = _store.get_competitor_history(competitor_name, event_code)
+    history = store.get_competitor_history(competitor_name, event_code)
     return [
         {
             "event_code": r.event_code,

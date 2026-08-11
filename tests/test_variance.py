@@ -242,3 +242,15 @@ class TestMonteCarlo:
         assert r1["winner_counts"] == r2["winner_counts"], (
             "Different winner counts with same seed -- not reproducible"
         )
+
+    def test_can_omit_raw_finish_spreads(self):
+        result = run_monte_carlo_simulation(
+            [_comp("Alice", 3, 60.0), _comp("Bob", 10, 55.0)],
+            num_simulations=100,
+            seed=7,
+            include_finish_spreads=False,
+            verbose=False,
+        )
+
+        assert "finish_spreads" not in result
+        assert result["avg_spread"] > 0

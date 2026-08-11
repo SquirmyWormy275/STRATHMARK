@@ -20,6 +20,7 @@ lib64/
 # Virtual environments
 .env
 .venv
+.venv*/
 env/
 venv/
 ENV/
