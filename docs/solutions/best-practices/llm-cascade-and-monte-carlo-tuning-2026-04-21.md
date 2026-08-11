@@ -98,7 +98,9 @@ llm_client = {
     "timeout": llm_config.TIMEOUT_SECONDS,
 }
 prediction = get_best_prediction(
-    effective_record, wood, event_code,
+    effective_record,
+    wood,
+    event_code,
     wood_data_df=self.wood_df,
     results_df=self.results_df,
     ml_model=self._ml_model,
@@ -120,8 +122,8 @@ Ceiling rounding biased every non-integer-gap mark upward by ~0.5s on average. A
 Dropped from 2,000,000 to 500,000 once numpy vectorization landed — same statistical quality at 4x throughput (session history). Two tiers serve different audiences:
 
 ```python
-NUM_SIMULATIONS: int = 500_000          # production precision
-NUM_SIMULATIONS_QUICK: int = 100_000    # pre-competition fast path
+NUM_SIMULATIONS: int = 500_000  # production precision
+NUM_SIMULATIONS_QUICK: int = 100_000  # pre-competition fast path
 MIN_COMPETITOR_STD_SECONDS: float = 1.5
 MAX_COMPETITOR_STD_SECONDS: float = 15.0
 DEFAULT_VARIANCE_SCALING_FACTOR: float = 0.12

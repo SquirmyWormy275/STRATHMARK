@@ -31,9 +31,9 @@ assessment = simulate_and_assess_handicaps(
     mark_results,
     num_simulations=500_000,
 )
-print(assessment["rating"])          # 'Excellent' / 'Very Good' / …
+print(assessment["rating"])  # 'Excellent' / 'Very Good' / …
 print(assessment["spread_percent"])  # float
-print(assessment["narrative"])       # plain-text explanation
+print(assessment["narrative"])  # plain-text explanation
 ```
 
 The narrative includes:

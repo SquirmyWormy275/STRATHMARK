@@ -35,8 +35,10 @@ competitor_std = max(1.5, min(prediction.value * 0.12, 15.0))
 # After:
 competitor_std = max(
     sim_config.MIN_COMPETITOR_STD_SECONDS,
-    min(prediction.value * sim_config.DEFAULT_VARIANCE_SCALING_FACTOR,
-        sim_config.MAX_COMPETITOR_STD_SECONDS),
+    min(
+        prediction.value * sim_config.DEFAULT_VARIANCE_SCALING_FACTOR,
+        sim_config.MAX_COMPETITOR_STD_SECONDS,
+    ),
 )
 ```
 

@@ -101,8 +101,8 @@ sim = run_monte_carlo_simulation(
     num_simulations=500_000,
 )
 
-print(sim["summary"])          # plain-text summary
-print(sim["win_rates"])        # dict {name: probability}
+print(sim["summary"])  # plain-text summary
+print(sim["win_rates"])  # dict {name: probability}
 print(sim["finish_spread_s"])  # scalar (mean finish spread)
 ```
 
@@ -133,8 +133,8 @@ Full audit with per-competitor breakdown:
 from strathmark import audit_mark_sheet
 
 audit = audit_mark_sheet(mark_results, num_simulations=500_000)
-print(audit["variance_ratio"])     # max/min competitor std dev
-print(audit["imbalance_warnings"]) # list of plain-text warnings
+print(audit["variance_ratio"])  # max/min competitor std dev
+print(audit["imbalance_warnings"])  # list of plain-text warnings
 ```
 
 Flags an imbalance warning when the variance ratio exceeds 2.5 — this

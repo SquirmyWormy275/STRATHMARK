@@ -173,8 +173,8 @@ MNEMEX is stood up.
 ```python
 from strathmark import pull_results
 
-df = pull_results()                                  # everything
-df = pull_results(competitor_ids=["C0042"])          # filter
+df = pull_results()  # everything
+df = pull_results(competitor_ids=["C0042"])  # filter
 ```
 
 Returns a Pandas DataFrame with the standardised column names

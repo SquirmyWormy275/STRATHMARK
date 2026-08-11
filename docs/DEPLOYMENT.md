@@ -115,6 +115,7 @@ limits. See [`wiki/REST-API.md`](wiki/REST-API.md) for the exact contract.
 5. Verify the new rows landed:
    ```python
    from strathmark.db import pull_results
+
    df = pull_results()
    print(df[df["show_name"] == "Missoula Pro-Am 2026"].shape)
    ```
