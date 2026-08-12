@@ -23,10 +23,11 @@ Public API:
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Iterable, List, Mapping, Optional
 
 _log = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class DriftReport:
     variance_ratio_alert: bool = False
     coverage_alert: bool = False
     insufficient_recent_samples: bool = False
+    sample_label: str = "sample_adequate"
 
     # Aggregated state
     overall_alert: bool = False
@@ -112,6 +114,9 @@ def evaluate_drift(
     model_version_id: Optional[str] = None,
     lookback_days: int = 30,
     model_type: str = "xgboost_lightgbm_ensemble",
+    *,
+    ledger: Any = None,
+    baseline_residuals: Optional[Iterable[float]] = None,
 ) -> DriftReport:
     """Evaluate drift for the given model version against its baseline calibration.
 
@@ -129,6 +134,21 @@ def evaluate_drift(
     is True when the recent window is too small. Raises only on Supabase env-var
     misconfiguration (since the operator running this clearly intends to query).
     """
+    if ledger is not None:
+        if baseline_residuals is None:
+            raise ValueError("baseline_residuals are required for V2 ledger drift")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        rows = ledger.get_training_rows(
+            since=cutoff,
+            model_version=model_version_id,
+        )
+        return evaluate_settled_drift(
+            rows,
+            baseline_residuals=baseline_residuals,
+            model_version_id=model_version_id,
+            lookback_days=lookback_days,
+        )
+
     from strathmark.db import _get_client, get_active_model_version
 
     client = _get_client()
@@ -240,6 +260,7 @@ def _build_report(
 
     if len(recent_residuals) < MIN_RECENT_SAMPLES:
         report.insufficient_recent_samples = True
+        report.sample_label = "insufficient_recent_sample"
         report.notes.append(
             f"only {len(recent_residuals)} recent samples (need >= {MIN_RECENT_SAMPLES})"
         )
@@ -322,3 +343,53 @@ def _build_report(
         report.mean_shift_alert or report.variance_ratio_alert or report.coverage_alert
     )
     return report
+
+
+def settled_model_prediction_rows(
+    rows: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only settled, non-manual, finite model predictions for monitoring."""
+
+    eligible: list[dict[str, Any]] = []
+    for raw in rows:
+        source = str(raw.get("source", "")).strip().lower()
+        if source == "manual" or not source:
+            continue
+        if raw.get("settled_at") in (None, ""):
+            continue
+        try:
+            predicted = float(raw.get("predicted_time"))
+            actual = float(raw.get("actual_time"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(predicted) or not math.isfinite(actual):
+            continue
+        if predicted <= 0 or actual <= 0:
+            continue
+        item = dict(raw)
+        item["predicted_time"] = predicted
+        item["actual_time"] = actual
+        item["residual"] = actual - predicted
+        eligible.append(item)
+    return eligible
+
+
+def evaluate_settled_drift(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    baseline_residuals: Iterable[float],
+    baseline_coverage: Optional[float] = 0.90,
+    model_version_id: Optional[str] = None,
+    lookback_days: int = 30,
+) -> DriftReport:
+    """Evaluate drift from trusted settlement rows only, without database access."""
+
+    eligible = settled_model_prediction_rows(rows)
+    residuals = [float(row["residual"]) for row in eligible]
+    return _build_report(
+        model_version_id=model_version_id,
+        lookback_days=lookback_days,
+        recent_residuals=residuals,
+        baseline_residuals=[float(value) for value in baseline_residuals],
+        baseline_coverage=baseline_coverage,
+    )

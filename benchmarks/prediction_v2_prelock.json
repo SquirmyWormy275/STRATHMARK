@@ -1,0 +1,259 @@
+{
+  "algorithm_contract": "prediction-v2-core-fixed-20260811",
+  "calibration": {
+    "calibrator": {
+      "cohort_counts": {
+        "SB": {
+          "0": 6,
+          "1-3": 21,
+          "4+": 19
+        },
+        "UH": {
+          "0": 9,
+          "1-3": 27,
+          "4+": 68
+        }
+      },
+      "cohort_radii": {
+        "UH": {
+          "4+": 0.7941871045326532
+        }
+      },
+      "event_counts": {
+        "SB": 46,
+        "UH": 104
+      },
+      "event_radii": {
+        "UH": 0.7573242220179353
+      },
+      "global_count": 150,
+      "global_radius": 0.7221023912257714,
+      "max_evidence_date": "2025-05-31",
+      "nominal_coverage": 0.9,
+      "version": "prediction-v2-calibration-2025h1"
+    },
+    "metrics_before_conformal": {
+      "cohorts": {
+        "event": {
+          "SB": {
+            "claim_eligible": true,
+            "count": 46,
+            "coverage_90": 1.0,
+            "mae_seconds": 33.52459693865607,
+            "mean_interval_width_seconds": 155.10193552998453,
+            "median_absolute_error_seconds": 21.71439424265838,
+            "rmse_seconds": 45.005643231259235,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "UH": {
+            "claim_eligible": true,
+            "count": 104,
+            "coverage_90": 0.9615384615384616,
+            "mae_seconds": 28.87507372373318,
+            "mean_interval_width_seconds": 165.14406731192454,
+            "median_absolute_error_seconds": 23.55188837346471,
+            "rmse_seconds": 35.6864997038033,
+            "sample_label": "cohort_claim_eligible"
+          }
+        },
+        "history_depth": {
+          "0": {
+            "claim_eligible": false,
+            "count": 15,
+            "coverage_90": 1.0,
+            "mae_seconds": 56.53946157531953,
+            "mean_interval_width_seconds": 264.39219361471777,
+            "median_absolute_error_seconds": 50.96889317065872,
+            "rmse_seconds": 66.85489334393158,
+            "sample_label": "insufficient_cohort_sample"
+          },
+          "1-3": {
+            "claim_eligible": true,
+            "count": 48,
+            "coverage_90": 1.0,
+            "mae_seconds": 33.09259626201472,
+            "mean_interval_width_seconds": 185.00902692441505,
+            "median_absolute_error_seconds": 22.193922090576542,
+            "rmse_seconds": 41.89655679826674,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "4+": {
+            "claim_eligible": true,
+            "count": 87,
+            "coverage_90": 0.9540229885057471,
+            "mae_seconds": 24.236811290114133,
+            "mean_interval_width_seconds": 131.76271078421556,
+            "median_absolute_error_seconds": 21.745321408079185,
+            "rmse_seconds": 29.227803937716672,
+            "sample_label": "cohort_claim_eligible"
+          }
+        }
+      },
+      "global": {
+        "claim_eligible": true,
+        "count": 150,
+        "coverage_90": 0.9733333333333334,
+        "mae_seconds": 30.30092750964286,
+        "mean_interval_width_seconds": 162.06448023212963,
+        "median_absolute_error_seconds": 23.177952798101934,
+        "rmse_seconds": 38.783166073072266,
+        "sample_label": "global_claim_eligible"
+      }
+    }
+  },
+  "locked_test_opened": false,
+  "manifest_sha256": "b702f607a30aee2531f3f59064e2f8c67a96aa3f13cd74ce3f1fdcc1182f6899",
+  "residual": {
+    "promoted": false,
+    "reason": "No optional residual candidate was frozen before the locked test.",
+    "status": "inactive_no_prelocked_candidate"
+  },
+  "role_counts": {
+    "calibration": 150,
+    "fit": 782,
+    "locked_test": 128,
+    "selection": 231,
+    "undated_excluded": 20
+  },
+  "schema_version": "prediction-v2-prelock/v1",
+  "selection": {
+    "core": {
+      "cohorts": {
+        "event": {
+          "SB": {
+            "claim_eligible": true,
+            "count": 106,
+            "coverage_90": 0.8490566037735849,
+            "mae_seconds": 20.87080304577564,
+            "mean_interval_width_seconds": 63.346338793999855,
+            "median_absolute_error_seconds": 7.798102013048338,
+            "rmse_seconds": 37.37403296483356,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "UH": {
+            "claim_eligible": true,
+            "count": 125,
+            "coverage_90": 0.872,
+            "mae_seconds": 29.569468805313644,
+            "mean_interval_width_seconds": 85.19922913027231,
+            "median_absolute_error_seconds": 14.198251135887446,
+            "rmse_seconds": 49.371019716945916,
+            "sample_label": "cohort_claim_eligible"
+          }
+        },
+        "history_depth": {
+          "0": {
+            "claim_eligible": true,
+            "count": 33,
+            "coverage_90": 0.8181818181818182,
+            "mae_seconds": 44.945448149849106,
+            "mean_interval_width_seconds": 106.64449737677124,
+            "median_absolute_error_seconds": 17.901714516641654,
+            "rmse_seconds": 65.78515423026366,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "1-3": {
+            "claim_eligible": true,
+            "count": 86,
+            "coverage_90": 0.813953488372093,
+            "mae_seconds": 34.267786369286206,
+            "mean_interval_width_seconds": 91.31237119244712,
+            "median_absolute_error_seconds": 17.20738496275327,
+            "rmse_seconds": 54.29429024892491,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "4+": {
+            "claim_eligible": true,
+            "count": 112,
+            "coverage_90": 0.9107142857142857,
+            "mae_seconds": 13.198743810828475,
+            "mean_interval_width_seconds": 53.50431444164396,
+            "median_absolute_error_seconds": 5.96864632708931,
+            "rmse_seconds": 22.444270557378598,
+            "sample_label": "cohort_claim_eligible"
+          }
+        }
+      },
+      "global": {
+        "claim_eligible": true,
+        "count": 231,
+        "coverage_90": 0.8614718614718615,
+        "mae_seconds": 25.577873261975864,
+        "mean_interval_width_seconds": 75.1714959023724,
+        "median_absolute_error_seconds": 11.378377665416668,
+        "rmse_seconds": 44.27139551876678,
+        "sample_label": "global_claim_eligible"
+      }
+    },
+    "incumbent": {
+      "cohorts": {
+        "event": {
+          "SB": {
+            "claim_eligible": true,
+            "count": 106,
+            "coverage_90": null,
+            "mae_seconds": 24.64419915378881,
+            "mean_interval_width_seconds": null,
+            "median_absolute_error_seconds": 10.608126242164017,
+            "rmse_seconds": 43.59417006020613,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "UH": {
+            "claim_eligible": true,
+            "count": 125,
+            "coverage_90": null,
+            "mae_seconds": 31.467502093321656,
+            "mean_interval_width_seconds": null,
+            "median_absolute_error_seconds": 8.820331346008139,
+            "rmse_seconds": 56.59445079432524,
+            "sample_label": "cohort_claim_eligible"
+          }
+        },
+        "history_depth": {
+          "0": {
+            "claim_eligible": true,
+            "count": 33,
+            "coverage_90": null,
+            "mae_seconds": 58.18181818181818,
+            "mean_interval_width_seconds": null,
+            "median_absolute_error_seconds": 37.5,
+            "rmse_seconds": 82.23045959283266,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "1-3": {
+            "claim_eligible": true,
+            "count": 86,
+            "coverage_90": null,
+            "mae_seconds": 38.24778189938272,
+            "mean_interval_width_seconds": null,
+            "median_absolute_error_seconds": 20.78892139394406,
+            "rmse_seconds": 61.782196007491045,
+            "sample_label": "cohort_claim_eligible"
+          },
+          "4+": {
+            "claim_eligible": true,
+            "count": 112,
+            "coverage_90": null,
+            "mae_seconds": 11.932264541249168,
+            "mean_interval_width_seconds": null,
+            "median_absolute_error_seconds": 5.877581918745619,
+            "rmse_seconds": 21.214874530467014,
+            "sample_label": "cohort_claim_eligible"
+          }
+        }
+      },
+      "global": {
+        "claim_eligible": true,
+        "count": 231,
+        "coverage_90": null,
+        "mae_seconds": 28.33646264920702,
+        "mean_interval_width_seconds": null,
+        "median_absolute_error_seconds": 9.079201177443984,
+        "rmse_seconds": 51.04171788744106,
+        "sample_label": "global_claim_eligible"
+      }
+    }
+  },
+  "source_sha256": "61344dda5a5aa84f99a9936f3710b3532f0faf3c373082314be1b1c6bf84c330",
+  "tuning_frozen": true
+}

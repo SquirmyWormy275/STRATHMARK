@@ -21,6 +21,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 
 from strathmark.predictor import (
     CompetitorRecord,
@@ -114,6 +115,59 @@ def backtest_predictions(
         "rmse": float(np.sqrt(np.mean(errors_arr**2))),
         "bias": float(np.mean(errors_arr)),
         "within_3s_pct": within_3s / len(errors) * 100,
+    }
+
+
+def rolling_origin_analysis(
+    evidence: pd.DataFrame,
+    *,
+    target_start: date | None = None,
+    target_end_exclusive: date | None = None,
+    min_training_rows: int = 30,
+    minimum_global_rows: int = 100,
+    minimum_cohort_rows: int = 30,
+) -> Dict[str, Any]:
+    """Return an honest prior-only V2 rolling-origin accuracy summary.
+
+    ``claim_eligible`` is explicit so a small sample cannot accidentally be
+    presented as a validated accuracy or subgroup claim.
+    """
+
+    from strathmark.validation import chronological_backtest
+
+    report = chronological_backtest(
+        evidence,
+        target_start=target_start,
+        target_end_exclusive=target_end_exclusive,
+        min_training_rows=min_training_rows,
+    )
+    predictions = report.predictions
+    metrics: Dict[str, Any] = dict(report.metrics)
+    count = int(metrics.get("count", 0))
+    metrics["claim_eligible"] = count >= minimum_global_rows
+    metrics["sample_label"] = (
+        "global_claim_eligible" if metrics["claim_eligible"] else "insufficient_global_sample"
+    )
+    if not predictions.empty and {"core_lower", "core_upper"}.issubset(predictions.columns):
+        actual = predictions["actual_time"].to_numpy(dtype=float)
+        lower = predictions["core_lower"].to_numpy(dtype=float)
+        upper = predictions["core_upper"].to_numpy(dtype=float)
+        metrics["coverage_90"] = float(np.mean((lower <= actual) & (actual <= upper)))
+        metrics["mean_interval_width"] = float(np.mean(upper - lower))
+
+    cohorts: Dict[str, Dict[str, Any]] = {}
+    for name, values in report.cohort_metrics.items():
+        cohort = dict(values)
+        cohort_count = int(cohort.get("count", 0))
+        cohort["claim_eligible"] = cohort_count >= minimum_cohort_rows
+        cohort["sample_label"] = (
+            "cohort_claim_eligible" if cohort["claim_eligible"] else "insufficient_cohort_sample"
+        )
+        cohorts[name] = cohort
+    return {
+        "metrics": metrics,
+        "cohorts": cohorts,
+        "predictions": predictions,
     }
 
 

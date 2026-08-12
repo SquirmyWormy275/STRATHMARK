@@ -6,12 +6,16 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from strathmark.prediction_v2 import ChronologicalCalibrator
 from strathmark.validation import (
     build_residual_training_frame,
     chronological_backtest,
+    evaluate_core_promotion,
     finite_sample_higher_quantile,
+    partition_benchmark_roles,
+    strict_incumbent_backtest,
 )
 
 
@@ -141,3 +145,63 @@ def test_residual_training_frame_uses_only_prior_fold_core_residuals(monkeypatch
         residuals["core_log_residual"],
         np.log(residuals["actual_time"]) - residuals["core_log_location"],
     )
+
+
+def test_partition_benchmark_roles_uses_exact_exclusive_windows():
+    from tests.test_prediction_v2 import _training_frame
+
+    evidence = _training_frame().copy()
+    evidence["result_date"] = [
+        date(2023, 12, 31) + timedelta(days=index * 120) for index in range(len(evidence))
+    ]
+    manifest = {
+        "roles": {
+            "fit": {"start": "1900-01-01", "end_exclusive": "2024-01-01"},
+            "selection": {"start": "2024-01-01", "end_exclusive": "2025-01-01"},
+            "calibration": {"start": "2025-01-01", "end_exclusive": "2025-07-01"},
+            "locked_test": {"start": "2025-07-01", "end_exclusive": "2026-02-07"},
+        }
+    }
+
+    roles = partition_benchmark_roles(evidence, manifest)
+
+    for name, spec in manifest["roles"].items():
+        assert (roles[name]["result_date"] >= date.fromisoformat(spec["start"])).all()
+        assert (roles[name]["result_date"] < date.fromisoformat(spec["end_exclusive"])).all()
+
+
+def test_strict_incumbent_is_prior_only_and_same_event():
+    from tests.test_prediction_v2 import _training_frame
+
+    evidence = _training_frame()
+    start = min(evidence["result_date"]) + timedelta(days=180)
+    report = strict_incumbent_backtest(
+        evidence,
+        target_start=start,
+        target_end_exclusive=date(2030, 1, 1),
+        min_training_rows=4,
+    )
+
+    assert not report.predictions.empty
+    assert (
+        report.predictions["fold_training_max_date"] < report.predictions["fold_training_cutoff"]
+    ).all()
+    assert set(report.predictions["incumbent_history_event"].unique()) <= {"SB", "UH"}
+    assert (report.predictions["incumbent_history_event"] == report.predictions["event"]).all()
+
+
+def test_core_promotion_gate_applies_locked_thresholds():
+    passing = evaluate_core_promotion(
+        {"mae": 9.8, "rmse": 12.05, "count": 128},
+        {"mae": 10.0, "rmse": 12.0, "count": 128},
+    )
+    failing = evaluate_core_promotion(
+        {"mae": 9.95, "rmse": 12.07, "count": 128},
+        {"mae": 10.0, "rmse": 12.0, "count": 128},
+    )
+
+    assert passing["promoted"] is True
+    assert passing["mae_relative_improvement"] == pytest.approx(0.02)
+    assert failing["promoted"] is False
+    assert "mae_gate_failed" in failing["reasons"]
+    assert "rmse_gate_failed" in failing["reasons"]

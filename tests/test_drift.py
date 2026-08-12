@@ -16,6 +16,9 @@ from strathmark.drift import (
     DriftReport,
     _build_report,
     _coerce_residual_list,
+    evaluate_drift,
+    evaluate_settled_drift,
+    settled_model_prediction_rows,
 )
 
 
@@ -239,3 +242,85 @@ class TestDriftReportSummary:
         )
         s = report.summary()
         assert "insufficient" in s.lower()
+
+
+def test_settled_rows_exclude_manual_unsettled_and_invalid_predictions():
+    rows = [
+        {
+            "source": "hierarchical_dynamic_core",
+            "predicted_time": 50.0,
+            "actual_time": 52.0,
+            "settled_at": "2026-08-01T00:00:00Z",
+        },
+        {
+            "source": "manual",
+            "predicted_time": 49.0,
+            "actual_time": 50.0,
+            "settled_at": "2026-08-01T00:00:00Z",
+        },
+        {
+            "source": "hierarchical_dynamic_core",
+            "predicted_time": 48.0,
+            "actual_time": None,
+            "settled_at": None,
+        },
+    ]
+
+    eligible = settled_model_prediction_rows(rows)
+
+    assert len(eligible) == 1
+    assert eligible[0]["residual"] == 2.0
+
+
+def test_settled_drift_reports_sample_label():
+    rows = [
+        {
+            "source": "hierarchical_dynamic_core",
+            "predicted_time": 50.0,
+            "actual_time": 50.5,
+            "settled_at": "2026-08-01T00:00:00Z",
+        }
+        for _ in range(10)
+    ]
+
+    report = evaluate_settled_drift(
+        rows,
+        baseline_residuals=[0.0] * 100,
+        model_version_id="v2",
+    )
+
+    assert report.insufficient_recent_samples is True
+    assert report.sample_label == "insufficient_recent_sample"
+
+
+def test_evaluate_drift_uses_injected_settled_ledger_only():
+    class Ledger:
+        def __init__(self):
+            self.kwargs = None
+
+        def get_training_rows(self, **kwargs):
+            self.kwargs = kwargs
+            return [
+                {
+                    "source": "hierarchical_dynamic_core",
+                    "predicted_time": 50.0,
+                    "actual_time": 51.0,
+                    "settled_at": "2026-08-01T00:00:00Z",
+                },
+                {
+                    "source": "manual",
+                    "predicted_time": 10.0,
+                    "actual_time": 100.0,
+                    "settled_at": "2026-08-01T00:00:00Z",
+                },
+            ]
+
+    ledger = Ledger()
+    report = evaluate_drift(
+        model_version_id="v2",
+        ledger=ledger,
+        baseline_residuals=[0.0] * 100,
+    )
+
+    assert report.recent_count == 1
+    assert ledger.kwargs["model_version"] == "v2"

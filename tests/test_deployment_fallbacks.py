@@ -77,17 +77,18 @@ class TestNoSupabase:
         assert result["inserted"] == 0
         # Should not raise -- error list may contain a connection warning, that's fine
 
-    def test_cascade_falls_to_panel_when_no_history(self):
-        """A new competitor with empty history must produce a panel mark."""
+    def test_packaged_core_handles_no_history_without_supabase(self):
+        """A new competitor uses the packaged population prior offline."""
         rec = CompetitorRecord(name="Brand New", history=[], division="Open")
         wood = WoodProfile(species="Pine", diameter_mm=300, quality=5)
 
         pred = get_best_prediction(rec, wood, "SB")
 
         assert pred is not None
-        assert pred.method == "panel"
+        assert pred.method == "baseline"
+        assert pred.metadata["source"] == "conditional_population_prior"
         assert 3.0 <= pred.value <= 183.0
-        assert pred.confidence == "VERY LOW"
+        assert pred.confidence == "LOW"
 
 
 # ---------------------------------------------------------------------------

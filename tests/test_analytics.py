@@ -2,7 +2,11 @@
 
 from datetime import date, timedelta
 
-from strathmark.analytics import profile_competitor, summarise_performance_history
+from strathmark.analytics import (
+    profile_competitor,
+    rolling_origin_analysis,
+    summarise_performance_history,
+)
 from strathmark.predictor import CompetitorRecord, HistoricalResult
 
 
@@ -58,3 +62,19 @@ class TestSummarisePerformanceHistory:
     def test_empty_list(self):
         summaries = summarise_performance_history([])
         assert summaries == []
+
+
+def test_rolling_origin_analysis_labels_small_cohorts():
+    from tests.test_prediction_v2 import _training_frame
+
+    evidence = _training_frame()
+    report = rolling_origin_analysis(
+        evidence,
+        min_training_rows=10,
+        minimum_global_rows=1_000,
+        minimum_cohort_rows=1_000,
+    )
+
+    assert report["metrics"]["sample_label"] == "insufficient_global_sample"
+    assert report["metrics"]["claim_eligible"] is False
+    assert all(not cohort["claim_eligible"] for cohort in report["cohorts"].values())
