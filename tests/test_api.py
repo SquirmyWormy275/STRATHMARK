@@ -1,5 +1,7 @@
 """Tests for strathmark/api.py — FastAPI REST endpoints."""
 
+from datetime import date
+
 import pytest
 
 pytest.importorskip(
@@ -9,7 +11,14 @@ pytest.importorskip(
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from strathmark.api import _SIMULATION_SLOTS, app, get_store  # noqa: E402
+from strathmark.api import (  # noqa: E402
+    _SIMULATION_SLOTS,
+    app,
+    get_prediction_provider,
+    get_store,
+)
+from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution  # noqa: E402
+from strathmark.predictor import PredictionBundle, StaticPredictionProvider  # noqa: E402
 from strathmark.store import ResultStore  # noqa: E402
 
 
@@ -26,6 +35,36 @@ def client(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def v2_provider():
+    class Core:
+        model_version = "api-core"
+        source_checksum = "c" * 64
+
+        class calibration:
+            version = "api-cal"
+
+        def __init__(self):
+            self.cutoffs = []
+
+        def predict(self, request, *, history=None, wood_df=None):
+            self.cutoffs.append(request.prediction_as_of)
+            return PredictiveDistribution(
+                median=44.0,
+                log_location=3.78,
+                log_scale=0.2,
+                interval=ForecastInterval(33.0, 58.0, calibration_state="calibrated"),
+                source="conditional_population_prior",
+                history_count=0,
+                effective_history_weight=0.0,
+                model_version=self.model_version,
+                calibration_version="api-cal",
+            )
+
+    core = Core()
+    return core, StaticPredictionProvider(PredictionBundle(core=core, source="api-test"))
+
+
+@pytest.fixture
 def api_headers():
     return {"Authorization": "Bearer test-api-token"}
 
@@ -39,6 +78,20 @@ class TestHealthEndpoint:
         assert "ollama_available" in data
         assert "store_results_count" in data
         assert "store_path" not in data
+
+    def test_health_reports_engine_components_separately(self, client, v2_provider):
+        _, provider = v2_provider
+        app.dependency_overrides[get_prediction_provider] = lambda: provider
+
+        data = client.get("/health").json()
+
+        assert data["prediction_engine"]["core"]["available"] is True
+        assert data["prediction_engine"]["core"]["version"] == "api-core"
+        assert "residual" in data["prediction_engine"]
+        assert "calibration" in data["prediction_engine"]
+        assert "cutoff" in data["prediction_engine"]
+        assert "degraded" in data["prediction_engine"]
+        assert "ollama_available" in data
 
 
 class TestCalculateEndpoint:
@@ -245,6 +298,47 @@ class TestPredictEndpoint:
     def test_missing_fields_returns_422(self, client):
         resp = client.post("/predict", json={"competitor": {"name": "A"}})
         assert resp.status_code == 422
+
+    def test_predict_consumes_cutoff_and_is_publicly_stateless(
+        self, client, v2_provider, monkeypatch
+    ):
+        core, provider = v2_provider
+        app.dependency_overrides[get_prediction_provider] = lambda: provider
+        monkeypatch.setattr(
+            "strathmark.api.get_store",
+            lambda: (_ for _ in ()).throw(AssertionError("public prediction touched store")),
+        )
+
+        resp = client.post(
+            "/predict",
+            json={
+                "competitor": {
+                    "name": "A",
+                    "history": [
+                        {
+                            "event_code": "SB",
+                            "time_seconds": 45.0,
+                            "species": "S01",
+                            "diameter_mm": 300,
+                            "quality": 1,
+                            "result_date": "2025-05-01",
+                            "heat_id": "inactive",
+                        }
+                    ],
+                    "division": "inactive",
+                    "tournament_time": 9.0,
+                },
+                "wood": {"species": "S01", "diameter_mm": 300, "quality": 10},
+                "event_code": "SB",
+                "prediction_as_of": "2025-06-01",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert core.cutoffs == [date(2025, 6, 1)]
+        assert data["best"]["method_used"] == "baseline"
+        assert data["all_predictions"]["llm"] is None
 
 
 class TestSimulateEndpoint:

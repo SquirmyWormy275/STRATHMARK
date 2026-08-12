@@ -236,6 +236,24 @@ def build_prior_evidence(
     return PriorEvidence(rows=rows, prediction_as_of=cutoff, diagnostics=diagnostics)
 
 
+def resolve_species_properties(
+    species: Any,
+    wood_df: Optional[pd.DataFrame] = None,
+) -> tuple[dict[str, float], bool]:
+    """Resolve one species without assigning a fabricated known-species identity.
+
+    Known species receive their canonical physical properties. Missing or unknown
+    species receive the column-wise pooled medians and are explicitly flagged so
+    the prediction engine can widen uncertainty and report extrapolation.
+    """
+
+    lookup, pooled = _species_property_lookup(wood_df)
+    key = _clean_category(species, uppercase=True)
+    if key == MISSING_CATEGORY or key not in lookup:
+        return dict(pooled), True
+    return dict(lookup[key]), False
+
+
 def _normal_name(value: Any) -> str:
     return str(value).strip().lower()
 

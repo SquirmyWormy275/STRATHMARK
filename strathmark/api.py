@@ -50,9 +50,11 @@ from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
     PredictionContext,
+    PredictionEngineProvider,
     PredictionInterval,
     WoodProfile,
     get_all_predictions,
+    get_prediction_provider,
     select_best_prediction,
 )
 from strathmark.store import ResultStore
@@ -308,8 +310,15 @@ app = FastAPI(
 
 
 @app.get("/health")
-def health(store: ResultStore = Depends(get_store)) -> Dict[str, Any]:
+def health(
+    store: ResultStore = Depends(get_store),
+    prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
+) -> Dict[str, Any]:
     """Check Ollama connectivity and store availability."""
+    from strathmark.features import normalize_prediction_as_of
+
+    cutoff = normalize_prediction_as_of(None)
+    bundle = prediction_provider.snapshot(cutoff)
     ollama_ok = check_ollama_connection()
     store_count = store.count()
     return {
@@ -318,11 +327,15 @@ def health(store: ResultStore = Depends(get_store)) -> Dict[str, Any]:
         "ollama_model": llm_config.DEFAULT_MODEL,
         "store_available": True,
         "store_results_count": store_count,
+        "prediction_engine": bundle.health(cutoff),
     }
 
 
 @app.post("/calculate", response_model=List[MarkResultResponse])
-def calculate(req: CalculateRequest) -> List[MarkResultResponse]:
+def calculate(
+    req: CalculateRequest,
+    prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
+) -> List[MarkResultResponse]:
     """
     Compute AAA-compliant handicap marks for a field of competitors.
 
@@ -331,7 +344,7 @@ def calculate(req: CalculateRequest) -> List[MarkResultResponse]:
     if not req.competitors:
         raise HTTPException(status_code=400, detail="competitors list must not be empty")
 
-    calc = HandicapCalculator()
+    calc = HandicapCalculator(prediction_provider=prediction_provider)
     records = [_to_competitor_record(c) for c in req.competitors]
     wood = _to_wood_profile(req.wood)
 
@@ -373,7 +386,10 @@ def calculate(req: CalculateRequest) -> List[MarkResultResponse]:
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest) -> PredictResponse:
+def predict(
+    req: PredictRequest,
+    prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
+) -> PredictResponse:
     """
     Run all prediction methods for a single competitor and return all results.
 
@@ -382,7 +398,13 @@ def predict(req: PredictRequest) -> PredictResponse:
     record = _to_competitor_record(req.competitor)
     wood = _to_wood_profile(req.wood)
 
-    all_preds = get_all_predictions(record, wood, req.event_code)
+    all_preds = get_all_predictions(
+        record,
+        wood,
+        req.event_code,
+        context=PredictionContext(prediction_as_of=req.prediction_as_of),
+        prediction_provider=prediction_provider,
+    )
     best_pred = select_best_prediction(all_preds)
 
     return PredictResponse(

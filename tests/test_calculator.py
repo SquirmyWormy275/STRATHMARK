@@ -17,16 +17,53 @@ Tests are organized in three groups:
 import re
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from strathmark.calculator import HandicapCalculator, MarkResult, StartSheet
 from strathmark.config import rules
+from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
+    PredictionBundle,
+    PredictionContext,
+    PredictionEngineProvider,
     WoodProfile,
     predict_baseline,
 )
+
+
+class _MutatingProvider(PredictionEngineProvider):
+    def __init__(self):
+        self.calls = 0
+
+    def snapshot(self, prediction_as_of):
+        self.calls += 1
+        value = 40.0 + self.calls
+
+        class Core:
+            model_version = f"core-{value}"
+            source_checksum = "b" * 64
+
+            class calibration:
+                version = "cal-test"
+
+            def predict(self, request, *, history=None, wood_df=None):
+                return PredictiveDistribution(
+                    median=value,
+                    log_location=3.7,
+                    log_scale=0.2,
+                    interval=ForecastInterval(30.0, 55.0),
+                    source="conditional_population_prior",
+                    history_count=0,
+                    effective_history_weight=0.0,
+                    model_version=self.model_version,
+                    calibration_version="cal-test",
+                )
+
+        return PredictionBundle(core=Core(), source="mutating-test")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -151,6 +188,47 @@ class TestMarkCeiling:
         calc._assign_marks(results)
         fast = next(r for r in results if r.name == "Fast")
         assert fast.mark == 50
+
+
+class TestPredictionV2FieldSnapshot:
+    def test_one_immutable_snapshot_serves_the_whole_field(self):
+        provider = _MutatingProvider()
+        calc = HandicapCalculator(prediction_provider=provider)
+        competitors = [
+            CompetitorRecord("A", competitor_id="C-1"),
+            CompetitorRecord("B", competitor_id="C-2"),
+        ]
+
+        results = calc.calculate(
+            competitors,
+            WoodProfile("S01", 300, 5),
+            "SB",
+            context=PredictionContext(prediction_as_of=date.today()),
+        )
+
+        assert provider.calls == 1
+        assert {result.model_version for result in results} == {"core-41.0"}
+        assert {result.predicted_time for result in results} == {41.0}
+        assert [result.name for result in results] == ["A", "B"]
+
+    def test_calculate_never_trains_on_the_hot_path(self, monkeypatch):
+        provider = _MutatingProvider()
+        calc = HandicapCalculator(
+            results_df=pd.DataFrame({"future": ["ignored"]}),
+            prediction_provider=provider,
+        )
+
+        monkeypatch.setattr(
+            "strathmark.predictor.MLModel.train",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("hot-path training")),
+        )
+        result = calc.calculate(
+            [CompetitorRecord("A")],
+            WoodProfile("S01", 300, 5),
+            "SB",
+        )
+
+        assert result[0].predicted_time == 41.0
 
 
 # ---------------------------------------------------------------------------

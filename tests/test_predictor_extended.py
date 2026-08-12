@@ -189,19 +189,18 @@ class TestVarianceScaler:
 
 
 class TestPredictWithLLM:
-    def test_quality_5_skips_llm_call(self):
-        """Quality 5 should skip LLM entirely and return baseline directly."""
+    @patch("strathmark.llm.call_ollama")
+    def test_numeric_llm_entry_point_is_disabled(self, mock_ollama):
+        """The compatibility function remains importable but returns no number."""
         comp = CompetitorRecord(name="A", history=_history())
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         result = predict_with_llm(comp, wood, "SB", baseline_time=30.0)
-        assert result is not None
-        assert result.value == 30.0
-        assert result.method == "llm"
-        assert "quality 5" in result.explanation.lower()
+        assert result is None
+        mock_ollama.assert_not_called()
 
     @patch("strathmark.llm.call_ollama")
-    def test_quality_above_5_calls_llm(self, mock_ollama):
-        """Quality > 5 should call LLM for adjustment."""
+    def test_quality_above_5_does_not_call_llm(self, mock_ollama):
+        """Inactive quality cannot reactivate numeric LLM prediction."""
         import json
 
         mock_ollama.return_value = json.dumps(
@@ -210,10 +209,8 @@ class TestPredictWithLLM:
         comp = CompetitorRecord(name="A", history=_history())
         wood = WoodProfile(species="S01", diameter_mm=300, quality=8)
         result = predict_with_llm(comp, wood, "SB", baseline_time=30.0)
-        # Either returns a result with LLM adjustment, or falls back
-        # depending on whether mock response is parsed
-        if result is not None:
-            assert result.value > 0
+        assert result is None
+        mock_ollama.assert_not_called()
 
     @patch("strathmark.llm.call_ollama")
     def test_ollama_unavailable_returns_none_or_fallback(self, mock_ollama):

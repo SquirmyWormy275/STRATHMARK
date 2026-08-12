@@ -35,12 +35,14 @@ from __future__ import annotations
 import collections as _collections
 import logging
 import math
+import os
 import statistics as _statistics
 import threading as _threading
 import time as _time
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -68,6 +70,7 @@ from strathmark.config import (
     is_valid_event,
     llm_config,
     ml_config,
+    prediction_config,
     rules,
 )
 from strathmark.decay import (
@@ -82,6 +85,7 @@ from strathmark.fallback import (
     get_event_baseline,
     get_panel_mark,
 )
+from strathmark.features import resolve_species_properties
 from strathmark.wood import (
     calculate_scaling_factor,
     get_event_scaling_exponent,
@@ -366,6 +370,7 @@ class PredictionContext:
     prediction_as_of: Optional[date] = None
     request_id: Optional[str] = None
     seed: int = 20260811
+    engine: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +427,195 @@ class PredictionResult:
     warnings: List[str] = field(default_factory=list)
     ignored_factors: List[str] = field(default_factory=list)
     degraded: bool = False
+
+
+@dataclass(frozen=True)
+class PredictionBundle:
+    """Immutable runtime snapshot used for every prediction in one request."""
+
+    core: Any = None
+    residual: Any = None
+    source: str = "broad_prior"
+    warnings: tuple[str, ...] = ()
+    degraded: bool = False
+
+    @property
+    def core_version(self) -> Optional[str]:
+        return getattr(self.core, "model_version", None)
+
+    @property
+    def calibration_version(self) -> Optional[str]:
+        calibration = getattr(self.core, "calibration", None)
+        return getattr(calibration, "version", None)
+
+    @property
+    def residual_version(self) -> Optional[str]:
+        loaded = getattr(self.residual, "loaded", None)
+        manifest = getattr(loaded, "manifest", {}) or {}
+        return manifest.get("model_version")
+
+    def health(self, prediction_as_of: date) -> Dict[str, Any]:
+        residual_loaded = getattr(self.residual, "loaded", None)
+        residual_active = bool(getattr(residual_loaded, "active", False))
+        calibration_version = self.calibration_version
+        calibration_available = bool(calibration_version and calibration_version != "uncalibrated")
+        warnings = list(self.warnings)
+        if self.core is not None and not calibration_available:
+            warnings.append("calibration_unavailable")
+        return {
+            "core": {"available": self.core is not None, "version": self.core_version},
+            "residual": {
+                "available": residual_loaded is not None,
+                "active": residual_active,
+                "version": self.residual_version,
+            },
+            "calibration": {
+                "available": calibration_available,
+                "version": calibration_version,
+            },
+            "cutoff": prediction_as_of.isoformat(),
+            "source": self.source,
+            "warnings": list(dict.fromkeys(warnings)),
+            "degraded": bool(self.degraded or self.core is None or not calibration_available),
+        }
+
+
+class PredictionEngineProvider:
+    """Interface for atomically obtaining one immutable engine snapshot."""
+
+    def snapshot(self, prediction_as_of: date) -> PredictionBundle:
+        raise NotImplementedError
+
+
+class StaticPredictionProvider(PredictionEngineProvider):
+    """Explicit provider injection for Python callers and deterministic tests."""
+
+    def __init__(self, bundle: PredictionBundle):
+        self._bundle = bundle
+
+    def snapshot(self, prediction_as_of: date) -> PredictionBundle:
+        del prediction_as_of
+        return self._bundle
+
+
+class FilePredictionProvider(PredictionEngineProvider):
+    """Thread-safe artifact loader with environment, local, package precedence."""
+
+    def __init__(self) -> None:
+        self._lock = _threading.RLock()
+        self._cache_key: Optional[tuple[Any, ...]] = None
+        self._bundle: Optional[PredictionBundle] = None
+
+    def snapshot(self, prediction_as_of: date) -> PredictionBundle:
+        from strathmark.features import normalize_prediction_as_of
+
+        cutoff = normalize_prediction_as_of(prediction_as_of)
+        core_path, source = _resolve_core_artifact_path()
+        residual_path = _resolve_residual_artifact_path(core_path)
+        cache_key = (
+            str(core_path) if core_path else None,
+            _path_signature(core_path),
+            str(residual_path) if residual_path else None,
+            _path_signature(residual_path),
+            cutoff,
+        )
+        with self._lock:
+            if self._cache_key == cache_key and self._bundle is not None:
+                return self._bundle
+            bundle = _load_prediction_bundle(core_path, residual_path, source, cutoff)
+            self._cache_key = cache_key
+            self._bundle = bundle
+            return bundle
+
+
+_prediction_provider: PredictionEngineProvider = FilePredictionProvider()
+
+
+def get_prediction_provider() -> PredictionEngineProvider:
+    """Return the process-level thread-safe runtime provider."""
+
+    return _prediction_provider
+
+
+def _resolve_core_artifact_path() -> tuple[Optional[Path], str]:
+    configured = os.environ.get(prediction_config.CORE_ARTIFACT_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser(), "environment"
+    for candidate in prediction_config.LOCAL_CORE_PATHS:
+        path = Path(candidate)
+        if path.is_file():
+            return path, "local"
+    package_path = Path(__file__).resolve().parent / prediction_config.PACKAGE_CORE_PATH
+    if package_path.is_file():
+        return package_path, "package"
+    return None, "broad_prior"
+
+
+def _resolve_residual_artifact_path(core_path: Optional[Path]) -> Optional[Path]:
+    configured = os.environ.get(prediction_config.RESIDUAL_ARTIFACT_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if core_path is not None:
+        sibling = core_path.parent / "residual"
+        if sibling.is_dir():
+            return sibling
+    local = Path("models/prediction_v2/residual")
+    return local if local.is_dir() else None
+
+
+def _path_signature(path: Optional[Path]) -> Optional[tuple[int, int]]:
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _load_prediction_bundle(
+    core_path: Optional[Path],
+    residual_path: Optional[Path],
+    source: str,
+    prediction_as_of: date,
+) -> PredictionBundle:
+    from strathmark.prediction_v2 import PredictionV2Model
+
+    if core_path is None:
+        return PredictionBundle(
+            source="broad_prior",
+            warnings=("core_artifact_missing", "residual_artifact_missing"),
+            degraded=True,
+        )
+    try:
+        core = PredictionV2Model.from_json(core_path.read_bytes())
+    except (OSError, ValueError, TypeError):
+        return PredictionBundle(
+            source=source,
+            warnings=("core_artifact_invalid", "residual_artifact_unavailable"),
+            degraded=True,
+        )
+
+    from strathmark.residual import ResidualRuntime, load_residual_artifact
+
+    loaded = load_residual_artifact(
+        residual_path,
+        expected_core_checksum=core.source_checksum,
+        prediction_as_of=prediction_as_of,
+    )
+    residual = ResidualRuntime(loaded)
+    warnings: list[str] = []
+    if loaded.warning:
+        warnings.append(loaded.warning)
+    if core.calibration.version == "uncalibrated":
+        warnings.append("calibration_unavailable")
+    return PredictionBundle(
+        core=core,
+        residual=residual,
+        source=source,
+        warnings=tuple(warnings),
+        degraded=bool(loaded.degraded or core.calibration.version == "uncalibrated"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1519,7 +1713,7 @@ QUALITY_ADJUSTMENT_SCHEMA: dict = {
 }
 
 
-def predict_with_llm(
+def _retired_predict_with_llm(
     competitor: CompetitorRecord,
     wood: WoodProfile,
     event_code: str,
@@ -1640,6 +1834,35 @@ Return your answer as JSON with keys: multiplier (number), confidence (HIGH/MEDI
 
     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         return None
+
+
+def predict_with_llm(
+    competitor: CompetitorRecord,
+    wood: WoodProfile,
+    event_code: str,
+    baseline_time: float,
+    ollama_url: str = "http://localhost:11434",
+    model: str = None,
+    timeout: int = None,
+    tournament_weighted: bool = False,
+    historical_baseline: Optional[float] = None,
+    wood_df: Optional[pd.DataFrame] = None,
+) -> Optional[PredictionResult]:
+    """Deprecated numeric LLM entry point, permanently disabled in V2."""
+
+    del (
+        competitor,
+        wood,
+        event_code,
+        baseline_time,
+        ollama_url,
+        model,
+        timeout,
+        tournament_weighted,
+        historical_baseline,
+        wood_df,
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1807,7 +2030,7 @@ def _apply_form_trajectory(
 # ---------------------------------------------------------------------------
 
 
-def get_best_prediction(
+def _deprecated_numeric_cascade(
     competitor: CompetitorRecord,
     wood: WoodProfile,
     event_code: str,
@@ -1999,7 +2222,7 @@ def get_best_prediction(
     return fallback_result
 
 
-def get_all_predictions(
+def _deprecated_all_predictions(
     competitor: CompetitorRecord,
     wood: WoodProfile,
     event_code: str,
@@ -2103,7 +2326,7 @@ def get_all_predictions(
 # ---------------------------------------------------------------------------
 
 
-def select_best_prediction(
+def _deprecated_expected_error_selection(
     all_predictions: Dict[str, Optional[PredictionResult]],
 ) -> PredictionResult:
     """
@@ -2222,3 +2445,426 @@ def select_best_prediction(
         explanation=explanation,
         metadata=best_pred.metadata,
     )
+
+
+# ---------------------------------------------------------------------------
+# Prediction Engine V2 authoritative compatibility projection
+# ---------------------------------------------------------------------------
+
+_IGNORED_V2_FACTORS = (
+    "division",
+    "round_or_heat",
+    "venue",
+    "lane_or_stand",
+    "run_order",
+    "log_block_batch_identity",
+    "wood_quality_or_moisture",
+    "weather",
+    "equipment",
+    "rest_or_fatigue",
+    "penalty_or_dnf",
+    "same_tournament_result",
+    "field_strength",
+)
+_BROAD_EVENT_PRIORS = {"SB": (50.0, 0.45), "UH": (75.0, 0.45)}
+_V2_ENGINE_VERSION = "2.0.0"
+
+
+def _prediction_runtime(
+    context: Optional[PredictionContext],
+    prediction_bundle: Optional[PredictionBundle],
+    prediction_provider: Optional[PredictionEngineProvider],
+) -> tuple[PredictionContext, date, PredictionBundle, str]:
+    from strathmark.features import normalize_prediction_as_of
+
+    supplied = context or PredictionContext()
+    cutoff = normalize_prediction_as_of(supplied.prediction_as_of)
+    resolved = PredictionContext(
+        prediction_as_of=cutoff,
+        request_id=supplied.request_id,
+        seed=supplied.seed,
+        engine=supplied.engine,
+    )
+    selected = (supplied.engine or prediction_config.selected_engine()).strip().lower()
+    engine = "legacy" if selected in {"legacy", "legacy-baseline"} else "v2"
+    if prediction_bundle is not None:
+        bundle = prediction_bundle
+    else:
+        provider = prediction_provider or get_prediction_provider()
+        bundle = provider.snapshot(cutoff)
+    return resolved, cutoff, bundle, engine
+
+
+def _manual_prediction(competitor: CompetitorRecord, cutoff: date) -> Optional[PredictionResult]:
+    if competitor.manual_time_override is None:
+        return None
+    value = float(competitor.manual_time_override)
+    return PredictionResult(
+        value=value,
+        confidence="VERY HIGH",
+        method="manual",
+        explanation=f"Manual override: {value:.1f}s (operator-supplied)",
+        metadata={
+            "source": "operator_override",
+            "is_override": True,
+            "confidence_kind": "operator_authority",
+        },
+        interval=None,
+        engine_version=_V2_ENGINE_VERSION,
+        evidence_cutoff=cutoff,
+        provenance={"source": "operator_override", "model_evidence": False},
+        ignored_factors=list(_IGNORED_V2_FACTORS),
+    )
+
+
+def _request_history_frame(
+    competitor: CompetitorRecord,
+    competitor_id: str,
+) -> pd.DataFrame:
+    rows = []
+    gender = competitor.gender
+    for result in competitor.history:
+        rows.append(
+            {
+                "competitor_id": competitor_id,
+                "event": result.event_code,
+                "time_seconds": result.time_seconds,
+                "result_date": result.result_date,
+                "diameter_mm": result.diameter_mm,
+                "species": result.species,
+                "gender": gender,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _request_identity(competitor: CompetitorRecord, context: PredictionContext) -> tuple[str, str]:
+    stable = str(competitor.competitor_id or "").strip()
+    if stable:
+        return stable, "stable"
+    scope = str(context.request_id or "anonymous-request").strip()
+    return f"request:{scope}", "request_scoped"
+
+
+def _v2_request(
+    competitor: CompetitorRecord,
+    wood: WoodProfile,
+    event_code: str,
+    cutoff: date,
+    competitor_id: str,
+    wood_data_df: Optional[pd.DataFrame],
+):
+    from strathmark.prediction_v2 import PredictionV2Request
+
+    properties, species_missing = resolve_species_properties(wood.species, wood_data_df)
+    return PredictionV2Request(
+        competitor_id=competitor_id,
+        event=event_code,
+        diameter_mm=float(wood.diameter_mm),
+        species=str(wood.species),
+        gender=str(competitor.gender or ""),
+        prediction_as_of=cutoff,
+        janka_hardness=float(properties["janka_hardness"]),
+        specific_gravity=float(properties["specific_gravity"]),
+        crush_strength=float(properties["crush_strength"]),
+        shear_strength=float(properties["shear_strength"]),
+        modulus_of_rupture=float(properties["modulus_of_rupture"]),
+        modulus_of_elasticity=float(properties["modulus_of_elasticity"]),
+        species_missing=species_missing,
+    )
+
+
+def _confidence_for_distribution(distribution: Any) -> str:
+    if distribution.degraded or distribution.source == "broad_event_prior":
+        return "VERY LOW"
+    if distribution.interval.calibration_state != "calibrated":
+        return "LOW"
+    if distribution.history_count >= 5:
+        return "HIGH"
+    if distribution.history_count >= 2:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _distribution_result(
+    distribution: Any,
+    *,
+    method: str,
+    cutoff: date,
+    bundle: PredictionBundle,
+    identity_scope: str,
+    extra_warnings: tuple[str, ...] = (),
+) -> PredictionResult:
+    interval = PredictionInterval(
+        lower=float(distribution.interval.lower),
+        upper=float(distribution.interval.upper),
+        nominal_coverage=float(distribution.interval.nominal_coverage),
+        calibration_state=str(distribution.interval.calibration_state),
+        scope=str(distribution.interval.scope),
+    )
+    warnings = list(dict.fromkeys((*bundle.warnings, *distribution.warnings, *extra_warnings)))
+    degraded = bool(bundle.degraded or distribution.degraded or extra_warnings)
+    source = str(distribution.source)
+    label = "Promoted residual V2" if method == "ml" else "Prediction Engine V2 core"
+    return PredictionResult(
+        value=float(distribution.median),
+        confidence=_confidence_for_distribution(distribution),
+        method=method,
+        explanation=f"{label}: {distribution.median:.1f}s ({source})",
+        metadata={
+            **dict(distribution.metadata),
+            "source": source,
+            "history_count": int(distribution.history_count),
+            "effective_history_weight": float(distribution.effective_history_weight),
+        },
+        interval=interval,
+        engine_version=_V2_ENGINE_VERSION,
+        model_version=str(distribution.model_version or bundle.core_version or "") or None,
+        calibration_version=(
+            str(distribution.calibration_version or bundle.calibration_version or "") or None
+        ),
+        evidence_cutoff=cutoff,
+        provenance={
+            "engine": "prediction_v2",
+            "provider_source": bundle.source,
+            "prediction_source": source,
+            "core_checksum": getattr(bundle.core, "source_checksum", None),
+            "residual_version": bundle.residual_version,
+            "identity_scope": identity_scope,
+        },
+        warnings=warnings,
+        ignored_factors=list(_IGNORED_V2_FACTORS),
+        degraded=degraded,
+    )
+
+
+def _residual_features(request: Any, distribution: Any) -> Dict[str, Any]:
+    metadata = distribution.metadata
+    diameter_used = float(metadata.get("diameter_used_mm", request.diameter_mm))
+    return {
+        "event": request.event,
+        "gender": request.gender,
+        "species": request.species,
+        "species_missing": int(
+            request.species_missing or "unknown_species" in distribution.warnings
+        ),
+        "log_diameter_ratio": math.log(diameter_used / 300.0),
+        "janka_hardness": request.janka_hardness,
+        "specific_gravity": request.specific_gravity,
+        "crush_strength": request.crush_strength,
+        "shear_strength": request.shear_strength,
+        "modulus_of_rupture": request.modulus_of_rupture,
+        "modulus_of_elasticity": request.modulus_of_elasticity,
+        "core_log_location": distribution.log_location,
+        "history_count": distribution.history_count,
+        "effective_history_weight": distribution.effective_history_weight,
+        "same_event_state": float(metadata.get("same_event_state", 0.0)),
+        "trend_projection": float(metadata.get("trend_projection", 0.0)),
+        "cross_event_state": float(metadata.get("cross_event_state", 0.0)),
+    }
+
+
+def _panel_prediction(event_code: str, cutoff: date, bundle: PredictionBundle) -> PredictionResult:
+    median, log_scale = _BROAD_EVENT_PRIORS[event_code]
+    radius = 1.6448536269514722 * log_scale
+    interval = PredictionInterval(
+        lower=math.exp(math.log(median) - radius),
+        upper=math.exp(math.log(median) + radius),
+        calibration_state="broad_prior",
+        scope="static_event",
+    )
+    warnings = list(bundle.warnings)
+    if bundle.core is None and "core_artifact_missing" not in warnings:
+        warnings.append("core_artifact_unavailable")
+    return PredictionResult(
+        value=median,
+        confidence="VERY LOW",
+        method="panel",
+        explanation=f"Static broad {event_code} event prior: {median:.1f}s",
+        metadata={"source": "broad_event_prior", "std_dev": median * log_scale},
+        interval=interval,
+        engine_version=_V2_ENGINE_VERSION,
+        evidence_cutoff=cutoff,
+        provenance={
+            "engine": "prediction_v2",
+            "provider_source": bundle.source,
+            "prediction_source": "broad_event_prior",
+        },
+        warnings=list(dict.fromkeys(warnings)),
+        ignored_factors=list(_IGNORED_V2_FACTORS),
+        degraded=True,
+    )
+
+
+def _legacy_baseline_projection(
+    competitor: CompetitorRecord,
+    wood: WoodProfile,
+    event_code: str,
+    cutoff: date,
+) -> Optional[PredictionResult]:
+    """One-release deterministic rollback; intentionally never calls an LLM."""
+
+    from dataclasses import replace
+
+    history = []
+    for item in competitor.history:
+        result_date = item.result_date
+        if result_date is None:
+            continue
+        try:
+            prior = pd.Timestamp(result_date).date() < cutoff
+        except (TypeError, ValueError):
+            prior = False
+        if prior:
+            history.append(replace(item, quality=5, heat_id=None, field_strength=None))
+    sanitized = replace(
+        competitor,
+        history=history,
+        division=None,
+        tournament_time=None,
+        num_tournament_rounds=1,
+    )
+    result = predict_baseline(
+        sanitized,
+        WoodProfile(wood.species, wood.diameter_mm, 5),
+        event_code,
+        None,
+        None,
+    )
+    if result is None:
+        return None
+    result.engine_version = "legacy-baseline-v1"
+    result.evidence_cutoff = cutoff
+    result.warnings = ["legacy_engine_selected"]
+    result.ignored_factors = list(_IGNORED_V2_FACTORS)
+    result.provenance = {"engine": "legacy_baseline", "numeric_llm": False}
+    return result
+
+
+def get_all_predictions(
+    competitor: CompetitorRecord,
+    wood: WoodProfile,
+    event_code: str,
+    wood_data_df=None,
+    results_df=None,
+    ml_model=None,
+    llm_client=None,
+    context: Optional[PredictionContext] = None,
+    prediction_bundle: Optional[PredictionBundle] = None,
+    prediction_provider: Optional[PredictionEngineProvider] = None,
+) -> Dict[str, Optional[PredictionResult]]:
+    """Project the authoritative V2 engine into the five legacy method keys."""
+
+    del results_df, ml_model, llm_client
+    event = str(event_code).strip().upper()
+    if not is_valid_event(event):
+        raise ValueError(f"Invalid event_code: '{event_code}'. Must be 'SB' or 'UH'.")
+    resolved_context, cutoff, bundle, engine = _prediction_runtime(
+        context, prediction_bundle, prediction_provider
+    )
+    projections: Dict[str, Optional[PredictionResult]] = {
+        "manual": _manual_prediction(competitor, cutoff),
+        "llm": None,
+        "ml": None,
+        "baseline": None,
+        "panel": _panel_prediction(event, cutoff, bundle),
+    }
+    if engine == "legacy":
+        projections["baseline"] = _legacy_baseline_projection(competitor, wood, event, cutoff)
+        return projections
+    if bundle.core is None:
+        return projections
+
+    competitor_id, identity_scope = _request_identity(competitor, resolved_context)
+    request = _v2_request(
+        competitor,
+        wood,
+        event,
+        cutoff,
+        competitor_id,
+        wood_data_df,
+    )
+    history = _request_history_frame(competitor, competitor_id)
+    try:
+        core_distribution = bundle.core.predict(
+            request,
+            history=history,
+            wood_df=wood_data_df,
+        )
+    except Exception:
+        projections["panel"].warnings = list(
+            dict.fromkeys((*projections["panel"].warnings, "core_prediction_failed"))
+        )
+        projections["panel"].degraded = True
+        return projections
+
+    baseline = _distribution_result(
+        core_distribution,
+        method="baseline",
+        cutoff=cutoff,
+        bundle=bundle,
+        identity_scope=identity_scope,
+    )
+    projections["baseline"] = baseline
+
+    residual_loaded = getattr(bundle.residual, "loaded", None)
+    if bundle.residual is not None and bool(getattr(residual_loaded, "active", False)):
+        application = bundle.residual.apply(
+            core_distribution,
+            _residual_features(request, core_distribution),
+        )
+        if application.applied:
+            projections["ml"] = _distribution_result(
+                application.distribution,
+                method="ml",
+                cutoff=cutoff,
+                bundle=bundle,
+                identity_scope=identity_scope,
+            )
+        elif application.warning:
+            baseline.warnings = list(dict.fromkeys((*baseline.warnings, application.warning)))
+            baseline.degraded = bool(application.degraded or baseline.degraded)
+    return projections
+
+
+def select_best_prediction(
+    all_predictions: Dict[str, Optional[PredictionResult]],
+) -> PredictionResult:
+    """Select by the documented deterministic authority order."""
+
+    for key in ("manual", "ml", "baseline", "panel"):
+        prediction = all_predictions.get(key)
+        if prediction is not None:
+            return prediction
+    raise RuntimeError(
+        "select_best_prediction: all prediction levels are None, including panel fallback."
+    )
+
+
+def get_best_prediction(
+    competitor: CompetitorRecord,
+    wood: WoodProfile,
+    event_code: str,
+    wood_data_df=None,
+    results_df=None,
+    ml_model=None,
+    llm_client=None,
+    context: Optional[PredictionContext] = None,
+    prediction_bundle: Optional[PredictionBundle] = None,
+    prediction_provider: Optional[PredictionEngineProvider] = None,
+) -> PredictionResult:
+    """Return the authoritative numeric prediction without invoking an LLM."""
+
+    predictions = get_all_predictions(
+        competitor,
+        wood,
+        event_code,
+        wood_data_df=wood_data_df,
+        results_df=results_df,
+        ml_model=ml_model,
+        llm_client=llm_client,
+        context=context,
+        prediction_bundle=prediction_bundle,
+        prediction_provider=prediction_provider,
+    )
+    return select_best_prediction(predictions)

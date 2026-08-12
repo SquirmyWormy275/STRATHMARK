@@ -210,8 +210,8 @@ class TestProcessCompetitionDay:
         for r in results[0]["results"]:
             assert r.mark <= 30
 
-    def test_tournament_results_passed(self):
-        """Tournament results should be forwarded to calculate()."""
+    def test_tournament_results_are_accepted_but_inactive(self):
+        """Legacy tournament input is accepted without changing V2 numerics."""
         competitors = [
             _competitor("Alice", 30.0),
             _competitor("Bob", 40.0),
@@ -228,9 +228,11 @@ class TestProcessCompetitionDay:
             }
         ]
         results = process_competition_day(events)
+        events[0]["tournament_results"] = {}
+        control = process_competition_day(events)
         alice_result = next(r for r in results[0]["results"] if r.name == "Alice")
-        # Tournament time (25s) should influence prediction strongly
-        assert alice_result.predicted_time < 30.0
+        control_result = next(r for r in control[0]["results"] if r.name == "Alice")
+        assert alice_result.predicted_time.hex() == control_result.predicted_time.hex()
 
 
 # ---------------------------------------------------------------------------

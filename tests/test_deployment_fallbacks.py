@@ -161,7 +161,7 @@ class TestNoOllama:
 
 
 class TestNewCompetitor:
-    def test_zero_history_returns_panel_mark(self):
+    def test_zero_history_returns_population_or_broad_prior(self):
         rec = CompetitorRecord(name="First Timer", history=[], division="Novice")
         wood = WoodProfile(species="Pine", diameter_mm=300, quality=5)
 
@@ -169,7 +169,11 @@ class TestNewCompetitor:
 
         assert pred is not None
         assert pred.value > 0
-        assert pred.method == "panel"
+        assert pred.method in {"baseline", "panel"}
+        assert pred.metadata["source"] in {
+            "conditional_population_prior",
+            "broad_event_prior",
+        }
 
     def test_zero_history_in_calculate_produces_valid_mark(self):
         rec_new = CompetitorRecord(name="Newbie", history=[], division="Open")

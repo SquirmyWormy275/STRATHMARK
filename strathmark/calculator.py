@@ -33,14 +33,16 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from strathmark.config import llm_config, sim_config
+from strathmark.config import sim_config
 from strathmark.predictor import (
     CompetitorRecord,
     PredictionContext,
+    PredictionEngineProvider,
     PredictionInterval,
     PredictionResult,
     WoodProfile,
     get_best_prediction,
+    get_prediction_provider,
 )
 
 _log = logging.getLogger(__name__)
@@ -232,6 +234,7 @@ class HandicapCalculator:
         ollama_url: str = "http://localhost:11434",
         wood_df: Optional[pd.DataFrame] = None,
         results_df: Optional[pd.DataFrame] = None,
+        prediction_provider: Optional[PredictionEngineProvider] = None,
     ) -> None:
         """
         Args:
@@ -262,7 +265,8 @@ class HandicapCalculator:
         self._ollama_url = ollama_url
         self.wood_df: Optional[pd.DataFrame] = wood_df
         self.results_df: Optional[pd.DataFrame] = results_df
-        self._ml_model = None  # set on first calculate() when results_df is available
+        self._ml_model = None  # compatibility only; V2 never trains on the request path
+        self._prediction_provider = prediction_provider or get_prediction_provider()
 
     @classmethod
     def from_db(
@@ -385,26 +389,19 @@ class HandicapCalculator:
             context=context,
         )
 
-        # Lazy ML training: attempt once per instance when results_df is available
-        # and no model has been trained yet.
-        if self._ml_model is None and self.results_df is not None:
-            from strathmark.predictor import MLModel
+        # Resolve the exclusive UTC cutoff and atomically snapshot all model,
+        # residual, calibration, and provenance state exactly once per field.
+        from strathmark.features import normalize_prediction_as_of
 
-            ml = MLModel()
-            try:
-                trained = ml.train(self.results_df, self.wood_df)
-                if trained:
-                    self._ml_model = ml
-                else:
-                    _log.warning(
-                        "HandicapCalculator: ML training returned False "
-                        "(insufficient data). Continuing with baseline."
-                    )
-            except Exception as exc:
-                _log.warning(
-                    "HandicapCalculator: ML training failed (%s). Continuing with baseline.",
-                    exc,
-                )
+        supplied_context = context or PredictionContext()
+        cutoff = normalize_prediction_as_of(supplied_context.prediction_as_of)
+        resolved_context = PredictionContext(
+            prediction_as_of=cutoff,
+            request_id=supplied_context.request_id,
+            seed=supplied_context.seed,
+            engine=supplied_context.engine,
+        )
+        bundle = self._prediction_provider.snapshot(cutoff)
 
         results: List[MarkResult] = []
 
@@ -430,20 +427,16 @@ class HandicapCalculator:
                     tournament_time=tournament_results[record.name],
                 )
 
-            # Run prediction cascade, forwarding stored data frames and ML model
-            llm_client = {
-                "url": self._ollama_url,
-                "model": llm_config.PREDICTION_MODEL,
-                "timeout": llm_config.TIMEOUT_SECONDS,
-            }
+            # V2 uses request-owned history and the one immutable field bundle.
+            # Legacy context inputs remain accepted above but are numeric no-ops.
             prediction: PredictionResult = get_best_prediction(
                 effective_record,
                 wood,
                 event_code,
                 wood_data_df=self.wood_df,
                 results_df=self.results_df,
-                ml_model=self._ml_model,
-                llm_client=llm_client,
+                context=resolved_context,
+                prediction_bundle=bundle,
             )
 
             # Compute per-competitor std_dev from event history.

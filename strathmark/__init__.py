@@ -76,6 +76,7 @@ from strathmark.features import (
     PriorEvidence,
     build_prior_evidence,
     normalize_prediction_as_of,
+    resolve_species_properties,
 )
 from strathmark.llm import call_ollama, check_ollama_connection
 from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
@@ -94,13 +95,18 @@ from strathmark.prediction_v2 import (
 )
 from strathmark.predictor import (
     CompetitorRecord,
+    FilePredictionProvider,
     HistoricalResult,
+    PredictionBundle,
     PredictionContext,
+    PredictionEngineProvider,
     PredictionInterval,
     PredictionResult,
+    StaticPredictionProvider,
     WoodProfile,
     get_all_predictions,
     get_best_prediction,
+    get_prediction_provider,
     predict_baseline,
     select_best_prediction,
 )
@@ -131,15 +137,21 @@ __all__ = [
     "PredictionResult",
     "PredictionContext",
     "PredictionInterval",
+    "PredictionBundle",
+    "PredictionEngineProvider",
+    "StaticPredictionProvider",
+    "FilePredictionProvider",
     "PriorEvidence",
     "ExclusionDiagnostics",
     # Prediction API
     "get_best_prediction",
+    "get_prediction_provider",
     "get_all_predictions",
     "select_best_prediction",
     "predict_baseline",
     "build_prior_evidence",
     "normalize_prediction_as_of",
+    "resolve_species_properties",
     "PredictionV2Model",
     "PredictionV2Request",
     "PredictiveDistribution",

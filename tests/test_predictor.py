@@ -1,21 +1,63 @@
 """Tests for strathmark/predictor.py — prediction cascade and form trajectory."""
 
+from dataclasses import replace
 from datetime import date, timedelta
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
+from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
+    PredictionBundle,
     PredictionContext,
     PredictionInterval,
     PredictionResult,
+    StaticPredictionProvider,
     WoodProfile,
     _apply_form_trajectory,
     get_all_predictions,
     get_best_prediction,
     select_best_prediction,
 )
+
+
+class _RecordingCore:
+    model_version = "core-test"
+    source_checksum = "a" * 64
+
+    class _Calibration:
+        version = "cal-test"
+
+    calibration = _Calibration()
+
+    def __init__(self, value=41.0):
+        self.value = value
+        self.requests = []
+        self.histories = []
+
+    def predict(self, request, *, history=None, wood_df=None):
+        self.requests.append(request)
+        self.histories.append(history.copy())
+        return PredictiveDistribution(
+            median=self.value,
+            log_location=3.7,
+            log_scale=0.2,
+            interval=ForecastInterval(30.0, 55.0, calibration_state="calibrated"),
+            source="hierarchical_dynamic_core",
+            history_count=len(history) if history is not None else 0,
+            effective_history_weight=1.0,
+            model_version=self.model_version,
+            calibration_version=self.calibration.version,
+        )
+
+
+def _provider(value=41.0):
+    core = _RecordingCore(value)
+    bundle = PredictionBundle(core=core, source="injected")
+    return core, StaticPredictionProvider(bundle)
 
 
 def test_public_dataclasses_preserve_old_positional_constructors_and_add_v2_fields():
@@ -73,6 +115,176 @@ class TestGetBestPrediction:
         assert result.method == "manual"
         assert result.value == 42.0
         assert result.confidence == "VERY HIGH"
+        assert result.interval is None
+        assert result.metadata["source"] == "operator_override"
+        assert result.metadata["is_override"] is True
+        assert result.metadata["confidence_kind"] == "operator_authority"
+
+    def test_v2_never_calls_numeric_llm(self, monkeypatch):
+        def fail(*args, **kwargs):
+            raise AssertionError("numeric LLM must never run")
+
+        monkeypatch.setattr("strathmark.predictor.predict_with_llm", fail)
+        _, provider = _provider()
+        comp = CompetitorRecord(name="A", history=_history())
+        wood = WoodProfile(species="poplar", diameter_mm=300, quality=9)
+
+        result = get_best_prediction(
+            comp,
+            wood,
+            "SB",
+            llm_client={"url": "unused"},
+            prediction_provider=provider,
+            context=PredictionContext(prediction_as_of=date.today()),
+        )
+
+        assert result.method == "baseline"
+        assert result.value == 41.0
+
+    def test_cutoff_is_forwarded_to_the_core(self):
+        core, provider = _provider()
+        cutoff = date(2025, 7, 1)
+        comp = CompetitorRecord(name="A", history=[], competitor_id="C-1")
+        result = get_best_prediction(
+            comp,
+            WoodProfile("S01", 300, 5),
+            "SB",
+            prediction_provider=provider,
+            context=PredictionContext(prediction_as_of=cutoff),
+        )
+
+        assert result.evidence_cutoff == cutoff
+        assert core.requests[0].prediction_as_of == cutoff
+
+    def test_unknown_species_uses_pooled_properties_and_is_flagged(self):
+        core, provider = _provider()
+        wood_data = pd.DataFrame(
+            {
+                "speciesID": ["S01", "S02", "S03"],
+                "janka_hard": [1000.0, 2000.0, 9000.0],
+                "spec_gravity": [0.3, 0.5, 0.9],
+                "crush_strength": [3000.0, 5000.0, 9000.0],
+                "shear": [700.0, 1100.0, 1900.0],
+                "MOR": [6000.0, 8000.0, 14000.0],
+                "MOE": [800000.0, 1200000.0, 2400000.0],
+            }
+        )
+
+        get_best_prediction(
+            CompetitorRecord("A"),
+            WoodProfile("UNLISTED", 300, 5),
+            "SB",
+            wood_data_df=wood_data,
+            prediction_provider=provider,
+        )
+
+        request = core.requests[0]
+        assert request.species_missing is True
+        assert request.janka_hardness == 2000.0
+        assert request.specific_gravity == 0.5
+        assert request.crush_strength == 5000.0
+        assert request.shear_strength == 1100.0
+        assert request.modulus_of_rupture == 8000.0
+        assert request.modulus_of_elasticity == 1200000.0
+
+    def test_inactive_inputs_are_numeric_no_ops(self):
+        _, provider = _provider()
+        cutoff = date.today()
+        base = CompetitorRecord(name="A", history=_history(), division="Open")
+        changed = CompetitorRecord(
+            name="A",
+            history=_history(),
+            division="Junior",
+            tournament_time=5.0,
+            num_tournament_rounds=99,
+        )
+
+        first = get_best_prediction(
+            base,
+            WoodProfile("S01", 300, 1),
+            "SB",
+            prediction_provider=provider,
+            context=PredictionContext(prediction_as_of=cutoff),
+        )
+        second = get_best_prediction(
+            changed,
+            WoodProfile("S01", 300, 10),
+            "SB",
+            prediction_provider=provider,
+            context=PredictionContext(prediction_as_of=cutoff),
+        )
+
+        assert first.value.hex() == second.value.hex()
+        assert first.interval == second.interval
+
+    def test_request_history_is_self_contained_and_global_frame_is_ignored(self):
+        core, provider = _provider()
+        comp = CompetitorRecord(
+            name="A",
+            competitor_id="C-1",
+            history=[HistoricalResult("SB", 42.0, "S01", 300, 5, date(2025, 1, 1))],
+        )
+        global_frame = pd.DataFrame(
+            {
+                "competitor_id": ["C-1"],
+                "event": ["SB"],
+                "time_seconds": [5.0],
+                "result_date": [date(2025, 1, 2)],
+                "diameter_mm": [300],
+                "species": ["S01"],
+            }
+        )
+
+        get_best_prediction(
+            comp,
+            WoodProfile("S01", 300, 5),
+            "SB",
+            results_df=global_frame,
+            prediction_provider=provider,
+            context=PredictionContext(prediction_as_of=date(2026, 1, 1)),
+        )
+
+        assert core.histories[0]["time_seconds"].tolist() == [42.0]
+
+    def test_missing_core_degrades_visibly_to_static_broad_prior(self):
+        provider = StaticPredictionProvider(
+            PredictionBundle(
+                source="test",
+                warnings=("core_artifact_invalid",),
+                degraded=True,
+            )
+        )
+
+        result = get_best_prediction(
+            CompetitorRecord("A"),
+            WoodProfile("S01", 300, 5),
+            "SB",
+            prediction_provider=provider,
+        )
+
+        assert result.method == "panel"
+        assert result.value == 50.0
+        assert result.interval.scope == "static_event"
+        assert result.degraded is True
+        assert "core_artifact_invalid" in result.warnings
+
+    def test_explicit_rollback_is_deterministic_baseline_only(self, monkeypatch):
+        def fail(*args, **kwargs):
+            raise AssertionError("rollback invoked numeric LLM")
+
+        monkeypatch.setattr("strathmark.predictor.predict_with_llm", fail)
+        comp = CompetitorRecord(
+            "A",
+            [HistoricalResult("SB", 40.0, "S01", 300, 9, date(2025, 1, 1))],
+        )
+        context = PredictionContext(prediction_as_of=date(2026, 1, 1), engine="legacy")
+
+        first = get_best_prediction(comp, WoodProfile("S01", 300, 1), "SB", context=context)
+        second = get_best_prediction(comp, WoodProfile("S01", 300, 10), "SB", context=context)
+
+        assert first.method == "baseline"
+        assert first.value.hex() == second.value.hex()
+        assert first.warnings == ["legacy_engine_selected"]
 
     def test_no_history_falls_back_to_panel(self):
         comp = CompetitorRecord(name="Newbie", history=[])
@@ -91,17 +303,18 @@ class TestGetBestPrediction:
         assert result.value > 0
         assert result.method in ("baseline", "panel")
 
-    def test_tournament_time_weighted(self):
-        comp = CompetitorRecord(
+    def test_tournament_time_is_an_inactive_no_op(self):
+        with_tournament = CompetitorRecord(
             name="A",
             history=_history(n=3),
             tournament_time=45.0,
         )
+        without_tournament = CompetitorRecord(name="A", history=_history(n=3))
         wood = WoodProfile(species="poplar", diameter_mm=300, quality=5)
-        result = get_best_prediction(comp, wood, "SB")
-        assert result is not None
-        # Tournament time should dominate (97% weight)
-        assert abs(result.value - 45.0) < 5.0
+        first = get_best_prediction(with_tournament, wood, "SB")
+        second = get_best_prediction(without_tournament, wood, "SB")
+
+        assert first.value.hex() == second.value.hex()
 
 
 class TestGetAllPredictions:
@@ -116,6 +329,59 @@ class TestGetAllPredictions:
         assert "ml" in preds
         assert "baseline" in preds
         assert "panel" in preds
+
+    def test_v2_projection_has_exact_keys_and_no_llm(self):
+        _, provider = _provider()
+        comp = CompetitorRecord(name="A", history=_history())
+        preds = get_all_predictions(
+            comp,
+            WoodProfile("S01", 300, 5),
+            "SB",
+            prediction_provider=provider,
+        )
+
+        assert list(preds) == ["manual", "llm", "ml", "baseline", "panel"]
+        assert preds["llm"] is None
+        assert preds["ml"] is None
+        assert preds["baseline"].method == "baseline"
+        assert preds["panel"].method == "panel"
+
+    def test_promoted_residual_is_the_only_ml_projection(self):
+        core, _ = _provider()
+
+        class Residual:
+            loaded = SimpleNamespace(
+                active=True,
+                manifest={"model_version": "residual-test"},
+            )
+
+            def apply(self, distribution, features):
+                assert set(features) >= {"core_log_location", "history_count", "event"}
+                corrected = replace(
+                    distribution,
+                    median=39.0,
+                    source="hierarchical_dynamic_core+catboost_residual",
+                )
+                return SimpleNamespace(
+                    distribution=corrected,
+                    applied=True,
+                    degraded=False,
+                    warning=None,
+                )
+
+        provider = StaticPredictionProvider(
+            PredictionBundle(core=core, residual=Residual(), source="injected")
+        )
+        preds = get_all_predictions(
+            CompetitorRecord("A"),
+            WoodProfile("S01", 300, 5),
+            "SB",
+            prediction_provider=provider,
+        )
+
+        assert preds["ml"].value == 39.0
+        assert preds["ml"].method == "ml"
+        assert select_best_prediction(preds).method == "ml"
 
     def test_panel_always_present(self):
         comp = CompetitorRecord(name="A", history=[])
@@ -168,6 +434,16 @@ class TestSelectBestPrediction:
         }
         best = select_best_prediction(preds)
         assert best.method == "panel"
+
+    @pytest.mark.parametrize("available", ["ml", "baseline", "panel"])
+    def test_selection_is_manual_then_ml_then_baseline_then_panel(self, available):
+        order = ["ml", "baseline", "panel"]
+        preds = {"manual": None, "llm": None, "ml": None, "baseline": None, "panel": None}
+        start = order.index(available)
+        for method in order[start:]:
+            preds[method] = PredictionResult(40.0, "LOW", method, method)
+
+        assert select_best_prediction(preds).method == available
 
 
 class TestApplyFormTrajectory:
