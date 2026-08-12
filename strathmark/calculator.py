@@ -841,9 +841,9 @@ class HandicapCalculator:
             mark = MARK_FLOOR + round(gap)   # standard rounding
             mark = min(mark, effective_ceiling)
 
-        The slowest competitor receives the floor mark (3).
-        Each full second faster than the slowest adds 1 mark.
-        Fractional seconds are rounded up (ceiling, not nearest).
+        The joint optimizer starts from the legacy rounded-gap marks and may
+        adjust them to improve the deterministic posterior fairness objective.
+        Its fallback uses Python's round-half-to-even gap rule.
 
         Args:
             results: List with predicted_time populated for each entry.

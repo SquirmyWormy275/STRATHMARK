@@ -54,17 +54,19 @@ class TestBankersRoundingRegression:
         """Exact integer gaps should give the same mark as before."""
         assert self._calc(5.0) == 8
 
-    def test_calculator_uses_round_not_ceil(self):
-        """End-to-end: verify the calculator uses banker's rounding."""
+    def test_calculator_fallback_uses_round_not_ceil(self):
+        """The explicit posterior-unavailable fallback uses banker's rounding."""
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         # Create competitors with a 2.5s gap
         c1 = CompetitorRecord(name="Slow", history=[], manual_time_override=30.0)
         c2 = CompetitorRecord(name="Fast", history=[], manual_time_override=27.5)
         calc = HandicapCalculator()
         results = calc.calculate([c1, c2], wood, "SB")
+        calc._assign_marks(results, distributions=None)
         fast_mark = next(r for r in results if r.name == "Fast")
         # gap = 30.0 - 27.5 = 2.5; round(2.5) = 2; mark = 3 + 2 = 5
         assert fast_mark.mark == 5
+        assert fast_mark.optimizer == "rounded_gap_fallback"
 
 
 # ---------------------------------------------------------------------------
