@@ -102,12 +102,28 @@ def chronological_backtest(
                     "competitor_id": str(row["competitor_id"]),
                     "event": str(row["event"]),
                     "result_date": cutoff,
+                    "fold_training_cutoff": cutoff,
+                    "fold_training_max_date": max(training["result_date"]),
+                    "gender": str(row["gender"]),
+                    "species": str(row["species"]),
+                    "species_missing": bool(row["species_missing"]),
+                    "diameter_mm": float(row["diameter_mm"]),
+                    "log_diameter_ratio": math.log(float(row["diameter_mm"]) / 300.0),
+                    **{name: float(row[name]) for name in SPECIES_PROPERTY_FIELDS},
                     "history_count": distribution.history_count,
+                    "effective_history_weight": distribution.effective_history_weight,
+                    "same_event_state": float(distribution.metadata.get("same_event_state", 0.0)),
+                    "trend_projection": float(distribution.metadata.get("trend_projection", 0.0)),
+                    "cross_event_state": float(distribution.metadata.get("cross_event_state", 0.0)),
                     "actual_time": actual,
                     "predicted_median": distribution.median,
+                    "core_log_location": distribution.log_location,
+                    "core_lower": distribution.interval.lower,
+                    "core_upper": distribution.interval.upper,
                     "absolute_error": abs(actual - distribution.median),
                     "squared_error": (actual - distribution.median) ** 2,
                     "absolute_log_residual": abs(math.log(actual) - distribution.log_location),
+                    "core_log_residual": math.log(actual) - distribution.log_location,
                 }
             )
 
@@ -133,6 +149,22 @@ def chronological_backtest(
     return BacktestReport(output, metrics, cohort_metrics)
 
 
+def build_residual_training_frame(
+    evidence: pd.DataFrame,
+    *,
+    min_training_rows: int = 30,
+    model_version: str = "prediction-v2-residual-fold-core",
+) -> pd.DataFrame:
+    """Return only core residuals produced by strictly-prior rolling fits."""
+
+    report = chronological_backtest(
+        evidence,
+        min_training_rows=min_training_rows,
+        model_version=model_version,
+    )
+    return report.predictions.copy()
+
+
 def _point_metrics(frame: pd.DataFrame) -> dict[str, float]:
     return {
         "count": float(len(frame)),
@@ -152,6 +184,7 @@ def _history_band(history_count: int) -> str:
 
 __all__ = [
     "BacktestReport",
+    "build_residual_training_frame",
     "chronological_backtest",
     "finite_sample_higher_quantile",
     "fit_chronological_calibration",

@@ -9,6 +9,7 @@ import pandas as pd
 
 from strathmark.prediction_v2 import ChronologicalCalibrator
 from strathmark.validation import (
+    build_residual_training_frame,
     chronological_backtest,
     finite_sample_higher_quantile,
 )
@@ -116,3 +117,27 @@ def test_calibrator_round_trips_inside_core_artifact():
     restored = PredictionV2Model.from_json(model.to_json())
 
     assert restored.calibration == model.calibration
+
+
+def test_residual_training_frame_uses_only_prior_fold_core_residuals(monkeypatch):
+    from strathmark import validation
+    from tests.test_prediction_v2 import _training_frame
+
+    evidence = _training_frame()
+    observed: list[tuple[date, date]] = []
+    original = validation.PredictionV2Model.fit
+
+    def recording_fit(training, *, training_cutoff, **kwargs):
+        observed.append((max(training["result_date"]), training_cutoff))
+        return original(training, training_cutoff=training_cutoff, **kwargs)
+
+    monkeypatch.setattr(validation.PredictionV2Model, "fit", staticmethod(recording_fit))
+    residuals = build_residual_training_frame(evidence, min_training_rows=10)
+
+    assert not residuals.empty
+    assert all(max_date < cutoff for max_date, cutoff in observed)
+    assert (residuals["fold_training_max_date"] < residuals["fold_training_cutoff"]).all()
+    assert np.allclose(
+        residuals["core_log_residual"],
+        np.log(residuals["actual_time"]) - residuals["core_log_location"],
+    )
