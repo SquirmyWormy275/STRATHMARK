@@ -15,13 +15,13 @@ evidence.
 for every row plus a caller/request idempotency key. A complete field is committed in
 one transaction after marks are final.
 
-The ledger retains canonical request hash, stable IDs, cutoff, prediction and artifact
+The ledger retains a canonical calculation hash, stable IDs, cutoff, prediction and artifact
 versions, median, interval, source, mark, ignored factors, warnings, numeric allowlisted
 features, and optimizer metadata. It does not retain display names, narrative notes, or
 the raw request body. Manual predictions are not training eligible.
 
-An identical retry returns original prediction IDs. A changed payload under the same
-key conflicts. Settlements verify prediction/competitor/event, deduplicate exact
+An identical retry returns original prediction IDs. Changed inputs or deterministic
+prediction outputs under the same key conflict. Settlements verify prediction/competitor/event, deduplicate exact
 retries, and append attributed correction revisions rather than updating rows.
 
 ## Cloud mirror

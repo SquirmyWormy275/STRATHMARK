@@ -129,6 +129,22 @@ def test_same_caller_key_with_changed_payload_is_conflict(tmp_path):
         )
 
 
+def test_same_caller_key_with_changed_prediction_is_conflict(tmp_path):
+    ledger = PredictionLedger(tmp_path / "ledger.db")
+    ledger.record_field("api", "model-swap", _request_payload(), [_pred()])
+    changed_prediction = _pred()
+    object.__setattr__(changed_prediction, "model_version", "core-next")
+    object.__setattr__(changed_prediction, "median_seconds", 39.0)
+
+    with pytest.raises(LedgerConflictError, match="different payload"):
+        ledger.record_field(
+            "api",
+            "model-swap",
+            _request_payload(),
+            [changed_prediction],
+        )
+
+
 def test_request_keys_are_scoped_to_caller(tmp_path):
     ledger = PredictionLedger(tmp_path / "ledger.db")
     a = ledger.record_field("caller-a", "key", _request_payload(), [_pred()])

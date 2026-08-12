@@ -22,8 +22,8 @@ an invalid token returns 401.
 performance `std_dev`, versions, optimizer metadata, warnings, and degraded state.
 
 `/ledger/calculate` adds `request_id` and requires every `competitor_id`. Identical
-retries return original prediction IDs; a changed payload under the same key returns
-409. Settlement verifies prediction/competitor/event, deduplicates exact retries, and
+retries return original prediction IDs; changed inputs or deterministic prediction
+outputs under the same key return 409. Settlement verifies prediction/competitor/event, deduplicates exact retries, and
 requires a reason for corrections.
 
 `/simulate` defaults to and caps at 250,000 races. It is a post-mark audit, separate

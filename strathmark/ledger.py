@@ -294,10 +294,13 @@ class PredictionLedger:
         idempotency_key = _identifier(request_id, "request_id")
         if not predictions:
             raise ValueError("predictions must not be empty")
-        digest = canonical_hash(request_payload)
         validated = [self._validate_prediction(item) for item in predictions]
         if len({item["competitor_id"] for item in validated}) != len(validated):
             raise ValueError("competitor_id values must be unique within a field")
+        # Bind an idempotency key to the complete deterministic calculation,
+        # not inputs alone. Otherwise a retry after model activation could
+        # attach persisted IDs to newly computed, different predictions.
+        digest = canonical_hash({"request": request_payload, "predictions": validated})
 
         event_code = _event(request_payload.get("event_code"))
         prediction_as_of = str(request_payload.get("prediction_as_of") or "").strip()

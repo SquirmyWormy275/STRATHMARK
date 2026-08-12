@@ -206,13 +206,13 @@ evidence. Authenticated `POST /ledger/calculate` requires:
 - a stable `competitor_id` for every competitor.
 
 The entire field is written atomically to local SQLite after marks are final. The ledger
-stores only the canonical request hash, stable IDs, engine/model/calibration versions,
+stores only the canonical calculation hash, stable IDs, engine/model/calibration versions,
 cutoff, median, interval, mark, source, ignored factors, numeric allowlisted feature
 snapshot, warnings, and optimizer metadata. It does not persist names, narrative notes,
 or the raw request payload.
 
 An identical caller/request key returns the original prediction IDs. Reusing it for a
-different canonical payload is a conflict. `POST
+different canonical input or deterministic prediction output is a conflict. `POST
 /ledger/predictions/{prediction_id}/settle` verifies prediction, competitor, and event;
 an exact retry deduplicates, while a correction requires an actor-attributed reason and
 appends a new revision that supersedes the previous settlement. Rows are immutable.
