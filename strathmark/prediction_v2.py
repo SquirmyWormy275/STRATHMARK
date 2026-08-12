@@ -969,13 +969,18 @@ def _broad_event_prediction(
     )
 
 
-def _history_band(history_count: int) -> str:
+def history_band(history_count: int | float) -> str:
+    """Return the shared calibration and reporting band for a history count."""
+
     count = max(0, int(history_count))
     if count == 0:
         return "0"
     if count <= 3:
         return "1-3"
     return "4+"
+
+
+_history_band = history_band
 
 
 def _finite_sample_higher_quantile(values: np.ndarray, coverage: float) -> float:
@@ -1017,6 +1022,7 @@ __all__ = [
     "ARTIFACT_MAX_BYTES",
     "ChronologicalCalibrator",
     "ForecastInterval",
+    "history_band",
     "PredictionV2Model",
     "PredictionV2Request",
     "PredictiveDistribution",

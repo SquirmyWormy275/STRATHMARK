@@ -5,9 +5,9 @@ Handicap Mark Calculator
 Core handicap mark computation for woodchopping competitions.
 
 This module contains HandicapCalculator, the primary public class for computing
-association-agnostic handicap marks. It orchestrates the prediction cascade
-(Manual > LLM > ML > Panel fallback), gap computation, floor/ceiling
-enforcement, and produces a ranked start sheet.
+association-agnostic handicap marks. It snapshots Prediction Engine V2 once per
+field, optimizes the joint marks, enforces floor/ceiling constraints, and
+produces a ranked start sheet.
 
 Key constraints (must never be violated):
     - Mark floor:   3 seconds (front marker minimum)
@@ -291,15 +291,13 @@ class HandicapCalculator:
         sheet = calc.build_start_sheet(results, event_name="225 SB", ...)
         print(sheet.render())
 
-    Prediction cascade (highest to lowest priority):
+    Prediction selection:
         1. Manual override (explicit time supplied by operator)
-        2. LLM quality adjustment on top of weighted baseline
-        3. ML model (XGBoost, trained on historical data with time-decay weights)
-        4. Panel mark fallback (division-based default for competitors with no history)
+        2. The immutable V2 core/residual/calibration bundle
+        3. The explicit deterministic legacy-baseline rollback on degradation
 
-    Tournament result weighting:
-        When same-tournament times are available (earlier rounds on SAME wood),
-        they are weighted at 97% vs 3% historical. Confidence becomes VERY HIGH.
+    Unsupported context such as same-tournament results, division, wood quality,
+    venue, and lane remains accepted for compatibility but is a numeric no-op.
 
     Design invariants:
         - Mark floor = 3 (enforced after all other logic)
@@ -324,12 +322,11 @@ class HandicapCalculator:
         Args:
             event_ceiling: Optional lower ceiling for this event (seconds).
                            Must be > MARK_FLOOR. If None, system default of 183 is used.
-            ollama_url: Base URL for the Ollama API used by the LLM prediction layer.
+            ollama_url: Deprecated compatibility input. Numeric LLM prediction is disabled.
             wood_df: Optional species properties DataFrame (Janka hardness, etc.).
                      When provided, passed to get_best_prediction() on every call.
-            results_df: Optional historical results DataFrame. When provided and no
-                        ML model has been trained yet, training is attempted on the
-                        first call to calculate(). Cached in self._ml_model.
+            results_df: Legacy compatibility data. V2 never trains on the request path;
+                        prediction state comes from the provider's immutable bundle.
         """
         if event_ceiling is not None:
             if event_ceiling <= self.MARK_FLOOR:
@@ -346,10 +343,9 @@ class HandicapCalculator:
         else:
             self.effective_ceiling = self.MARK_CEILING
 
-        self._ollama_url = ollama_url
+        del ollama_url
         self.wood_df: Optional[pd.DataFrame] = wood_df
         self.results_df: Optional[pd.DataFrame] = results_df
-        self._ml_model = None  # compatibility only; V2 never trains on the request path
         self._prediction_provider = prediction_provider or get_prediction_provider()
         self._ledger_sink = ledger_sink
         self._ledger_caller_id = str(ledger_caller_id or "python").strip()
@@ -364,8 +360,9 @@ class HandicapCalculator:
         """
         Construct a HandicapCalculator pre-loaded with data from the global database.
 
-        Calls pull_results() and pull_competitors() internally to fetch the
-        historical results needed for ML training and baseline prediction.
+        Calls pull_results() internally to fetch legacy historical results used
+        only by compatibility surfaces. V2 model
+        state is loaded from the configured immutable prediction bundle.
 
         Args:
             competitor_ids: Optional list of competitor IDs to filter results by.
@@ -405,8 +402,7 @@ class HandicapCalculator:
 
         Calls load_woodchopping_xlsx(path) to read the 'Wood' and 'Results'
         sheets, then returns a fully initialized instance with wood_df and
-        results_df already set. ML training is deferred to the first call to
-        calculate().
+        results_df already set. V2 does not train during calculation.
 
         Args:
             path: Path to the .xlsx workbook (e.g. 'woodchopping_clean.xlsx').
@@ -441,9 +437,8 @@ class HandicapCalculator:
                          Each record includes historical times and metadata.
             wood: Wood characteristics for this event (species, diameter, quality).
             event_code: 'SB' (Standing Block) or 'UH' (Underhand).
-            tournament_results: Optional dict of {name: actual_time} from earlier
-                                rounds on the SAME wood. When provided, times are
-                                weighted 97% vs 3% historical (same-wood optimization).
+            tournament_results: Deprecated compatibility input. It is validated but
+                                cannot affect V2 numeric predictions or marks.
             manual_overrides: Optional dict of {name: predicted_time} supplied
                               directly by the operator. Highest cascade priority.
 
@@ -530,8 +525,8 @@ class HandicapCalculator:
             )
 
             # Compute per-competitor std_dev from event history.
-            # Done here (not in predictor.py) so all cascade levels get the correct
-            # value regardless of which method (ML/LLM/baseline/panel) won.
+            # Kept separate from forecast uncertainty so the mark optimizer does
+            # not conflate performance variance with prediction uncertainty.
             # Threshold: 3+ results -> clamped sample std; <3 -> flat 3.0.
             event_times = [
                 h.time_seconds for h in record.history if h.event_code.upper() == event_code.upper()

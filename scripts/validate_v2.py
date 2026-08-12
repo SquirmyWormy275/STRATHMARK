@@ -22,7 +22,7 @@ import pandas as pd
 
 from strathmark.features import CANONICALIZATION_VERSION, build_prior_evidence
 from strathmark.loader import load_woodchopping_xlsx
-from strathmark.prediction_v2 import ChronologicalCalibrator, PredictionV2Model
+from strathmark.prediction_v2 import ChronologicalCalibrator, PredictionV2Model, history_band
 from strathmark.validation import (
     chronological_backtest,
     evaluate_core_promotion,
@@ -276,10 +276,10 @@ def write_artifact(model: PredictionV2Model, path: str | Path) -> dict[str, Any]
     output.parent.mkdir(parents=True, exist_ok=True)
     encoded = model.to_json()
     output.write_text(encoded, encoding="utf-8")
-    restored = PredictionV2Model.from_json(output.read_bytes())
+    raw = output.read_bytes()
+    restored = PredictionV2Model.from_json(raw)
     if restored != model:
         raise ValueError("written prediction artifact failed deterministic round trip")
-    raw = output.read_bytes()
     return {
         "packaged": True,
         "path": output.as_posix(),
@@ -347,7 +347,7 @@ def _metric_bundle(
         for event, subset in predictions.groupby("event", sort=True):
             cohorts["event"][str(event)] = _labeled_cohort(subset, minimums)
         if "history_count" in predictions:
-            bands = predictions["history_count"].map(_history_band)
+            bands = predictions["history_count"].map(history_band)
             for band in ("0", "1-3", "4+"):
                 subset = predictions[bands == band]
                 if not subset.empty:
@@ -394,15 +394,6 @@ def _metrics(frame: pd.DataFrame) -> dict[str, Any]:
         metrics["coverage_90"] = float(np.mean((lower <= actual) & (actual <= upper)))
         metrics["mean_interval_width_seconds"] = float(np.mean(upper - lower))
     return metrics
-
-
-def _history_band(value: Any) -> str:
-    count = int(value)
-    if count <= 0:
-        return "0"
-    if count <= 3:
-        return "1-3"
-    return "4+"
 
 
 def _assert_common_targets(core: pd.DataFrame, incumbent: pd.DataFrame) -> None:

@@ -35,7 +35,8 @@ Design Rules (invariants enforced in all submodules)
     - Mark ceiling:  system-wide 183 seconds (180s time limit + 3s minimum mark)
                      event configs may enforce a lower ceiling
     - Variance:      absolute +-3 seconds ONLY — proportional variance is forbidden
-    - Prediction cascade: Manual > LLM > ML > Panel mark fallback
+    - Prediction engine: manual override, otherwise the validated V2 posterior
+      with an explicit deterministic rollback fallback
     - Time-decay:    exponential decay, 2-year half-life (730 days)
     - Output:        plain text only — no emojis, no ANSI color codes
     - Style:         lean and simple, no unnecessary complexity

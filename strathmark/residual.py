@@ -19,7 +19,12 @@ from typing import Any, Mapping, Optional
 import numpy as np
 import pandas as pd
 
-from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
+from strathmark.prediction_v2 import (
+    ForecastInterval,
+    PredictiveDistribution,
+    _canonical_json,
+    history_band,
+)
 
 RESIDUAL_ARTIFACT_SCHEMA = "strathmark.prediction-v2-catboost-residual"
 RESIDUAL_ARTIFACT_SCHEMA_VERSION = 1
@@ -236,7 +241,7 @@ def evaluate_residual_promotion(comparison: pd.DataFrame) -> PromotionDecision:
 
     cohorts: dict[str, dict[str, float]] = {}
     cohort_gate = True
-    bands = frame["history_count"].map(_history_band)
+    bands = frame["history_count"].map(history_band)
     for band in ("0", "1-3", "4+"):
         indices = np.flatnonzero(bands.to_numpy() == band)
         if len(indices) < MIN_COHORT_ROWS:
@@ -640,14 +645,6 @@ def _relative_worsening(core: float, residual: float) -> float:
     return (residual - core) / core
 
 
-def _history_band(history_count: float) -> str:
-    if history_count <= 0:
-        return "0"
-    if history_count <= 3:
-        return "1-3"
-    return "4+"
-
-
 def _empty_promotion_decision(reason: str) -> PromotionDecision:
     return PromotionDecision(
         promoted=False,
@@ -690,10 +687,6 @@ def _file_sha256(path: Path) -> str:
 def _is_sha256(value: Any) -> bool:
     text = str(value).lower()
     return len(text) == 64 and all(character in "0123456789abcdef" for character in text)
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 __all__ = [

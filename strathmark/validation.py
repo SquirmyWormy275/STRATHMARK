@@ -16,6 +16,7 @@ from strathmark.prediction_v2 import (
     PredictionV2Model,
     PredictionV2Request,
     _finite_sample_higher_quantile,
+    history_band,
 )
 
 
@@ -155,7 +156,7 @@ def chronological_backtest(
     ).reset_index(drop=True)
     metrics = _point_metrics(output)
     cohort_metrics: dict[str, dict[str, float]] = {}
-    bands = output["history_count"].map(_history_band)
+    bands = output["history_count"].map(history_band)
     for band in ("0", "1-3", "4+"):
         subset = output[bands == band]
         if not subset.empty:
@@ -288,7 +289,7 @@ def strict_incumbent_backtest(
     ).reset_index(drop=True)
     metrics = _point_metrics(output)
     cohorts: dict[str, dict[str, float]] = {}
-    bands = output["history_count"].map(_history_band)
+    bands = output["history_count"].map(history_band)
     for band in ("0", "1-3", "4+"):
         subset = output[bands == band]
         if not subset.empty:
@@ -399,14 +400,6 @@ def _point_metrics(frame: pd.DataFrame) -> dict[str, float]:
         "rmse": float(math.sqrt(frame["squared_error"].mean())),
         "median_absolute_error": float(frame["absolute_error"].median()),
     }
-
-
-def _history_band(history_count: int) -> str:
-    if history_count <= 0:
-        return "0"
-    if history_count <= 3:
-        return "1-3"
-    return "4+"
 
 
 __all__ = [
