@@ -28,12 +28,15 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
+from statistics import NormalDist
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
 from strathmark.config import sim_config
+from strathmark.mark_optimizer import legacy_rounded_gap_marks, optimize_joint_marks
+from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
 from strathmark.predictor import (
     CompetitorRecord,
     PredictionContext,
@@ -54,6 +57,83 @@ def _is_positive_finite(value: object) -> bool:
     except (TypeError, ValueError, OverflowError):
         return False
     return math.isfinite(number) and number > 0
+
+
+def _optimizer_distribution(
+    prediction: PredictionResult,
+    performance_std_dev: float,
+) -> PredictiveDistribution:
+    """Rebuild the immutable posterior used by the joint mark optimizer.
+
+    V2 model results carry their exact log-location and log-scale. Manual and
+    static fallback results have no model posterior, so their documented
+    interval is converted to a conservative log-scale; a performance-variance
+    conversion is the final compatibility fallback.
+    """
+
+    median = float(prediction.value)
+    metadata = prediction.metadata
+    try:
+        location = float(metadata["posterior_log_location"])
+        log_scale = float(metadata["posterior_log_scale"])
+        if not math.isfinite(location) or not math.isfinite(log_scale) or log_scale <= 0:
+            raise ValueError("invalid exact posterior parameters")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        location = math.log(median)
+        interval = prediction.interval
+        if interval is not None:
+            quantile = NormalDist().inv_cdf(0.5 + interval.nominal_coverage / 2.0)
+            radius = max(
+                location - math.log(interval.lower),
+                math.log(interval.upper) - location,
+            )
+            log_scale = max(radius / quantile, 1e-6)
+        else:
+            # Manual overrides intentionally have no model interval and no
+            # shared model latent. Use their labeled performance variability.
+            ratio = max(float(performance_std_dev), 1e-6) / median
+            log_scale = max(math.sqrt(math.log1p(ratio * ratio)), 1e-6)
+
+    raw_shared_scale = metadata.get("shared_log_scale", 0.0)
+    try:
+        shared_scale = float(raw_shared_scale)
+    except (TypeError, ValueError, OverflowError):
+        shared_scale = 0.0
+    if not math.isfinite(shared_scale) or prediction.method in {"manual", "panel"}:
+        shared_scale = 0.0
+    shared_scale = max(0.0, min(shared_scale, log_scale))
+
+    interval = prediction.interval
+    forecast = (
+        ForecastInterval(
+            lower=interval.lower,
+            upper=interval.upper,
+            nominal_coverage=interval.nominal_coverage,
+            calibration_state=interval.calibration_state,
+            scope=interval.scope,
+        )
+        if interval is not None
+        else ForecastInterval(
+            lower=math.exp(location - 1.6448536269514722 * log_scale),
+            upper=math.exp(location + 1.6448536269514722 * log_scale),
+            calibration_state="manual_event_prior",
+            scope="analytic",
+        )
+    )
+    return PredictiveDistribution(
+        median=median,
+        log_location=location,
+        log_scale=log_scale,
+        interval=forecast,
+        source=str(metadata.get("source", prediction.method)),
+        history_count=int(metadata.get("history_count", 0)),
+        effective_history_weight=float(metadata.get("effective_history_weight", 0.0)),
+        warnings=tuple(prediction.warnings),
+        degraded=prediction.degraded,
+        model_version=prediction.model_version or "",
+        calibration_version=prediction.calibration_version or "uncalibrated",
+        metadata={"shared_log_scale": shared_scale},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +180,7 @@ class MarkResult:
     prediction_id: Optional[str] = None
     ledger_recorded: Optional[bool] = None
     degraded: bool = False
+    optimizer_metadata: Dict[str, object] = field(default_factory=dict)
 
     def to_simulation_dict(self) -> dict:
         """Return a dict suitable for passing to run_monte_carlo_simulation().
@@ -404,6 +485,7 @@ class HandicapCalculator:
         bundle = self._prediction_provider.snapshot(cutoff)
 
         results: List[MarkResult] = []
+        posterior_by_result_id: Dict[int, PredictiveDistribution] = {}
 
         for record in competitors:
             # Apply manual override from the external dict if provided
@@ -459,32 +541,39 @@ class HandicapCalculator:
                     ),
                 )
 
-            results.append(
-                MarkResult(
-                    name=record.name,
-                    mark=self.MARK_FLOOR,  # placeholder; filled by _assign_marks
-                    predicted_time=prediction.value,
-                    method_used=prediction.method,
-                    confidence=prediction.confidence,
-                    explanation=prediction.explanation,
-                    std_dev=competitor_std,
-                    competitor_id=record.competitor_id,
-                    interval=prediction.interval,
-                    engine_version=prediction.engine_version,
-                    model_version=prediction.model_version,
-                    calibration_version=prediction.calibration_version,
-                    evidence_cutoff=prediction.evidence_cutoff,
-                    warnings=list(prediction.warnings),
-                    prediction_id=prediction.prediction_id,
-                    degraded=prediction.degraded,
-                )
+            mark_result = MarkResult(
+                name=record.name,
+                mark=self.MARK_FLOOR,  # placeholder; filled by _assign_marks
+                predicted_time=prediction.value,
+                method_used=prediction.method,
+                confidence=prediction.confidence,
+                explanation=prediction.explanation,
+                std_dev=competitor_std,
+                competitor_id=record.competitor_id,
+                interval=prediction.interval,
+                engine_version=prediction.engine_version,
+                model_version=prediction.model_version,
+                calibration_version=prediction.calibration_version,
+                evidence_cutoff=prediction.evidence_cutoff,
+                warnings=list(prediction.warnings),
+                prediction_id=prediction.prediction_id,
+                degraded=prediction.degraded,
+            )
+            results.append(mark_result)
+            posterior_by_result_id[id(mark_result)] = _optimizer_distribution(
+                prediction,
+                competitor_std,
             )
 
         # Sort slowest -> fastest (front marker first)
         results.sort(key=lambda r: r.predicted_time, reverse=True)
 
         # Assign final marks
-        results = self._assign_marks(results)
+        results = self._assign_marks(
+            results,
+            distributions=[posterior_by_result_id[id(result)] for result in results],
+            seed=resolved_context.seed,
+        )
 
         return results
 
@@ -560,7 +649,13 @@ class HandicapCalculator:
                 if not _is_positive_finite(historical.diameter_mm):
                     raise ValueError("historical diameter_mm must be positive and finite")
 
-    def _assign_marks(self, results: List[MarkResult]) -> List[MarkResult]:
+    def _assign_marks(
+        self,
+        results: List[MarkResult],
+        distributions: Optional[Sequence[PredictiveDistribution]] = None,
+        *,
+        seed: int = 20260811,
+    ) -> List[MarkResult]:
         """
         Apply gap logic to assign final marks from predicted times.
 
@@ -584,14 +679,35 @@ class HandicapCalculator:
         if not results:
             return results
 
-        # Slowest competitor gets mark 3 (front marker)
-        slowest_time = results[0].predicted_time
+        if distributions is None or len(distributions) != len(results):
+            marks = legacy_rounded_gap_marks(
+                [result.predicted_time for result in results],
+                ceiling=self.effective_ceiling,
+                floor=self.MARK_FLOOR,
+            )
+            optimizer = "rounded_gap_fallback"
+            optimizer_metadata: Dict[str, object] = {
+                "optimizer": optimizer,
+                "simulations": 0,
+                "seed": seed,
+                "passes": 0,
+                "reason": "posterior_unavailable",
+            }
+        else:
+            optimization = optimize_joint_marks(
+                distributions,
+                ceiling=self.effective_ceiling,
+                floor=self.MARK_FLOOR,
+                seed=seed,
+            )
+            marks = optimization.marks
+            optimizer = optimization.optimizer
+            optimizer_metadata = optimization.metadata()
 
-        for result in results:
-            gap = slowest_time - result.predicted_time
-            mark = self.MARK_FLOOR + round(gap)  # standard rounding
-            mark = min(mark, self.effective_ceiling)
+        for result, mark in zip(results, marks, strict=True):
             result.mark = mark
+            result.optimizer = optimizer
+            result.optimizer_metadata = dict(optimizer_metadata)
 
         return results
 

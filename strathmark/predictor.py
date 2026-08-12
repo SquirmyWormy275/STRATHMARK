@@ -2616,6 +2616,10 @@ def _distribution_result(
             "source": source,
             "history_count": int(distribution.history_count),
             "effective_history_weight": float(distribution.effective_history_weight),
+            # Internal posterior parameters let the joint mark optimizer replay
+            # the exact distribution without exposing a mutable model object.
+            "posterior_log_location": float(distribution.log_location),
+            "posterior_log_scale": float(distribution.log_scale),
         },
         interval=interval,
         engine_version=_V2_ENGINE_VERSION,

@@ -345,6 +345,8 @@ class TestGetAllPredictions:
         assert preds["ml"] is None
         assert preds["baseline"].method == "baseline"
         assert preds["panel"].method == "panel"
+        assert preds["baseline"].metadata["posterior_log_location"] == 3.7
+        assert preds["baseline"].metadata["posterior_log_scale"] == 0.2
 
     def test_promoted_residual_is_the_only_ml_projection(self):
         core, _ = _provider()

@@ -80,6 +80,11 @@ from strathmark.features import (
 )
 from strathmark.llm import call_ollama, check_ollama_connection
 from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
+from strathmark.mark_optimizer import (
+    MarkOptimizationResult,
+    legacy_rounded_gap_marks,
+    optimize_joint_marks,
+)
 from strathmark.mnemex import (
     is_mnemex_configured,
     pull_canonical_competitors,
@@ -157,6 +162,9 @@ __all__ = [
     "PredictiveDistribution",
     "ForecastInterval",
     "ChronologicalCalibrator",
+    "MarkOptimizationResult",
+    "legacy_rounded_gap_marks",
+    "optimize_joint_marks",
     # Persistence
     "ResultStore",
     # Simulation

@@ -82,6 +82,25 @@ def _mark_result(name: str, predicted_time: float) -> MarkResult:
     )
 
 
+def test_calculate_records_joint_optimizer_metadata() -> None:
+    calc = HandicapCalculator(prediction_provider=_MutatingProvider())
+    competitors = [_competitor("Alice", 60.0), _competitor("Bob", 40.0)]
+
+    results = calc.calculate(
+        competitors,
+        PINE_300,
+        "SB",
+        context=PredictionContext(prediction_as_of=date(2026, 1, 1), seed=17),
+    )
+
+    assert {result.optimizer for result in results} <= {
+        "posterior_crn_v2",
+        "rounded_gap_fallback",
+    }
+    assert all(result.optimizer_metadata["simulations"] == 2048 for result in results)
+    assert all(result.optimizer_metadata["seed"] == 17 for result in results)
+
+
 def _competitor(
     name: str,
     time_s: float,
