@@ -85,6 +85,13 @@ from strathmark.mnemex import (
     pull_canonical_results,
     register_competitor_in_mnemex,
 )
+from strathmark.prediction_v2 import (
+    ChronologicalCalibrator,
+    ForecastInterval,
+    PredictionV2Model,
+    PredictionV2Request,
+    PredictiveDistribution,
+)
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
@@ -133,6 +140,11 @@ __all__ = [
     "predict_baseline",
     "build_prior_evidence",
     "normalize_prediction_as_of",
+    "PredictionV2Model",
+    "PredictionV2Request",
+    "PredictiveDistribution",
+    "ForecastInterval",
+    "ChronologicalCalibrator",
     # Persistence
     "ResultStore",
     # Simulation
