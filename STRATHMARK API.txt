@@ -1,0 +1,178 @@
+STRATHMARK 2.0.0 REST API
+=========================
+
+Start locally
+-------------
+
+    pip install "strathmark[api]"
+    uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
+
+Interactive OpenAPI documentation is available at /docs. JSON examples below omit
+unchanged optional fields for readability.
+
+Prediction rules
+----------------
+
+V2 uses only competitor identity/history, event, strictly prior dated results,
+diameter, species physical properties, and gender including missing. prediction_as_of
+is an exclusive UTC date: same-day, future, invalid-date, and undated history is not
+evidence.
+
+division, tournament_time, tournament_results, history heat_id, and wood/history
+quality remain accepted for compatibility but are numeric no-ops. Other inactive
+factors are round/heat, venue, lane/stand, run order, exact material identity,
+quality/moisture, weather, equipment, fatigue, penalty/DNF, same-tournament weighting,
+and field strength.
+
+Manual times are uncalibrated operator overrides. LLMs do not produce numeric values;
+the llm compatibility entry is always null. A single request uses one immutable model
+bundle.
+
+GET /health
+-----------
+
+Returns store health, narrative Ollama availability, and independent prediction-engine
+component health:
+
+    {
+      "status": "ok",
+      "ollama_available": false,
+      "store_available": true,
+      "store_results_count": 0,
+      "prediction_engine": {
+        "core": {"available": true, "version": "prediction-v2-core-20260207"},
+        "residual": {"available": false, "active": false, "version": null},
+        "calibration": {"available": true, "version": "prediction-v2-calibration-2025h1"},
+        "cutoff": "2026-08-11",
+        "source": "package",
+        "warnings": [],
+        "degraded": false
+      }
+    }
+
+Ollama health is narrative-only and does not affect numeric V2 availability.
+
+POST /predict
+-------------
+
+Stateless single-competitor prediction. The returned mark is the placeholder 3 because
+a handicap mark requires a complete field.
+
+    {
+      "competitor": {
+        "name": "Alice",
+        "competitor_id": "competitor-alice",
+        "gender": "F",
+        "history": [{
+          "event_code": "SB",
+          "time_seconds": 28.4,
+          "species": "Pine",
+          "diameter_mm": 300,
+          "quality": 5,
+          "result_date": "2025-03-01"
+        }]
+      },
+      "wood": {"species": "Pine", "diameter_mm": 300, "quality": 5},
+      "event_code": "SB",
+      "prediction_as_of": "2026-01-01"
+    }
+
+Response has best plus all_predictions. Compatibility keys are manual, llm, ml,
+baseline, and panel. In the 2.0.0 packaged release, llm and ml are normally null,
+baseline is the V2 core, and panel is the broad fallback.
+
+POST /calculate
+---------------
+
+Stateless field calculation. No trusted prediction record is written.
+
+    {
+      "competitors": [
+        {"name": "Alice", "competitor_id": "competitor-alice", "gender": "F", "history": []},
+        {"name": "Bob", "competitor_id": "competitor-bob", "gender": "M", "history": []}
+      ],
+      "wood": {"species": "Pine", "diameter_mm": 300, "quality": 5},
+      "event_code": "SB",
+      "prediction_as_of": "2026-01-01"
+    }
+
+The response is slowest-to-fastest. Each item can include:
+
+- name, competitor_id, predicted_time, mark, method_used, confidence, explanation;
+- interval {lower, upper, nominal_coverage, calibration_state, scope};
+- std_dev (race-performance variability, not the prediction interval);
+- engine_version, model_version, calibration_version, evidence_cutoff;
+- optimizer and optimizer_metadata;
+- warnings, degraded, prediction_id, ledger_recorded, and ledger_status.
+
+The joint optimizer uses 2,048 deterministic posterior samples. Its fallback is the
+bounded rounded median-gap mark sheet.
+
+POST /ledger/calculate
+----------------------
+
+Authenticated trusted calculation. Requires:
+
+    Authorization: Bearer <STRATHMARK_API_TOKEN>
+
+The body is the /calculate body plus a non-empty request_id. Every competitor must have
+a stable competitor_id. The field is written atomically to local SQLite after marks are
+final. An identical caller/request_id and canonical payload returns the original
+prediction IDs; the same key with a changed payload returns HTTP 409.
+
+STRATHMARK_LEDGER_CALLER identifies the caller namespace and defaults to api. Cloud
+mirroring is best-effort when Supabase credentials are present. Calculation remains
+valid if mirroring or ledger recording fails; inspect ledger_recorded and ledger_status.
+
+POST /ledger/predictions/{prediction_id}/settle
+------------------------------------------------
+
+Authenticated immutable settlement:
+
+    {
+      "competitor_id": "competitor-alice",
+      "event_code": "SB",
+      "actual_time": 29.1,
+      "reason": null
+    }
+
+The prediction ID, competitor ID, and event must match. An exact retry returns the
+existing settlement. A changed settlement is a correction and requires a non-empty
+reason; it appends a revision with supersedes_settlement_id. STRATHMARK_LEDGER_ACTOR
+identifies the actor and defaults to api. Manual-source predictions never become
+training rows.
+
+POST /simulate
+--------------
+
+Independent fairness simulation for an already assigned mark sheet. Requires 2-64
+competitors. num_simulations defaults to and is capped at 250,000. The API also caps
+the request to 4,000,000 competitor-by-simulation cells and admits two simulations at a
+time. This simulation audits a sheet; it is separate from the optimizer's fixed 2,048
+samples.
+
+POST /results and GET /results/{competitor_name}
+------------------------------------------------
+
+Authenticated local history storage. Both require STRATHMARK_API_TOKEN. POST requires a
+competition_id and deduplicates store records. This result store is separate from the
+append-only trusted prediction ledger.
+
+Authentication and errors
+-------------------------
+
+- If STRATHMARK_API_TOKEN is unset, protected routes return 503.
+- A missing or incorrect Bearer token returns 401.
+- Invalid request values normally return 422; an empty calculation field returns 400.
+- Ledger idempotency or settlement conflicts return 409.
+- Public /health, /predict, /calculate, and /simulate do not require the token.
+
+Artifact and rollback configuration
+-----------------------------------
+
+- STRATHMARK_PREDICTION_CORE_ARTIFACT: safe JSON core override.
+- STRATHMARK_PREDICTION_RESIDUAL_ARTIFACT: optional residual directory.
+- STRATHMARK_PREDICTION_ENGINE=legacy: temporary deterministic baseline-only rollback.
+
+The default path is V2. The legacy rollback still excludes non-prior rows and never
+calls an LLM for a numeric prediction.

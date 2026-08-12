@@ -58,5 +58,5 @@ section for the full list, but the load-bearing ones are:
 - Mark floor: 3 seconds
 - Mark ceiling: 183 seconds system-wide
 - Variance: absolute +/- 3 seconds only — proportional variance is forbidden
-- Prediction cascade: Manual > LLM > ML > Panel mark fallback
+- Prediction engine: manual override, otherwise the validated V2 posterior with deterministic fallback
 - Output: plain text only, no emojis, no ANSI color codes

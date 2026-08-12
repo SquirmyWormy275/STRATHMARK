@@ -22,7 +22,7 @@ Woodchopping times are dominated by strike-by-strike noise (axe bite, knot encou
 - The `DEFAULT_VARIANCE_SCALING_FACTOR = 0.12` constant lives in `SimulationConfig`, not as a magic number in `calculator.py`
 
 ## Rationale
-Proportional variance would predict that a slow chopper has wildly more variance than a fast chopper of the same competence, which is empirically false. It also compounds badly in Monte Carlo: over 500K simulations, proportional variance makes mark stability dependent on predicted time, which is circular.
+Proportional variance would predict that a slow chopper has wildly more variance than a fast chopper of the same competence, which is empirically false. It also compounds badly in Monte Carlo: across repeated simulations, proportional variance makes mark stability dependent on predicted time, which is circular. The REST audit currently caps requests at 250,000 races.
 
 The 0.12 default was empirically validated against historical data and represents the mean `std/mean` ratio across all observed competitors. It exists only to bootstrap new competitors with no history.
 

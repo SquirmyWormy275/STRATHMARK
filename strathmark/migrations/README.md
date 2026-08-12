@@ -53,11 +53,34 @@ exists, this process will be tightened (likely Supabase CLI based, or a
 dedicated migration runner). Until then, the dashboard editor is the
 mechanism.
 
+Prediction Engine V2 migration `20260811_005_prediction_v2.sql` is also
+operator-applied, not automatic. Before applying it, confirm migrations 001-004 are
+present, take a schema backup, and verify that existing competitor IDs match the stable
+IDs trusted callers will send. Apply the complete transaction as a trusted operator.
+Never expose the `service_role` key to a browser or mobile client.
+
+Migration 005 creates four additive append-only mirror tables and the
+`append_prediction_ledger_v2(JSONB)` transactional RPC. It forces RLS, revokes `anon`
+and `authenticated`, grants the RPC only to `service_role`, and installs UPDATE/DELETE
+rejection triggers. Local SQLite remains the race-day authority.
+
 ## What lives here
 
 Schema changes only. Data migrations (backfills, re-keying, data cleanup)
 live in `scripts/` as Python files, not as SQL migrations, because they
 need branching and validation logic that SQL handles poorly.
+
+Current ordered migrations:
+
+1. `20260504_001_add_source_tracking.sql`
+2. `20260504_002_ml_state_tables.sql`
+3. `20260504_003_rls_reframe.sql`
+4. `20260508_004_atomic_model_swap_and_residual_dedup.sql`
+5. `20260811_005_prediction_v2.sql`
+
+Migration 005's rollback drops mirrored ledger data and is therefore destructive to the
+cloud copy. Preserve required audit data before rollback. The local SQLite ledger is
+not removed.
 
 ## Test coverage
 

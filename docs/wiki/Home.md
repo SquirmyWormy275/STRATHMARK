@@ -1,92 +1,35 @@
 # STRATHMARK Wiki
 
-STRATHMARK is a pip-installable woodchopping handicap engine. It takes a
-field of competitors, a block of wood, and an event code, and returns a
-start sheet that gives every competitor an equal chance of winning — the
-front marker starts at Mark 3, the back marker starts later by however
-many seconds faster they are predicted to cut.
+STRATHMARK 2.0.0 is an offline-capable woodchopping prediction and handicap-mark
+engine. It uses strictly prior evidence, returns calibrated positive finish-time
+distributions, and assigns marks jointly for a field.
 
-The engine was extracted from STRATHEX (the full tournament-management
-system) so that external applications — scoring apps, tournament
-software, analysis tools, the Missoula Pro-Am Manager — can compute
-identical handicap marks without depending on the full STRATHEX code
-base. Every downstream tool points at the same calculator, so fixing a
-bug here fixes it everywhere.
+Start with [Prediction Engine V2](Prediction-Engine-V2), then follow the [Quick
+Start](Quick-Start) or [REST API](REST-API).
 
-## Wiki contents
+## Stable rules
 
-- [Installation](Installation)
-- [Quick Start](Quick-Start)
-- [Architecture Overview](Architecture-Overview)
-- [Prediction Cascade](Prediction-Cascade)
-- [Handicap Mark Math](Handicap-Mark-Math)
-- [Rulebook Comparison](Rulebook-Comparison)
-- [Wood and Diameter Scaling](Wood-and-Diameter-Scaling)
-- [Time-Decay Weighting](Time-Decay-Weighting)
-- [Variance and Monte Carlo Simulation](Variance-and-Monte-Carlo)
-- [Fairness Assessment](Fairness-Assessment)
-- [Persistence and Database](Persistence-and-Database)
-- [LLM Integration (Ollama and Gemini)](LLM-Integration)
-- [REST API](REST-API)
-- [Deployment](Deployment)
-- [Testing](Testing)
-- [FAQ](FAQ)
+- Mark floor 3; system ceiling 183, with lower event ceilings allowed.
+- One exclusive UTC cutoff and one immutable model bundle per request.
+- Active factors: stable identity/history, event, prior dates, diameter, species
+  physical properties, and gender including missing.
+- Unverified tournament, venue, material, condition, and status factors are numeric
+  no-ops.
+- Forecast interval and race-performance `std_dev` are separate quantities.
+- Numeric LLM prediction is retired; LLMs are narrative-only.
+- The deterministic joint optimizer uses 2,048 samples and a rounded-gap fallback.
+- Public prediction routes are stateless; trusted logging is explicit and authenticated.
 
-## Design rules (invariants)
+## Release evidence
 
-These rules are enforced across every cascade level and every release.
-They are not negotiable.
+The frozen 128-row temporal benchmark recorded V2 core MAE 16.1301 seconds versus
+20.5172, RMSE 33.6904 versus 44.4791, and 94.53% coverage for the nominal 90%
+interval. These results are specific to the checked-in workbook and split and do not
+prove universal accuracy or actual equal finishes.
 
-- **Mark floor:** 3 seconds. No competitor can ever be given a mark
-  lower than 3.
-- **Mark ceiling:** 183 seconds system-wide (180 s time limit +
-  3 s minimum). Individual events may enforce a lower ceiling.
-- **Gap logic:** the slowest predicted competitor gets Mark 3; each
-  full second faster than the slowest adds one mark, using standard
-  banker's rounding (round half-to-even).
-- **Variance:** absolute ±3 seconds only. Proportional variance
-  (e.g. ±5 % of predicted time) is forbidden because it gives faster
-  competitors a systematic advantage.
-- **Prediction cascade:** Manual override > LLM > ML > Weighted
-  baseline > Panel mark fallback. Higher priority always wins when
-  available.
-- **Time-decay:** exponential with a standard half-life of 730 days
-  (2 years). Adaptive to 365 / 730 / 1095 days depending on how
-  active the competitor has been.
-- **Same-tournament weighting:** actual times from earlier rounds on
-  the same wood are weighted 65 % / 80 % / 90 % / 97 % as the round
-  count rises, with historical data getting the remainder.
-- **Output:** plain text only. No emojis, no ANSI colour codes. The
-  start sheet is 70 characters wide for terminal and thermal-printer
-  compatibility.
+## Where it fits
 
-## Where STRATHMARK fits
-
-```
-+--------------------------+
-| STRATHEX                 |  full tournament management (Python)
-|                          |
-| + Pro-Am Manager (2026)  |  race-day scoring UI
-| + future tournament apps |
-+-----------+--------------+
-            |
-            v  import strathmark
-+--------------------------+
-| STRATHMARK               |  calculation engine (this repo)
-|                          |
-| + calculator.py          |
-| + predictor.py           |
-| + variance.py, ...       |
-+--------------------------+
-```
-
-STRATHMARK is intentionally UI-free, state-free, and tournament-agnostic.
-It has no concept of entries, prize money, or scoring; it only knows
-how to turn historical results into a fair set of marks.
-
-## Status
-
-Version 1.0.0. The project has automated coverage across calculator,
-variance, integration, predictor, fairness, analytics, loader, store,
-db, llm, llm_roles, visualization, wood, decay, fallback, config, utils,
-API, deployment-fallback, and regression suites.
+STRATHMARK is a calculation library, not tournament-management software. STRATHEX and
+other scoring applications call it so prediction and mark logic live in one versioned
+place. Future tournament software may collect currently unavailable factors, but those
+fields remain inactive until a later model validates them.
