@@ -14,9 +14,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 from strathmark.api import (  # noqa: E402
     _SIMULATION_SLOTS,
     app,
+    get_ledger,
     get_prediction_provider,
     get_store,
 )
+from strathmark.ledger import PredictionLedger  # noqa: E402
 from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution  # noqa: E402
 from strathmark.predictor import PredictionBundle, StaticPredictionProvider  # noqa: E402
 from strathmark.store import ResultStore  # noqa: E402
@@ -26,8 +28,10 @@ from strathmark.store import ResultStore  # noqa: E402
 def client(tmp_path, monkeypatch):
     """Use an isolated store and explicit API token for every API test."""
     store = ResultStore(db_path=tmp_path / "api-results.db")
+    ledger = PredictionLedger(tmp_path / "api-ledger.db")
     monkeypatch.setenv("STRATHMARK_API_TOKEN", "test-api-token")
     app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_ledger] = lambda: ledger
     try:
         yield TestClient(app)
     finally:
@@ -134,6 +138,20 @@ class TestCalculateEndpoint:
         assert len(data) == 2
         marks = [r["mark"] for r in data]
         assert all(m >= 3 for m in marks)
+
+    def test_public_calculate_is_stateless(self, client):
+        response = client.post(
+            "/calculate",
+            json={
+                "competitors": [{"name": "Alice", "competitor_id": "athlete-a"}],
+                "wood": {"species": "Pine", "diameter_mm": 300, "quality": 5},
+                "event_code": "SB",
+                "prediction_as_of": "2026-08-11",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()[0]["prediction_id"] is None
+        assert response.json()[0]["ledger_recorded"] is None
 
     def test_empty_competitors_returns_400(self, client):
         resp = client.post(
@@ -266,6 +284,88 @@ class TestCalculateEndpoint:
 
         assert resp.status_code == 422
         assert "ambiguous" in resp.json()["detail"].lower()
+
+
+class TestTrustedLedgerEndpoints:
+    @staticmethod
+    def _request(request_id="trusted-field", diameter_mm=300):
+        return {
+            "request_id": request_id,
+            "competitors": [
+                {"name": "Alice", "competitor_id": "athlete-a", "gender": "F"},
+                {"name": "Bob", "competitor_id": "athlete-b", "gender": "M"},
+            ],
+            "wood": {"species": "Pine", "diameter_mm": diameter_mm, "quality": 5},
+            "event_code": "SB",
+            "prediction_as_of": "2026-08-11",
+        }
+
+    def test_ledger_calculate_requires_fail_closed_bearer(self, client, monkeypatch):
+        assert client.post("/ledger/calculate", json=self._request()).status_code == 401
+        monkeypatch.delenv("STRATHMARK_API_TOKEN")
+        assert client.post("/ledger/calculate", json=self._request()).status_code == 503
+
+    def test_ledger_calculate_requires_stable_ids(self, client, api_headers):
+        payload = self._request()
+        payload["competitors"][0].pop("competitor_id")
+        response = client.post("/ledger/calculate", json=payload, headers=api_headers)
+        assert response.status_code == 422
+        assert "competitor_id" in response.json()["detail"]
+
+    def test_ledger_calculate_records_and_retries_original_ids(
+        self, client, api_headers, v2_provider
+    ):
+        _, provider = v2_provider
+        app.dependency_overrides[get_prediction_provider] = lambda: provider
+
+        first = client.post("/ledger/calculate", json=self._request(), headers=api_headers)
+        retry = client.post("/ledger/calculate", json=self._request(), headers=api_headers)
+
+        assert first.status_code == 200
+        assert retry.status_code == 200
+        assert [row["prediction_id"] for row in retry.json()] == [
+            row["prediction_id"] for row in first.json()
+        ]
+        assert all(row["ledger_recorded"] is True for row in first.json())
+        assert all(row["ledger_status"] == "duplicate" for row in retry.json())
+        assert all("optimizer_metadata" in row for row in first.json())
+
+    def test_ledger_calculate_key_payload_conflict_is_409(self, client, api_headers):
+        assert (
+            client.post("/ledger/calculate", json=self._request(), headers=api_headers).status_code
+            == 200
+        )
+        changed = self._request(diameter_mm=325)
+        response = client.post("/ledger/calculate", json=changed, headers=api_headers)
+        assert response.status_code == 409
+
+    def test_settle_requires_auth_and_appends_correction(self, client, api_headers, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_LEDGER_ACTOR", "api-official")
+        calculated = client.post(
+            "/ledger/calculate", json=self._request(), headers=api_headers
+        ).json()
+        prediction_id = calculated[0]["prediction_id"]
+        payload = {
+            "competitor_id": calculated[0]["competitor_id"],
+            "event_code": "SB",
+            "actual_time": 45.0,
+        }
+        url = f"/ledger/predictions/{prediction_id}/settle"
+        assert client.post(url, json=payload).status_code == 401
+
+        first = client.post(url, json=payload, headers=api_headers)
+        retry = client.post(url, json=payload, headers=api_headers)
+        assert first.status_code == 200
+        assert first.json()["actor"] == "api-official"
+        assert retry.json()["status"] == "duplicate"
+
+        changed = dict(payload, actual_time=44.5)
+        assert client.post(url, json=changed, headers=api_headers).status_code == 409
+        changed["reason"] = "Timing review"
+        correction = client.post(url, json=changed, headers=api_headers)
+        assert correction.status_code == 200
+        assert correction.json()["revision"] == 2
+        assert correction.json()["supersedes_settlement_id"] == first.json()["settlement_id"]
 
 
 class TestPredictEndpoint:

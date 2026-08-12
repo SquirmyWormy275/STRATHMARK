@@ -45,7 +45,7 @@ import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import pandas as pd
 
@@ -121,6 +121,19 @@ class ResultStore:
         conn = sqlite3.connect(str(self._path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @property
+    def path(self) -> Path:
+        """Resolved local database path (useful for additive local stores)."""
+
+        return self._path
+
+    def prediction_ledger(self, mirror: Optional[Any] = None):
+        """Return a trusted ledger sharing this store's isolated SQLite file."""
+
+        from strathmark.ledger import PredictionLedger
+
+        return PredictionLedger(self._path, mirror=mirror)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

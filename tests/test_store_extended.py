@@ -313,6 +313,15 @@ class TestEmptyStore:
         assert store.get_competitor_history("Nobody") == []
 
 
+def test_prediction_ledger_uses_same_isolated_database_without_touching_results(store):
+    store.record_result("A", "SB", 25.0, "S01", 300, 5, result_date=date(2025, 1, 1))
+
+    ledger = store.prediction_ledger()
+
+    assert ledger.path == store.path
+    assert store.count() == 1
+
+
 # ---------------------------------------------------------------------------
 # Date handling edge cases
 # ---------------------------------------------------------------------------

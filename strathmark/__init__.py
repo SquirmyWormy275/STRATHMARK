@@ -51,6 +51,7 @@ from strathmark.db import (
     format_proam_results,
     get_active_model_version,
     get_competitor_bias,
+    mirror_prediction_ledger,
     pull_competitors,
     pull_results,
     push_competitors,
@@ -77,6 +78,14 @@ from strathmark.features import (
     build_prior_evidence,
     normalize_prediction_as_of,
     resolve_species_properties,
+)
+from strathmark.ledger import (
+    LedgerConflictError,
+    LedgerPrediction,
+    LedgerWriteResult,
+    PredictionLedger,
+    SettlementConflictError,
+    SettlementResult,
 )
 from strathmark.llm import call_ollama, check_ollama_connection
 from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
@@ -167,6 +176,12 @@ __all__ = [
     "optimize_joint_marks",
     # Persistence
     "ResultStore",
+    "PredictionLedger",
+    "LedgerPrediction",
+    "LedgerWriteResult",
+    "LedgerConflictError",
+    "SettlementResult",
+    "SettlementConflictError",
     # Simulation
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",
@@ -195,6 +210,7 @@ __all__ = [
     "format_proam_results",
     "record_prediction_residuals",
     "get_competitor_bias",
+    "mirror_prediction_ledger",
     # ML state (carve-out from controlled-write rule; STRATHMARK-internal)
     "register_model_version",
     "set_active_model",
@@ -221,4 +237,4 @@ __all__ = [
     "score_prediction_accuracy",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

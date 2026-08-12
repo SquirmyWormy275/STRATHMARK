@@ -29,7 +29,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from statistics import NormalDist
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -181,6 +181,7 @@ class MarkResult:
     ledger_recorded: Optional[bool] = None
     degraded: bool = False
     optimizer_metadata: Dict[str, object] = field(default_factory=dict)
+    ledger_status: Optional[str] = None
 
     def to_simulation_dict(self) -> dict:
         """Return a dict suitable for passing to run_monte_carlo_simulation().
@@ -316,6 +317,8 @@ class HandicapCalculator:
         wood_df: Optional[pd.DataFrame] = None,
         results_df: Optional[pd.DataFrame] = None,
         prediction_provider: Optional[PredictionEngineProvider] = None,
+        ledger_sink: Optional[Any] = None,
+        ledger_caller_id: str = "python",
     ) -> None:
         """
         Args:
@@ -348,6 +351,8 @@ class HandicapCalculator:
         self.results_df: Optional[pd.DataFrame] = results_df
         self._ml_model = None  # compatibility only; V2 never trains on the request path
         self._prediction_provider = prediction_provider or get_prediction_provider()
+        self._ledger_sink = ledger_sink
+        self._ledger_caller_id = str(ledger_caller_id or "python").strip()
 
     @classmethod
     def from_db(
@@ -486,6 +491,8 @@ class HandicapCalculator:
 
         results: List[MarkResult] = []
         posterior_by_result_id: Dict[int, PredictiveDistribution] = {}
+        prediction_by_result_id: Dict[int, PredictionResult] = {}
+        effective_records: List[CompetitorRecord] = []
 
         for record in competitors:
             # Apply manual override from the external dict if provided
@@ -508,6 +515,7 @@ class HandicapCalculator:
                     effective_record,
                     tournament_time=tournament_results[record.name],
                 )
+            effective_records.append(effective_record)
 
             # V2 uses request-owned history and the one immutable field bundle.
             # Legacy context inputs remain accepted above but are numeric no-ops.
@@ -564,6 +572,7 @@ class HandicapCalculator:
                 prediction,
                 competitor_std,
             )
+            prediction_by_result_id[id(mark_result)] = prediction
 
         # Sort slowest -> fastest (front marker first)
         results.sort(key=lambda r: r.predicted_time, reverse=True)
@@ -575,7 +584,179 @@ class HandicapCalculator:
             seed=resolved_context.seed,
         )
 
+        self._record_trusted_field(
+            results,
+            prediction_by_result_id=prediction_by_result_id,
+            competitors=effective_records,
+            wood=wood,
+            event_code=event_code,
+            context=resolved_context,
+        )
+
         return results
+
+    def _record_trusted_field(
+        self,
+        results: Sequence[MarkResult],
+        *,
+        prediction_by_result_id: Dict[int, PredictionResult],
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+    ) -> None:
+        """Attempt one non-blocking trusted field write after marks are final."""
+
+        if self._ledger_sink is None:
+            return
+        if not context.request_id or not str(context.request_id).strip():
+            self._set_ledger_state(results, False, "missing_request_id")
+            return
+        if any(not str(record.competitor_id or "").strip() for record in competitors):
+            self._set_ledger_state(results, False, "missing_competitor_id")
+            return
+
+        try:
+            from strathmark.features import resolve_species_properties
+            from strathmark.ledger import LedgerConflictError, LedgerPrediction
+
+            properties, species_missing = resolve_species_properties(wood.species, self.wood_df)
+            record_by_id = {str(record.competitor_id).strip(): record for record in competitors}
+            ledger_predictions = []
+            for result in results:
+                competitor_id = str(result.competitor_id).strip()
+                record = record_by_id[competitor_id]
+                prediction = prediction_by_result_id[id(result)]
+                metadata = prediction.metadata
+                feature_snapshot: Dict[str, float] = {
+                    "diameter_mm": float(wood.diameter_mm),
+                    **{name: float(value) for name, value in properties.items()},
+                    "species_missing": float(bool(species_missing)),
+                    "gender_f": float(str(record.gender or "").strip().upper() == "F"),
+                    "gender_missing": float(
+                        str(record.gender or "").strip().upper() not in {"M", "F"}
+                    ),
+                    "performance_std_dev": float(result.std_dev),
+                }
+                metadata_features = {
+                    "history_count",
+                    "effective_history_weight",
+                    "same_event_state",
+                    "trend_projection",
+                    "cross_event_state",
+                    "posterior_log_location",
+                    "posterior_log_scale",
+                    "shared_log_scale",
+                    "calibration_sample_count",
+                }
+                for name in metadata_features:
+                    value = metadata.get(name)
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        feature_snapshot[name] = float(value)
+
+                interval = result.interval
+                ledger_predictions.append(
+                    LedgerPrediction(
+                        competitor_id=competitor_id,
+                        event_code=event_code,
+                        median_seconds=result.predicted_time,
+                        assigned_mark=result.mark,
+                        source=result.method_used,
+                        engine_version=result.engine_version,
+                        model_version=result.model_version,
+                        calibration_version=result.calibration_version,
+                        evidence_cutoff=result.evidence_cutoff,
+                        interval_lower=interval.lower if interval else None,
+                        interval_upper=interval.upper if interval else None,
+                        interval_coverage=interval.nominal_coverage if interval else None,
+                        interval_state=interval.calibration_state if interval else None,
+                        interval_scope=interval.scope if interval else None,
+                        ignored_factors=tuple(prediction.ignored_factors),
+                        warnings=tuple(result.warnings),
+                        optimizer=result.optimizer,
+                        optimizer_metadata=result.optimizer_metadata,
+                        feature_snapshot=feature_snapshot,
+                    )
+                )
+
+            write = self._ledger_sink.record_field(
+                caller_id=self._ledger_caller_id,
+                request_id=str(context.request_id).strip(),
+                request_payload=self._canonical_ledger_request(
+                    competitors, wood, event_code, context
+                ),
+                predictions=ledger_predictions,
+            )
+            if len(write.prediction_ids) != len(results):
+                raise RuntimeError("ledger returned an incomplete prediction ID set")
+            for result, prediction_id in zip(results, write.prediction_ids, strict=True):
+                result.prediction_id = prediction_id
+                result.ledger_recorded = bool(write.recorded)
+                result.ledger_status = str(write.status)
+        except LedgerConflictError:
+            self._set_ledger_state(results, False, "idempotency_conflict")
+        except Exception:
+            _log.warning("trusted prediction ledger write failed", exc_info=True)
+            self._set_ledger_state(results, False, "write_failed")
+
+    @staticmethod
+    def _set_ledger_state(results: Sequence[MarkResult], recorded: bool, status: str) -> None:
+        for result in results:
+            result.ledger_recorded = recorded
+            result.ledger_status = status
+
+    def _canonical_ledger_request(
+        self,
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+    ) -> Dict[str, Any]:
+        """Return only request inputs that can affect V2 predictions or marks."""
+
+        competitor_payloads = []
+        for record in competitors:
+            history = [
+                {
+                    "event_code": str(item.event_code).strip().upper(),
+                    "time_seconds": float(item.time_seconds),
+                    "result_date": (
+                        item.result_date.isoformat()
+                        if hasattr(item.result_date, "isoformat")
+                        else item.result_date
+                    ),
+                    "diameter_mm": float(item.diameter_mm),
+                    "species": str(item.species).strip(),
+                }
+                for item in record.history
+            ]
+            history.sort(
+                key=lambda item: (
+                    str(item["result_date"] or ""),
+                    item["event_code"],
+                    item["time_seconds"],
+                    item["diameter_mm"],
+                    item["species"],
+                )
+            )
+            competitor_payloads.append(
+                {
+                    "competitor_id": str(record.competitor_id).strip(),
+                    "gender": str(record.gender or "").strip().upper(),
+                    "manual_time_override": record.manual_time_override,
+                    "history": history,
+                }
+            )
+        return {
+            "event_code": event_code,
+            "prediction_as_of": context.prediction_as_of.isoformat(),
+            "diameter_mm": float(wood.diameter_mm),
+            "species": str(wood.species).strip(),
+            "seed": int(context.seed),
+            "engine": str(context.engine or "v2").strip().lower(),
+            "effective_mark_ceiling": int(self.effective_ceiling),
+            "competitors": competitor_payloads,
+        }
 
     @staticmethod
     def _validate_field_inputs(

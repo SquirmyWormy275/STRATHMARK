@@ -145,7 +145,7 @@ import math
 import os
 import statistics
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 
@@ -1555,3 +1555,114 @@ def settle_prediction(
     except Exception as exc:  # pragma: no cover
         _log.warning("settle_prediction failed (non-fatal): %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Prediction Engine V2 append-only cloud mirror
+# ---------------------------------------------------------------------------
+
+_LEDGER_REQUEST_FIELDS = {
+    "ledger_request_id",
+    "request_hash",
+    "event_code",
+    "prediction_as_of",
+    "created_at",
+}
+_LEDGER_PREDICTION_FIELDS = {
+    "prediction_id",
+    "ledger_request_id",
+    "competitor_id",
+    "event_code",
+    "median_seconds",
+    "assigned_mark",
+    "source",
+    "training_eligible",
+    "engine_version",
+    "model_version",
+    "calibration_version",
+    "evidence_cutoff",
+    "interval_lower",
+    "interval_upper",
+    "interval_coverage",
+    "interval_state",
+    "interval_scope",
+    "ignored_factors",
+    "warnings",
+    "optimizer",
+    "optimizer_metadata",
+    "created_at",
+}
+_LEDGER_FEATURE_FIELDS = {
+    "feature_snapshot_id",
+    "prediction_id",
+    "feature_name",
+    "numeric_value",
+    "created_at",
+}
+_LEDGER_SETTLEMENT_FIELDS = {
+    "settlement_id",
+    "prediction_id",
+    "revision",
+    "competitor_id",
+    "event_code",
+    "actual_time",
+    "residual",
+    "actor",
+    "reason",
+    "payload_hash",
+    "supersedes_settlement_id",
+    "settled_at",
+}
+
+
+def _reject_extra_fields(record: Mapping[str, Any], allowed: set[str], label: str) -> None:
+    extras = set(record) - allowed
+    if extras:
+        raise ValueError(f"unsanitized {label} fields: {sorted(extras)}")
+
+
+def mirror_prediction_ledger(payload: Mapping[str, Any]) -> bool:
+    """Mirror one sanitized ledger transaction through a service-role RPC.
+
+    The Postgres function performs its own transaction and is granted only to
+    ``service_role``.  Validation occurs before client creation so accidental
+    names, notes, histories, or secrets cannot cross the network boundary.
+    Exceptions intentionally propagate to :class:`PredictionLedger`, which
+    converts them into a sanitized non-fatal cloud status.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("ledger mirror payload must be an object")
+    keys = set(payload)
+    if keys == {"request", "predictions", "features"}:
+        request = payload["request"]
+        predictions = payload["predictions"]
+        features = payload["features"]
+        if not isinstance(request, Mapping):
+            raise ValueError("ledger request mirror row must be an object")
+        _reject_extra_fields(request, _LEDGER_REQUEST_FIELDS, "request")
+        if not isinstance(predictions, list) or not isinstance(features, list):
+            raise ValueError("ledger predictions and features must be lists")
+        for prediction in predictions:
+            if not isinstance(prediction, Mapping):
+                raise ValueError("ledger prediction row must be an object")
+            _reject_extra_fields(prediction, _LEDGER_PREDICTION_FIELDS, "prediction")
+            if not str(prediction.get("competitor_id") or "").strip():
+                raise ValueError("cloud ledger predictions require stable competitor_id")
+        for feature in features:
+            if not isinstance(feature, Mapping):
+                raise ValueError("ledger feature row must be an object")
+            _reject_extra_fields(feature, _LEDGER_FEATURE_FIELDS, "feature")
+    elif keys == {"settlement"}:
+        settlement = payload["settlement"]
+        if not isinstance(settlement, Mapping):
+            raise ValueError("ledger settlement mirror row must be an object")
+        _reject_extra_fields(settlement, _LEDGER_SETTLEMENT_FIELDS, "settlement")
+        if not str(settlement.get("competitor_id") or "").strip():
+            raise ValueError("cloud ledger settlements require stable competitor_id")
+    else:
+        raise ValueError("ledger mirror payload has an invalid or unsanitized shape")
+
+    client = _get_client()
+    client.rpc("append_prediction_ledger_v2", {"ledger_payload": payload}).execute()
+    return True

@@ -45,6 +45,7 @@ except ImportError:
 from strathmark import __version__
 from strathmark.calculator import HandicapCalculator
 from strathmark.config import data_req, llm_config, rules, sim_config
+from strathmark.ledger import PredictionLedger, SettlementConflictError
 from strathmark.llm import check_ollama_connection
 from strathmark.predictor import (
     CompetitorRecord,
@@ -106,6 +107,7 @@ class CompetitorSchema(BaseModel):
         default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
     )
     competitor_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    gender: Optional[Literal["M", "F"]] = None
 
 
 class WoodSchema(BaseModel):
@@ -125,6 +127,10 @@ class CalculateRequest(BaseModel):
     tournament_results: Optional[Dict[str, float]] = None
     manual_overrides: Optional[Dict[str, float]] = None
     prediction_as_of: Optional[date] = None
+
+
+class LedgerCalculateRequest(CalculateRequest):
+    request_id: str = Field(min_length=1, max_length=128)
 
 
 class PredictionIntervalResponse(BaseModel):
@@ -154,6 +160,8 @@ class MarkResultResponse(BaseModel):
     prediction_id: Optional[str] = None
     ledger_recorded: Optional[bool] = None
     degraded: bool = False
+    optimizer_metadata: Dict[str, Any] = Field(default_factory=dict)
+    ledger_status: Optional[str] = None
 
 
 class PredictRequest(BaseModel):
@@ -196,11 +204,36 @@ class RecordResultResponse(BaseModel):
     message: str
 
 
+class SettlePredictionRequest(BaseModel):
+    competitor_id: str = Field(min_length=1, max_length=128)
+    event_code: Literal["SB", "UH"]
+    actual_time: float = Field(
+        ge=rules.MIN_MARK_SECONDS,
+        le=rules.MAX_TIME_LIMIT_SECONDS,
+    )
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class SettlementResponse(BaseModel):
+    settlement_id: str
+    prediction_id: str
+    revision: int
+    actual_time: float
+    residual: float
+    actor: str
+    reason: Optional[str] = None
+    supersedes_settlement_id: Optional[str] = None
+    settled_at: str
+    status: str
+    cloud_status: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 _store: Optional[ResultStore] = None
+_ledger: Optional[PredictionLedger] = None
 _MAX_SIMULATION_CELLS = 4_000_000
 _SIMULATION_SLOTS = threading.BoundedSemaphore(value=2)
 
@@ -211,6 +244,20 @@ def get_store() -> ResultStore:
     if _store is None:
         _store = ResultStore()
     return _store
+
+
+def get_ledger() -> PredictionLedger:
+    """Lazily open the additive local ledger; imports never touch user data."""
+
+    global _ledger
+    if _ledger is None:
+        mirror = None
+        if os.environ.get("STRATHMARK_SUPABASE_URL") and os.environ.get("STRATHMARK_SUPABASE_KEY"):
+            from strathmark.db import mirror_prediction_ledger
+
+            mirror = mirror_prediction_ledger
+        _ledger = PredictionLedger(mirror=mirror)
+    return _ledger
 
 
 def require_results_token(authorization: Optional[str] = Header(default=None)) -> None:
@@ -248,6 +295,7 @@ def _to_competitor_record(schema: CompetitorSchema) -> CompetitorRecord:
         manual_time_override=schema.manual_time_override,
         tournament_time=schema.tournament_time,
         competitor_id=schema.competitor_id,
+        gender=schema.gender,
     )
 
 
@@ -292,6 +340,31 @@ def _interval_to_response(
         nominal_coverage=interval.nominal_coverage,
         calibration_state=interval.calibration_state,
         scope=interval.scope,
+    )
+
+
+def _mark_result_response(result: Any) -> MarkResultResponse:
+    return MarkResultResponse(
+        name=result.name,
+        mark=result.mark,
+        predicted_time=result.predicted_time,
+        method_used=result.method_used,
+        confidence=result.confidence,
+        explanation=result.explanation,
+        std_dev=result.std_dev,
+        competitor_id=result.competitor_id,
+        interval=_interval_to_response(result.interval),
+        engine_version=result.engine_version,
+        model_version=result.model_version,
+        calibration_version=result.calibration_version,
+        evidence_cutoff=result.evidence_cutoff,
+        optimizer=result.optimizer,
+        warnings=result.warnings,
+        prediction_id=result.prediction_id,
+        ledger_recorded=result.ledger_recorded,
+        degraded=result.degraded,
+        optimizer_metadata=result.optimizer_metadata,
+        ledger_status=result.ledger_status,
     )
 
 
@@ -360,29 +433,84 @@ def calculate(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    return [
-        MarkResultResponse(
-            name=r.name,
-            mark=r.mark,
-            predicted_time=r.predicted_time,
-            method_used=r.method_used,
-            confidence=r.confidence,
-            explanation=r.explanation,
-            std_dev=r.std_dev,
-            competitor_id=r.competitor_id,
-            interval=_interval_to_response(r.interval),
-            engine_version=r.engine_version,
-            model_version=r.model_version,
-            calibration_version=r.calibration_version,
-            evidence_cutoff=r.evidence_cutoff,
-            optimizer=r.optimizer,
-            warnings=r.warnings,
-            prediction_id=r.prediction_id,
-            ledger_recorded=r.ledger_recorded,
-            degraded=r.degraded,
+    return [_mark_result_response(result) for result in mark_results]
+
+
+@app.post(
+    "/ledger/calculate",
+    response_model=List[MarkResultResponse],
+    dependencies=[Depends(require_results_token)],
+)
+def ledger_calculate(
+    req: LedgerCalculateRequest,
+    ledger: PredictionLedger = Depends(get_ledger),
+    prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
+) -> List[MarkResultResponse]:
+    """Calculate and atomically record a trusted stable-identity field."""
+
+    if not req.competitors:
+        raise HTTPException(status_code=400, detail="competitors list must not be empty")
+    missing = [item.name for item in req.competitors if not item.competitor_id]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail="stable competitor_id is required for every trusted ledger entry",
         )
-        for r in mark_results
-    ]
+
+    calc = HandicapCalculator(
+        prediction_provider=prediction_provider,
+        ledger_sink=ledger,
+        ledger_caller_id=os.environ.get("STRATHMARK_LEDGER_CALLER", "api"),
+    )
+    try:
+        results = calc.calculate(
+            competitors=[_to_competitor_record(item) for item in req.competitors],
+            wood=_to_wood_profile(req.wood),
+            event_code=req.event_code,
+            tournament_results=req.tournament_results or {},
+            manual_overrides=req.manual_overrides or {},
+            context=PredictionContext(
+                prediction_as_of=req.prediction_as_of,
+                request_id=req.request_id,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if any(result.ledger_status == "idempotency_conflict" for result in results):
+        raise HTTPException(
+            status_code=409,
+            detail="request_id was already used for a different canonical payload",
+        )
+    return [_mark_result_response(result) for result in results]
+
+
+@app.post(
+    "/ledger/predictions/{prediction_id}/settle",
+    response_model=SettlementResponse,
+    dependencies=[Depends(require_results_token)],
+)
+def settle_ledger_prediction(
+    prediction_id: str,
+    req: SettlePredictionRequest,
+    ledger: PredictionLedger = Depends(get_ledger),
+) -> SettlementResponse:
+    """Append an explicit immutable settlement or attributed correction."""
+
+    try:
+        settlement = ledger.settle(
+            prediction_id=prediction_id,
+            competitor_id=req.competitor_id,
+            event_code=req.event_code,
+            actual_time=req.actual_time,
+            actor=os.environ.get("STRATHMARK_LEDGER_ACTOR", "api"),
+            reason=req.reason,
+        )
+    except SettlementConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return SettlementResponse(**settlement.__dict__)
 
 
 @app.post("/predict", response_model=PredictResponse)
