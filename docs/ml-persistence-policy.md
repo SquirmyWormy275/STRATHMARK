@@ -66,9 +66,10 @@ a request ID. It stores:
 - numeric allowlisted feature snapshot and optimizer metadata;
 - immutable settlement revisions with actor, reason, residual, and supersession.
 
-The raw canonical request and display names are not stored. Manual predictions are
-marked not training eligible. `get_training_rows()` returns only the latest settlement
-revision for model-source predictions.
+The raw canonical request and display names are not stored. Manual, broad-prior,
+legacy-rollback, and degraded predictions are marked not training eligible.
+`get_training_rows()` returns only the latest settlement revision for explicitly
+eligible model-source predictions.
 
 Exact request or settlement retries deduplicate. Reusing a caller/request key for a
 changed payload conflicts. A changed settlement requires a reason and appends a new
@@ -94,8 +95,9 @@ guard. Do not mirror entries without stable competitor IDs.
 - Optimizer failure: return bounded rounded median-gap marks and record the reason.
 - Local ledger failure: return marks and set ledger failure state; preserve the request
   for operator recovery.
-- Cloud mirror failure: keep the committed local ledger row and report
-  `recorded_cloud_failed`.
+- Cloud mirror delivery: keep the committed local ledger row, report
+  `recorded_cloud_pending`, and deliver from the local outbox asynchronously or with
+  `flush_mirror_outbox()`.
 - Training, activation, and migration failures: fail visibly to the operator; these are
   not hot-path best-effort operations.
 

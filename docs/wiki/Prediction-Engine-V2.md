@@ -9,7 +9,8 @@ to every competitor in a field.
 - stable competitor identity and strictly prior dated history;
 - event (`SB` or `UH`), result date, and measured positive time;
 - target and historical diameter and species;
-- Janka hardness, specific gravity, crush strength, shear, MOR, and MOE;
+- Janka hardness, specific gravity, crush strength, shear, MOR, and MOE, with the
+  canonical species lookup packaged inside the checksummed core artifact;
 - gender (`M`, `F`, or missing).
 
 Derived features include 730-day recency, history depth, partially pooled same-event
@@ -70,7 +71,8 @@ Do not rerun `--open-locked-test` for this release.
 
 Public prediction routes are stateless. Authenticated `/ledger/calculate` requires a
 request ID and stable competitor IDs, writes one local append-only SQLite transaction,
-and mirrors to Supabase only best-effort. Settlements are immutable revisions. The
+and mirrors to Supabase only best-effort through a replayable local outbox. Settlements
+are immutable revisions. The
 ledger stores hashes, stable IDs, versions, numeric allowlisted features, predictions,
 marks, and settlement provenance—not names, notes, or raw bodies. Migration 005 forces
 RLS and restricts the append RPC to `service_role`.

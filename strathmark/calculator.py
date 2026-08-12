@@ -182,6 +182,8 @@ class MarkResult:
     degraded: bool = False
     optimizer_metadata: Dict[str, object] = field(default_factory=dict)
     ledger_status: Optional[str] = None
+    provenance: Dict[str, object] = field(default_factory=dict)
+    ignored_factors: List[str] = field(default_factory=list)
 
     def to_simulation_dict(self) -> dict:
         """Return a dict suitable for passing to run_monte_carlo_simulation().
@@ -472,7 +474,7 @@ class HandicapCalculator:
 
         # Resolve the exclusive UTC cutoff and atomically snapshot all model,
         # residual, calibration, and provenance state exactly once per field.
-        from strathmark.features import normalize_prediction_as_of
+        from strathmark.features import normalize_prediction_as_of, parse_result_date_utc
 
         supplied_context = context or PredictionContext()
         cutoff = normalize_prediction_as_of(supplied_context.prediction_as_of)
@@ -528,9 +530,21 @@ class HandicapCalculator:
             # Kept separate from forecast uncertainty so the mark optimizer does
             # not conflate performance variance with prediction uncertainty.
             # Threshold: 3+ results -> clamped sample std; <3 -> flat 3.0.
-            event_times = [
-                h.time_seconds for h in record.history if h.event_code.upper() == event_code.upper()
-            ]
+            event_times = []
+            for history_item in record.history:
+                if str(history_item.event_code).strip().upper() != event_code:
+                    continue
+                # Performance variability is prediction evidence too.  Apply
+                # the same exclusive cutoff as the point model so same-day,
+                # future, invalid, and undated rows cannot alter final marks.
+                if history_item.result_date is None:
+                    continue
+                history_date = parse_result_date_utc(history_item.result_date)
+                if history_date is None:
+                    continue
+                if history_date >= cutoff or not _is_positive_finite(history_item.time_seconds):
+                    continue
+                event_times.append(float(history_item.time_seconds))
             if len(event_times) >= 3:
                 raw_std = float(np.std(event_times, ddof=1))
                 competitor_std = max(1.5, min(raw_std, 15.0))
@@ -561,6 +575,8 @@ class HandicapCalculator:
                 warnings=list(prediction.warnings),
                 prediction_id=prediction.prediction_id,
                 degraded=prediction.degraded,
+                provenance=dict(prediction.provenance),
+                ignored_factors=list(prediction.ignored_factors),
             )
             results.append(mark_result)
             posterior_by_result_id[id(mark_result)] = _optimizer_distribution(
@@ -586,6 +602,7 @@ class HandicapCalculator:
             wood=wood,
             event_code=event_code,
             context=resolved_context,
+            prediction_bundle=bundle,
         )
 
         return results
@@ -599,6 +616,7 @@ class HandicapCalculator:
         wood: WoodProfile,
         event_code: str,
         context: PredictionContext,
+        prediction_bundle: Any,
     ) -> None:
         """Attempt one non-blocking trusted field write after marks are final."""
 
@@ -615,7 +633,14 @@ class HandicapCalculator:
             from strathmark.features import resolve_species_properties
             from strathmark.ledger import LedgerConflictError, LedgerPrediction
 
-            properties, species_missing = resolve_species_properties(wood.species, self.wood_df)
+            if self.wood_df is None and callable(
+                getattr(prediction_bundle.core, "resolve_species_properties", None)
+            ):
+                properties, species_missing = prediction_bundle.core.resolve_species_properties(
+                    wood.species
+                )
+            else:
+                properties, species_missing = resolve_species_properties(wood.species, self.wood_df)
             record_by_id = {str(record.competitor_id).strip(): record for record in competitors}
             ledger_predictions = []
             for result in results:
@@ -657,6 +682,12 @@ class HandicapCalculator:
                         median_seconds=result.predicted_time,
                         assigned_mark=result.mark,
                         source=result.method_used,
+                        training_eligible=bool(
+                            not prediction.degraded
+                            and prediction.engine_version == "2.0.0"
+                            and prediction.method in {"baseline", "ml"}
+                            and metadata.get("source") != "broad_event_prior"
+                        ),
                         engine_version=result.engine_version,
                         model_version=result.model_version,
                         calibration_version=result.calibration_version,
@@ -671,6 +702,7 @@ class HandicapCalculator:
                         optimizer=result.optimizer,
                         optimizer_metadata=result.optimizer_metadata,
                         feature_snapshot=feature_snapshot,
+                        degraded=result.degraded,
                     )
                 )
 

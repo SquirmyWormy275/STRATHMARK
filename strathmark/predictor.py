@@ -601,6 +601,7 @@ def _load_prediction_bundle(
     loaded = load_residual_artifact(
         residual_path,
         expected_core_checksum=core.source_checksum,
+        expected_core_artifact_checksum=core.artifact_fingerprint(),
         prediction_as_of=prediction_as_of,
     )
     residual = ResidualRuntime(loaded)
@@ -2553,10 +2554,14 @@ def _v2_request(
     cutoff: date,
     competitor_id: str,
     wood_data_df: Optional[pd.DataFrame],
+    core: Any = None,
 ):
     from strathmark.prediction_v2 import PredictionV2Request
 
-    properties, species_missing = resolve_species_properties(wood.species, wood_data_df)
+    if wood_data_df is None and callable(getattr(core, "resolve_species_properties", None)):
+        properties, species_missing = core.resolve_species_properties(wood.species)
+    else:
+        properties, species_missing = resolve_species_properties(wood.species, wood_data_df)
     return PredictionV2Request(
         competitor_id=competitor_id,
         event=event_code,
@@ -2640,32 +2645,6 @@ def _distribution_result(
         ignored_factors=list(_IGNORED_V2_FACTORS),
         degraded=degraded,
     )
-
-
-def _residual_features(request: Any, distribution: Any) -> Dict[str, Any]:
-    metadata = distribution.metadata
-    diameter_used = float(metadata.get("diameter_used_mm", request.diameter_mm))
-    return {
-        "event": request.event,
-        "gender": request.gender,
-        "species": request.species,
-        "species_missing": int(
-            request.species_missing or "unknown_species" in distribution.warnings
-        ),
-        "log_diameter_ratio": math.log(diameter_used / 300.0),
-        "janka_hardness": request.janka_hardness,
-        "specific_gravity": request.specific_gravity,
-        "crush_strength": request.crush_strength,
-        "shear_strength": request.shear_strength,
-        "modulus_of_rupture": request.modulus_of_rupture,
-        "modulus_of_elasticity": request.modulus_of_elasticity,
-        "core_log_location": distribution.log_location,
-        "history_count": distribution.history_count,
-        "effective_history_weight": distribution.effective_history_weight,
-        "same_event_state": float(metadata.get("same_event_state", 0.0)),
-        "trend_projection": float(metadata.get("trend_projection", 0.0)),
-        "cross_event_state": float(metadata.get("cross_event_state", 0.0)),
-    }
 
 
 def _panel_prediction(event_code: str, cutoff: date, bundle: PredictionBundle) -> PredictionResult:
@@ -2787,13 +2766,18 @@ def get_all_predictions(
         cutoff,
         competitor_id,
         wood_data_df,
+        bundle.core,
     )
     history = _request_history_frame(competitor, competitor_id)
     try:
         core_distribution = bundle.core.predict(
             request,
             history=history,
-            wood_df=wood_data_df,
+            wood_df=(
+                wood_data_df
+                if wood_data_df is not None
+                else getattr(bundle.core, "species_property_frame", lambda: None)()
+            ),
         )
     except Exception:
         projections["panel"].warnings = list(
@@ -2813,9 +2797,11 @@ def get_all_predictions(
 
     residual_loaded = getattr(bundle.residual, "loaded", None)
     if bundle.residual is not None and bool(getattr(residual_loaded, "active", False)):
+        from strathmark.residual import build_residual_features
+
         application = bundle.residual.apply(
             core_distribution,
-            _residual_features(request, core_distribution),
+            build_residual_features(request, core_distribution),
         )
         if application.applied:
             projections["ml"] = _distribution_result(

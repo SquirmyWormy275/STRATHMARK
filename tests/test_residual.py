@@ -166,6 +166,7 @@ def test_missing_dependency_preserves_exact_core_distribution(tmp_path, monkeypa
         training_cutoff=date(2025, 1, 1),
         evidence_max_date=date(2024, 12, 31),
         core_source_checksum="a" * 64,
+        core_artifact_checksum="9" * 64,
         promotion=_accepted_decision(),
     )
 
@@ -193,6 +194,7 @@ def test_corrupt_checksum_or_schema_fails_closed(tmp_path, monkeypatch, damage):
         training_cutoff=date(2025, 1, 1),
         evidence_max_date=date(2024, 12, 31),
         core_source_checksum="b" * 64,
+        core_artifact_checksum="9" * 64,
         promotion=_accepted_decision(),
     )
     manifest_path = artifact / "manifest.json"
@@ -226,11 +228,37 @@ def test_core_checksum_mismatch_fails_closed(tmp_path, monkeypatch):
         training_cutoff=date(2025, 1, 1),
         evidence_max_date=date(2024, 12, 31),
         core_source_checksum="c" * 64,
+        core_artifact_checksum="9" * 64,
         promotion=_accepted_decision(),
     )
     monkeypatch.setattr(residual, "_import_catboost_regressor", lambda: _FakeCatBoostRegressor)
 
     loaded = load_residual_artifact(artifact, expected_core_checksum="d" * 64)
+
+    assert not loaded.active
+    assert loaded.warning == "residual_artifact_incompatible"
+
+
+def test_exact_core_artifact_mismatch_fails_closed(tmp_path, monkeypatch):
+    from strathmark import residual
+
+    artifact = save_residual_artifact(
+        _FakeModel(),
+        tmp_path / "artifact",
+        model_version="residual-v1",
+        training_cutoff=date(2025, 1, 1),
+        evidence_max_date=date(2024, 12, 31),
+        core_source_checksum="c" * 64,
+        core_artifact_checksum="9" * 64,
+        promotion=_accepted_decision(),
+    )
+    monkeypatch.setattr(residual, "_import_catboost_regressor", lambda: _FakeCatBoostRegressor)
+
+    loaded = load_residual_artifact(
+        artifact,
+        expected_core_checksum="c" * 64,
+        expected_core_artifact_checksum="8" * 64,
+    )
 
     assert not loaded.active
     assert loaded.warning == "residual_artifact_incompatible"
@@ -246,6 +274,7 @@ def test_valid_promoted_artifact_applies_a_bounded_log_correction(tmp_path, monk
         training_cutoff=date(2025, 1, 1),
         evidence_max_date=date(2024, 12, 31),
         core_source_checksum="1" * 64,
+        core_artifact_checksum="9" * 64,
         promotion=_accepted_decision(),
     )
     monkeypatch.setattr(residual, "_import_catboost_regressor", lambda: _FakeCatBoostRegressor)
@@ -289,6 +318,7 @@ def test_forged_promotion_cannot_mark_an_artifact_promoted(tmp_path):
             training_cutoff=date(2025, 1, 1),
             evidence_max_date=date(2024, 12, 31),
             core_source_checksum="f" * 64,
+            core_artifact_checksum="9" * 64,
             promotion=forged,
         )
 
@@ -306,6 +336,7 @@ def test_valid_native_artifact_round_trip_when_catboost_is_installed(tmp_path):
         training_cutoff=date(2025, 1, 1),
         evidence_max_date=date(2024, 12, 31),
         core_source_checksum="e" * 64,
+        core_artifact_checksum="9" * 64,
         promotion=_accepted_decision(),
     )
 

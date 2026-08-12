@@ -7,6 +7,8 @@ an injected callable and never contacts Supabase.
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
@@ -28,7 +30,14 @@ from strathmark.predictor import (
 )
 
 
-def _pred(competitor_id: str = "competitor-1", *, source: str = "baseline"):
+def _pred(
+    competitor_id: str = "competitor-1",
+    *,
+    source: str = "baseline",
+    training_eligible: bool | None = None,
+):
+    if training_eligible is None:
+        training_eligible = source != "manual"
     return LedgerPrediction(
         competitor_id=competitor_id,
         event_code="SB",
@@ -53,6 +62,7 @@ def _pred(competitor_id: str = "competitor-1", *, source: str = "baseline"):
             "history_count": 4.0,
             "gender_f": 0.0,
         },
+        training_eligible=training_eligible,
     )
 
 
@@ -152,6 +162,17 @@ def test_request_keys_are_scoped_to_caller(tmp_path):
     assert a.prediction_ids != b.prediction_ids
 
 
+def test_separate_ledgers_allocate_same_ids_for_same_caller_request(tmp_path):
+    first = PredictionLedger(tmp_path / "first.db").record_field(
+        "api", "shared-field", _request_payload(), [_pred()]
+    )
+    second = PredictionLedger(tmp_path / "second.db").record_field(
+        "api", "shared-field", _request_payload(), [_pred()]
+    )
+
+    assert second.prediction_ids == first.prediction_ids
+
+
 def test_concurrent_duplicate_request_creates_one_field(tmp_path):
     path = tmp_path / "ledger.db"
     PredictionLedger(path)
@@ -209,7 +230,7 @@ def test_settlement_is_idempotent_and_correction_appends_revision(tmp_path):
         actor="chief-handicapper",
     )
     assert retry.settlement_id == first.settlement_id
-    assert retry.status == "duplicate"
+    assert retry.status in {"duplicate", "duplicate_cloud_pending"}
 
     with pytest.raises(SettlementConflictError, match="reason"):
         ledger.settle(
@@ -270,6 +291,52 @@ def test_manual_predictions_are_recorded_but_excluded_from_training_rows(tmp_pat
     assert [row["competitor_id"] for row in rows] == ["competitor-2"]
 
 
+def test_degraded_fallback_is_recorded_but_excluded_from_training_rows(tmp_path):
+    ledger = PredictionLedger(tmp_path / "ledger.db")
+    write = ledger.record_field(
+        "api",
+        "fallback",
+        _request_payload(),
+        [_pred(source="panel", training_eligible=False)],
+    )
+    ledger.settle(write.prediction_ids[0], "competitor-1", "SB", 45.0, "official")
+
+    assert ledger.get_training_rows() == []
+
+
+def test_ledger_forces_manual_and_panel_sources_ineligible(tmp_path):
+    ledger = PredictionLedger(tmp_path / "ledger.db")
+    for index, source in enumerate(("manual", "panel")):
+        competitor_id = f"competitor-{index}"
+        write = ledger.record_field(
+            "api",
+            f"unsafe-{source}",
+            _request_payload(competitor_id),
+            [_pred(competitor_id, source=source, training_eligible=True)],
+        )
+        ledger.settle(write.prediction_ids[0], competitor_id, "SB", 45.0, "official")
+
+    assert ledger.get_training_rows() == []
+
+
+def test_ledger_forces_legacy_and_degraded_predictions_ineligible(tmp_path):
+    ledger = PredictionLedger(tmp_path / "ledger.db")
+    legacy = _pred("legacy", training_eligible=True)
+    object.__setattr__(legacy, "engine_version", "legacy-baseline-v1")
+    degraded = _pred("degraded", training_eligible=True)
+    object.__setattr__(degraded, "degraded", True)
+    for request_id, prediction in (("legacy", legacy), ("degraded", degraded)):
+        write = ledger.record_field(
+            "api",
+            request_id,
+            _request_payload(prediction.competitor_id),
+            [prediction],
+        )
+        ledger.settle(write.prediction_ids[0], prediction.competitor_id, "SB", 45.0, "official")
+
+    assert ledger.get_training_rows() == []
+
+
 def test_cloud_mirror_failure_is_sanitized_and_nonfatal(tmp_path):
     mirrored = []
 
@@ -279,15 +346,114 @@ def test_cloud_mirror_failure_is_sanitized_and_nonfatal(tmp_path):
 
     ledger = PredictionLedger(tmp_path / "ledger.db", mirror=broken)
     result = ledger.record_field("api", "cloud", _request_payload(), [_pred()])
+    flushed = ledger.flush_mirror_outbox()
 
     assert result.recorded is True
-    assert result.status == "recorded_cloud_failed"
-    assert result.cloud_status == "failed"
+    assert result.status == "recorded_cloud_pending"
+    assert result.cloud_status == "pending"
+    assert flushed["failed"] <= 1
     assert "secret" not in result.status
     assert set(mirrored[0]) == {"request", "predictions", "features"}
     serialized = repr(mirrored[0])
     assert "Secret Name" not in serialized
     assert "'history':" not in serialized
+
+
+def test_cloud_mirror_latency_is_off_the_calculation_response_path(tmp_path):
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow(payload):
+        started.set()
+        release.wait(timeout=5)
+
+    ledger = PredictionLedger(tmp_path / "ledger.db", mirror=slow)
+    before = time.perf_counter()
+    result = ledger.record_field("api", "slow-cloud", _request_payload(), [_pred()])
+    elapsed = time.perf_counter() - before
+
+    try:
+        assert result.recorded is True
+        assert result.cloud_status == "pending"
+        assert elapsed < 0.5
+        assert started.wait(timeout=1)
+    finally:
+        release.set()
+
+
+def test_duplicate_retries_pending_cloud_outbox_without_new_local_rows(tmp_path):
+    mirrored = []
+
+    def flaky(payload):
+        mirrored.append(payload)
+        if len(mirrored) == 1:
+            raise OSError("offline")
+
+    path = tmp_path / "ledger.db"
+    ledger = PredictionLedger(path, mirror=flaky)
+    first = ledger.record_field("api", "cloud-retry", _request_payload(), [_pred()])
+    ledger.flush_mirror_outbox()
+    retry = ledger.record_field("api", "cloud-retry", _request_payload(), [_pred()])
+    ledger.flush_mirror_outbox()
+    third = ledger.record_field("api", "cloud-retry", _request_payload(), [_pred()])
+
+    assert first.cloud_status == "pending"
+    assert retry.status == "duplicate"
+    assert retry.cloud_status in {"pending", "recorded"}
+    assert third.cloud_status == "recorded"
+    assert len(mirrored) >= 2
+    assert mirrored[0]["request"]["caller_id"] == "api"
+    assert mirrored[0]["request"]["request_id"] == "cloud-retry"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM prediction_requests").fetchone()[0] == 1
+        assert conn.execute("SELECT attempts FROM prediction_mirror_delivery").fetchone()[0] == 2
+
+
+def test_post_commit_delivery_state_failure_keeps_local_field_recorded(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.db"
+    ledger = PredictionLedger(path, mirror=lambda payload: True)
+    original_connect = ledger._connect
+    calls = 0
+
+    def flaky_connect():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise sqlite3.OperationalError("delivery state unavailable")
+        return original_connect()
+
+    monkeypatch.setattr(ledger, "_connect", flaky_connect)
+
+    result = ledger.record_field("api", "delivery-state", _request_payload(), [_pred()])
+
+    assert result.recorded is True
+    assert result.status == "recorded_cloud_pending"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM prediction_requests").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM prediction_mirror_outbox").fetchone()[0] == 1
+
+
+def test_duplicate_settlement_retries_pending_cloud_outbox(tmp_path):
+    mirrored = []
+
+    def flaky(payload):
+        mirrored.append(payload)
+        if "settlement" in payload and sum("settlement" in item for item in mirrored) == 1:
+            raise OSError("offline")
+
+    ledger = PredictionLedger(tmp_path / "ledger.db", mirror=flaky)
+    write = ledger.record_field("api", "settlement-retry", _request_payload(), [_pred()])
+    first = ledger.settle(write.prediction_ids[0], "competitor-1", "SB", 45.0, "official")
+    ledger.flush_mirror_outbox()
+    retry = ledger.settle(write.prediction_ids[0], "competitor-1", "SB", 45.0, "official")
+    ledger.flush_mirror_outbox()
+
+    assert first.cloud_status == "pending"
+    assert retry.status == "duplicate"
+    assert retry.cloud_status in {"pending", "recorded"}
+    settlement_payloads = [item for item in mirrored if "settlement" in item]
+    assert len(settlement_payloads) >= 2
+    assert settlement_payloads[0] == settlement_payloads[1]
 
 
 def test_schema_creation_preserves_existing_results_rows(tmp_path):

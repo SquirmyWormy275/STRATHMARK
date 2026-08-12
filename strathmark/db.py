@@ -1563,6 +1563,8 @@ def settle_prediction(
 
 _LEDGER_REQUEST_FIELDS = {
     "ledger_request_id",
+    "caller_id",
+    "request_id",
     "request_hash",
     "event_code",
     "prediction_as_of",

@@ -135,6 +135,8 @@ def evaluate_drift(
     misconfiguration (since the operator running this clearly intends to query).
     """
     if ledger is not None:
+        if model_version_id is None or not str(model_version_id).strip():
+            raise ValueError("model_version_id is required for V2 ledger drift")
         if baseline_residuals is None:
             raise ValueError("baseline_residuals are required for V2 ledger drift")
         cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)

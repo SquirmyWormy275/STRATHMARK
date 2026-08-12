@@ -92,8 +92,10 @@ The local SQLite file from `STRATHMARK_DB_PATH` (default
 one transaction after marks are final. Identical retries return original prediction
 IDs; a request-key payload conflict returns HTTP 409.
 
-Cloud mirroring is best-effort. `ledger_status=recorded_cloud_failed` means local trust
-evidence exists but the mirror needs operational follow-up. `ledger_recorded=false`
+Cloud mirroring is best-effort and off the calculation response path.
+`ledger_status=recorded_cloud_pending` means local trust evidence and a replayable mirror
+outbox entry exist; the daemon attempt or `flush_mirror_outbox()` can deliver it later.
+`ledger_recorded=false`
 means marks are still valid but no trusted local record was made; preserve the request
 and investigate disk/path/permission state before settlement.
 
@@ -138,7 +140,8 @@ mixed field, but operational changes belong between fields and must be logged.
 4. Review warnings, degraded results, optimizer fallbacks, and cloud failures.
 5. Run drift analysis off the hot path. Drift is advisory; it never auto-activates,
    retrains, or disables a model.
-6. Do not train on manual-source ledger rows.
+6. Train only on rows explicitly marked eligible; manual, broad-prior, legacy-rollback,
+   and degraded rows are excluded.
 
 Supabase migration 005 must be reviewed and applied separately before cloud mirroring.
 It forces RLS and grants its append RPC only to `service_role`; never expose the service

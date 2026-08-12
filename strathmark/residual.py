@@ -27,7 +27,7 @@ from strathmark.prediction_v2 import (
 )
 
 RESIDUAL_ARTIFACT_SCHEMA = "strathmark.prediction-v2-catboost-residual"
-RESIDUAL_ARTIFACT_SCHEMA_VERSION = 1
+RESIDUAL_ARTIFACT_SCHEMA_VERSION = 2
 RESIDUAL_MANIFEST_MAX_BYTES = 100_000
 RESIDUAL_MODEL_MAX_BYTES = 100_000_000
 RESIDUAL_MODEL_FILENAME = "residual.cbm"
@@ -370,6 +370,7 @@ def save_residual_artifact(
     training_cutoff: date,
     evidence_max_date: date,
     core_source_checksum: str,
+    core_artifact_checksum: str,
     promotion: PromotionDecision,
 ) -> Path:
     """Save a native CatBoost model and checksummed JSON manifest (never pickle)."""
@@ -381,6 +382,9 @@ def save_residual_artifact(
     checksum = str(core_source_checksum).lower()
     if not _is_sha256(checksum):
         raise ValueError("core_source_checksum must be a SHA-256 digest")
+    artifact_checksum = str(core_artifact_checksum).lower()
+    if not _is_sha256(artifact_checksum):
+        raise ValueError("core_artifact_checksum must be a SHA-256 digest")
     if promotion.promoted and not _promotion_audit_passes(promotion.to_dict()):
         raise ValueError("promoted residual decision does not satisfy the locked gates")
     directory = Path(artifact_directory)
@@ -399,6 +403,7 @@ def save_residual_artifact(
         "training_cutoff": training_cutoff.isoformat(),
         "evidence_max_date": evidence_max_date.isoformat(),
         "core_source_checksum": checksum,
+        "core_artifact_checksum": artifact_checksum,
         "feature_names": list(RESIDUAL_FEATURE_NAMES),
         "categorical_features": list(CATEGORICAL_RESIDUAL_FEATURES),
         "model_filename": RESIDUAL_MODEL_FILENAME,
@@ -426,6 +431,7 @@ def load_residual_artifact(
     artifact_directory: str | Path | None,
     *,
     expected_core_checksum: Optional[str] = None,
+    expected_core_artifact_checksum: Optional[str] = None,
     prediction_as_of: Optional[date] = None,
 ) -> ResidualArtifactLoad:
     """Load an eligible native artifact or return a disabled fail-closed state."""
@@ -445,6 +451,13 @@ def load_residual_artifact(
     if expected_core_checksum is not None:
         expected = str(expected_core_checksum).lower()
         if not _is_sha256(expected) or payload["core_source_checksum"] != expected:
+            return _disabled("residual_artifact_incompatible", payload)
+    if expected_core_artifact_checksum is not None:
+        expected_artifact = str(expected_core_artifact_checksum).lower()
+        if (
+            not _is_sha256(expected_artifact)
+            or payload["core_artifact_checksum"] != expected_artifact
+        ):
             return _disabled("residual_artifact_incompatible", payload)
     if prediction_as_of is not None:
         if date.fromisoformat(payload["evidence_max_date"]) >= prediction_as_of:
@@ -489,6 +502,7 @@ def _load_manifest(manifest_path: Path, directory: Path) -> dict[str, Any]:
         "training_cutoff",
         "evidence_max_date",
         "core_source_checksum",
+        "core_artifact_checksum",
         "feature_names",
         "categorical_features",
         "model_filename",
@@ -520,6 +534,8 @@ def _load_manifest(manifest_path: Path, directory: Path) -> dict[str, Any]:
         raise ValueError("promoted residual audit does not satisfy the locked gates")
     if not _is_sha256(payload["core_source_checksum"]):
         raise ValueError("residual core checksum is invalid")
+    if not _is_sha256(payload["core_artifact_checksum"]):
+        raise ValueError("residual core artifact checksum is invalid")
     training_cutoff = date.fromisoformat(payload["training_cutoff"])
     evidence_max_date = date.fromisoformat(payload["evidence_max_date"])
     if evidence_max_date >= training_cutoff:
@@ -540,6 +556,37 @@ def _load_manifest(manifest_path: Path, directory: Path) -> dict[str, Any]:
     if _file_sha256(model_path) != payload["model_checksum"]:
         raise ValueError("residual native model checksum mismatch")
     return payload
+
+
+def build_residual_features(
+    request: Any,
+    distribution: PredictiveDistribution,
+) -> dict[str, Any]:
+    """Build the one canonical residual vector used by training and serving."""
+
+    metadata = distribution.metadata
+    diameter_used = float(metadata.get("diameter_used_mm", request.diameter_mm))
+    return {
+        "event": request.event,
+        "gender": request.gender,
+        "species": request.species,
+        "species_missing": int(
+            request.species_missing or "unknown_species" in distribution.warnings
+        ),
+        "log_diameter_ratio": math.log(diameter_used / 300.0),
+        "janka_hardness": request.janka_hardness,
+        "specific_gravity": request.specific_gravity,
+        "crush_strength": request.crush_strength,
+        "shear_strength": request.shear_strength,
+        "modulus_of_rupture": request.modulus_of_rupture,
+        "modulus_of_elasticity": request.modulus_of_elasticity,
+        "core_log_location": distribution.log_location,
+        "history_count": distribution.history_count,
+        "effective_history_weight": distribution.effective_history_weight,
+        "same_event_state": float(metadata.get("same_event_state", 0.0)),
+        "trend_projection": float(metadata.get("trend_projection", 0.0)),
+        "cross_event_state": float(metadata.get("cross_event_state", 0.0)),
+    }
 
 
 def _validated_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:

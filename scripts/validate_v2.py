@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,7 +21,12 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from strathmark.features import CANONICALIZATION_VERSION, build_prior_evidence
+from strathmark.features import (
+    CANONICALIZATION_VERSION,
+    SPECIES_PROPERTY_FIELDS,
+    build_prior_evidence,
+    resolve_species_properties,
+)
 from strathmark.loader import load_woodchopping_xlsx
 from strathmark.prediction_v2 import ChronologicalCalibrator, PredictionV2Model, history_band
 from strathmark.validation import (
@@ -298,6 +304,56 @@ def write_artifact(model: PredictionV2Model, path: str | Path) -> dict[str, Any]
     }
 
 
+def refresh_runtime_species_lookup(
+    report_path: str | Path,
+    artifact_path: str | Path,
+    manifest_path: str | Path,
+    source_path: str | Path,
+) -> dict[str, Any]:
+    """Embed the benchmark Wood-sheet lookup without evaluating result rows.
+
+    This is a packaging repair only: coefficients, calibration, validation
+    metrics, and locked-test evidence remain byte-for-byte equivalent in the
+    decoded model.  The command refuses to overwrite an already enriched core.
+    """
+
+    report = verify_release(report_path, artifact_path, manifest_path, source_path)
+    manifest = load_benchmark_manifest(manifest_path)
+    verify_source_checksum(source_path, manifest["source_sha256"])
+    model = PredictionV2Model.from_json(Path(artifact_path).read_bytes())
+    if model.species_properties:
+        raise ValueError("packaged artifact already contains a species-property lookup")
+    try:
+        wood_df = pd.read_excel(source_path, sheet_name="Wood")
+    except (OSError, ValueError) as exc:
+        raise ValueError("benchmark Wood sheet is not readable") from exc
+    lookup: dict[str, dict[str, float]] = {}
+    for species in model.species_support:
+        properties, missing = resolve_species_properties(species, wood_df)
+        if missing:
+            raise ValueError(f"artifact species {species!r} is absent from the Wood sheet")
+        lookup[species] = {name: float(properties[name]) for name in SPECIES_PROPERTY_FIELDS}
+    enriched = replace(model, species_properties=lookup)
+    if (
+        enriched.coefficients != model.coefficients
+        or enriched.calibration != model.calibration
+        or enriched.validation_metrics != model.validation_metrics
+    ):
+        raise ValueError("runtime lookup refresh altered locked numeric model state")
+    artifact_record = write_artifact(enriched, artifact_path)
+    report["artifact"] = artifact_record
+    report["runtime_lookup_refresh"] = {
+        "kind": "species_properties_from_pinned_wood_sheet",
+        "species_count": len(lookup),
+        "locked_rows_reopened": False,
+        "coefficients_or_locked_metrics_changed": False,
+        "served_feature_mapping_changed": True,
+    }
+    _write_json(report_path, report)
+    verify_release(report_path, artifact_path, manifest_path, source_path)
+    return report
+
+
 def verify_release(
     report_path: str | Path,
     artifact_path: str | Path,
@@ -311,8 +367,16 @@ def verify_release(
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     if report.get("schema_version") != REPORT_SCHEMA:
         raise ValueError("validation report schema is incompatible")
+    if report.get("algorithm_contract") != ALGORITHM_CONTRACT:
+        raise ValueError("validation report algorithm contract is incompatible")
     if report.get("source_sha256") != manifest["source_sha256"]:
         raise ValueError("validation report source checksum is incompatible")
+    if report.get("manifest_sha256") != _file_sha256(manifest_path):
+        raise ValueError("validation report manifest checksum is incompatible")
+    if report.get("canonical_builder_version") != CANONICALIZATION_VERSION:
+        raise ValueError("validation report canonical builder is incompatible")
+    if report.get("role_counts") != manifest["observed_role_counts_before_modeling"]:
+        raise ValueError("validation report role counts are incompatible")
     artifact_record = report.get("artifact", {})
     if not report.get("promotion", {}).get("core_promoted"):
         if artifact_record.get("packaged"):
@@ -325,8 +389,68 @@ def verify_release(
     model = PredictionV2Model.from_json(raw)
     if model.source_checksum != manifest["source_sha256"]:
         raise ValueError("packaged artifact source checksum is incompatible")
-    if not bool(report["locked_test"]["core_gate"]["promoted"]):
+    locked = report.get("locked_test", {})
+    if locked.get("opened_once_after_freeze") is not True:
+        raise ValueError("validation report does not prove the locked test was opened after freeze")
+    if locked.get("window") != manifest["roles"]["locked_test"]:
+        raise ValueError("validation report locked window is incompatible")
+    gate = locked.get("core_gate", {})
+    if not bool(gate.get("promoted")):
         raise ValueError("packaged artifact lacks a passing locked core gate")
+    if report.get("promotion", {}).get("core_promoted") is not True:
+        raise ValueError("validation report promotion state is inconsistent")
+    core = locked.get("core", {}).get("global", {})
+    incumbent = locked.get("incumbent", {}).get("global", {})
+    locked_count = int(manifest["observed_role_counts_before_modeling"]["locked_test"])
+    if core.get("count") != locked_count or incumbent.get("count") != locked_count:
+        raise ValueError("validation report locked row counts are incompatible")
+    core_mae = float(core["mae_seconds"])
+    incumbent_mae = float(incumbent["mae_seconds"])
+    core_rmse = float(core["rmse_seconds"])
+    incumbent_rmse = float(incumbent["rmse_seconds"])
+    mae_improvement = (incumbent_mae - core_mae) / incumbent_mae
+    rmse_worsening = (core_rmse - incumbent_rmse) / incumbent_rmse
+    expected_promotion = mae_improvement >= float(
+        manifest["core_gate"]["minimum_mae_relative_improvement"]
+    ) and rmse_worsening <= float(manifest["core_gate"]["maximum_rmse_relative_worsening"])
+    if not expected_promotion:
+        raise ValueError("locked metrics do not satisfy the benchmark core gate")
+    if not math.isclose(float(gate["mae_relative_improvement"]), mae_improvement, abs_tol=1e-12):
+        raise ValueError("locked MAE promotion calculation is inconsistent")
+    if not math.isclose(float(gate["rmse_relative_worsening"]), rmse_worsening, abs_tol=1e-12):
+        raise ValueError("locked RMSE promotion calculation is inconsistent")
+    expected_validation = {
+        "locked_count": float(locked_count),
+        "locked_mae_seconds": core_mae,
+        "locked_rmse_seconds": core_rmse,
+        "locked_median_absolute_error_seconds": float(core["median_absolute_error_seconds"]),
+        "incumbent_mae_seconds": incumbent_mae,
+        "incumbent_rmse_seconds": incumbent_rmse,
+        "mae_relative_improvement": mae_improvement,
+        "rmse_relative_worsening": rmse_worsening,
+    }
+    for name, expected in expected_validation.items():
+        if not math.isclose(
+            float(model.validation_metrics.get(name, math.nan)), expected, abs_tol=1e-12
+        ):
+            raise ValueError(f"packaged artifact validation metric {name} is inconsistent")
+    artifact_metadata = {
+        "model_version": model.model_version,
+        "engine_version": model.engine_version,
+        "training_cutoff_exclusive": model.training_cutoff.isoformat(),
+        "evidence_max_date": model.evidence_max_date.isoformat(),
+        "calibration_version": model.calibration.version,
+        "calibration_max_evidence_date": (
+            model.calibration.max_evidence_date.isoformat()
+            if model.calibration.max_evidence_date
+            else None
+        ),
+    }
+    for name, expected in artifact_metadata.items():
+        if artifact_record.get(name) != expected:
+            raise ValueError(f"packaged artifact metadata {name} is inconsistent")
+    if artifact_record.get("bytes") != len(raw):
+        raise ValueError("packaged artifact byte count is inconsistent")
     return report
 
 
@@ -491,10 +615,20 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--prepare", action="store_true")
     mode.add_argument("--open-locked-test", action="store_true")
     mode.add_argument("--verify-release", action="store_true")
+    mode.add_argument("--refresh-runtime-species-lookup", action="store_true")
     args = parser.parse_args(argv)
 
     try:
         manifest = load_benchmark_manifest(args.manifest)
+        if args.refresh_runtime_species_lookup:
+            refresh_runtime_species_lookup(
+                args.report,
+                args.artifact,
+                args.manifest,
+                args.source,
+            )
+            print("Prediction V2 runtime species lookup packaged without opening result rows.")
+            return 0
         if not args.prepare and not args.open_locked_test:
             verify_release(args.report, args.artifact, args.manifest, args.source)
             print("Prediction V2 release evidence verified without reopening locked rows.")

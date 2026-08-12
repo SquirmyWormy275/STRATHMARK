@@ -216,14 +216,18 @@ different canonical input or deterministic prediction output is a conflict. `POS
 /ledger/predictions/{prediction_id}/settle` verifies prediction, competitor, and event;
 an exact retry deduplicates, while a correction requires an actor-attributed reason and
 appends a new revision that supersedes the previous settlement. Rows are immutable.
-Manual-source rows are not training eligible.
+Manual, broad-prior, legacy-rollback, and otherwise degraded rows are not training
+eligible. Only explicitly eligible V2 core or promoted-residual rows can enter training
+and drift views.
 
 SQLite at `STRATHMARK_DB_PATH` (default `~/.strathmark/results.db`) is the race-day
 authority. If cloud
 credentials exist, mirroring is best-effort through the service-role-only function from
 migration `20260811_005_prediction_v2.sql`. Browser roles have no ledger access and RLS
-is forced. Cloud failure is reported in ledger status but never invalidates returned
-marks. Local ledger write failure is also non-blocking for calculation; the response
+is forced. Each sanitized mirror payload is committed to a local outbox with its field
+or settlement. Delivery runs on a daemon attempt or explicit `flush_mirror_outbox()` and
+does not delay the calculation response. Pending or failed delivery never invalidates
+returned marks. Local ledger write failure is also non-blocking for calculation; the response
 reports that trusted recording failed.
 
 ## 2.0 migration and rollback

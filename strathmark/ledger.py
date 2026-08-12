@@ -12,14 +12,16 @@ import json
 import math
 import os
 import sqlite3
+import threading
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 _ENV_VAR = "STRATHMARK_DB_PATH"
 _DEFAULT_PATH = Path.home() / ".strathmark" / "results.db"
+_LEDGER_NAMESPACE = uuid.UUID("2f08f564-cae9-54bf-b488-7d5a19831f80")
 
 _NUMERIC_FEATURES = frozenset(
     {
@@ -113,6 +115,22 @@ CREATE TABLE IF NOT EXISTS prediction_settlements (
     UNIQUE(prediction_id, payload_hash)
 );
 
+CREATE TABLE IF NOT EXISTS prediction_mirror_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('field', 'settlement')),
+    entity_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(kind, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS prediction_mirror_delivery (
+    outbox_id TEXT PRIMARY KEY REFERENCES prediction_mirror_outbox(outbox_id),
+    attempts INTEGER NOT NULL CHECK(attempts >= 1),
+    status TEXT NOT NULL CHECK(status IN ('failed', 'recorded')),
+    last_attempt_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_ledger_predictions_competitor
     ON ledger_predictions(competitor_id, event_code);
 CREATE INDEX IF NOT EXISTS idx_prediction_settlements_prediction
@@ -170,6 +188,8 @@ class LedgerPrediction:
     optimizer: Optional[str] = None
     optimizer_metadata: Mapping[str, Any] = field(default_factory=dict)
     feature_snapshot: Mapping[str, float] = field(default_factory=dict)
+    training_eligible: bool = False
+    degraded: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +287,7 @@ class PredictionLedger:
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._mirror = mirror
+        self._delivery_lock = threading.Lock()
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -309,7 +330,7 @@ class PredictionLedger:
         except ValueError as exc:
             raise ValueError("prediction_as_of must be an ISO date") from exc
 
-        request_row_id = str(uuid.uuid4())
+        request_row_id = str(uuid.uuid5(_LEDGER_NAMESPACE, f"request:{caller}:{idempotency_key}"))
         timestamp = _now()
         prediction_ids: list[str] = []
         with self._connect() as conn:
@@ -335,12 +356,16 @@ class PredictionLedger:
                         """,
                         (existing["ledger_request_id"],),
                     ).fetchall()
+                    existing_request_id = str(existing["ledger_request_id"])
                     conn.commit()
+                    cloud_status = self._schedule_delivery("field", existing_request_id)
+                    status = "duplicate_cloud_pending" if cloud_status == "pending" else "duplicate"
                     return LedgerWriteResult(
                         recorded=True,
-                        status="duplicate",
+                        status=status,
                         prediction_ids=tuple(row["prediction_id"] for row in rows),
                         request_hash=digest,
+                        cloud_status=cloud_status,
                     )
 
                 conn.execute(
@@ -361,7 +386,12 @@ class PredictionLedger:
                     ),
                 )
                 for ordinal, item in enumerate(validated):
-                    prediction_id = str(uuid.uuid4())
+                    prediction_id = str(
+                        uuid.uuid5(
+                            _LEDGER_NAMESPACE,
+                            f"prediction:{request_row_id}:{item['competitor_id']}",
+                        )
+                    )
                     prediction_ids.append(prediction_id)
                     conn.execute(
                         """
@@ -386,7 +416,7 @@ class PredictionLedger:
                             item["median_seconds"],
                             item["assigned_mark"],
                             item["source"],
-                            int(item["source"] != "manual"),
+                            int(item["training_eligible"]),
                             item["engine_version"],
                             item["model_version"],
                             item["calibration_version"],
@@ -412,29 +442,43 @@ class PredictionLedger:
                             ) VALUES (?, ?, ?, ?, ?)
                             """,
                             (
-                                str(uuid.uuid4()),
+                                str(
+                                    uuid.uuid5(
+                                        _LEDGER_NAMESPACE,
+                                        f"feature:{prediction_id}:{feature_name}",
+                                    )
+                                ),
                                 prediction_id,
                                 feature_name,
                                 numeric_value,
                                 timestamp,
                             ),
                         )
+                cloud_payload = self._cloud_field_payload(
+                    request_row_id,
+                    caller,
+                    idempotency_key,
+                    digest,
+                    event_code,
+                    prediction_as_of,
+                    prediction_ids,
+                    validated,
+                    timestamp,
+                )
+                self._append_outbox(
+                    conn,
+                    kind="field",
+                    entity_id=request_row_id,
+                    payload=cloud_payload,
+                    timestamp=timestamp,
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
 
-        cloud_payload = self._cloud_field_payload(
-            request_row_id,
-            digest,
-            event_code,
-            prediction_as_of,
-            prediction_ids,
-            validated,
-            timestamp,
-        )
-        cloud_status = self._try_mirror(cloud_payload)
-        status = "recorded_cloud_failed" if cloud_status == "failed" else "recorded"
+        cloud_status = self._schedule_delivery("field", request_row_id)
+        status = "recorded_cloud_pending" if cloud_status == "pending" else "recorded"
         return LedgerWriteResult(
             recorded=True,
             status=status,
@@ -500,7 +544,11 @@ class PredictionLedger:
                 ).fetchone()
                 if duplicate is not None:
                     conn.commit()
-                    return self._settlement_from_row(duplicate, status="duplicate")
+                    result = self._settlement_from_row(duplicate, status="duplicate")
+                    cloud_status = self._schedule_delivery(
+                        "settlement", str(duplicate["settlement_id"])
+                    )
+                    return replace(result, cloud_status=cloud_status)
 
                 latest = conn.execute(
                     """
@@ -516,7 +564,12 @@ class PredictionLedger:
 
                 revision = 1 if latest is None else int(latest["revision"]) + 1
                 supersedes = None if latest is None else str(latest["settlement_id"])
-                settlement_id = str(uuid.uuid4())
+                settlement_id = str(
+                    uuid.uuid5(
+                        _LEDGER_NAMESPACE,
+                        f"settlement:{prediction_key}:{payload_digest}",
+                    )
+                )
                 residual = actual - float(prediction["median_seconds"])
                 conn.execute(
                     """
@@ -541,29 +594,35 @@ class PredictionLedger:
                         timestamp,
                     ),
                 )
+                cloud_payload = {
+                    "settlement": {
+                        "settlement_id": settlement_id,
+                        "prediction_id": prediction_key,
+                        "revision": revision,
+                        "competitor_id": competitor_key,
+                        "event_code": event,
+                        "actual_time": actual,
+                        "residual": residual,
+                        "actor": actor_value,
+                        "reason": reason_value,
+                        "payload_hash": payload_digest,
+                        "supersedes_settlement_id": supersedes,
+                        "settled_at": timestamp,
+                    }
+                }
+                self._append_outbox(
+                    conn,
+                    kind="settlement",
+                    entity_id=settlement_id,
+                    payload=cloud_payload,
+                    timestamp=timestamp,
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
 
-        cloud_status = self._try_mirror(
-            {
-                "settlement": {
-                    "settlement_id": settlement_id,
-                    "prediction_id": prediction_key,
-                    "revision": revision,
-                    "competitor_id": competitor_key,
-                    "event_code": event,
-                    "actual_time": actual,
-                    "residual": residual,
-                    "actor": actor_value,
-                    "reason": reason_value,
-                    "payload_hash": payload_digest,
-                    "supersedes_settlement_id": supersedes,
-                    "settled_at": timestamp,
-                }
-            }
-        )
+        cloud_status = self._schedule_delivery("settlement", settlement_id)
         return SettlementResult(
             settlement_id=settlement_id,
             prediction_id=prediction_key,
@@ -595,7 +654,7 @@ class PredictionLedger:
         model_version: Optional[str] = None,
         event_code: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """Return current settled model predictions; manual rows never qualify."""
+        """Return current settled, explicitly eligible model predictions."""
 
         conditions = ["p.training_eligible = 1"]
         parameters: list[Any] = []
@@ -643,6 +702,16 @@ class PredictionLedger:
         if item["assigned_mark"] < 3:
             raise ValueError("assigned_mark must be at least 3")
         item["source"] = _identifier(item["source"], "source").lower()
+        if not isinstance(item["training_eligible"], bool):
+            raise ValueError("training_eligible must be a boolean")
+        if not isinstance(item["degraded"], bool):
+            raise ValueError("degraded must be a boolean")
+        if (
+            item["degraded"]
+            or item["engine_version"] != "2.0.0"
+            or item["source"] not in {"baseline", "ml"}
+        ):
+            item["training_eligible"] = False
         item["evidence_cutoff"] = (
             item["evidence_cutoff"].isoformat()
             if hasattr(item["evidence_cutoff"], "isoformat")
@@ -670,6 +739,8 @@ class PredictionLedger:
     @staticmethod
     def _cloud_field_payload(
         request_row_id: str,
+        caller_id: str,
+        request_id: str,
         request_hash: str,
         event_code: str,
         prediction_as_of: str,
@@ -689,7 +760,7 @@ class PredictionLedger:
                     "median_seconds": item["median_seconds"],
                     "assigned_mark": item["assigned_mark"],
                     "source": item["source"],
-                    "training_eligible": item["source"] != "manual",
+                    "training_eligible": item["training_eligible"],
                     "engine_version": item["engine_version"],
                     "model_version": item["model_version"],
                     "calibration_version": item["calibration_version"],
@@ -709,7 +780,12 @@ class PredictionLedger:
             for name, value in item["feature_snapshot"].items():
                 feature_rows.append(
                     {
-                        "feature_snapshot_id": str(uuid.uuid4()),
+                        "feature_snapshot_id": str(
+                            uuid.uuid5(
+                                _LEDGER_NAMESPACE,
+                                f"feature:{prediction_id}:{name}",
+                            )
+                        ),
                         "prediction_id": prediction_id,
                         "feature_name": name,
                         "numeric_value": value,
@@ -719,6 +795,8 @@ class PredictionLedger:
         return {
             "request": {
                 "ledger_request_id": request_row_id,
+                "caller_id": caller_id,
+                "request_id": request_id,
                 "request_hash": request_hash,
                 "event_code": event_code,
                 "prediction_as_of": prediction_as_of,
@@ -728,14 +806,131 @@ class PredictionLedger:
             "features": feature_rows,
         }
 
-    def _try_mirror(self, payload: Mapping[str, Any]) -> str:
+    @staticmethod
+    def _append_outbox(
+        conn: sqlite3.Connection,
+        *,
+        kind: str,
+        entity_id: str,
+        payload: Mapping[str, Any],
+        timestamp: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO prediction_mirror_outbox (
+                outbox_id, kind, entity_id, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                kind,
+                entity_id,
+                json.dumps(_json_value(payload), sort_keys=True, separators=(",", ":")),
+                timestamp,
+            ),
+        )
+
+    def _deliver_pending(self, kind: str, entity_id: str) -> str:
+        with self._delivery_lock:
+            return self._deliver_pending_locked(kind, entity_id)
+
+    def _deliver_pending_locked(self, kind: str, entity_id: str) -> str:
         if self._mirror is None:
             return "not_configured"
         try:
-            self._mirror(payload)
-        except Exception:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT o.outbox_id, o.payload_json, d.status
+                    FROM prediction_mirror_outbox o
+                    LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                    WHERE o.kind = ? AND o.entity_id = ?
+                    """,
+                    (kind, entity_id),
+                ).fetchone()
+        except sqlite3.Error:
             return "failed"
-        return "recorded"
+        if row is None:
+            return "not_configured"
+        if row["status"] == "recorded":
+            return "recorded"
+        try:
+            self._mirror(json.loads(row["payload_json"]))
+        except Exception:
+            status = "failed"
+        else:
+            status = "recorded"
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO prediction_mirror_delivery (
+                        outbox_id, attempts, status, last_attempt_at
+                    ) VALUES (?, 1, ?, ?)
+                    ON CONFLICT(outbox_id) DO UPDATE SET
+                        attempts = attempts + 1,
+                        status = excluded.status,
+                        last_attempt_at = excluded.last_attempt_at
+                    """,
+                    (row["outbox_id"], status, _now()),
+                )
+        except sqlite3.Error:
+            # The authoritative ledger and outbox were already committed.  A
+            # delivery-status failure must never relabel that durable write as
+            # a local ledger failure; an identical retry can replay the outbox.
+            return "failed"
+        return status
+
+    def _schedule_delivery(self, kind: str, entity_id: str) -> str:
+        """Start best-effort outbox delivery without delaying race-day output."""
+
+        if self._mirror is None:
+            return "not_configured"
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT d.status
+                    FROM prediction_mirror_outbox o
+                    LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                    WHERE o.kind = ? AND o.entity_id = ?
+                    """,
+                    (kind, entity_id),
+                ).fetchone()
+        except sqlite3.Error:
+            return "pending"
+        if row is not None and row["status"] == "recorded":
+            return "recorded"
+        worker = threading.Thread(
+            target=self._deliver_pending,
+            args=(kind, entity_id),
+            name="strathmark-ledger-mirror",
+            daemon=True,
+        )
+        worker.start()
+        return "pending"
+
+    def flush_mirror_outbox(self, *, limit: int = 100) -> dict[str, int]:
+        """Synchronously retry a bounded number of pending mirror payloads off-path."""
+
+        bounded = max(1, min(int(limit), 1000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT o.kind, o.entity_id
+                FROM prediction_mirror_outbox o
+                LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                WHERE d.status IS NULL OR d.status != 'recorded'
+                ORDER BY o.created_at, o.outbox_id
+                LIMIT ?
+                """,
+                (bounded,),
+            ).fetchall()
+        summary = {"recorded": 0, "failed": 0, "not_configured": 0}
+        for row in rows:
+            status = self._deliver_pending(str(row["kind"]), str(row["entity_id"]))
+            summary[status] = summary.get(status, 0) + 1
+        return summary
 
     @staticmethod
     def _settlement_from_row(row: sqlite3.Row, *, status: str = "recorded") -> SettlementResult:

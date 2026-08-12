@@ -44,7 +44,7 @@ except ImportError:
 
 from strathmark import __version__
 from strathmark.calculator import HandicapCalculator
-from strathmark.config import data_req, llm_config, rules, sim_config
+from strathmark.config import data_req, llm_config, prediction_config, rules, sim_config
 from strathmark.ledger import PredictionLedger, SettlementConflictError
 from strathmark.llm import check_ollama_connection
 from strathmark.predictor import (
@@ -98,7 +98,7 @@ class HistoricalResultSchema(BaseModel):
 
 class CompetitorSchema(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    history: List[HistoricalResultSchema] = Field(default_factory=list)
+    history: List[HistoricalResultSchema] = Field(default_factory=list, max_length=500)
     division: Optional[str] = Field(default=None, max_length=100)
     manual_time_override: Optional[float] = Field(
         default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
@@ -162,6 +162,8 @@ class MarkResultResponse(BaseModel):
     degraded: bool = False
     optimizer_metadata: Dict[str, Any] = Field(default_factory=dict)
     ledger_status: Optional[str] = None
+    provenance: Dict[str, Any] = Field(default_factory=dict)
+    ignored_factors: List[str] = Field(default_factory=list)
 
 
 class PredictRequest(BaseModel):
@@ -365,6 +367,8 @@ def _mark_result_response(result: Any) -> MarkResultResponse:
         degraded=result.degraded,
         optimizer_metadata=result.optimizer_metadata,
         ledger_status=result.ledger_status,
+        provenance=result.provenance,
+        ignored_factors=result.ignored_factors,
     )
 
 
@@ -392,6 +396,11 @@ def health(
 
     cutoff = normalize_prediction_as_of(None)
     bundle = prediction_provider.snapshot(cutoff)
+    active_engine = prediction_config.selected_engine()
+    engine_health = bundle.health(cutoff)
+    engine_health["active_engine"] = active_engine
+    for component in ("core", "residual", "calibration"):
+        engine_health[component]["serving_active"] = active_engine == "v2"
     ollama_ok = check_ollama_connection()
     store_count = store.count()
     return {
@@ -400,7 +409,7 @@ def health(
         "ollama_model": llm_config.DEFAULT_MODEL,
         "store_available": True,
         "store_results_count": store_count,
-        "prediction_engine": bundle.health(cutoff),
+        "prediction_engine": engine_health,
     }
 
 
@@ -553,6 +562,8 @@ def predict(
             warnings=best_pred.warnings,
             prediction_id=best_pred.prediction_id,
             degraded=best_pred.degraded,
+            provenance=best_pred.provenance,
+            ignored_factors=best_pred.ignored_factors,
         ),
         all_predictions={k: _prediction_result_to_dict(v) for k, v in all_preds.items()},
     )

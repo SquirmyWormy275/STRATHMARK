@@ -7,6 +7,8 @@ is covered by an integration test gated behind STRATHMARK_TEST_DB.
 
 from __future__ import annotations
 
+import pytest
+
 from strathmark.drift import (
     COVERAGE_HIGH_THRESHOLD,
     COVERAGE_LOW_THRESHOLD,
@@ -324,3 +326,8 @@ def test_evaluate_drift_uses_injected_settled_ledger_only():
 
     assert report.recent_count == 1
     assert ledger.kwargs["model_version"] == "v2"
+
+
+def test_evaluate_drift_requires_model_version_for_ledger():
+    with pytest.raises(ValueError, match="model_version_id"):
+        evaluate_drift(ledger=object(), baseline_residuals=[0.0] * 100)

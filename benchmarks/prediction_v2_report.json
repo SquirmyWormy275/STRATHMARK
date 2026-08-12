@@ -1,7 +1,7 @@
 {
   "algorithm_contract": "prediction-v2-core-fixed-20260811",
   "artifact": {
-    "bytes": 2868,
+    "bytes": 4216,
     "calibration_max_evidence_date": "2025-05-31",
     "calibration_version": "prediction-v2-calibration-2025h1",
     "engine_version": "2.0.0",
@@ -9,7 +9,7 @@
     "model_version": "prediction-v2-core-20260207",
     "packaged": true,
     "path": "strathmark/models/prediction_v2_core.json",
-    "sha256": "6141eeb8bd75be5a2db9b30125a32d33aae79f6ac675d5d21b673a554615dd70",
+    "sha256": "d564bf679244d9e39149c4bfd8ff50adc079e0696cde931d48a57dcb8b9c3f67",
     "training_cutoff_exclusive": "2026-02-07"
   },
   "calibration": {
@@ -290,6 +290,13 @@
     "locked_test": 128,
     "selection": 231,
     "undated_excluded": 20
+  },
+  "runtime_lookup_refresh": {
+    "kind": "species_properties_from_pinned_wood_sheet",
+    "locked_rows_reopened": false,
+    "coefficients_or_locked_metrics_changed": false,
+    "served_feature_mapping_changed": true,
+    "species_count": 8
   },
   "schema_version": "prediction-v2-validation-report/v1",
   "selection": {

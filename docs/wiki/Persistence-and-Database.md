@@ -18,7 +18,8 @@ one transaction after marks are final.
 The ledger retains a canonical calculation hash, stable IDs, cutoff, prediction and artifact
 versions, median, interval, source, mark, ignored factors, warnings, numeric allowlisted
 features, and optimizer metadata. It does not retain display names, narrative notes, or
-the raw request body. Manual predictions are not training eligible.
+the raw request body. Manual, broad-prior, legacy-rollback, and degraded predictions are
+not training eligible.
 
 An identical retry returns original prediction IDs. Changed inputs or deterministic
 prediction outputs under the same key conflict. Settlements verify prediction/competitor/event, deduplicate exact
@@ -32,7 +33,9 @@ to `service_role`. The migration is operator-applied; its presence in the reposi
 not proof that a live project has it.
 
 SQLite is authoritative. Cloud mirroring is best-effort and cannot block marks. Keep
-the service key server-side. Public `/predict` and `/calculate` remain stateless.
+the service key server-side. A sanitized local outbox is committed with each trusted
+field or settlement and an identical retry replays failed delivery. Public `/predict`
+and `/calculate` remain stateless.
 
 MNEMEX and older Supabase ML-state tables are separate integration/history concerns;
 they are not the V2 race-day ledger authority.

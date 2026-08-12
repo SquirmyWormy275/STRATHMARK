@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from datetime import date, timedelta
@@ -236,6 +237,10 @@ def test_artifact_round_trip_checksum_and_backdated_rejection(model):
     request = _request()
 
     assert restored.predict(request) == model.predict(request)
+    assert restored.species_properties == model.species_properties
+    properties, missing = restored.resolve_species_properties("S01")
+    assert missing is False
+    assert properties["janka_hardness"] == PROPERTIES["janka_hardness"]
     envelope = json.loads(encoded)
     envelope["payload"]["coefficients"][0] += 1.0
     with pytest.raises(ValueError, match="checksum"):
@@ -258,3 +263,37 @@ def test_inference_serialization_and_positive_samples_are_deterministic(model):
     np.testing.assert_array_equal(first.sample(32, seed=7), second.sample(32, seed=7))
     assert np.all(first.sample(32, seed=7) > 0)
     assert model.to_json() == model.to_json()
+
+
+def test_standalone_and_shared_sampling_preserve_total_log_variance():
+    from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
+
+    distribution = PredictiveDistribution(
+        median=50.0,
+        log_location=math.log(50.0),
+        log_scale=0.30,
+        interval=ForecastInterval(30.0, 80.0),
+        source="test",
+        history_count=0,
+        effective_history_weight=0.0,
+        metadata={"shared_log_scale": 0.18},
+    )
+    standalone = np.log(distribution.sample(100_000, seed=7))
+    shared = np.random.default_rng(9).normal(size=100_000)
+    correlated = np.log(distribution.sample(100_000, seed=7, shared_standard_normal=shared))
+
+    assert np.std(standalone) == pytest.approx(0.30, rel=0.02)
+    assert np.std(correlated) == pytest.approx(0.30, rel=0.02)
+
+
+def test_schema_valid_artifact_with_incomplete_species_mapping_is_rejected(model):
+    envelope = json.loads(model.to_json())
+    del envelope["payload"]["species_properties"]["S01"]["janka_hardness"]
+    payload_bytes = json.dumps(
+        envelope["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    envelope["payload_bytes"] = len(payload_bytes)
+    envelope["payload_checksum"] = hashlib.sha256(payload_bytes).hexdigest()
+
+    with pytest.raises(ValueError, match="species S01 properties"):
+        PredictionV2Model.from_json(json.dumps(envelope))

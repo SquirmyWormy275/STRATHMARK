@@ -12,10 +12,13 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS prediction_ledger_requests (
     ledger_request_id TEXT PRIMARY KEY,
+    caller_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
     request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
     event_code TEXT NOT NULL CHECK (event_code IN ('SB', 'UH')),
     prediction_as_of DATE NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (caller_id, request_id)
 );
 
 CREATE TABLE IF NOT EXISTS prediction_ledger_predictions (
@@ -140,6 +143,7 @@ AS $$
 DECLARE
     request_row JSONB;
     existing_hash TEXT;
+    existing_request_id TEXT;
 BEGIN
     IF ledger_payload ? 'settlement' THEN
         INSERT INTO prediction_ledger_settlements (
@@ -164,18 +168,25 @@ BEGIN
 
     request_row := ledger_payload->'request';
     INSERT INTO prediction_ledger_requests (
-        ledger_request_id, request_hash, event_code, prediction_as_of, created_at
+        ledger_request_id, caller_id, request_id, request_hash,
+        event_code, prediction_as_of, created_at
     ) VALUES (
-        request_row->>'ledger_request_id', request_row->>'request_hash',
+        request_row->>'ledger_request_id', request_row->>'caller_id',
+        request_row->>'request_id', request_row->>'request_hash',
         request_row->>'event_code', (request_row->>'prediction_as_of')::DATE,
         (request_row->>'created_at')::TIMESTAMPTZ
-    ) ON CONFLICT (ledger_request_id) DO NOTHING;
+    ) ON CONFLICT (caller_id, request_id) DO NOTHING;
 
-    SELECT request_hash INTO existing_hash
+    SELECT ledger_request_id, request_hash
+    INTO existing_request_id, existing_hash
     FROM prediction_ledger_requests
-    WHERE ledger_request_id = request_row->>'ledger_request_id';
+    WHERE caller_id = request_row->>'caller_id'
+      AND request_id = request_row->>'request_id';
     IF existing_hash IS DISTINCT FROM request_row->>'request_hash' THEN
         RAISE EXCEPTION 'ledger request hash conflict';
+    END IF;
+    IF existing_request_id IS DISTINCT FROM request_row->>'ledger_request_id' THEN
+        RETURN jsonb_build_object('accepted', TRUE, 'kind', 'field', 'duplicate', TRUE);
     END IF;
 
     INSERT INTO prediction_ledger_predictions (
@@ -232,9 +243,9 @@ COMMIT;
 -- Rollback (destructive to mirrored ledger data; local SQLite remains intact):
 -- BEGIN;
 -- DROP FUNCTION IF EXISTS append_prediction_ledger_v2(JSONB);
--- DROP FUNCTION IF EXISTS reject_prediction_ledger_mutation();
 -- DROP TABLE IF EXISTS prediction_ledger_settlements;
 -- DROP TABLE IF EXISTS prediction_ledger_features;
 -- DROP TABLE IF EXISTS prediction_ledger_predictions;
 -- DROP TABLE IF EXISTS prediction_ledger_requests;
+-- DROP FUNCTION IF EXISTS reject_prediction_ledger_mutation();
 -- COMMIT;

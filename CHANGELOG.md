@@ -15,15 +15,16 @@ for compatibility.
   trend, cross-event borrowing, and partial pooling for zero/sparse history.
 - Chronological split-conformal 90% prediction intervals with calibration state and
   scope, kept separate from race-performance `std_dev`.
-- Safe checksummed JSON core artifact packaged with the wheel and one immutable
+- Safe checksummed JSON core artifact with its canonical species-property lookup,
+  packaged with the wheel and one immutable
   `PredictionBundle` snapshot per request.
 - Optional CatBoost residual artifact and strict rolling-origin promotion gate. No
   residual candidate is promoted in the 2.0.0 release.
 - Deterministic joint mark optimizer using 2,048 common-random samples and at most eight
   coordinate passes, with a bounded rounded-gap fallback.
 - Append-only local SQLite prediction ledger, authenticated REST ledger routes,
-  immutable settlement revisions, and optional best-effort Supabase mirroring through
-  migration `20260811_005_prediction_v2.sql`.
+  immutable settlement revisions, a replayable sanitized mirror outbox, and optional
+  best-effort Supabase mirroring through migration `20260811_005_prediction_v2.sql`.
 - Frozen release evidence and a verify-only operator command: `python train_model.py`.
 
 ### Changed

@@ -147,6 +147,24 @@ def test_residual_training_frame_uses_only_prior_fold_core_residuals(monkeypatch
     )
 
 
+def test_residual_training_features_use_the_serving_diameter_clip():
+    from tests.test_prediction_v2 import _training_frame
+
+    evidence = _training_frame().copy()
+    target_index = evidence["result_date"].idxmax()
+    evidence.loc[target_index, "diameter_mm"] = 2000.0
+    residuals = build_residual_training_frame(evidence, min_training_rows=10)
+    target = residuals[
+        (residuals["competitor_id"] == evidence.loc[target_index, "competitor_id"])
+        & (residuals["event"] == evidence.loc[target_index, "event"])
+        & (residuals["result_date"] == evidence.loc[target_index, "result_date"])
+    ]
+
+    assert len(target) == 1
+    clipped = float(np.exp(target.iloc[0]["log_diameter_ratio"]) * 300.0)
+    assert clipped < 2000.0
+
+
 def test_partition_benchmark_roles_uses_exact_exclusive_windows():
     from tests.test_prediction_v2 import _training_frame
 

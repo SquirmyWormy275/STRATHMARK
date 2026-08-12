@@ -29,7 +29,7 @@ from strathmark.features import (
 
 ENGINE_VERSION = "2.0.0"
 ARTIFACT_SCHEMA = "strathmark.prediction-v2-core"
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 ARTIFACT_MAX_BYTES = 1_000_000
 
 HUBER_THRESHOLD = 1.345
@@ -293,13 +293,15 @@ class PredictiveDistribution:
         rng = np.random.default_rng(seed)
         independent = rng.standard_normal(size)
         shared_scale = float(self.metadata.get("shared_log_scale", 0.0))
-        individual_scale = math.sqrt(max(self.log_scale**2 - shared_scale**2, 1e-12))
         shared = 0.0
         if shared_standard_normal is not None:
+            individual_scale = math.sqrt(max(self.log_scale**2 - shared_scale**2, 1e-12))
             supplied = np.asarray(shared_standard_normal, dtype=float)
             if supplied.shape != (size,) or not np.all(np.isfinite(supplied)):
                 raise ValueError("shared_standard_normal must be a finite vector matching size")
             shared = shared_scale * supplied
+        else:
+            individual_scale = self.log_scale
         return np.exp(self.log_location + shared + individual_scale * independent)
 
 
@@ -320,6 +322,7 @@ class PredictionV2Model:
     event_counts: Mapping[str, int]
     species_support: tuple[str, ...]
     cross_event_coefficients: Mapping[str, float]
+    species_properties: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     calibration: ChronologicalCalibrator = field(default_factory=ChronologicalCalibrator)
     validation_metrics: Mapping[str, float] = field(default_factory=dict)
     engine_version: str = ENGINE_VERSION
@@ -382,6 +385,12 @@ class PredictionV2Model:
         residual_frame = frame[["competitor_id", "event"]].copy()
         residual_frame["residual"] = residuals
         cross = _learn_cross_event_coefficients(residual_frame)
+        species_properties: dict[str, dict[str, float]] = {}
+        known_species = frame.loc[~frame["species_missing"].astype(bool)].copy()
+        for species, group in known_species.groupby("species", sort=True):
+            species_properties[str(species)] = {
+                name: float(group[name].astype(float).median()) for name in SPECIES_PROPERTY_FIELDS
+            }
         digest = source_checksum or _frame_checksum(frame)
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest.lower()):
             raise ValueError("source_checksum must be a SHA-256 hexadecimal digest")
@@ -400,11 +409,17 @@ class PredictionV2Model:
             event_counts=event_counts,
             species_support=tuple(sorted(set(frame["species"].astype(str)) - {MISSING_CATEGORY})),
             cross_event_coefficients=cross,
+            species_properties=species_properties,
             validation_metrics=dict(validation_metrics or {}),
         )
 
     def with_calibration(self, calibration: ChronologicalCalibrator) -> "PredictionV2Model":
         return replace(self, calibration=calibration)
+
+    def artifact_fingerprint(self) -> str:
+        """Return the exact immutable core payload digest for residual binding."""
+
+        return hashlib.sha256(_canonical_json(self._payload()).encode("utf-8")).hexdigest()
 
     def is_compatible(self, prediction_as_of: date) -> bool:
         cutoff = normalize_prediction_as_of(prediction_as_of)
@@ -459,7 +474,8 @@ class PredictionV2Model:
             **{name: float(getattr(request, name)) for name in SPECIES_PROPERTY_FIELDS},
         }
         population_mu = self._population_location(pd.DataFrame([target]))[0]
-        history_frame = _canonical_history(history, request.prediction_as_of, wood_df)
+        effective_wood_df = wood_df if wood_df is not None else self.species_property_frame()
+        history_frame = _canonical_history(history, request.prediction_as_of, effective_wood_df)
         if not history_frame.empty:
             history_frame = history_frame[
                 history_frame["competitor_id"].astype(str) == str(request.competitor_id)
@@ -542,6 +558,24 @@ class PredictionV2Model:
                 "calibration_sample_count": calibration.sample_count,
             },
         )
+
+    def resolve_species_properties(self, species: Any) -> tuple[dict[str, float], bool]:
+        """Resolve a request species from the exact lookup packaged with this core."""
+
+        key = str(species or "").strip().upper()
+        values = self.species_properties.get(key)
+        if values is None:
+            return dict(self.property_means), True
+        return {name: float(values[name]) for name in SPECIES_PROPERTY_FIELDS}, False
+
+    def species_property_frame(self) -> pd.DataFrame:
+        """Return a canonical lookup frame for request-owned history preparation."""
+
+        rows = [
+            {"species": species, **dict(values)}
+            for species, values in sorted(self.species_properties.items())
+        ]
+        return pd.DataFrame(rows, columns=("species", *SPECIES_PROPERTY_FIELDS))
 
     def _population_location(self, frame: pd.DataFrame) -> np.ndarray:
         matrix = _design_matrix(
@@ -634,6 +668,9 @@ class PredictionV2Model:
             "event_scales": dict(self.event_scales),
             "event_counts": dict(self.event_counts),
             "species_support": list(self.species_support),
+            "species_properties": {
+                species: dict(values) for species, values in sorted(self.species_properties.items())
+            },
             "cross_event_coefficients": dict(self.cross_event_coefficients),
             "calibration": self.calibration.to_dict(),
             "validation_metrics": dict(self.validation_metrics),
@@ -650,7 +687,8 @@ class PredictionV2Model:
             raise ValueError("artifact is not valid JSON") from exc
         if not isinstance(envelope, dict):
             raise ValueError("artifact envelope must be an object")
-        if envelope.get("schema") != ARTIFACT_SCHEMA or envelope.get("schema_version") != 1:
+        schema_version = envelope.get("schema_version")
+        if envelope.get("schema") != ARTIFACT_SCHEMA or schema_version not in {1, 2}:
             raise ValueError("unsupported prediction artifact schema")
         payload = envelope.get("payload")
         if not isinstance(payload, dict):
@@ -682,6 +720,8 @@ class PredictionV2Model:
             "calibration",
             "validation_metrics",
         }
+        if schema_version == 2:
+            required.add("species_properties")
         if set(payload) != required:
             raise ValueError("artifact payload fields do not match schema")
         if payload["canonicalization_version"] != CANONICALIZATION_VERSION:
@@ -692,6 +732,27 @@ class PredictionV2Model:
         coefficients = tuple(float(value) for value in payload["coefficients"])
         if feature_names != _feature_names() or len(coefficients) != len(feature_names):
             raise ValueError("artifact feature schema is incompatible")
+        property_means = _validated_property_mapping(payload["property_means"], "property means")
+        property_scales = _validated_property_mapping(
+            payload["property_scales"], "property scales", positive=True
+        )
+        raw_species_properties = payload.get("species_properties", {})
+        if not isinstance(raw_species_properties, Mapping):
+            raise ValueError("artifact species properties must be an object")
+        species_properties: dict[str, dict[str, float]] = {}
+        for species, values in raw_species_properties.items():
+            species_key = str(species).strip().upper()
+            if not species_key or species_key == MISSING_CATEGORY:
+                raise ValueError("artifact species property key is invalid")
+            species_properties[species_key] = _validated_property_mapping(
+                values, f"species {species_key} properties"
+            )
+        species_support = tuple(str(value).strip().upper() for value in payload["species_support"])
+        if schema_version == 2 and set(species_properties) != set(species_support):
+            raise ValueError("artifact species lookup does not match species support")
+        diameter_support = _validated_event_pair_mapping(payload["diameter_support"])
+        event_scales = _validated_event_scalar_mapping(payload["event_scales"], positive=True)
+        event_counts = _validated_event_count_mapping(payload["event_counts"])
         model = cls(
             engine_version=str(payload["engine_version"]),
             model_version=str(payload["model_version"]),
@@ -701,17 +762,13 @@ class PredictionV2Model:
             source_checksum=str(payload["source_checksum"]),
             feature_names=feature_names,
             coefficients=coefficients,
-            property_means={key: float(value) for key, value in payload["property_means"].items()},
-            property_scales={
-                key: float(value) for key, value in payload["property_scales"].items()
-            },
-            diameter_support={
-                key: (float(value[0]), float(value[1]))
-                for key, value in payload["diameter_support"].items()
-            },
-            event_scales={key: float(value) for key, value in payload["event_scales"].items()},
-            event_counts={key: int(value) for key, value in payload["event_counts"].items()},
-            species_support=tuple(str(value) for value in payload["species_support"]),
+            property_means=property_means,
+            property_scales=property_scales,
+            diameter_support=diameter_support,
+            event_scales=event_scales,
+            event_counts=event_counts,
+            species_support=species_support,
+            species_properties=species_properties,
             cross_event_coefficients={
                 key: float(value) for key, value in payload["cross_event_coefficients"].items()
             },
@@ -728,6 +785,50 @@ class PredictionV2Model:
         if model.engine_version != ENGINE_VERSION:
             raise ValueError("artifact engine version is incompatible")
         return model
+
+
+def _validated_property_mapping(
+    raw: Any, label: str, *, positive: bool = False
+) -> dict[str, float]:
+    if not isinstance(raw, Mapping) or set(raw) != set(SPECIES_PROPERTY_FIELDS):
+        raise ValueError(f"artifact {label} fields are incompatible")
+    result = {name: float(raw[name]) for name in SPECIES_PROPERTY_FIELDS}
+    if any(not math.isfinite(value) or (positive and value <= 0) for value in result.values()):
+        raise ValueError(f"artifact {label} values are invalid")
+    return result
+
+
+def _validated_event_pair_mapping(raw: Any) -> dict[str, tuple[float, float]]:
+    if not isinstance(raw, Mapping) or set(raw) != set(_EVENTS):
+        raise ValueError("artifact diameter support event fields are incompatible")
+    result: dict[str, tuple[float, float]] = {}
+    for event in _EVENTS:
+        values = raw[event]
+        if not isinstance(values, (list, tuple)) or len(values) != 2:
+            raise ValueError("artifact diameter support values are invalid")
+        pair = (float(values[0]), float(values[1]))
+        if any(not math.isfinite(value) or value <= 0 for value in pair) or pair[0] > pair[1]:
+            raise ValueError("artifact diameter support values are invalid")
+        result[event] = pair
+    return result
+
+
+def _validated_event_scalar_mapping(raw: Any, *, positive: bool = False) -> dict[str, float]:
+    if not isinstance(raw, Mapping) or set(raw) != set(_EVENTS):
+        raise ValueError("artifact event scale fields are incompatible")
+    result = {event: float(raw[event]) for event in _EVENTS}
+    if any(not math.isfinite(value) or (positive and value <= 0) for value in result.values()):
+        raise ValueError("artifact event scales are invalid")
+    return result
+
+
+def _validated_event_count_mapping(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, Mapping) or set(raw) != set(_EVENTS):
+        raise ValueError("artifact event count fields are incompatible")
+    result = {event: int(raw[event]) for event in _EVENTS}
+    if any(value < 0 for value in result.values()):
+        raise ValueError("artifact event counts are invalid")
+    return result
 
 
 @dataclass(frozen=True)

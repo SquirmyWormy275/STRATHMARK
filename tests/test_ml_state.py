@@ -162,6 +162,8 @@ class TestPredictionLedgerMirror:
         payload = {
             "request": {
                 "ledger_request_id": "request-1",
+                "caller_id": "api",
+                "request_id": "field-1",
                 "request_hash": "a" * 64,
                 "event_code": "SB",
                 "prediction_as_of": "2026-08-11",

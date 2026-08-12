@@ -46,7 +46,8 @@ safe fallback and tie anchor. Inspect `optimizer` and `optimizer_metadata`.
 ## Does calculation require the cloud?
 
 No. The model and local SQLite work offline. Cloud mirroring is optional and
-best-effort.
+best-effort through a replayable local outbox, and delivery does not delay the
+calculation response.
 
 ## How do I record trusted predictions?
 

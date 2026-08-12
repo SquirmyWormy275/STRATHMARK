@@ -109,6 +109,9 @@ def chronological_backtest(
                 **{name: float(row[name]) for name in SPECIES_PROPERTY_FIELDS},
             )
             distribution = model.predict(request, history=training)
+            from strathmark.residual import build_residual_features
+
+            residual_features = build_residual_features(request, distribution)
             actual = float(row["time_seconds"])
             predictions.append(
                 {
@@ -119,15 +122,15 @@ def chronological_backtest(
                     "fold_training_max_date": max(training["result_date"]),
                     "gender": str(row["gender"]),
                     "species": str(row["species"]),
-                    "species_missing": bool(row["species_missing"]),
+                    "species_missing": bool(residual_features["species_missing"]),
                     "diameter_mm": float(row["diameter_mm"]),
-                    "log_diameter_ratio": math.log(float(row["diameter_mm"]) / 300.0),
-                    **{name: float(row[name]) for name in SPECIES_PROPERTY_FIELDS},
-                    "history_count": distribution.history_count,
-                    "effective_history_weight": distribution.effective_history_weight,
-                    "same_event_state": float(distribution.metadata.get("same_event_state", 0.0)),
-                    "trend_projection": float(distribution.metadata.get("trend_projection", 0.0)),
-                    "cross_event_state": float(distribution.metadata.get("cross_event_state", 0.0)),
+                    "log_diameter_ratio": residual_features["log_diameter_ratio"],
+                    **{name: residual_features[name] for name in SPECIES_PROPERTY_FIELDS},
+                    "history_count": residual_features["history_count"],
+                    "effective_history_weight": residual_features["effective_history_weight"],
+                    "same_event_state": residual_features["same_event_state"],
+                    "trend_projection": residual_features["trend_projection"],
+                    "cross_event_state": residual_features["cross_event_state"],
                     "actual_time": actual,
                     "predicted_median": distribution.median,
                     "core_log_location": distribution.log_location,

@@ -366,6 +366,12 @@ def _parse_result_date(value: Any) -> Optional[date]:
     return timestamp.date()
 
 
+def parse_result_date_utc(value: Any) -> Optional[date]:
+    """Parse one result date using the canonical UTC evidence semantics."""
+
+    return _parse_result_date(value)
+
+
 __all__ = [
     "ACTIVE_RESULT_FIELDS",
     "CANONICALIZATION_VERSION",
@@ -376,4 +382,5 @@ __all__ = [
     "SPECIES_PROPERTY_FIELDS",
     "build_prior_evidence",
     "normalize_prediction_as_of",
+    "parse_result_date_utc",
 ]

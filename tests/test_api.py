@@ -49,9 +49,33 @@ def v2_provider():
 
         def __init__(self):
             self.cutoffs = []
+            self.requests = []
+
+        def resolve_species_properties(self, species):
+            if str(species).strip().upper() == "S01":
+                return {
+                    "janka_hardness": 2400.0,
+                    "specific_gravity": 0.42,
+                    "crush_strength": 5100.0,
+                    "shear_strength": 1100.0,
+                    "modulus_of_rupture": 10000.0,
+                    "modulus_of_elasticity": 1500000.0,
+                }, False
+            return {
+                "janka_hardness": 1690.0,
+                "specific_gravity": 0.34,
+                "crush_strength": 4000.0,
+                "shear_strength": 1000.0,
+                "modulus_of_rupture": 8000.0,
+                "modulus_of_elasticity": 1000000.0,
+            }, True
+
+        def species_property_frame(self):
+            return None
 
         def predict(self, request, *, history=None, wood_df=None):
             self.cutoffs.append(request.prediction_as_of)
+            self.requests.append(request)
             return PredictiveDistribution(
                 median=44.0,
                 log_location=3.78,
@@ -91,11 +115,23 @@ class TestHealthEndpoint:
 
         assert data["prediction_engine"]["core"]["available"] is True
         assert data["prediction_engine"]["core"]["version"] == "api-core"
+        assert data["prediction_engine"]["core"]["serving_active"] is True
         assert "residual" in data["prediction_engine"]
         assert "calibration" in data["prediction_engine"]
         assert "cutoff" in data["prediction_engine"]
         assert "degraded" in data["prediction_engine"]
+        assert data["prediction_engine"]["active_engine"] == "v2"
         assert "ollama_available" in data
+
+    def test_health_reports_legacy_when_rollback_is_active(self, client, monkeypatch):
+        monkeypatch.setenv("STRATHMARK_PREDICTION_ENGINE", "legacy")
+
+        data = client.get("/health").json()
+
+        assert data["prediction_engine"]["active_engine"] == "legacy"
+        assert data["prediction_engine"]["core"]["serving_active"] is False
+        assert data["prediction_engine"]["residual"]["serving_active"] is False
+        assert data["prediction_engine"]["calibration"]["serving_active"] is False
 
 
 class TestCalculateEndpoint:
@@ -267,6 +303,30 @@ class TestCalculateEndpoint:
         assert "engine_version" in result
         assert "prediction_id" in result
         assert "ledger_recorded" in result
+        assert result["provenance"]["engine"] == "prediction_v2"
+        assert "division" in result["ignored_factors"]
+
+    def test_history_is_bounded_at_api_boundary(self, client):
+        history = [
+            {
+                "event_code": "SB",
+                "time_seconds": 30.0,
+                "species": "poplar",
+                "diameter_mm": 300,
+                "quality": 5,
+                "result_date": "2025-01-01",
+            }
+        ] * 501
+        response = client.post(
+            "/calculate",
+            json={
+                "competitors": [{"name": "A", "history": history}],
+                "wood": {"species": "poplar", "diameter_mm": 300, "quality": 5},
+                "event_code": "SB",
+            },
+        )
+
+        assert response.status_code == 422
 
     def test_duplicate_name_keyed_override_is_rejected(self, client):
         resp = client.post(
@@ -437,7 +497,11 @@ class TestPredictEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert core.cutoffs == [date(2025, 6, 1)]
+        assert core.requests[0].species_missing is False
+        assert core.requests[0].janka_hardness == 2400.0
         assert data["best"]["method_used"] == "baseline"
+        assert data["best"]["provenance"]["prediction_source"] == ("conditional_population_prior")
+        assert "division" in data["best"]["ignored_factors"]
         assert data["all_predictions"]["llm"] is None
 
 

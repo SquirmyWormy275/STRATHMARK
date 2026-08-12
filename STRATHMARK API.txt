@@ -121,8 +121,11 @@ final. An identical caller/request_id and canonical payload returns the original
 prediction IDs; the same key with a changed payload returns HTTP 409.
 
 STRATHMARK_LEDGER_CALLER identifies the caller namespace and defaults to api. Cloud
-mirroring is best-effort when Supabase credentials are present. Calculation remains
-valid if mirroring or ledger recording fails; inspect ledger_recorded and ledger_status.
+mirroring is best-effort when Supabase credentials are present. A sanitized local
+outbox is committed with the field, and delivery runs off the calculation response
+path. `recorded_cloud_pending` means local evidence is durable while cloud delivery is
+pending. Calculation remains valid if mirroring or ledger recording fails; inspect
+ledger_recorded and ledger_status.
 
 POST /ledger/predictions/{prediction_id}/settle
 ------------------------------------------------

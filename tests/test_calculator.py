@@ -15,7 +15,7 @@ Tests are organized in three groups:
 """
 
 import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -99,6 +99,65 @@ def test_calculate_records_joint_optimizer_metadata() -> None:
     }
     assert all(result.optimizer_metadata["simulations"] == 2048 for result in results)
     assert all(result.optimizer_metadata["seed"] == 17 for result in results)
+
+
+def test_future_same_day_and_undated_history_cannot_change_manual_marks() -> None:
+    cutoff = date(2026, 1, 1)
+    prior = [
+        HistoricalResult("SB", 40.0, "Pine", 300.0, 5, date(2025, 1, 1)),
+        HistoricalResult("SB", 41.0, "Pine", 300.0, 5, date(2025, 6, 1)),
+    ]
+    contaminated = [
+        *prior,
+        HistoricalResult("SB", 5.0, "Pine", 300.0, 5, cutoff),
+        HistoricalResult("SB", 170.0, "Pine", 300.0, 5, date(2027, 1, 1)),
+        HistoricalResult("SB", 120.0, "Pine", 300.0, 5, None),
+    ]
+    clean = [
+        CompetitorRecord("Alice", history=prior, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+    dirty = [
+        CompetitorRecord("Alice", history=contaminated, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+    context = PredictionContext(prediction_as_of=cutoff, seed=19)
+
+    clean_results = HandicapCalculator().calculate(clean, PINE_300, "SB", context=context)
+    dirty_results = HandicapCalculator().calculate(dirty, PINE_300, "SB", context=context)
+
+    assert [(row.name, row.std_dev, row.mark) for row in dirty_results] == [
+        (row.name, row.std_dev, row.mark) for row in clean_results
+    ]
+
+
+def test_timezone_aware_utc_same_day_history_cannot_change_manual_marks() -> None:
+    cutoff = date(2026, 1, 1)
+    prior = [
+        HistoricalResult("SB", 40.0, "Pine", 300.0, 5, date(2025, 1, 1)),
+        HistoricalResult("SB", 41.0, "Pine", 300.0, 5, date(2025, 6, 1)),
+    ]
+    utc_same_day = datetime(2025, 12, 31, 23, 30, tzinfo=timezone(-timedelta(hours=12)))
+    dirty_history = [
+        *prior,
+        HistoricalResult("SB", 170.0, "Pine", 300.0, 5, utc_same_day),
+    ]
+    context = PredictionContext(prediction_as_of=cutoff, seed=23)
+    clean = [
+        CompetitorRecord("Alice", history=prior, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+    dirty = [
+        CompetitorRecord("Alice", history=dirty_history, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+
+    clean_results = HandicapCalculator().calculate(clean, PINE_300, "SB", context=context)
+    dirty_results = HandicapCalculator().calculate(dirty, PINE_300, "SB", context=context)
+
+    assert [(row.name, row.std_dev, row.mark) for row in dirty_results] == [
+        (row.name, row.std_dev, row.mark) for row in clean_results
+    ]
 
 
 def _competitor(
