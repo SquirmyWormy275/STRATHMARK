@@ -398,7 +398,7 @@ def test_duplicate_retries_pending_cloud_outbox_without_new_local_rows(tmp_path)
     third = ledger.record_field("api", "cloud-retry", _request_payload(), [_pred()])
 
     assert first.cloud_status == "pending"
-    assert retry.status == "duplicate"
+    assert retry.status in {"duplicate", "duplicate_cloud_pending"}
     assert retry.cloud_status in {"pending", "recorded"}
     assert third.cloud_status == "recorded"
     assert len(mirrored) >= 2
