@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.validate_v2 import load_benchmark_manifest, verify_release, verify_source_checksum
+from scripts.validate_v2 import (
+    _attested_file_sha256,
+    load_benchmark_manifest,
+    verify_release,
+    verify_source_checksum,
+)
 from scripts.verify_v2_golden import build_golden, verify_golden
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +42,15 @@ def test_source_checksum_must_match_before_evaluation(tmp_path: Path):
     assert verify_source_checksum(source, actual) == actual
     with pytest.raises(ValueError, match="checksum mismatch"):
         verify_source_checksum(source, "0" * 64)
+
+
+def test_attestation_digest_is_stable_across_json_line_endings(tmp_path: Path):
+    lf = tmp_path / "lf.json"
+    crlf = tmp_path / "crlf.json"
+    lf.write_bytes(b'{\n  "value": 1\n}\n')
+    crlf.write_bytes(b'{\r\n  "value": 1\r\n}\r\n')
+
+    assert _attested_file_sha256(lf) == _attested_file_sha256(crlf)
 
 
 def test_published_release_verifies_without_reopening_locked_rows(monkeypatch):

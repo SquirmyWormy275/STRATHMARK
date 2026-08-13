@@ -474,7 +474,7 @@ def _verify_release_attestation(
     }
     digests = attestation["digests"]
     for name, path in paths.items():
-        if _file_sha256(path) != digests[f"{name}_sha256"]:
+        if _attested_file_sha256(path) != digests[f"{name}_sha256"]:
             raise ValueError(f"release attestation digest mismatch for {name}")
 
 
@@ -576,6 +576,13 @@ def _validate_prelock(
 
 def _file_sha256(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _attested_file_sha256(path: str | Path) -> str:
+    """Hash persisted JSON with canonical LF line endings across checkouts."""
+
+    raw = Path(path).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _write_json(path: str | Path, value: Mapping[str, Any]) -> None:

@@ -197,11 +197,13 @@ python train_model.py
 ```
 
 The verifier also checks a separately reviewed fixed-digest attestation for the
-manifest, pre-lock record, final report, and packaged artifact. Ordinary verification
-never regenerates that trust anchor; changing it is a governance action reviewed
-separately from the payload change it authorizes. Because all of those files live in the
-repository, branch protection and independent review of attestation changes are the trust
-root; the local verifier alone cannot make a coordinated repository rewrite trustworthy.
+manifest, pre-lock record, final report, and packaged artifact. The attested JSON digest
+canonicalizes line endings to LF so the same reviewed content verifies on Windows and
+Linux. Ordinary verification never regenerates that trust anchor; changing it is a
+governance action reviewed separately from the payload change it authorizes. Because the
+four files live in the repository, branch protection and independent review of attestation
+changes are the trust root; the local verifier alone cannot make a coordinated repository
+rewrite trustworthy.
 
 `python train_model.py --prepare` and `python train_model.py --open-locked-test` are
 governance operations for a new, prospectively locked benchmark only. The current tool
