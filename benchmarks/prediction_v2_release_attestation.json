@@ -1,0 +1,10 @@
+{
+  "schema_version": "prediction-v2-release-attestation/v1",
+  "governance_policy": "fixed canonical-LF digests; governance-only updates reviewed independently from release payload changes",
+  "digests": {
+    "manifest_sha256": "b702f607a30aee2531f3f59064e2f8c67a96aa3f13cd74ce3f1fdcc1182f6899",
+    "prelock_sha256": "d642be7f28245a7103ca832c9976750daed16470303ee7a36a5b5093b6dcca6c",
+    "report_sha256": "c83ba87edafe42c7df335bd80a7a42d60ba4baca9cedd28d12001e90df168536",
+    "artifact_sha256": "d564bf679244d9e39149c4bfd8ff50adc079e0696cde931d48a57dcb8b9c3f67"
+  }
+}

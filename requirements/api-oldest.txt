@@ -1,0 +1,5 @@
+# Oldest API-compatible set verified by CI. Keep these as a coordinated set.
+fastapi==0.110.0
+starlette==0.36.3
+httpx==0.27.2
+uvicorn==0.29.0

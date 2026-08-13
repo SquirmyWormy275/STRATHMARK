@@ -24,6 +24,7 @@ import pytest
 from strathmark.calculator import HandicapCalculator
 from strathmark.predictor import (
     CompetitorRecord,
+    FilePredictionProvider,
     HistoricalResult,
     WoodProfile,
     get_best_prediction,
@@ -77,17 +78,28 @@ class TestNoSupabase:
         assert result["inserted"] == 0
         # Should not raise -- error list may contain a connection warning, that's fine
 
-    def test_cascade_falls_to_panel_when_no_history(self):
-        """A new competitor with empty history must produce a panel mark."""
+    def test_packaged_core_handles_no_history_without_supabase(self):
+        """A new competitor uses the packaged population prior offline."""
         rec = CompetitorRecord(name="Brand New", history=[], division="Open")
         wood = WoodProfile(species="Pine", diameter_mm=300, quality=5)
 
         pred = get_best_prediction(rec, wood, "SB")
 
         assert pred is not None
-        assert pred.method == "panel"
+        assert pred.method == "baseline"
+        assert pred.metadata["source"] == "conditional_population_prior"
         assert 3.0 <= pred.value <= 183.0
-        assert pred.confidence == "VERY LOW"
+        assert pred.confidence == "LOW"
+
+    def test_packaged_core_is_healthy_without_an_optional_residual(self):
+        bundle = FilePredictionProvider().snapshot(date(2026, 8, 13))
+        health = bundle.health(date(2026, 8, 13))
+
+        assert bundle.core is not None
+        assert bundle.degraded is False
+        assert health["degraded"] is False
+        assert health["residual"]["available"] is False
+        assert "residual_artifact_missing" not in health["warnings"]
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +173,7 @@ class TestNoOllama:
 
 
 class TestNewCompetitor:
-    def test_zero_history_returns_panel_mark(self):
+    def test_zero_history_returns_population_or_broad_prior(self):
         rec = CompetitorRecord(name="First Timer", history=[], division="Novice")
         wood = WoodProfile(species="Pine", diameter_mm=300, quality=5)
 
@@ -169,7 +181,11 @@ class TestNewCompetitor:
 
         assert pred is not None
         assert pred.value > 0
-        assert pred.method == "panel"
+        assert pred.method in {"baseline", "panel"}
+        assert pred.metadata["source"] in {
+            "conditional_population_prior",
+            "broad_event_prior",
+        }
 
     def test_zero_history_in_calculate_produces_valid_mark(self):
         rec_new = CompetitorRecord(name="Newbie", history=[], division="Open")

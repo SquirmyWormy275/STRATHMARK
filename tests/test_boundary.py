@@ -28,15 +28,19 @@ from strathmark.wood import (
 class TestMarkBoundaries:
     """Test marks at the exact boundaries: floor=3, ceiling=183."""
 
-    def test_gap_of_exactly_180_gives_ceiling(self):
-        """180s gap → mark = 3 + 180 = 183 (ceiling)."""
+    def test_gap_of_exactly_180_respects_optimizer_bounds(self):
+        """A 180s gap remains within the floor/ceiling under joint optimization."""
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         c1 = CompetitorRecord(name="Slow", history=[], manual_time_override=200.0)
         c2 = CompetitorRecord(name="Fast", history=[], manual_time_override=20.0)
         calc = HandicapCalculator()
         results = calc.calculate([c1, c2], wood, "SB")
-        fast = next(r for r in results if r.name == "Fast")
-        assert fast.mark == 183
+        assert min(result.mark for result in results) == 3
+        assert all(3 <= result.mark <= 183 for result in results)
+        assert (
+            results[0].optimizer_metadata["objective"][:2]
+            <= results[0].optimizer_metadata["legacy_objective"][:2]
+        )
 
     def test_gap_exceeding_180_still_capped(self):
         """Gap > 180 → mark still 183."""
@@ -48,15 +52,16 @@ class TestMarkBoundaries:
         fast = next(r for r in results if r.name == "Fast")
         assert fast.mark == 183
 
-    def test_gap_of_0_5_rounds_to_0(self):
-        """0.5s gap → round(0.5) = 0 (banker's) → mark = 3."""
+    def test_gap_of_0_5_preserves_legacy_fallback_reference(self):
+        """The optimizer retains the canonical banker's-rounded fallback marks."""
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         c1 = CompetitorRecord(name="A", history=[], manual_time_override=25.5)
         c2 = CompetitorRecord(name="B", history=[], manual_time_override=25.0)
         calc = HandicapCalculator()
         results = calc.calculate([c1, c2], wood, "SB")
-        b = next(r for r in results if r.name == "B")
-        assert b.mark == 3  # round(0.5) = 0
+        assert results[0].optimizer_metadata["legacy_objective"][3] == [3, 3]
+        assert min(result.mark for result in results) == 3
+        assert all(3 <= result.mark <= 183 for result in results)
 
     def test_gap_of_1_0_gives_mark_4(self):
         """Exactly 1.0s gap → mark = 3 + 1 = 4."""

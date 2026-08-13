@@ -5,9 +5,9 @@ Handicap Mark Calculator
 Core handicap mark computation for woodchopping competitions.
 
 This module contains HandicapCalculator, the primary public class for computing
-association-agnostic handicap marks. It orchestrates the prediction cascade
-(Manual > LLM > ML > Panel fallback), gap computation, floor/ceiling
-enforcement, and produces a ranked start sheet.
+association-agnostic handicap marks. It snapshots Prediction Engine V2 once per
+field, optimizes the joint marks, enforces floor/ceiling constraints, and
+produces a ranked start sheet.
 
 Key constraints (must never be violated):
     - Mark floor:   3 seconds (front marker minimum)
@@ -15,7 +15,7 @@ Key constraints (must never be violated):
                     Individual event configs may set a lower ceiling.
     - Gap logic:    slowest predicted time -> Mark 3;
                     each full second faster -> +1 mark (ceiling arithmetic).
-    - Rounding:     marks always rounded UP (ceiling, not nearest).
+    - Rounding:     rounded-gap fallback uses Python's half-to-even ``round``.
 
 Source references (STRATHEX):
     woodchopping/handicaps/calculator.py  -> calculate_ai_enhanced_handicaps()
@@ -24,21 +24,142 @@ Source references (STRATHEX):
 from __future__ import annotations
 
 import logging
+import math
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from datetime import date
+from statistics import NormalDist
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
-from strathmark.config import llm_config, sim_config
+from strathmark.config import sim_config
+from strathmark.mark_optimizer import legacy_rounded_gap_marks, optimize_joint_marks
+from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
 from strathmark.predictor import (
     CompetitorRecord,
+    PredictionContext,
+    PredictionEngineProvider,
+    PredictionInterval,
     PredictionResult,
     WoodProfile,
     get_best_prediction,
+    get_prediction_provider,
 )
+from strathmark.provenance import ENGINE_VERSION, is_v2_training_source
 
 _log = logging.getLogger(__name__)
+
+_NUMERIC_EVIDENCE_FIELDS = frozenset(
+    {
+        "time_seconds",
+        "diameter_mm",
+        "janka_hardness",
+        "specific_gravity",
+        "crush_strength",
+        "shear_strength",
+        "modulus_of_rupture",
+        "modulus_of_elasticity",
+    }
+)
+
+
+def _serialize_evidence_value(name: str, value: Any) -> str | float | bool:
+    """Serialize one canonical evidence value without changing its domain type."""
+
+    if isinstance(value, date):
+        return value.isoformat()
+    if name == "species_missing":
+        return bool(value)
+    if name in _NUMERIC_EVIDENCE_FIELDS:
+        return float(value)
+    return str(value)
+
+
+def _is_positive_finite(value: object) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(number) and number > 0
+
+
+def _optimizer_distribution(
+    prediction: PredictionResult,
+    performance_std_dev: float,
+) -> PredictiveDistribution:
+    """Rebuild the immutable posterior used by the joint mark optimizer.
+
+    V2 model results carry their exact log-location and log-scale. Manual and
+    static fallback results have no model posterior, so their documented
+    interval is converted to a conservative log-scale; a performance-variance
+    conversion is the final compatibility fallback.
+    """
+
+    median = float(prediction.value)
+    metadata = prediction.metadata
+    try:
+        location = float(metadata["posterior_log_location"])
+        log_scale = float(metadata["posterior_log_scale"])
+        if not math.isfinite(location) or not math.isfinite(log_scale) or log_scale <= 0:
+            raise ValueError("invalid exact posterior parameters")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        location = math.log(median)
+        interval = prediction.interval
+        if interval is not None:
+            quantile = NormalDist().inv_cdf(0.5 + interval.nominal_coverage / 2.0)
+            radius = max(
+                location - math.log(interval.lower),
+                math.log(interval.upper) - location,
+            )
+            log_scale = max(radius / quantile, 1e-6)
+        else:
+            # Manual overrides intentionally have no model interval and no
+            # shared model latent. Use their labeled performance variability.
+            ratio = max(float(performance_std_dev), 1e-6) / median
+            log_scale = max(math.sqrt(math.log1p(ratio * ratio)), 1e-6)
+
+    raw_shared_scale = metadata.get("shared_log_scale", 0.0)
+    try:
+        shared_scale = float(raw_shared_scale)
+    except (TypeError, ValueError, OverflowError):
+        shared_scale = 0.0
+    if not math.isfinite(shared_scale) or prediction.method in {"manual", "panel"}:
+        shared_scale = 0.0
+    shared_scale = max(0.0, min(shared_scale, log_scale))
+
+    interval = prediction.interval
+    forecast = (
+        ForecastInterval(
+            lower=interval.lower,
+            upper=interval.upper,
+            nominal_coverage=interval.nominal_coverage,
+            calibration_state=interval.calibration_state,
+            scope=interval.scope,
+        )
+        if interval is not None
+        else ForecastInterval(
+            lower=math.exp(location - 1.6448536269514722 * log_scale),
+            upper=math.exp(location + 1.6448536269514722 * log_scale),
+            calibration_state="manual_event_prior",
+            scope="analytic",
+        )
+    )
+    return PredictiveDistribution(
+        median=median,
+        log_location=location,
+        log_scale=log_scale,
+        interval=forecast,
+        source=str(metadata.get("source", prediction.method)),
+        history_count=int(metadata.get("history_count", 0)),
+        effective_history_weight=float(metadata.get("effective_history_weight", 0.0)),
+        warnings=tuple(prediction.warnings),
+        degraded=prediction.degraded,
+        model_version=prediction.model_version or "",
+        calibration_version=prediction.calibration_version or "uncalibrated",
+        metadata={"shared_log_scale": shared_scale},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +194,22 @@ class MarkResult:
     Computed directly from competitor event history (3+ results -> clamped sample std;
     <3 results -> 3.0 flat). Independent of which cascade level won the prediction.
     Clamped to [1.5, 6.0]. Default 3.0 (PERFORMANCE_VARIANCE_SECONDS)."""
+
+    competitor_id: Optional[str] = None
+    interval: Optional[PredictionInterval] = None
+    engine_version: Optional[str] = None
+    model_version: Optional[str] = None
+    calibration_version: Optional[str] = None
+    evidence_cutoff: Optional[date] = None
+    optimizer: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    prediction_id: Optional[str] = None
+    ledger_recorded: Optional[bool] = None
+    degraded: bool = False
+    optimizer_metadata: Dict[str, object] = field(default_factory=dict)
+    ledger_status: Optional[str] = None
+    provenance: Dict[str, object] = field(default_factory=dict)
+    ignored_factors: List[str] = field(default_factory=list)
 
     def to_simulation_dict(self) -> dict:
         """Return a dict suitable for passing to run_monte_carlo_simulation().
@@ -182,15 +319,13 @@ class HandicapCalculator:
         sheet = calc.build_start_sheet(results, event_name="225 SB", ...)
         print(sheet.render())
 
-    Prediction cascade (highest to lowest priority):
+    Prediction selection:
         1. Manual override (explicit time supplied by operator)
-        2. LLM quality adjustment on top of weighted baseline
-        3. ML model (XGBoost, trained on historical data with time-decay weights)
-        4. Panel mark fallback (division-based default for competitors with no history)
+        2. The immutable V2 core/residual/calibration bundle
+        3. The explicit deterministic legacy-baseline rollback on degradation
 
-    Tournament result weighting:
-        When same-tournament times are available (earlier rounds on SAME wood),
-        they are weighted at 97% vs 3% historical. Confidence becomes VERY HIGH.
+    Unsupported context such as same-tournament results, division, wood quality,
+    venue, and lane remains accepted for compatibility but is a numeric no-op.
 
     Design invariants:
         - Mark floor = 3 (enforced after all other logic)
@@ -207,17 +342,19 @@ class HandicapCalculator:
         ollama_url: str = "http://localhost:11434",
         wood_df: Optional[pd.DataFrame] = None,
         results_df: Optional[pd.DataFrame] = None,
+        prediction_provider: Optional[PredictionEngineProvider] = None,
+        ledger_sink: Optional[Any] = None,
+        ledger_caller_id: str = "python",
     ) -> None:
         """
         Args:
             event_ceiling: Optional lower ceiling for this event (seconds).
                            Must be > MARK_FLOOR. If None, system default of 183 is used.
-            ollama_url: Base URL for the Ollama API used by the LLM prediction layer.
+            ollama_url: Deprecated compatibility input. Numeric LLM prediction is disabled.
             wood_df: Optional species properties DataFrame (Janka hardness, etc.).
                      When provided, passed to get_best_prediction() on every call.
-            results_df: Optional historical results DataFrame. When provided and no
-                        ML model has been trained yet, training is attempted on the
-                        first call to calculate(). Cached in self._ml_model.
+            results_df: Legacy compatibility data. V2 never trains on the request path;
+                        prediction state comes from the provider's immutable bundle.
         """
         if event_ceiling is not None:
             if event_ceiling <= self.MARK_FLOOR:
@@ -234,10 +371,12 @@ class HandicapCalculator:
         else:
             self.effective_ceiling = self.MARK_CEILING
 
-        self._ollama_url = ollama_url
+        del ollama_url
         self.wood_df: Optional[pd.DataFrame] = wood_df
         self.results_df: Optional[pd.DataFrame] = results_df
-        self._ml_model = None  # set on first calculate() when results_df is available
+        self._prediction_provider = prediction_provider or get_prediction_provider()
+        self._ledger_sink = ledger_sink
+        self._ledger_caller_id = str(ledger_caller_id or "python").strip()
 
     @classmethod
     def from_db(
@@ -249,8 +388,9 @@ class HandicapCalculator:
         """
         Construct a HandicapCalculator pre-loaded with data from the global database.
 
-        Calls pull_results() and pull_competitors() internally to fetch the
-        historical results needed for ML training and baseline prediction.
+        Calls pull_results() internally to fetch legacy historical results used
+        only by compatibility surfaces. V2 model
+        state is loaded from the configured immutable prediction bundle.
 
         Args:
             competitor_ids: Optional list of competitor IDs to filter results by.
@@ -290,8 +430,7 @@ class HandicapCalculator:
 
         Calls load_woodchopping_xlsx(path) to read the 'Wood' and 'Results'
         sheets, then returns a fully initialized instance with wood_df and
-        results_df already set. ML training is deferred to the first call to
-        calculate().
+        results_df already set. V2 does not train during calculation.
 
         Args:
             path: Path to the .xlsx workbook (e.g. 'woodchopping_clean.xlsx').
@@ -316,6 +455,7 @@ class HandicapCalculator:
         event_code: str,
         tournament_results: Optional[Dict[str, float]] = None,
         manual_overrides: Optional[Dict[str, float]] = None,
+        context: Optional[PredictionContext] = None,
     ) -> List[MarkResult]:
         """
         Compute handicap marks for all competitors in a heat/round.
@@ -325,15 +465,15 @@ class HandicapCalculator:
                          Each record includes historical times and metadata.
             wood: Wood characteristics for this event (species, diameter, quality).
             event_code: 'SB' (Standing Block) or 'UH' (Underhand).
-            tournament_results: Optional dict of {name: actual_time} from earlier
-                                rounds on the SAME wood. When provided, times are
-                                weighted 97% vs 3% historical (same-wood optimization).
+            tournament_results: Deprecated compatibility input. It is validated but
+                                cannot affect V2 numeric predictions or marks.
             manual_overrides: Optional dict of {name: predicted_time} supplied
                               directly by the operator. Highest cascade priority.
 
         Returns:
             List of MarkResult, sorted slowest-to-fastest (front marker first).
-            Marks are in [MARK_FLOOR, effective_ceiling], rounded up.
+            Marks are in [MARK_FLOOR, effective_ceiling]. The deterministic
+            rounded-gap fallback uses half-to-even rounding.
 
         Raises:
             ValueError: If event_code is not 'SB' or 'UH'.
@@ -350,28 +490,33 @@ class HandicapCalculator:
         if tournament_results is None:
             tournament_results = {}
 
-        # Lazy ML training: attempt once per instance when results_df is available
-        # and no model has been trained yet.
-        if self._ml_model is None and self.results_df is not None:
-            from strathmark.predictor import MLModel
+        self._validate_field_inputs(
+            competitors,
+            wood,
+            event_code,
+            tournament_results=tournament_results,
+            manual_overrides=manual_overrides,
+            context=context,
+        )
 
-            ml = MLModel()
-            try:
-                trained = ml.train(self.results_df, self.wood_df)
-                if trained:
-                    self._ml_model = ml
-                else:
-                    _log.warning(
-                        "HandicapCalculator: ML training returned False "
-                        "(insufficient data). Continuing with baseline."
-                    )
-            except Exception as exc:
-                _log.warning(
-                    "HandicapCalculator: ML training failed (%s). Continuing with baseline.",
-                    exc,
-                )
+        # Resolve the exclusive UTC cutoff and atomically snapshot all model,
+        # residual, calibration, and provenance state exactly once per field.
+        from strathmark.features import normalize_prediction_as_of, parse_result_date_utc
+
+        supplied_context = context or PredictionContext()
+        cutoff = normalize_prediction_as_of(supplied_context.prediction_as_of)
+        resolved_context = PredictionContext(
+            prediction_as_of=cutoff,
+            request_id=supplied_context.request_id,
+            seed=supplied_context.seed,
+            engine=supplied_context.engine,
+        )
+        bundle = self._prediction_provider.snapshot(cutoff)
 
         results: List[MarkResult] = []
+        posterior_by_result_id: Dict[int, PredictiveDistribution] = {}
+        prediction_by_result_id: Dict[int, PredictionResult] = {}
+        effective_records: List[CompetitorRecord] = []
 
         for record in competitors:
             # Apply manual override from the external dict if provided
@@ -394,30 +539,39 @@ class HandicapCalculator:
                     effective_record,
                     tournament_time=tournament_results[record.name],
                 )
+            effective_records.append(effective_record)
 
-            # Run prediction cascade, forwarding stored data frames and ML model
-            llm_client = {
-                "url": self._ollama_url,
-                "model": llm_config.PREDICTION_MODEL,
-                "timeout": llm_config.TIMEOUT_SECONDS,
-            }
+            # V2 uses request-owned history and the one immutable field bundle.
+            # Legacy context inputs remain accepted above but are numeric no-ops.
             prediction: PredictionResult = get_best_prediction(
                 effective_record,
                 wood,
                 event_code,
                 wood_data_df=self.wood_df,
                 results_df=self.results_df,
-                ml_model=self._ml_model,
-                llm_client=llm_client,
+                context=resolved_context,
+                prediction_bundle=bundle,
             )
 
             # Compute per-competitor std_dev from event history.
-            # Done here (not in predictor.py) so all cascade levels get the correct
-            # value regardless of which method (ML/LLM/baseline/panel) won.
+            # Kept separate from forecast uncertainty so the mark optimizer does
+            # not conflate performance variance with prediction uncertainty.
             # Threshold: 3+ results -> clamped sample std; <3 -> flat 3.0.
-            event_times = [
-                h.time_seconds for h in record.history if h.event_code.upper() == event_code.upper()
-            ]
+            event_times = []
+            for history_item in record.history:
+                if str(history_item.event_code).strip().upper() != event_code:
+                    continue
+                # Performance variability is prediction evidence too.  Apply
+                # the same exclusive cutoff as the point model so same-day,
+                # future, invalid, and undated rows cannot alter final marks.
+                if history_item.result_date is None:
+                    continue
+                history_date = parse_result_date_utc(history_item.result_date)
+                if history_date is None:
+                    continue
+                if history_date >= cutoff or not _is_positive_finite(history_item.time_seconds):
+                    continue
+                event_times.append(float(history_item.time_seconds))
             if len(event_times) >= 3:
                 raw_std = float(np.std(event_times, ddof=1))
                 competitor_std = max(1.5, min(raw_std, 15.0))
@@ -431,27 +585,402 @@ class HandicapCalculator:
                     ),
                 )
 
-            results.append(
-                MarkResult(
-                    name=record.name,
-                    mark=self.MARK_FLOOR,  # placeholder; filled by _assign_marks
-                    predicted_time=prediction.value,
-                    method_used=prediction.method,
-                    confidence=prediction.confidence,
-                    explanation=prediction.explanation,
-                    std_dev=competitor_std,
-                )
+            mark_result = MarkResult(
+                name=record.name,
+                mark=self.MARK_FLOOR,  # placeholder; filled by _assign_marks
+                predicted_time=prediction.value,
+                method_used=prediction.method,
+                confidence=prediction.confidence,
+                explanation=prediction.explanation,
+                std_dev=competitor_std,
+                competitor_id=record.competitor_id,
+                interval=prediction.interval,
+                engine_version=prediction.engine_version,
+                model_version=prediction.model_version,
+                calibration_version=prediction.calibration_version,
+                evidence_cutoff=prediction.evidence_cutoff,
+                warnings=list(prediction.warnings),
+                prediction_id=prediction.prediction_id,
+                degraded=prediction.degraded,
+                provenance=dict(prediction.provenance),
+                ignored_factors=list(prediction.ignored_factors),
             )
+            results.append(mark_result)
+            posterior_by_result_id[id(mark_result)] = _optimizer_distribution(
+                prediction,
+                competitor_std,
+            )
+            prediction_by_result_id[id(mark_result)] = prediction
 
         # Sort slowest -> fastest (front marker first)
         results.sort(key=lambda r: r.predicted_time, reverse=True)
 
         # Assign final marks
-        results = self._assign_marks(results)
+        results = self._assign_marks(
+            results,
+            distributions=[posterior_by_result_id[id(result)] for result in results],
+            seed=resolved_context.seed,
+        )
+
+        self._record_trusted_field(
+            results,
+            prediction_by_result_id=prediction_by_result_id,
+            competitors=effective_records,
+            wood=wood,
+            event_code=event_code,
+            context=resolved_context,
+            prediction_bundle=bundle,
+        )
 
         return results
 
-    def _assign_marks(self, results: List[MarkResult]) -> List[MarkResult]:
+    def _record_trusted_field(
+        self,
+        results: Sequence[MarkResult],
+        *,
+        prediction_by_result_id: Dict[int, PredictionResult],
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+        prediction_bundle: Any,
+    ) -> None:
+        """Attempt one non-blocking trusted field write after marks are final."""
+
+        if self._ledger_sink is None:
+            return
+        if not context.request_id or not str(context.request_id).strip():
+            self._set_ledger_state(results, False, "missing_request_id")
+            return
+        if any(not str(record.competitor_id or "").strip() for record in competitors):
+            self._set_ledger_state(results, False, "missing_competitor_id")
+            return
+
+        try:
+            from strathmark.features import resolve_species_properties
+            from strathmark.ledger import LedgerConflictError, LedgerPrediction
+
+            if self.wood_df is None and callable(
+                getattr(prediction_bundle.core, "resolve_species_properties", None)
+            ):
+                properties, species_missing = prediction_bundle.core.resolve_species_properties(
+                    wood.species
+                )
+            else:
+                properties, species_missing = resolve_species_properties(wood.species, self.wood_df)
+            record_by_id = {str(record.competitor_id).strip(): record for record in competitors}
+            ledger_predictions = []
+            for result in results:
+                competitor_id = str(result.competitor_id).strip()
+                record = record_by_id[competitor_id]
+                prediction = prediction_by_result_id[id(result)]
+                metadata = prediction.metadata
+                feature_snapshot: Dict[str, float] = {
+                    "diameter_mm": float(wood.diameter_mm),
+                    **{name: float(value) for name, value in properties.items()},
+                    "species_missing": float(bool(species_missing)),
+                    "gender_f": float(str(record.gender or "").strip().upper() == "F"),
+                    "gender_missing": float(
+                        str(record.gender or "").strip().upper() not in {"M", "F"}
+                    ),
+                    "performance_std_dev": float(result.std_dev),
+                }
+                metadata_features = {
+                    "history_count",
+                    "effective_history_weight",
+                    "same_event_state",
+                    "trend_projection",
+                    "cross_event_state",
+                    "posterior_log_location",
+                    "posterior_log_scale",
+                    "shared_log_scale",
+                    "calibration_sample_count",
+                }
+                for name in metadata_features:
+                    value = metadata.get(name)
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        feature_snapshot[name] = float(value)
+
+                interval = result.interval
+                ledger_predictions.append(
+                    LedgerPrediction(
+                        competitor_id=competitor_id,
+                        event_code=event_code,
+                        median_seconds=result.predicted_time,
+                        assigned_mark=result.mark,
+                        source=result.method_used,
+                        training_eligible=bool(
+                            not prediction.degraded
+                            and prediction.engine_version == ENGINE_VERSION
+                            and is_v2_training_source(prediction.method)
+                            and metadata.get("source") != "broad_event_prior"
+                        ),
+                        engine_version=result.engine_version,
+                        model_version=result.model_version,
+                        calibration_version=result.calibration_version,
+                        evidence_cutoff=result.evidence_cutoff,
+                        interval_lower=interval.lower if interval else None,
+                        interval_upper=interval.upper if interval else None,
+                        interval_coverage=interval.nominal_coverage if interval else None,
+                        interval_state=interval.calibration_state if interval else None,
+                        interval_scope=interval.scope if interval else None,
+                        ignored_factors=tuple(prediction.ignored_factors),
+                        warnings=tuple(result.warnings),
+                        optimizer=result.optimizer,
+                        optimizer_metadata=result.optimizer_metadata,
+                        feature_snapshot=feature_snapshot,
+                        degraded=result.degraded,
+                    )
+                )
+
+            write = self._ledger_sink.record_field(
+                caller_id=self._ledger_caller_id,
+                request_id=str(context.request_id).strip(),
+                request_payload=self._canonical_ledger_request(
+                    competitors,
+                    wood,
+                    event_code,
+                    context,
+                    prediction_bundle=prediction_bundle,
+                ),
+                predictions=ledger_predictions,
+                legacy_request_payload=self._raw_v1_ledger_request(
+                    competitors, wood, event_code, context
+                ),
+            )
+            if len(write.prediction_ids) != len(results):
+                raise RuntimeError("ledger returned an incomplete prediction ID set")
+            for result, prediction_id in zip(results, write.prediction_ids, strict=True):
+                result.prediction_id = prediction_id
+                result.ledger_recorded = bool(write.recorded)
+                result.ledger_status = str(write.status)
+        except LedgerConflictError:
+            self._set_ledger_state(results, False, "idempotency_conflict")
+        except Exception:
+            _log.warning("trusted prediction ledger write failed", exc_info=True)
+            self._set_ledger_state(results, False, "write_failed")
+
+    @staticmethod
+    def _set_ledger_state(results: Sequence[MarkResult], recorded: bool, status: str) -> None:
+        for result in results:
+            result.ledger_recorded = recorded
+            result.ledger_status = status
+
+    def _canonical_ledger_request(
+        self,
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+        *,
+        prediction_bundle: Any = None,
+    ) -> Dict[str, Any]:
+        """Return the active-v2 request projection used by prediction itself."""
+
+        from strathmark.features import (
+            MISSING_CATEGORY,
+            MODEL_EVIDENCE_FIELDS,
+            build_prior_evidence,
+            resolve_species_properties,
+        )
+
+        core = getattr(prediction_bundle, "core", None)
+        property_frame = self.wood_df
+        if property_frame is None and callable(getattr(core, "species_property_frame", None)):
+            property_frame = core.species_property_frame()
+        if self.wood_df is None and callable(getattr(core, "resolve_species_properties", None)):
+            target_properties, target_species_missing = core.resolve_species_properties(
+                wood.species
+            )
+        else:
+            target_properties, target_species_missing = resolve_species_properties(
+                wood.species, self.wood_df
+            )
+
+        competitor_payloads = []
+        for record in competitors:
+            gender = str(record.gender or "").strip().upper()
+            gender = gender if gender in {"M", "F"} else MISSING_CATEGORY
+            raw_history = pd.DataFrame(
+                [
+                    {
+                        "competitor_id": str(record.competitor_id).strip(),
+                        "event": item.event_code,
+                        "time_seconds": item.time_seconds,
+                        "result_date": item.result_date,
+                        "diameter_mm": item.diameter_mm,
+                        "species": item.species,
+                        "gender": record.gender,
+                    }
+                    for item in record.history
+                ]
+            )
+            evidence = build_prior_evidence(
+                raw_history,
+                context.prediction_as_of,
+                wood_df=property_frame,
+            ).rows
+            history = []
+            for row in evidence.loc[:, MODEL_EVIDENCE_FIELDS].to_dict("records"):
+                history.append(
+                    {name: _serialize_evidence_value(name, value) for name, value in row.items()}
+                )
+            history.sort(key=lambda item: tuple(str(item[name]) for name in MODEL_EVIDENCE_FIELDS))
+            competitor_payloads.append(
+                {
+                    "competitor_id": str(record.competitor_id).strip(),
+                    "gender": gender,
+                    "manual_time_override": record.manual_time_override,
+                    "history": history,
+                }
+            )
+        return {
+            "event_code": event_code,
+            "prediction_as_of": context.prediction_as_of.isoformat(),
+            "diameter_mm": float(wood.diameter_mm),
+            "species": str(wood.species).strip().upper(),
+            "wood_properties": {
+                **{name: float(value) for name, value in sorted(target_properties.items())},
+                "species_missing": bool(target_species_missing),
+            },
+            "seed": int(context.seed),
+            "engine": str(context.engine or "v2").strip().lower(),
+            "effective_mark_ceiling": int(self.effective_ceiling),
+            "competitors": competitor_payloads,
+        }
+
+    def _raw_v1_ledger_request(
+        self,
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+    ) -> Dict[str, Any]:
+        """Reproduce the immutable first-release request projection for retries."""
+
+        competitor_payloads = []
+        for record in competitors:
+            history = [
+                {
+                    "event_code": str(item.event_code).strip().upper(),
+                    "time_seconds": float(item.time_seconds),
+                    "result_date": (
+                        item.result_date.isoformat()
+                        if hasattr(item.result_date, "isoformat")
+                        else item.result_date
+                    ),
+                    "diameter_mm": float(item.diameter_mm),
+                    "species": str(item.species).strip(),
+                }
+                for item in record.history
+            ]
+            history.sort(
+                key=lambda item: (
+                    str(item["result_date"] or ""),
+                    item["event_code"],
+                    item["time_seconds"],
+                    item["diameter_mm"],
+                    item["species"],
+                )
+            )
+            competitor_payloads.append(
+                {
+                    "competitor_id": str(record.competitor_id).strip(),
+                    "gender": str(record.gender or "").strip().upper(),
+                    "manual_time_override": record.manual_time_override,
+                    "history": history,
+                }
+            )
+        return {
+            "event_code": event_code,
+            "prediction_as_of": context.prediction_as_of.isoformat(),
+            "diameter_mm": float(wood.diameter_mm),
+            "species": str(wood.species).strip(),
+            "seed": int(context.seed),
+            "engine": str(context.engine or "v2").strip().lower(),
+            "effective_mark_ceiling": int(self.effective_ceiling),
+            "competitors": competitor_payloads,
+        }
+
+    @staticmethod
+    def _validate_field_inputs(
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        *,
+        tournament_results: Dict[str, float],
+        manual_overrides: Dict[str, float],
+        context: Optional[PredictionContext],
+    ) -> None:
+        """Validate a complete field before model or persistence work begins."""
+
+        from strathmark.features import normalize_prediction_as_of
+
+        normalize_prediction_as_of(context.prediction_as_of if context else None)
+
+        if not str(wood.species or "").strip():
+            raise ValueError("wood species must not be empty")
+        if not math.isfinite(float(wood.diameter_mm)) or float(wood.diameter_mm) <= 0:
+            raise ValueError("wood diameter_mm must be positive and finite")
+        if not isinstance(wood.quality, int) or not 1 <= wood.quality <= 10:
+            raise ValueError("wood quality must be an integer from 1 to 10")
+
+        names = [str(record.name or "").strip() for record in competitors]
+        if any(not name for name in names):
+            raise ValueError("competitor names must not be empty")
+        duplicate_names = {name for name, count in Counter(names).items() if count > 1}
+        ambiguous = duplicate_names.intersection(manual_overrides)
+        if ambiguous:
+            joined = ", ".join(sorted(ambiguous))
+            raise ValueError(f"ambiguous name-keyed manual override for: {joined}")
+        ambiguous_tournament = duplicate_names.intersection(tournament_results)
+        if ambiguous_tournament:
+            joined = ", ".join(sorted(ambiguous_tournament))
+            raise ValueError(f"ambiguous name-keyed tournament result for: {joined}")
+
+        stable_ids = [
+            str(record.competitor_id).strip()
+            for record in competitors
+            if record.competitor_id is not None and str(record.competitor_id).strip()
+        ]
+        duplicate_ids = sorted(
+            identity for identity, count in Counter(stable_ids).items() if count > 1
+        )
+        if duplicate_ids:
+            raise ValueError(f"duplicate competitor_id values in field: {duplicate_ids}")
+
+        for label, values in (
+            ("manual override", manual_overrides),
+            ("tournament result", tournament_results),
+        ):
+            for name, value in values.items():
+                if not str(name).strip() or not _is_positive_finite(value):
+                    raise ValueError(f"{label} values must have a name and positive finite time")
+
+        for record in competitors:
+            if record.manual_time_override is not None and not _is_positive_finite(
+                record.manual_time_override
+            ):
+                raise ValueError("manual_time_override must be positive and finite")
+            if record.tournament_time is not None and not _is_positive_finite(
+                record.tournament_time
+            ):
+                raise ValueError("tournament_time must be positive and finite")
+            for historical in record.history:
+                if str(historical.event_code).strip().upper() not in {"SB", "UH"}:
+                    raise ValueError("historical event_code must be 'SB' or 'UH'")
+                if not _is_positive_finite(historical.time_seconds):
+                    raise ValueError("historical time_seconds must be positive and finite")
+                if not _is_positive_finite(historical.diameter_mm):
+                    raise ValueError("historical diameter_mm must be positive and finite")
+
+    def _assign_marks(
+        self,
+        results: List[MarkResult],
+        distributions: Optional[Sequence[PredictiveDistribution]] = None,
+        *,
+        seed: int = 20260811,
+    ) -> List[MarkResult]:
         """
         Apply gap logic to assign final marks from predicted times.
 
@@ -461,9 +990,9 @@ class HandicapCalculator:
             mark = MARK_FLOOR + round(gap)   # standard rounding
             mark = min(mark, effective_ceiling)
 
-        The slowest competitor receives the floor mark (3).
-        Each full second faster than the slowest adds 1 mark.
-        Fractional seconds are rounded up (ceiling, not nearest).
+        The joint optimizer starts from the legacy rounded-gap marks and may
+        adjust them to improve the deterministic posterior fairness objective.
+        Its fallback uses Python's round-half-to-even gap rule.
 
         Args:
             results: List with predicted_time populated for each entry.
@@ -475,14 +1004,35 @@ class HandicapCalculator:
         if not results:
             return results
 
-        # Slowest competitor gets mark 3 (front marker)
-        slowest_time = results[0].predicted_time
+        if distributions is None or len(distributions) != len(results):
+            marks = legacy_rounded_gap_marks(
+                [result.predicted_time for result in results],
+                ceiling=self.effective_ceiling,
+                floor=self.MARK_FLOOR,
+            )
+            optimizer = "rounded_gap_fallback"
+            optimizer_metadata: Dict[str, object] = {
+                "optimizer": optimizer,
+                "simulations": 0,
+                "seed": seed,
+                "passes": 0,
+                "reason": "posterior_unavailable",
+            }
+        else:
+            optimization = optimize_joint_marks(
+                distributions,
+                ceiling=self.effective_ceiling,
+                floor=self.MARK_FLOOR,
+                seed=seed,
+            )
+            marks = optimization.marks
+            optimizer = optimization.optimizer
+            optimizer_metadata = optimization.metadata()
 
-        for result in results:
-            gap = slowest_time - result.predicted_time
-            mark = self.MARK_FLOOR + round(gap)  # standard rounding
-            mark = min(mark, self.effective_ceiling)
+        for result, mark in zip(results, marks, strict=True):
             result.mark = mark
+            result.optimizer = optimizer
+            result.optimizer_metadata = dict(optimizer_metadata)
 
         return results
 

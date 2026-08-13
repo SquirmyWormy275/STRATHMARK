@@ -10,10 +10,15 @@ tags:
   - "pyproject"
 confidence: high
 created: 2026-04-21
+last_updated: 2026-08-13
 source: "v0.3.1 CI setup session + Apr 6 ModuleNotFoundError incident"
 ---
 
 # Optional Dependency Gating with `pytest.importorskip`
+
+> The optional-import pattern remains current. Later references to an LLM prediction
+> cascade are historical: Prediction Engine V2 never asks an LLM for a number. The LLM
+> extra now supports narrative-only compatibility features.
 
 ## Context
 STRATHMARK's base install is intentionally lean: `pandas`, `numpy`, `requests`, `openpyxl`. Heavy dependencies (FastAPI, XGBoost, Supabase, Ollama Python client, Gemini SDK) live in opt-in extras so downstream consumers (STRATHEX, Missoula-Pro-Am-Manager, bare-install library users) can pull the calculation core without dragging in ML wheels or web frameworks. This only works if tests for those optional subsystems do not crash CI when the extras aren't installed.

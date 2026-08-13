@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "1.0.0"
+version = "2.0.0"
 description = "Woodchopping handicap engine — pip-installable calculation core extracted from STRATHEX"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,6 +42,7 @@ dependencies = [
 [project.optional-dependencies]
 api = [
     "fastapi>=0.110",
+    "httpx>=0.27,<1",
     "httpx2>=2.0",
     "uvicorn[standard]>=0.29",
 ]
@@ -52,6 +53,7 @@ llm = [
     "google-generativeai>=0.8",
 ]
 ml = [
+    "catboost>=1.2",
     "xgboost>=2.0",
     "lightgbm>=4.0",
     "scikit-learn>=1.3",
@@ -75,6 +77,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["strathmark"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"strathmark/models/prediction_v2_core.json" = "strathmark/models/prediction_v2_core.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -16,7 +16,7 @@ Optional extras you may also want while working on specific subsystems:
 - `pip install -e ".[ml]"` — XGBoost / LightGBM / scikit-learn predictor
 - `pip install -e ".[db]"` — Supabase backend
 - `pip install -e ".[api]"` — FastAPI server
-- `pip install -e ".[llm]"` — Ollama Python client
+- `pip install -e ".[llm]"` — optional narrative-analysis client
 
 ## Running the test suite
 
@@ -46,9 +46,10 @@ ruff format .
 ## CI
 
 GitHub Actions runs lint, the full test matrix (Ubuntu + Windows across
-Python 3.10 / 3.12 / 3.13), and a wheel build on every push to `main`
-and every pull request. **All PRs must pass CI before merge.** The
-workflow definitions live under [`.github/workflows/`](.github/workflows/).
+Python 3.10 through 3.13), oldest/current API dependency contracts, release and
+cross-platform golden verification, the optimizer capacity gate, and isolated wheel
+and source-distribution installs. **All PRs must pass CI before merge.** The workflow
+definitions live under [`.github/workflows/`](.github/workflows/).
 
 ## Design rules (non-negotiable)
 
@@ -57,6 +58,7 @@ section for the full list, but the load-bearing ones are:
 
 - Mark floor: 3 seconds
 - Mark ceiling: 183 seconds system-wide
-- Variance: absolute +/- 3 seconds only — proportional variance is forbidden
-- Prediction cascade: Manual > LLM > ML > Panel mark fallback
+- Variance: performance uncertainty is represented in absolute seconds; proportional
+  scaling is only a clamped no-history fallback
+- Prediction engine: manual override, otherwise the validated V2 posterior with deterministic fallback
 - Output: plain text only, no emojis, no ANSI color codes

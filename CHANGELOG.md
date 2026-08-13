@@ -2,6 +2,88 @@
 
 All notable changes to STRATHMARK will be documented in this file.
 
+## [Unreleased]
+
+### Hardening
+
+- Added adversarial causal and artifact validation, trusted-ledger admission and
+  interval-aware drift checks, bounded mirror delivery, optimizer oracle/capacity
+  evidence, and stronger package/release verification.
+- Drift coverage for V2 is measured from each settled prediction's issued interval;
+  residual-quantile reconstruction remains historical behavior only.
+- Reconciled the retired pre-2.0 ensemble TODOs and corrected rounded-gap wording to
+  the implemented half-to-even behavior.
+- Excluded undated calibration rows and numeric pseudo-dates, normalized equivalent
+  species/gender identities before idempotency hashing, and kept an intentionally
+  inactive optional residual from degrading the promoted core.
+- Made active-v2 cloud payloads version-explicit, restored overflow/restart outbox
+  recovery, added a historical health cutoff, and guarded the 005-to-006 deploy window
+  plus rollback.
+- Preserved the public fairness-simulation admission limit at 4,000,000 cells and
+  limited it to one concurrent request per process pending a bounded-batch simulator.
+
+## [2.0.0] - 2026-08-11
+
+Prediction Engine V2 replaces the numeric Manual/LLM/ML/baseline cascade with one
+reproducible, prior-only prediction system while retaining the five legacy result keys
+for compatibility.
+
+### Added
+
+- Robust hierarchical log-time core with event and diameter effects, six species
+  physical properties, gender/missingness, recency-weighted competitor state, bounded
+  trend, cross-event borrowing, and partial pooling for zero/sparse history.
+- Chronological split-conformal 90% prediction intervals with calibration state and
+  scope, kept separate from race-performance `std_dev`.
+- Safe checksummed JSON core artifact with its canonical species-property lookup,
+  packaged with the wheel and one immutable
+  `PredictionBundle` snapshot per request.
+- Optional CatBoost residual artifact and strict rolling-origin promotion gate. No
+  residual candidate is promoted in the 2.0.0 release.
+- Deterministic joint mark optimizer using 2,048 common-random samples, exhaustive
+  global search for tractable small fields, and at most eight coordinate passes for
+  larger fields, with a bounded rounded-gap fallback.
+- Append-only local SQLite prediction ledger, authenticated REST ledger routes,
+  immutable settlement revisions, a replayable sanitized mirror outbox, and optional
+  best-effort Supabase mirroring through migrations
+  `20260811_005_prediction_v2.sql` and `20260813_006_prediction_hash_algorithm.sql`.
+- Frozen release evidence and a verify-only operator command: `python train_model.py`.
+
+### Changed
+
+- Numeric evidence is now restricted to stable identity/history, event, strictly prior
+  dated results, diameter, species physical properties, and gender including missing.
+- `get_all_predictions()` maps `baseline` to the V2 core, `ml` to a promoted residual
+  only, `panel` to the broad fallback, and `llm` to `None`.
+- `HandicapCalculator.calculate()` snapshots the engine once and chooses marks jointly.
+- REST responses include interval, engine/model/calibration, warning, optimizer,
+  prediction-ID, degradation, and ledger-state fields.
+- Public `/calculate` and `/predict` remain stateless. Trusted writes use
+  `/ledger/calculate` and require stable IDs, bearer authentication, and `request_id`.
+
+### Retired
+
+- Numeric LLM generation, selection, and adjustment. LLMs remain available only for
+  narrative features.
+- Numeric use of division, round/heat, venue, lane/stand, run order, exact material
+  identity, wood quality/moisture, weather, equipment, fatigue, penalty/DNF state,
+  same-tournament weighting, and field strength. Legacy inputs remain accepted as
+  documented no-ops for one migration release.
+
+### Validation
+
+- Frozen 128-row temporal test: MAE 16.1301 vs 20.5172 for the strict prior-only
+  incumbent (21.38% lower); RMSE 33.6904 vs 44.4791 (24.26% lower); 90% interval
+  coverage 94.53%. These results apply only to the checked-in workbook and split;
+  cohort samples are smaller and no universal accuracy or fairness claim is made.
+
+### Migration
+
+- Default engine is V2. Set `STRATHMARK_PREDICTION_ENGINE=legacy` for the temporary,
+  deterministic baseline-only rollback. The rollback never invokes an LLM numerically.
+- See `docs/PREDICTION_ENGINE_V2.md` and `docs/DEPLOYMENT.md` before upgrading a live
+  consumer.
+
 ## [1.0.0] - 2026-05-08
 
 First public PyPI release. No API changes relative to 0.5.0; the 1.0.0 designation marks publication readiness, not a redesign. The library has been production-tested for multiple seasons across STRATHEX and the Missoula Pro-Am tournament manager.

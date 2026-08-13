@@ -1,195 +1,156 @@
-# STRATHMARK Live Deployment Guide
+# Deployment Runbook
 
-This document covers everything required to run STRATHMARK at a live event,
-including the pre-event checklist, post-event ingestion, environment
-configuration, LLM setup, and common failure modes.
+Use this runbook for STRATHMARK 2.0.0 race-day Python or REST deployments. The default
+prediction path is offline V2. Database, cloud, CatBoost, and Ollama availability are
+not prerequisites for numeric marks.
 
-It is written for the 2026 Missoula Pro-Am (April 24-25, 2026) but applies
-to any event that uses STRATHMARK as its handicap engine.
+## 1. Prepare
 
-## Environment variables
+Install the exact release and the extras the host actually needs:
 
-| Variable | Required | Purpose |
+```bash
+pip install "strathmark==2.0.*"
+pip install "strathmark[api]==2.0.*"   # REST host only
+```
+
+The validated core artifact is packaged at
+`strathmark/models/prediction_v2_core.json`. Do not download or train a model during an
+event.
+
+Optional environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `STRATHMARK_PREDICTION_CORE_ARTIFACT` | operator-approved safe JSON core override |
+| `STRATHMARK_PREDICTION_RESIDUAL_ARTIFACT` | optional promoted residual directory |
+| `STRATHMARK_PREDICTION_ENGINE=legacy` | temporary deterministic baseline-only rollback |
+| `STRATHMARK_DB_PATH` | local result store and ledger SQLite path |
+| `STRATHMARK_API_TOKEN` | enables protected result and trusted-ledger routes |
+| `STRATHMARK_LEDGER_CALLER` | trusted request caller namespace; default `api` |
+| `STRATHMARK_LEDGER_ACTOR` | settlement actor label; default `api` |
+| `STRATHMARK_SUPABASE_URL`, `STRATHMARK_SUPABASE_KEY` | optional best-effort cloud mirror |
+
+Ollama/Gemini variables affect narrative features only. They cannot change a V2 median
+or mark.
+
+## 2. Verify before the event
+
+From the release checkout:
+
+```bash
+python train_model.py
+pytest tests/test_deployment_fallbacks.py tests/test_api.py -q
+python scripts/validate_deployment.py
+```
+
+`python train_model.py` is verify-only: it checks the published report, source checksum,
+manifest, and packaged artifact without reopening the locked test.
+
+Do not run `python train_model.py --open-locked-test`. The 2.0.0 locked role has already
+been opened once. Do not remove its final report to rerun it.
+
+For the REST service:
+
+```bash
+uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
+```
+
+Check `GET /health` (or `GET /health?prediction_as_of=YYYY-MM-DD` for a backdated field).
+Before accepting calculations, confirm:
+
+- `prediction_engine.core.available` is true;
+- `prediction_engine.core.compatible` is true for the intended cutoff;
+- calibration is available;
+- expected core/calibration versions are shown;
+- `source` is the intended environment, local, or package source;
+- `degraded` is false and warnings are understood.
+
+Residual `active=false` is expected for the 2.0.0 packaged release. Ollama unavailable
+is acceptable for numeric calculation.
+
+## 3. Make requests safely
+
+Always send an explicit `prediction_as_of` date for reproducible operations. V2 treats
+it as an exclusive UTC cutoff. Same-day and later results cannot influence that request.
+
+Use `/calculate` when marks should be stateless. Use `/ledger/calculate` only when the
+caller can supply a stable `competitor_id` for every competitor and a durable unique
+`request_id`. The protected route also requires `Authorization: Bearer
+<STRATHMARK_API_TOKEN>`.
+
+Legacy fields such as division, tournament results, heat ID, field strength, and wood
+quality may still be accepted, but they are numeric no-ops in V2. Do not promise that
+they affect marks.
+
+One response item should expose interval and engine/model/calibration versions. Treat
+`interval` as forecast uncertainty and `std_dev` as simulation variability. Inspect
+`warnings`, `degraded`, `optimizer`, and `optimizer_metadata` before printing a start
+sheet.
+
+## 4. Trusted-ledger behavior
+
+The local SQLite file from `STRATHMARK_DB_PATH` (default
+`~/.strathmark/results.db`) is the race-day authority. A complete field is recorded in
+one transaction after marks are final. Identical retries return original prediction
+IDs; a request-key payload conflict returns HTTP 409.
+
+Cloud mirroring is best-effort and off the calculation response path.
+`ledger_status=recorded_cloud_pending` means local trust evidence and a replayable mirror
+outbox entry exist. The ledger's single bounded background worker reclaims overflowed
+and restart-surviving rows; `flush_mirror_outbox()` remains an explicit bounded replay.
+`ledger_recorded=false`
+means marks are still valid but no trusted local record was made; preserve the request
+and investigate disk/path/permission state before settlement.
+
+Settlements must reference the returned `prediction_id`, matching competitor ID and
+event. Corrections require a reason and append a new revision. Never edit ledger rows.
+
+## 5. Degraded and fallback states
+
+| Symptom | Meaning | Action |
 | --- | --- | --- |
-| `STRATHMARK_SUPABASE_URL` | yes (DB writes/reads) | Supabase project URL |
-| `STRATHMARK_SUPABASE_KEY` | yes (DB writes/reads) | Supabase service or anon key |
-| `STRATHMARK_DB_PATH` | no | Override the local SQLite store path (default `~/.strathmark/results.db`) |
-| `STRATHMARK_API_TOKEN` | yes for REST `/results` endpoints | Bearer token that enables protected local-history reads and writes |
-| `OLLAMA_HOST` | no | Ollama host, default `http://localhost:11434`; set to `disabled` to skip Ollama completely |
-| `STRATHMARK_OLLAMA_URL` | no, legacy | Full Ollama generate URL, takes precedence over `OLLAMA_HOST` |
-| `STRATHMARK_OLLAMA_CONNECT_TIMEOUT` | no | Ollama TCP-connect timeout, default `3` seconds |
-| `STRATHMARK_OLLAMA_READ_TIMEOUT` | no | Ollama response timeout, default `15` seconds |
-| `STRATHMARK_OLLAMA_MAX_RETRIES` | no | Retry attempts for failed Ollama requests, default `0` for race-day fail-fast behavior |
-| `GEMINI_API_KEY` | no | Enables Gemini cloud fallback when Ollama is unavailable |
+| `core_artifact_missing` | no environment/local/package core found | verify wheel contents and override path; result uses broad event prior |
+| `core_artifact_invalid` | JSON/schema/checksum/size check failed | remove the bad override and restart; packaged core should load |
+| `artifact_newer_than_prediction_cutoff` | backdated request cannot use this core | use a compatible historical artifact or accept labeled broad prior |
+| `residual_*` warning | optional residual absent/incompatible | continue with core; do not activate without promotion evidence |
+| `calibration_unavailable` | core has no usable calibrator | treat interval as degraded; restore validated artifact |
+| `core_prediction_failed` | request could not be evaluated by core | inspect request and artifact; broad event prior remains available |
+| optimizer `rounded_gap_fallback` | joint search unavailable or rejected | marks remain bounded and deterministic; record fallback reason |
+| `ledger_status=write_failed` | trusted local write failed | marks remain usable; retain request externally and repair storage |
 
-The Ollama timeout and retry settings are read into `LLMConfig` at import
-time, so set them before the first `import strathmark`. `OLLAMA_HOST` and
-`GEMINI_API_KEY` are read when the cascade runs and can be changed by a
-controlled process restart.
+## 6. Rollback
 
-When `STRATHMARK_SUPABASE_*` are missing, the prediction cascade still
-works: it falls through to the local store, baseline, or panel-mark
-fallback. Only ingestion (`push_results_dicts`, `register_competitor`)
-strictly requires Supabase credentials.
+If a verified V2 regression affects operations, set the explicit selector and restart
+the process:
 
-## Ollama setup (event laptop)
-
-Hardware target: RTX 4070 Laptop, 8GB VRAM. Recommended model:
-`qwen3.5:9b` quantised to Q4_K_M (~6.6GB on disk, fits in VRAM).
-
-```bash
-# One-time setup
-ollama pull qwen3.5:9b
-
-# At event start
-ollama serve
-```
-
-Verify Ollama is healthy:
-
-```bash
-curl http://localhost:11434/api/tags
-```
-
-If Ollama is not running, the cascade automatically skips the LLM level
-and proceeds Manual -> ML -> Baseline -> Panel without hanging. The
-connection failure is cached for 60 seconds so retries don't slow down
-mark generation.
-
-### Cloud fallback
-
-When the event laptop has no GPU or Ollama crashes mid-event, set
-`OLLAMA_HOST=disabled` to skip the local LLM tier. If `GEMINI_API_KEY` is
-configured, STRATHMARK then makes one bounded Gemini fallback attempt before
-continuing to ML, baseline, and panel prediction.
-
-## REST API safety
-
-The calculation endpoints can be exposed behind a reverse proxy with normal
-rate limiting. The `/results` endpoints are disabled until
-`STRATHMARK_API_TOKEN` is configured and require
-`Authorization: Bearer <token>` on every request. Do not expose the API
-directly to the public internet without TLS, authentication, and request-size
-limits. See [`wiki/REST-API.md`](wiki/REST-API.md) for the exact contract.
-
-## Pre-event checklist (run morning of Day 1)
-
-1. Set the Supabase env vars on the event laptop.
-2. Start Ollama: `ollama serve` (in a dedicated terminal).
-3. Run the validation script:
-   ```bash
-   python scripts/validate_deployment.py
-   ```
-   Expected output:
-   ```
-   Supabase:           [OK]
-   Predictions (base): [OK]
-   Predictions (LLM):  [OK]
-   Mark sheet:         [OK]
-   Result ingestion:   [OK]
-   READY FOR DEPLOYMENT: [YES]
-   ```
-4. If any check is `[FAIL]`, follow the remediation hint printed beneath
-   the summary block. Do not start the event with any critical check
-   failing.
-5. Confirm `pip show strathmark` matches the version pinned in the
-   Pro-Am Manager dependencies.
-
-## Post-event checklist
-
-1. Export results from the Pro-Am Manager (CSV or JSON, columns:
-   `competitor_name, event_name, time, species, date`).
-2. Run a dry-run ingestion to validate format:
-   ```bash
-   python scripts/ingest_proam_results.py --input results.csv \
-       --show "Missoula Pro-Am 2026"
-   ```
-3. Resolve any unmapped competitors when prompted (enter an existing
-   `competitor_id`, type `r` to register a new competitor, or `s` to
-   skip).
-4. Re-run with `--commit` to actually write to Supabase:
-   ```bash
-   python scripts/ingest_proam_results.py --input results.csv \
-       --show "Missoula Pro-Am 2026" --commit
-   ```
-5. Verify the new rows landed:
-   ```python
-   from strathmark.db import pull_results
-
-   df = pull_results()
-   print(df[df["show_name"] == "Missoula Pro-Am 2026"].shape)
-   ```
-6. Check `sync_log` in Supabase for the new ingestion entry.
-
-## Result ingestion programmatic API
-
-If you'd rather call STRATHMARK from another process instead of the CLI
-script, both helpers are exported from the package root:
-
-```python
-from strathmark import push_results_dicts, register_competitor
-
-push_results_dicts(
-    [
-        {
-            "competitor_id": "C0042",
-            "event_code": "SB",
-            "time_seconds": 24.7,
-            "size_mm": 275,
-            "species_code": "S05",
-            "date": "2026-04-25",
-        },
-    ],
-    source="pro-am-manager",
-    show_name="Missoula Pro-Am 2026",
-)
-
-register_competitor("New Competitor", country="USA", state="MT", gender="M")
-```
-
-`push_results_dicts` returns `{'inserted', 'skipped', 'errors', 'dry_run'}`
-and never silently drops a row. Validation rules:
-
-- Required fields: `competitor_id, event_code, time_seconds, size_mm, species_code, date`.
-- `event_code` must be `SB` or `UH`.
-- `time_seconds` must be in `[3.0, 180.0]` (the system mark window).
-- `competitor_id` must already exist in the `competitors` table.
-- Duplicates (`competitor_id+event+time+size+date`) are silently skipped.
-
-## Troubleshooting
-
-### `RuntimeError: STRATHMARK_SUPABASE_URL is not set`
-The env vars are missing in the current shell. On Windows PowerShell:
 ```powershell
-$env:STRATHMARK_SUPABASE_URL = "https://<project>.supabase.co"
-$env:STRATHMARK_SUPABASE_KEY = "<key>"
-```
-On bash/Git Bash:
-```bash
-export STRATHMARK_SUPABASE_URL="https://<project>.supabase.co"
-export STRATHMARK_SUPABASE_KEY="<key>"
+$env:STRATHMARK_PREDICTION_ENGINE = "legacy"
 ```
 
-### Cascade returns `panel` for an experienced competitor
-The competitor's history did not load. Confirm `pull_results()` returns
-rows for that `competitor_id`, and that the rows have valid `Event`
-values (`SB` or `UH`).
+This uses the deterministic legacy baseline only. It removes inactive context, applies
+the same exclusive cutoff, and never calls an LLM for a number. Confirm `/health` and a
+known fixture, document when and why rollback began, and open an incident. Remove the
+variable and restart to return to V2.
 
-### `validate_deployment.py` says Ollama is NOT RUNNING but `ollama serve` is up
-Verify the model is pulled (`ollama list` should include `qwen3.5:9b`)
-and that nothing else is bound to port 11434. The validation script
-forces a fresh connection check on every run, so a stale 60-second cache
-is not the cause.
+Do not hot-swap artifact files within an active field. The request snapshot prevents a
+mixed field, but operational changes belong between fields and must be logged.
 
-### `ingest_proam_results.py` reports "competitor_id not found"
-The Pro-Am Manager exported a name that has no match in the Supabase
-`competitors` table. Either:
-- Re-run interactively and choose `r` to register the new competitor, or
-- Pre-load the competitor with `register_competitor()` and re-run
-  ingestion.
+## 7. Post-event
 
-### Marks look wrong but no errors are printed
-Run `pytest tests/test_calculator.py` to confirm the mark invariants
-(floor 3, ceiling 183, gap logic) still hold. If those pass but a
-specific event still looks wrong, capture the input and open a ticket
-with the exact `CompetitorRecord`/`WoodProfile` payload.
+1. Settle trusted predictions using official positive measured times and returned IDs.
+2. Include an actor and a reason for every correction.
+3. Retain the local SQLite file before syncing or maintenance.
+4. Review warnings, degraded results, optimizer fallbacks, and cloud failures.
+5. Run drift analysis off the hot path. Drift is advisory; it never auto-activates,
+   retrains, or disables a model.
+6. Train only on rows explicitly marked eligible; manual, broad-prior, legacy-rollback,
+   and degraded rows are excluded.
+
+Supabase migrations 005 and 006 must be reviewed and applied in order, separately from
+the application release, before cloud mirroring. Migration 006 preserves old request
+rows as `raw-v1` while recording new active-evidence hashes as `active-v2`. The ledger
+schema forces RLS and grants its append RPC only to `service_role`; never expose the
+service key to browser or mobile clients.
+Migration 005 rejects explicit active-v2 payloads until 006 is installed, leaving them
+in the durable local outbox. The guarded 006 down migration restores the old RPC but
+aborts once any active-v2 cloud row exists; do not use it after active mirroring begins.

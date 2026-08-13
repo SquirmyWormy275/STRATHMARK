@@ -50,18 +50,18 @@ class TestCascadePriority:
         assert pred.value == pytest.approx(15.0)
         assert pred.method == "manual"
 
-    def test_tournament_time_high_priority(self):
-        """Tournament result should dominate historical baseline."""
+    def test_tournament_time_is_inactive(self):
+        """Unverified same-tournament context must not alter V2 numerics."""
         record = CompetitorRecord(
             name="Test",
             history=_make_history([30, 31, 29, 30, 32]),
             tournament_time=22.0,
         )
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
+        without = CompetitorRecord(name="Test", history=_make_history([30, 31, 29, 30, 32]))
         pred = get_best_prediction(record, wood, "SB")
-        # Should be heavily influenced by tournament time (22s)
-        # not the historical ~30s average
-        assert pred.value < 28.0
+        control = get_best_prediction(without, wood, "SB")
+        assert pred.value.hex() == control.value.hex()
 
     def test_baseline_used_without_manual_or_tournament(self):
         """Without manual/tournament, baseline should be used."""
@@ -213,8 +213,8 @@ class TestConfidenceLevels:
 # Tournament time weighting regression
 # ---------------------------------------------------------------------------
 class TestTournamentWeightingRegression:
-    def test_97_percent_weight_applied(self):
-        """With 4+ rounds, tournament result gets 97% weight vs 3% historical."""
+    def test_round_count_and_tournament_time_are_inactive(self):
+        """Round context remains accepted but cannot enter the numeric model."""
         record = CompetitorRecord(
             name="Test",
             history=_make_history([30, 30, 30, 30]),
@@ -222,19 +222,22 @@ class TestTournamentWeightingRegression:
             num_tournament_rounds=4,  # 4 rounds → 97% weight
         )
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
+        control = CompetitorRecord(name="Test", history=_make_history([30, 30, 30, 30]))
         pred = get_best_prediction(record, wood, "SB")
-        # Base blend: 0.97 * 20 + 0.03 * ~30 = ~20.3, plus species affinity
-        assert pred.value < 24.0  # Dominated by 20s tournament time
+        expected = get_best_prediction(control, wood, "SB")
+        assert pred.value.hex() == expected.value.hex()
 
-    def test_tournament_upgrades_confidence(self):
+    def test_tournament_does_not_upgrade_confidence(self):
         record = CompetitorRecord(
             name="Test",
             history=_make_history([30]),
             tournament_time=25.0,
         )
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
+        control = CompetitorRecord(name="Test", history=_make_history([30]))
         pred = get_best_prediction(record, wood, "SB")
-        assert pred.confidence in ("VERY HIGH", "HIGH")
+        expected = get_best_prediction(control, wood, "SB")
+        assert pred.confidence == expected.confidence
 
 
 # ---------------------------------------------------------------------------
@@ -243,12 +246,11 @@ class TestTournamentWeightingRegression:
 class TestDivisionFallback:
     """Different divisions should get different panel marks."""
 
-    def test_novice_slower_than_open(self):
-        """Novice default should be slower than Open default."""
+    def test_division_is_an_inactive_no_op(self):
+        """Unverified division cannot alter the static broad event prior."""
         open_rec = CompetitorRecord(name="Open", history=[], division="Open")
         novice_rec = CompetitorRecord(name="Novice", history=[], division="Novice")
         wood = WoodProfile(species="S01", diameter_mm=300, quality=5)
         pred_open = get_best_prediction(open_rec, wood, "SB")
         pred_novice = get_best_prediction(novice_rec, wood, "SB")
-        if pred_open is not None and pred_novice is not None:
-            assert pred_novice.value > pred_open.value
+        assert pred_novice.value.hex() == pred_open.value.hex()

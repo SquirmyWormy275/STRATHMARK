@@ -15,18 +15,96 @@ Tests are organized in three groups:
 """
 
 import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 
 from strathmark.calculator import HandicapCalculator, MarkResult, StartSheet
 from strathmark.config import rules
+from strathmark.prediction_v2 import ForecastInterval, PredictiveDistribution
 from strathmark.predictor import (
     CompetitorRecord,
     HistoricalResult,
+    PredictionBundle,
+    PredictionContext,
+    PredictionEngineProvider,
     WoodProfile,
     predict_baseline,
 )
+
+
+class _FixedProvider(PredictionEngineProvider):
+    def snapshot(self, prediction_as_of):
+        class Core:
+            model_version = "core-fixed"
+            source_checksum = "c" * 64
+
+            class calibration:
+                version = "cal-fixed"
+
+            def predict(self, request, *, history=None, wood_df=None):
+                return PredictiveDistribution(
+                    median=40.0,
+                    log_location=3.688879454,
+                    log_scale=0.2,
+                    interval=ForecastInterval(30.0, 55.0),
+                    source="hierarchical_dynamic_core",
+                    history_count=1,
+                    effective_history_weight=1.0,
+                    model_version=self.model_version,
+                    calibration_version="cal-fixed",
+                )
+
+            def resolve_species_properties(self, species):
+                return (
+                    {
+                        "janka_hardness": 1690.0,
+                        "specific_gravity": 0.34,
+                        "crush_strength": 4000.0,
+                        "shear_strength": 1000.0,
+                        "modulus_of_rupture": 8000.0,
+                        "modulus_of_elasticity": 1_000_000.0,
+                    },
+                    False,
+                )
+
+            def species_property_frame(self):
+                return None
+
+        return PredictionBundle(core=Core(), source="fixed-test")
+
+
+class _MutatingProvider(PredictionEngineProvider):
+    def __init__(self):
+        self.calls = 0
+
+    def snapshot(self, prediction_as_of):
+        self.calls += 1
+        value = 40.0 + self.calls
+
+        class Core:
+            model_version = f"core-{value}"
+            source_checksum = "b" * 64
+
+            class calibration:
+                version = "cal-test"
+
+            def predict(self, request, *, history=None, wood_df=None):
+                return PredictiveDistribution(
+                    median=value,
+                    log_location=3.7,
+                    log_scale=0.2,
+                    interval=ForecastInterval(30.0, 55.0),
+                    source="conditional_population_prior",
+                    history_count=0,
+                    effective_history_weight=0.0,
+                    model_version=self.model_version,
+                    calibration_version="cal-test",
+                )
+
+        return PredictionBundle(core=Core(), source="mutating-test")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -43,6 +121,171 @@ def _mark_result(name: str, predicted_time: float) -> MarkResult:
         confidence="HIGH",
         explanation="test fixture",
     )
+
+
+def test_calculate_records_joint_optimizer_metadata() -> None:
+    calc = HandicapCalculator(prediction_provider=_MutatingProvider())
+    competitors = [_competitor("Alice", 60.0), _competitor("Bob", 40.0)]
+
+    results = calc.calculate(
+        competitors,
+        PINE_300,
+        "SB",
+        context=PredictionContext(prediction_as_of=date(2026, 1, 1), seed=17),
+    )
+
+    assert {result.optimizer for result in results} <= {
+        "posterior_crn_v2",
+        "rounded_gap_fallback",
+    }
+    assert all(result.optimizer_metadata["simulations"] == 2048 for result in results)
+    assert all(result.optimizer_metadata["seed"] == 17 for result in results)
+
+
+def test_future_same_day_and_undated_history_cannot_change_manual_marks() -> None:
+    cutoff = date(2026, 1, 1)
+    prior = [
+        HistoricalResult("SB", 40.0, "Pine", 300.0, 5, date(2025, 1, 1)),
+        HistoricalResult("SB", 41.0, "Pine", 300.0, 5, date(2025, 6, 1)),
+    ]
+    contaminated = [
+        *prior,
+        HistoricalResult("SB", 5.0, "Pine", 300.0, 5, cutoff),
+        HistoricalResult("SB", 170.0, "Pine", 300.0, 5, date(2027, 1, 1)),
+        HistoricalResult("SB", 120.0, "Pine", 300.0, 5, None),
+    ]
+    clean = [
+        CompetitorRecord("Alice", history=prior, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+    dirty = [
+        CompetitorRecord("Alice", history=contaminated, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+    context = PredictionContext(prediction_as_of=cutoff, seed=19)
+
+    clean_results = HandicapCalculator().calculate(clean, PINE_300, "SB", context=context)
+    dirty_results = HandicapCalculator().calculate(dirty, PINE_300, "SB", context=context)
+
+    assert [(row.name, row.std_dev, row.mark) for row in dirty_results] == [
+        (row.name, row.std_dev, row.mark) for row in clean_results
+    ]
+
+
+def test_timezone_aware_utc_same_day_history_cannot_change_manual_marks() -> None:
+    cutoff = date(2026, 1, 1)
+    prior = [
+        HistoricalResult("SB", 40.0, "Pine", 300.0, 5, date(2025, 1, 1)),
+        HistoricalResult("SB", 41.0, "Pine", 300.0, 5, date(2025, 6, 1)),
+    ]
+    utc_same_day = datetime(2025, 12, 31, 23, 30, tzinfo=timezone(-timedelta(hours=12)))
+    dirty_history = [
+        *prior,
+        HistoricalResult("SB", 170.0, "Pine", 300.0, 5, utc_same_day),
+    ]
+    context = PredictionContext(prediction_as_of=cutoff, seed=23)
+    clean = [
+        CompetitorRecord("Alice", history=prior, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+    dirty = [
+        CompetitorRecord("Alice", history=dirty_history, manual_time_override=40.0),
+        CompetitorRecord("Bob", history=prior, manual_time_override=50.0),
+    ]
+
+    clean_results = HandicapCalculator().calculate(clean, PINE_300, "SB", context=context)
+    dirty_results = HandicapCalculator().calculate(dirty, PINE_300, "SB", context=context)
+
+    assert [(row.name, row.std_dev, row.mark) for row in dirty_results] == [
+        (row.name, row.std_dev, row.mark) for row in clean_results
+    ]
+
+
+def test_active_ledger_identity_ignores_excluded_history_but_conflicts_on_prior_history(
+    tmp_path,
+) -> None:
+    from strathmark.ledger import PredictionLedger
+
+    cutoff = date(2026, 1, 1)
+    prior = HistoricalResult("SB", 40.0, "Pine", 300.0, 5, date(2025, 1, 1))
+    excluded = HistoricalResult("SB", 5.0, "Pine", 300.0, 5, cutoff)
+    changed_prior = HistoricalResult("SB", 41.0, "Pine", 300.0, 5, date(2025, 1, 1))
+    ledger = PredictionLedger(tmp_path / "active-identity.db")
+    calculator = HandicapCalculator(prediction_provider=_FixedProvider(), ledger_sink=ledger)
+    context = PredictionContext(prediction_as_of=cutoff, request_id="field-active", seed=31)
+
+    first = calculator.calculate(
+        [CompetitorRecord("Alice", [prior], competitor_id="athlete-a")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+    excluded_retry = calculator.calculate(
+        [CompetitorRecord("Alice", [prior, excluded], competitor_id="athlete-a")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+    active_change = calculator.calculate(
+        [CompetitorRecord("Alice", [changed_prior], competitor_id="athlete-a")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+
+    assert first.ledger_status == "recorded"
+    assert excluded_retry.ledger_status == "duplicate"
+    assert excluded_retry.prediction_id == first.prediction_id
+    assert active_change.ledger_status == "idempotency_conflict"
+
+
+def test_active_ledger_identity_normalizes_equivalent_species_case(tmp_path) -> None:
+    from strathmark.ledger import PredictionLedger
+
+    ledger = PredictionLedger(tmp_path / "species-case.db")
+    calculator = HandicapCalculator(prediction_provider=_FixedProvider(), ledger_sink=ledger)
+    competitors = [CompetitorRecord("Alice", competitor_id="athlete-a")]
+    context = PredictionContext(
+        prediction_as_of=date(2026, 1, 1), request_id="field-species", seed=31
+    )
+
+    first = calculator.calculate(competitors, WoodProfile("pine", 300.0, 5), "SB", context=context)[
+        0
+    ]
+    retry = calculator.calculate(competitors, WoodProfile("PINE", 300.0, 5), "SB", context=context)[
+        0
+    ]
+
+    assert first.ledger_status == "recorded"
+    assert retry.ledger_status == "duplicate"
+    assert retry.prediction_id == first.prediction_id
+
+
+def test_active_ledger_identity_normalizes_equivalent_unknown_gender(tmp_path) -> None:
+    from strathmark.ledger import PredictionLedger
+
+    ledger = PredictionLedger(tmp_path / "gender-normalization.db")
+    calculator = HandicapCalculator(prediction_provider=_FixedProvider(), ledger_sink=ledger)
+    context = PredictionContext(
+        prediction_as_of=date(2026, 1, 1), request_id="field-gender", seed=31
+    )
+
+    first = calculator.calculate(
+        [CompetitorRecord("Alice", competitor_id="athlete-a", gender="")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+    retry = calculator.calculate(
+        [CompetitorRecord("Alice", competitor_id="athlete-a", gender="unknown")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+
+    assert first.ledger_status == "recorded"
+    assert retry.ledger_status == "duplicate"
+    assert retry.prediction_id == first.prediction_id
 
 
 def _competitor(
@@ -151,6 +394,47 @@ class TestMarkCeiling:
         calc._assign_marks(results)
         fast = next(r for r in results if r.name == "Fast")
         assert fast.mark == 50
+
+
+class TestPredictionV2FieldSnapshot:
+    def test_one_immutable_snapshot_serves_the_whole_field(self):
+        provider = _MutatingProvider()
+        calc = HandicapCalculator(prediction_provider=provider)
+        competitors = [
+            CompetitorRecord("A", competitor_id="C-1"),
+            CompetitorRecord("B", competitor_id="C-2"),
+        ]
+
+        results = calc.calculate(
+            competitors,
+            WoodProfile("S01", 300, 5),
+            "SB",
+            context=PredictionContext(prediction_as_of=date.today()),
+        )
+
+        assert provider.calls == 1
+        assert {result.model_version for result in results} == {"core-41.0"}
+        assert {result.predicted_time for result in results} == {41.0}
+        assert [result.name for result in results] == ["A", "B"]
+
+    def test_calculate_never_trains_on_the_hot_path(self, monkeypatch):
+        provider = _MutatingProvider()
+        calc = HandicapCalculator(
+            results_df=pd.DataFrame({"future": ["ignored"]}),
+            prediction_provider=provider,
+        )
+
+        monkeypatch.setattr(
+            "strathmark.predictor.MLModel.train",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("hot-path training")),
+        )
+        result = calc.calculate(
+            [CompetitorRecord("A")],
+            WoodProfile("S01", 300, 5),
+            "SB",
+        )
+
+        assert result[0].predicted_time == 41.0
 
 
 # ---------------------------------------------------------------------------

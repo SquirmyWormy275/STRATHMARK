@@ -486,7 +486,7 @@ class DecayConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """Ollama + Gemini LLM settings for AI-enhanced predictions"""
+    """Ollama + Gemini settings for optional narrative analysis."""
 
     DEFAULT_MODEL: str = "qwen3.5:9b"
     """Default Ollama model (Qwen 3.5 9B — fits 8GB VRAM at Q4_K_M, released Feb 2026)"""
@@ -615,6 +615,27 @@ class ConfidenceLevels:
     VERY_LOW: Final[str] = "VERY LOW"
 
 
+@dataclass(frozen=True)
+class PredictionEngineConfig:
+    """Runtime artifact discovery and one-release rollback settings for V2."""
+
+    ENGINE_ENV: str = "STRATHMARK_PREDICTION_ENGINE"
+    CORE_ARTIFACT_ENV: str = "STRATHMARK_PREDICTION_CORE_ARTIFACT"
+    RESIDUAL_ARTIFACT_ENV: str = "STRATHMARK_PREDICTION_RESIDUAL_ARTIFACT"
+    DEFAULT_ENGINE: str = "v2"
+    LOCAL_CORE_PATHS: tuple[str, ...] = (
+        "models/prediction_v2_core.json",
+        "models/prediction_v2/core.json",
+    )
+    PACKAGE_CORE_PATH: str = "models/prediction_v2_core.json"
+
+    def selected_engine(self) -> str:
+        """Return ``v2`` or the explicit deterministic rollback selector."""
+
+        selected = os.environ.get(self.ENGINE_ENV, self.DEFAULT_ENGINE).strip().lower()
+        return "legacy" if selected in {"legacy", "legacy-baseline"} else "v2"
+
+
 # =============================================================================
 # Instantiate Config Objects
 # =============================================================================
@@ -630,6 +651,7 @@ llm_config = LLMConfig()
 events = EventCodes()
 display = DisplayConfig()
 confidence = ConfidenceLevels()
+prediction_config = PredictionEngineConfig()
 
 
 # =============================================================================

@@ -11,6 +11,8 @@ Two layers:
 The live-DB guard lives in tests/conftest.py.
 """
 
+from pathlib import Path
+
 import pytest
 
 from tests.conftest import PRODUCTION_PROJECT_REF, live_db_required  # noqa: F401
@@ -123,6 +125,138 @@ class TestBestEffortContract:
                 calibration_data={},
                 holdout_residuals=[],
             )
+
+
+class TestPredictionLedgerMirror:
+    def test_migration_forces_rls_and_revokes_public_writes(self):
+        migration = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260811_005_prediction_v2.sql"
+        ).read_text(encoding="utf-8")
+
+        assert migration.count("FORCE ROW LEVEL SECURITY") == 4
+        assert "FROM PUBLIC, anon, authenticated" in migration
+        assert "TO service_role" in migration
+        assert "append_prediction_ledger_v2" in migration
+        assert "SECURITY DEFINER" in migration
+
+    def test_hash_algorithm_migration_preserves_legacy_rows_and_updates_rpc(self):
+        migration = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260813_006_prediction_hash_algorithm.sql"
+        ).read_text(encoding="utf-8")
+
+        assert "ADD COLUMN IF NOT EXISTS hash_algorithm" in migration
+        assert "DEFAULT 'raw-v1'" in migration
+        assert "CHECK (hash_algorithm IN ('raw-v1', 'active-v2'))" in migration
+        assert "request_row->>'hash_algorithm'" in migration
+        assert "existing_algorithm" in migration
+        assert "ledger request hash algorithm conflict" in migration
+        assert "REVOKE ALL ON FUNCTION append_prediction_ledger_v2(JSONB)" in migration
+        assert (
+            "GRANT EXECUTE ON FUNCTION append_prediction_ledger_v2(JSONB) TO service_role"
+            in migration
+        )
+
+        migration_005 = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260811_005_prediction_v2.sql"
+        ).read_text(encoding="utf-8")
+        assert "active-v2 request hashes require migration 006" in migration_005
+        assert "request_row->>'hash_algorithm' <> 'raw-v1'" in migration_005
+
+        rollback = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260813_006_prediction_hash_algorithm.down.sql"
+        ).read_text(encoding="utf-8")
+        assert "cannot roll back migration 006 while active-v2 request rows exist" in rollback
+        assert "CREATE OR REPLACE FUNCTION append_prediction_ledger_v2" in rollback
+        assert "ALTER TABLE prediction_ledger_requests DROP COLUMN hash_algorithm" in rollback
+
+    def test_mirror_uses_one_sanitized_service_rpc(self, monkeypatch):
+        import strathmark.db as db
+
+        calls = []
+
+        class Response:
+            data = [{"accepted": True}]
+
+        class Client:
+            def rpc(self, name, params):
+                calls.append((name, params))
+                return self
+
+            def execute(self):
+                return Response()
+
+        monkeypatch.setattr(db, "_get_client", lambda: Client())
+        payload = {
+            "request": {
+                "ledger_request_id": "request-1",
+                "caller_id": "api",
+                "request_id": "field-1",
+                "request_hash": "a" * 64,
+                "hash_algorithm": "active-v2",
+                "event_code": "SB",
+                "prediction_as_of": "2026-08-11",
+                "created_at": "2026-08-11T00:00:00+00:00",
+            },
+            "predictions": [
+                {
+                    "prediction_id": "prediction-1",
+                    "ledger_request_id": "request-1",
+                    "competitor_id": "competitor-1",
+                    "event_code": "SB",
+                    "median_seconds": 42.0,
+                    "assigned_mark": 3,
+                    "source": "baseline",
+                    "training_eligible": True,
+                    "created_at": "2026-08-11T00:00:00+00:00",
+                }
+            ],
+            "features": [],
+        }
+
+        assert db.mirror_prediction_ledger(payload) is True
+        assert calls == [("append_prediction_ledger_v2", {"ledger_payload": payload})]
+        assert "name" not in repr(calls)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"request": {}, "predictions": [], "features": [], "secret": "x"},
+            {
+                "request": {},
+                "predictions": [{"competitor_id": ""}],
+                "features": [],
+            },
+            {
+                "request": {},
+                "predictions": [{"competitor_id": "c", "competitor_name": "PII"}],
+                "features": [],
+            },
+        ],
+    )
+    def test_mirror_rejects_unsanitized_or_unstable_payload_before_network(
+        self, monkeypatch, payload
+    ):
+        import strathmark.db as db
+
+        monkeypatch.setattr(
+            db,
+            "_get_client",
+            lambda: pytest.fail("network client must not be called"),
+        )
+        with pytest.raises(ValueError):
+            db.mirror_prediction_ledger(payload)
 
 
 # ---------------------------------------------------------------------------

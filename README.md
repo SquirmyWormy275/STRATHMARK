@@ -4,39 +4,38 @@
 
 # STRATHMARK
 
-Pip-installable Python library for AAA-compliant woodchopping handicap calculation. Production-tested across multiple tournament management consumers and covered by an automated cross-platform test suite.
+STRATHMARK is a pip-installable Python engine for AAA-compliant woodchopping
+handicaps. Version 2.0.0 uses a reproducible, prior-only statistical model and a
+deterministic joint mark optimizer. It works offline and exposes both Python and REST
+interfaces.
 
-Originally extracted from [STRATHEX](https://github.com/SquirmyWormy275/STRATHEX), the public AI-powered handicap calculator. STRATHMARK now powers handicap mark generation across STRATHEX and multiple private timbersports applications that need AAA-compliant marks without the full STRATHEX runtime footprint (XGBoost, Ollama, the 500K-race Monte Carlo engine).
-
-## Why this exists
-
-STRATHEX evolved from a tournament-day calculator into a full management system: result ingestion, championship simulation, fairness assessment, an LLM-driven analyst tier. That growth was right for STRATHEX but wrong for downstream consumers. A scoring laptop at a regional event needs the calculation core, not the surrounding 50-MB ML stack. A separate Pro-Am tournament manager needs the same handicap math, not a copy of the STRATHEX pipeline. STRATHMARK was extracted so the calculation logic lives in exactly one place and propagates outward by version pin.
-
-The library enforces AAA rules at the boundary, not at the consumer level. The 3-second mark floor, 183-second ceiling, absolute (not proportional) variance model, and round-half-to-even gap arithmetic are constants in `strathmark/config.py` and are read by every code path that produces a mark. A consumer cannot produce a non-compliant mark even by accident, because the library refuses to produce one. Compliance enforcement at the library layer means downstream applications inherit it for free and cannot regress it without changing the library itself.
-
-## Installation
+## Install
 
 ```bash
-pip install strathmark               # core calculation engine
-pip install strathmark[api]          # FastAPI REST server
-pip install strathmark[ml]           # XGBoost / LightGBM / scikit-learn predictor
-pip install strathmark[llm]          # Ollama Python client
-pip install strathmark[db]           # Supabase / PostgreSQL backend
-pip install strathmark[dev]          # pytest + ruff
+pip install strathmark
+pip install "strathmark[api]"       # FastAPI server
+pip install "strathmark[ml]"        # optional CatBoost residual tooling
+pip install "strathmark[db]"        # optional Supabase integration
+pip install "strathmark[llm]"       # narrative features only
+pip install "strathmark[dev]"       # development and tests
 ```
 
-The base install pulls in only `pandas`, `numpy`, `requests`, and `openpyxl`. Heavy ML and database dependencies are optional extras and lazily imported, so the prediction cascade falls back to the panel/baseline tier when those packages are not present.
+The NumPy/Pandas V2 core and its validated JSON artifact ship in the base package. No
+network, database, LLM, or native ML library is required to calculate marks.
 
-## Usage
+## Quick start
 
 ```python
 from datetime import date
+
 from strathmark import HandicapCalculator
-from strathmark.predictor import CompetitorRecord, WoodProfile, HistoricalResult
+from strathmark.predictor import CompetitorRecord, HistoricalResult, PredictionContext, WoodProfile
 
 competitors = [
     CompetitorRecord(
         name="Alice",
+        competitor_id="competitor-alice",
+        gender="F",
         history=[
             HistoricalResult("SB", 28.4, "Pine", 300, 5, date(2025, 3, 1)),
             HistoricalResult("SB", 27.9, "Pine", 300, 5, date(2024, 11, 15)),
@@ -44,71 +43,131 @@ competitors = [
     ),
     CompetitorRecord(
         name="Bob",
+        competitor_id="competitor-bob",
+        gender="M",
         history=[HistoricalResult("SB", 35.2, "Pine", 300, 5, date(2025, 3, 1))],
     ),
 ]
 
 wood = WoodProfile(species="Pine", diameter_mm=300, quality=5)
-results = HandicapCalculator().calculate(competitors, wood, event_code="SB")
+results = HandicapCalculator().calculate(
+    competitors,
+    wood,
+    event_code="SB",
+    context=PredictionContext(prediction_as_of=date(2026, 1, 1)),
+)
+
+for result in results:
+    print(result.name, result.predicted_time, result.mark, result.interval)
 ```
 
-`results` is a list of `MarkResult` objects (defined in `strathmark.calculator`), one per competitor, carrying `name`, `predicted_time`, `mark` (assigned handicap in seconds, AAA-clamped to the 3-to-183 second range), `method_used` (which tier of the cascade produced the prediction), `confidence`, `explanation`, and `std_dev`.
+`calculate()` returns `MarkResult` objects ordered slowest to fastest. Important fields
+include `predicted_time`, `mark`, `method_used`, `interval`, performance `std_dev`,
+engine/model/calibration versions, optimizer metadata, warnings, and optional trusted
+ledger state.
 
-## API reference
+`quality=5` remains required by the legacy `WoodProfile` constructor, but wood quality
+is deliberately a numeric no-op in V2 until provenance-backed quality or moisture data
+exists.
 
-The public surface is exposed at the package root:
+## Prediction Engine V2
 
-- `HandicapCalculator`: full mark assignment from competitor history and wood profile
-- `process_competition_day`: high-level pipeline that predicts, assigns marks, runs the simulation, and audits the result
-- `get_best_prediction` / `get_all_predictions`: direct access to the Manual > LLM > ML > Panel cascade
-- `run_monte_carlo_simulation` / `audit_mark_sheet`: 500K-race fairness simulation against a generated mark sheet
-- `ResultStore`: local SQLite history at `~/.strathmark/results.db`
-- `push_results` / `pull_results`: Supabase sync for tournament-day backends
+The core models log finish time with robust hierarchical partial pooling. Verified
+inputs are competitor identity and strictly prior history, event, result date and
+exclusive UTC cutoff, diameter, species physical properties, and gender including
+missingness. Zero- and sparse-history competitors pool toward supported population
+priors. Chronological conformal intervals stay separate from race-performance
+`std_dev`.
 
-See `strathmark/__init__.py` for the full `__all__` list and the [wiki](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki) for module-level reference.
+Division, round/heat, venue, lane/stand, run order, exact material identity, wood
+quality/moisture, weather, equipment, fatigue, penalty/DNF state, same-tournament
+weighting, and field strength are accepted where compatibility requires but cannot
+change a V2 number. Numeric LLM prediction is retired; LLMs remain narrative-only.
 
-## How it relates to STRATHEX
+The five legacy keys remain:
 
-STRATHMARK is the calculation core. STRATHEX is one consumer of that core and the largest public reference implementation. The two repositories share heritage (STRATHMARK was extracted from STRATHEX in commit `5416342`) and stay synchronized through a cross-reference table documented in [`docs/ARCHITECTURE.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md). When a STRATHMARK module changes, the table identifies which STRATHEX file consumes it, so a behavior change cannot silently drift across the boundary.
+- `manual`: uncalibrated operator override;
+- `llm`: always `None` numerically;
+- `ml`: optional promoted residual learner, inactive in 2.0.0;
+- `baseline`: authoritative V2 core;
+- `panel`: labeled broad-prior fallback.
 
-## Production usage
+A field uses one immutable model bundle. Marks are chosen from 2,048 deterministic
+joint posterior samples, subject to the 3-second floor, effective ceiling, monotonic
+ordering, and a rounded-gap fallback.
 
-STRATHMARK powers handicap mark generation in production at AAA-sanctioned timbersports events including the Missoula Pro-Am and Mason County Western Qualifier (via STRATHEX), and in multiple private timbersports applications I maintain that need AAA-compliant marks without the full STRATHEX runtime. The downstream STRATHEX system, which composes STRATHMARK calculations with its simulation logic, achieves 0.3-second finish-time spreads on Standing Block and 0.8-second spreads on Underhand against an industry-acceptable target of under 1 second. STRATHMARK provides the calculation primitives that downstream applications compose into systems achieving sub-second fairness spreads at AAA-sanctioned events.
+Read [Prediction Engine V2](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md)
+for the complete evidence, calibration, optimizer, compatibility, and ledger contract.
 
-## Testing
+## Locked benchmark
 
-`pytest tests/ -v` runs the calculator invariants, variance, predictor cascade, integration, fairness, persistence, LLM, ML, and regression suites. Tests requiring optional extras skip gracefully when those packages are not installed. CI runs the core matrix on Ubuntu and Windows across Python 3.10, 3.12, and 3.13, plus an API contract job with the `api` extra and an isolated built-wheel smoke test.
+On the frozen 128-row temporal test set, the V2 core recorded MAE 16.1301 seconds versus
+20.5172 for the strict prior-only incumbent (21.38% lower), and RMSE 33.6904 versus
+44.4791 (24.26% lower). The central 90% interval covered 94.53% of rows. These figures
+describe that fixed workbook and split; they are not a universal accuracy or fairness
+claim. Cohort samples are smaller, and the optional residual learner was inactive.
+
+Verify the checked-in report and packaged artifact without reopening the locked data:
+
+```bash
+python train_model.py
+```
+
+## REST API
+
+```bash
+pip install "strathmark[api]"
+uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
+```
+
+- `GET /health` — core availability and cutoff compatibility, calibration, residual,
+  artifact, store, and narrative-LLM health; accepts optional `prediction_as_of`
+- `POST /predict` — one stateless prediction and all five compatibility keys
+- `POST /calculate` — stateless field prediction and mark assignment
+- `POST /simulate` — independent fairness simulation, capped at 250,000 races
+- `POST /ledger/calculate` — authenticated, idempotent trusted calculation
+- `POST /ledger/predictions/{prediction_id}/settle` — authenticated immutable settlement
+- `POST /results` and `GET /results/{competitor_name}` — authenticated local history
+
+Public calculation routes do not write trusted training evidence. Ledger and result
+routes require `STRATHMARK_API_TOKEN`.
+
+## Stable design rules
+
+- Mark floor: 3 seconds.
+- System ceiling: 183 seconds; event configuration may lower it.
+- Joint optimizer: deterministic, fixed seed/sample/pass budget, never wall-clock based.
+- Fallback mark: `3 + round(slowest - predicted)`, bounded to floor and ceiling.
+- Evidence: strictly earlier than one exclusive UTC request cutoff.
+- Forecast interval and simulation `std_dev`: different quantities.
+- Numeric LLM: prohibited.
+- Output: plain text, no terminal-control formatting.
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md): module structure, design decisions, and the STRATHEX cross-reference table
-- [`docs/wiki/`](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki): 19 reference pages covering cascade, variance, wood, decay, fairness, deployment
-- [`docs/solutions/`](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/solutions): institutional knowledge organized by category (bugs solved, decisions made, patterns followed)
-- [`CONTRIBUTING.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CONTRIBUTING.md): local development loop, lint, CI
-- [`docs/DEPLOYMENT.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md): race-day deployment guide
+- [Prediction Engine V2](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md)
+- [Architecture](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md)
+- [Deployment runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md)
+- [Wiki source](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki)
+- [Contributing](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CONTRIBUTING.md)
+- [Changelog](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CHANGELOG.md)
 
-## Design rules
+## Development
 
-These invariants are enforced in `strathmark/config.py` and read by every mark-producing code path:
+```bash
+pip install -e ".[dev,api]"
+pytest tests -q
+ruff check .
+ruff format --check .
+python train_model.py
+```
 
-- Mark floor: 3 seconds (no exceptions)
-- Mark ceiling: 183 seconds (180-second event time limit plus the 3-second minimum mark)
-- Variance: absolute plus or minus 3 seconds; proportional variance is forbidden
-- Prediction cascade: Manual > LLM > ML > Panel mark fallback
-- Time-decay weighting: exponential, 2-year half-life (730 days)
-- Tournament weighting: same-tournament results carry 97 percent weight, historical results 3 percent
-- Output: plain text only; no emojis, no ANSI color codes
-- Gap arithmetic: `mark = 3 + round(gap)` with round-half-to-even, capped at 183
+Tests use isolated temporary databases. Never point tests at a production database.
 
 ## License
 
 Apache License 2.0. See [LICENSE](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/LICENSE).
 
-The Apache patent grant matters because STRATHMARK has multiple production consumers; the patent protection extends to those consumers (including future external adopters) against patent claims related to the calculation methods.
+## Author
 
-## About the author
-
-Alex Kaper, MIS senior at the University of Montana, graduating May 2026. I build ML systems that ship, including production timbersports software.
-
-- GitHub: [SquirmyWormy275](https://github.com/SquirmyWormy275)
-- Email: <alex.j.kaper@gmail.com>
+Alex Kaper — [SquirmyWormy275](https://github.com/SquirmyWormy275)

@@ -1,102 +1,115 @@
 # Onboarding
 
-STRATHMARK is a pip-installable woodchopping handicap engine. This doc is a routing hub: it points you at the right file for what you're trying to do. It does not re-document things that live elsewhere.
+STRATHMARK 2.0.0 is an offline-capable woodchopping prediction and handicap-mark
+engine. Start with the current mechanism, not the historical cascade documents.
 
 ## First five minutes
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v     # core test suite
+pip install -e ".[dev,api]"
+pytest tests -q
+python train_model.py
 ```
 
+The last command verifies the published V2 report and packaged model checksum. It does
+not retrain or reopen the locked test.
+
 Read in this order:
-1. [`README.md`](README.md) — library usage, public API, design rules, package structure
-2. [`docs/wiki/Home.md`](docs/wiki/Home.md) — architecture overview, invariants, where STRATHMARK fits vs. STRATHEX / Missoula-Pro-Am-Manager
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module structure and design decisions
 
-The design rules (mark floor=3, ceiling=183, absolute variance only, cascade order, plain-text output) are non-negotiable. They are enforced in code and in review.
+1. [`README.md`](README.md) — install and public usage.
+2. [`docs/PREDICTION_ENGINE_V2.md`](docs/PREDICTION_ENGINE_V2.md) — active evidence,
+   model, uncertainty, optimizer, ledger, and migration contract.
+3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module and request data flow.
+4. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — race-day runbook and rollback.
 
-## If you're fixing a bug
+## Mental model
 
-1. Reproduce it first. Capture the exact input that triggers it.
-2. Investigate root cause — use `/investigate` or systematic debugging.
-3. Write the regression test **before** the fix — see [`docs/solutions/test-failures/regression-test-must-include-triggering-input.md`](docs/solutions/test-failures/regression-test-must-include-triggering-input.md). A regression test that doesn't include the triggering input passes forever regardless.
-4. Ship via `COMMIT PATCH` for single-file patches or `PREPARE FOR COMMIT` for multi-file work — see [`docs/solutions/workflow-patterns/prepare-for-commit-protocol.md`](docs/solutions/workflow-patterns/prepare-for-commit-protocol.md).
-5. Document non-obvious fixes in `docs/solutions/` via `/ce:compound`.
+One request captures one exclusive UTC cutoff and one immutable model bundle. V2 uses
+only stable identity/history, event, dated strictly prior results, diameter, species
+physical properties, and gender including missingness. It predicts a positive finish
+time and calibrated interval. A deterministic 2,048-sample joint optimizer then assigns
+marks for the whole field.
 
-## If you're adding a feature
+Manual time overrides are operator instructions and have no calibrated interval. The
+numeric LLM tier is retired. The compatibility key `llm` remains but is always `None`;
+LLM modules are narrative-only.
 
-1. Run `/plan-eng-review` (architecture) and/or `/plan-ceo-review` (scope) before writing code.
-2. Decisions land in [`TODOS.md`](TODOS.md) as TODO-NNN entries with a stable identifier.
-3. Implement against the TODO, prefixing commits with the scope `(eng-review)`, `(qa)`, etc.
-4. Get a second opinion via `/codex review`.
-5. Ship via `/ship` → PR → CI → merge. Direct-to-main is accepted only for small patches.
-6. Document the outcome via `/ce:compound`.
+## Non-negotiable rules
 
-Full pattern: [`docs/solutions/workflow-patterns/eng-review-cycle-and-todos-handoff.md`](docs/solutions/workflow-patterns/eng-review-cycle-and-todos-handoff.md).
+- Mark floor 3 and system ceiling 183; an event may use a lower ceiling.
+- Same-day, future, invalid-date, and undated rows never enter V2 evidence.
+- Forecast intervals are not race-performance `std_dev`.
+- Inactive context fields are numeric no-ops; never infer or backfill them.
+- One bundle snapshot serves the whole field.
+- Trusted prediction writes require stable competitor IDs and an idempotency key.
+- Public `/calculate` and `/predict` remain stateless.
+- Database or mirror failure must not block a valid race-day calculation.
+- Tests must use temporary, isolated databases and never production.
 
-## If you're debugging a live deployment
+## Code map
 
-Start at [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — env vars, pre-event checklist, post-event ingestion, troubleshooting.
+| Responsibility | Source | Primary tests |
+| --- | --- | --- |
+| Prior-only allowlist and exclusions | `strathmark/features.py` | `tests/test_features.py` |
+| Hierarchical core and calibration | `strathmark/prediction_v2.py` | `tests/test_prediction_v2.py`, `tests/test_validation.py` |
+| Optional residual gate | `strathmark/residual.py` | `tests/test_residual.py` |
+| Compatibility projection/provider | `strathmark/predictor.py` | `tests/test_predictor*.py` |
+| Field orchestration | `strathmark/calculator.py` | `tests/test_calculator*.py` |
+| Joint mark optimizer | `strathmark/mark_optimizer.py` | `tests/test_mark_optimizer.py` |
+| Trusted append-only ledger | `strathmark/ledger.py` | `tests/test_ledger.py` |
+| REST routes and auth | `strathmark/api.py` | `tests/test_api.py` |
+| Release validation | `scripts/validate_v2.py` | `tests/test_validate_v2.py` |
+| Packaged artifact | `strathmark/models/prediction_v2_core.json` | artifact and wheel tests |
 
-Most common failure modes and their docs:
-- **Ollama unreachable** → cascade skips LLM tier and proceeds Manual → ML → Baseline → Panel. See [`docs/solutions/performance-issues/ollama-cascade-hang-on-unreachable-host.md`](docs/solutions/performance-issues/ollama-cascade-hang-on-unreachable-host.md).
-- **Supabase DNS / credentials fail** → local SQLite keeps working; only ingestion is blocked. See [`docs/solutions/architecture-decisions/dual-store-sqlite-supabase-split.md`](docs/solutions/architecture-decisions/dual-store-sqlite-supabase-split.md).
-- **Env vars not taking effect** → STRATHMARK reads some env vars at import time. See [`docs/solutions/configuration-issues/env-vars-resolved-at-import-time.md`](docs/solutions/configuration-issues/env-vars-resolved-at-import-time.md).
+## Common changes
 
-Always run `python scripts/validate_deployment.py` before an event. If it fails any check, do not start the event.
+### Fix a prediction bug
 
-## Reference map
+Reproduce it with a test. If the result looks impossible despite matching source, clear
+stale `__pycache__` directories before deeper diagnosis. Preserve the cutoff and active
+feature allowlist; a fix must not make an inactive legacy field numerically active.
 
-| File | What it's for |
-|---|---|
-| [`README.md`](README.md) | Library usage, public API, design rules, package structure, downstream relationships |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev install, lint, CI, test loop |
-| [`CHANGELOG.md`](CHANGELOG.md) | Release history, including the 1.0.0 publication release |
-| [`TODOS.md`](TODOS.md) | Active design work (ensemble predictor, P1/P2 items) |
-| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Live-event deployment guide |
-| [`docs/wiki/`](docs/wiki/) | Architecture reference (19 pages: cascade, variance, wood, decay, etc.) |
-| [`docs/solutions/`](docs/solutions/) | Learnings database — organized by category |
+### Add a factor
 
-## Design-rule cross-reference
+Do not add a coefficient directly. A factor needs provenance-backed capture, a versioned
+allowlist/schema change, prior-only folding, leakage tests, frozen temporal comparison,
+calibration review, docs, and a new artifact. Division, heat, venue, lane, run order,
+material identity, quality/moisture, weather, equipment, fatigue, and penalty/DNF are
+specifically deferred.
 
-Every invariant lives in exactly one place in code:
+### Change the optimizer
 
-| Invariant | File | Where |
-|---|---|---|
-| Mark floor = 3 | `strathmark/calculator.py` | `HandicapCalculator.MARK_FLOOR` |
-| Mark ceiling = 183 | `strathmark/calculator.py` | `HandicapCalculator.MARK_CEILING` |
-| Gap logic + banker's rounding | `strathmark/calculator.py` | `_assign_marks()` |
-| Absolute variance only | `strathmark/variance.py` | module constants + docstring |
-| Prediction cascade | `strathmark/predictor.py` | `get_best_prediction()` |
-| Time-decay half-life (730 days) | `strathmark/decay.py`, `strathmark/config.py` | `DecayConfig.HALF_LIFE_MODERATE_DAYS` |
-| 97% same-tournament weighting | `strathmark/predictor.py` | graduated weighting in `predict_baseline()` |
-| Plain-text output | `strathmark/calculator.py` | `StartSheet.render()` |
+Preserve determinism, 2,048 common-random samples, bounded integer marks, monotonicity,
+input-order ties, at least one Mark 3, and the "not worse than rounded-gap" guard unless
+a new versioned contract and benchmark explicitly replaces them.
 
-Bypassing any of these through normal imports is not possible — change them at the one location and review will catch the design implication.
+### Change persistence
 
-## Downstream consumers
+Local SQLite is the trusted race-day authority. Keep ledger rows append-only, retain
+idempotency and stable-ID checks, and use a checked-in migration for Supabase changes.
+Public stateless routes must not acquire writes.
 
-STRATHMARK is a shared calculation core. Changes here propagate to:
-- **STRATHEX** — full tournament-management system
-- **Missoula-Pro-Am-Manager** — race-day scoring UI
+## Release checks
 
-Both depend on STRATHMARK via pinned version. The CI matrix (`.github/workflows/ci.yml`) runs lint + the full test suite across Python 3.10/3.12/3.13 on Ubuntu and Windows, plus a wheel build. Every PR must pass CI before merge.
+```bash
+pytest tests -q
+ruff check .
+ruff format --check .
+python train_model.py
+python -m build
+```
 
-If a change breaks a downstream project, it breaks every project that depends on STRATHMARK. Treat the public API as a contract — see the "Public vs internal API" section of [`docs/wiki/Architecture-Overview.md`](docs/wiki/Architecture-Overview.md).
+The optional-ML CI job installs CatBoost and tests safe residual artifacts. An installed
+library is not enough to activate the residual model; promotion evidence is required.
 
-## Common first tasks
+Do not run `python train_model.py --open-locked-test` for the existing 2.0.0 benchmark.
+The role has already been opened once, and the checked-in final report intentionally
+prevents a rerun.
 
-- **Understand one module** — read the docstring at the top, then its tests. Every module has a `test_<module>.py` and most have a `test_<module>_extended.py` for edge cases.
-- **Run the ML or API tests** — `pip install -e ".[dev,ml,api,llm,db]"` then `pytest`.
-- **Make a small change** — scope to one file, use `COMMIT PATCH`, ship.
-- **Understand why something is the way it is** — check `docs/solutions/` for the category matching your question before opening an issue.
+## Operations
 
-## Questions this doc doesn't answer
-
-- "What does variance scaling look like in practice?" → [`docs/wiki/Variance-and-Monte-Carlo.md`](docs/wiki/Variance-and-Monte-Carlo.md)
-- "How does the ML predictor train?" → `scripts/train_model.py` + [`docs/wiki/Prediction-Cascade.md`](docs/wiki/Prediction-Cascade.md)
-- "Why this rulebook and not another?" → [`docs/wiki/Rulebook-Comparison.md`](docs/wiki/Rulebook-Comparison.md)
-- "What changed in v0.3.0?" → [`CHANGELOG.md`](CHANGELOG.md) and [`docs/solutions/best-practices/llm-cascade-and-monte-carlo-tuning-2026-04-21.md`](docs/solutions/best-practices/llm-cascade-and-monte-carlo-tuning-2026-04-21.md)
-
-If the answer isn't in any of those, it's probably a genuine gap — open an issue or capture it via `/ce:compound` after you solve it.
+- Deployment and recovery: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- API examples: [`docs/wiki/REST-API.md`](docs/wiki/REST-API.md)
+- Persistence and privacy: [`docs/wiki/Persistence-and-Database.md`](docs/wiki/Persistence-and-Database.md)
+- Historical decisions: [`docs/solutions/`](docs/solutions/) — check each page's status;
+  the old numeric cascade and same-tournament weighting are superseded.

@@ -35,7 +35,8 @@ Design Rules (invariants enforced in all submodules)
     - Mark ceiling:  system-wide 183 seconds (180s time limit + 3s minimum mark)
                      event configs may enforce a lower ceiling
     - Variance:      absolute +-3 seconds ONLY — proportional variance is forbidden
-    - Prediction cascade: Manual > LLM > ML > Panel mark fallback
+    - Prediction engine: manual override, otherwise the validated V2 posterior
+      with an explicit deterministic rollback fallback
     - Time-decay:    exponential decay, 2-year half-life (730 days)
     - Output:        plain text only — no emojis, no ANSI color codes
     - Style:         lean and simple, no unnecessary complexity
@@ -51,6 +52,7 @@ from strathmark.db import (
     format_proam_results,
     get_active_model_version,
     get_competitor_bias,
+    mirror_prediction_ledger,
     pull_competitors,
     pull_results,
     push_competitors,
@@ -71,21 +73,55 @@ from strathmark.fairness import (
     get_championship_race_analysis,
     simulate_and_assess_handicaps,
 )
+from strathmark.features import (
+    ExclusionDiagnostics,
+    PriorEvidence,
+    build_prior_evidence,
+    normalize_prediction_as_of,
+    resolve_species_properties,
+)
+from strathmark.ledger import (
+    LedgerConflictError,
+    LedgerPrediction,
+    LedgerWriteResult,
+    PredictionLedger,
+    SettlementConflictError,
+    SettlementResult,
+)
 from strathmark.llm import call_ollama, check_ollama_connection
 from strathmark.loader import load_results_for_competitor, load_woodchopping_xlsx
+from strathmark.mark_optimizer import (
+    MarkOptimizationResult,
+    legacy_rounded_gap_marks,
+    optimize_joint_marks,
+)
 from strathmark.mnemex import (
     is_mnemex_configured,
     pull_canonical_competitors,
     pull_canonical_results,
     register_competitor_in_mnemex,
 )
+from strathmark.prediction_v2 import (
+    ChronologicalCalibrator,
+    ForecastInterval,
+    PredictionV2Model,
+    PredictionV2Request,
+    PredictiveDistribution,
+)
 from strathmark.predictor import (
     CompetitorRecord,
+    FilePredictionProvider,
     HistoricalResult,
+    PredictionBundle,
+    PredictionContext,
+    PredictionEngineProvider,
+    PredictionInterval,
     PredictionResult,
+    StaticPredictionProvider,
     WoodProfile,
     get_all_predictions,
     get_best_prediction,
+    get_prediction_provider,
     predict_baseline,
     select_best_prediction,
 )
@@ -114,13 +150,39 @@ __all__ = [
     "WoodProfile",
     "HistoricalResult",
     "PredictionResult",
+    "PredictionContext",
+    "PredictionInterval",
+    "PredictionBundle",
+    "PredictionEngineProvider",
+    "StaticPredictionProvider",
+    "FilePredictionProvider",
+    "PriorEvidence",
+    "ExclusionDiagnostics",
     # Prediction API
     "get_best_prediction",
+    "get_prediction_provider",
     "get_all_predictions",
     "select_best_prediction",
     "predict_baseline",
+    "build_prior_evidence",
+    "normalize_prediction_as_of",
+    "resolve_species_properties",
+    "PredictionV2Model",
+    "PredictionV2Request",
+    "PredictiveDistribution",
+    "ForecastInterval",
+    "ChronologicalCalibrator",
+    "MarkOptimizationResult",
+    "legacy_rounded_gap_marks",
+    "optimize_joint_marks",
     # Persistence
     "ResultStore",
+    "PredictionLedger",
+    "LedgerPrediction",
+    "LedgerWriteResult",
+    "LedgerConflictError",
+    "SettlementResult",
+    "SettlementConflictError",
     # Simulation
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",
@@ -149,6 +211,7 @@ __all__ = [
     "format_proam_results",
     "record_prediction_residuals",
     "get_competitor_bias",
+    "mirror_prediction_ledger",
     # ML state (carve-out from controlled-write rule; STRATHMARK-internal)
     "register_model_version",
     "set_active_model",
@@ -175,4 +238,4 @@ __all__ = [
     "score_prediction_accuracy",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

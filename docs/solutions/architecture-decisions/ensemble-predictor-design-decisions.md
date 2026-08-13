@@ -10,12 +10,19 @@ tags:
   - "outside-voice-review"
 confidence: high
 created: 2026-04-21
+last_updated: 2026-08-13
 source: "CEO + Eng plan-review sessions 2026-03-23; TODOS.md TODO-001..011"
 ---
 
 # Ensemble Predictor — Design Decisions and Deferred Scope
 
-## Context
+> **Superseded by Prediction Engine V2.** This document preserves a pre-2.0 proposal
+> for historical context. Its cascade, numeric-LLM, name-keyed ledger, and ensemble
+> backlog are not active requirements. See
+> [`docs/PREDICTION_ENGINE_V2.md`](../../PREDICTION_ENGINE_V2.md) and the current
+> [`TODOS.md`](../../../TODOS.md).
+
+## Historical context
 The CEO and eng reviews on 2026-03-23 produced a comprehensive design for a future ensemble predictor — a meta-learner that would blend outputs from the Manual/LLM/ML/Baseline tiers using learned weights rather than the current first-valid-wins cascade. The work is tracked in [`TODOS.md`](../../../TODOS.md) as TODO-001..011.
 
 TODOS.md tracks the *tasks*. This doc captures the *design decisions* — the agreed-upon shape of the solution, which alternatives were considered and rejected, and which scope was deliberately deferred. Without this, a future implementer re-opens every debate by re-reading TODOS.md piece by piece.

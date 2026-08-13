@@ -7,6 +7,40 @@ import pytest
 from strathmark.store import ResultStore
 
 
+def test_cloud_mirror_accepts_active_v2_hash_algorithm(monkeypatch):
+    from strathmark import db
+
+    captured = []
+
+    class RPC:
+        def execute(self):
+            return None
+
+    class Client:
+        def rpc(self, name, payload):
+            captured.append((name, payload))
+            return RPC()
+
+    monkeypatch.setattr(db, "_get_client", lambda: Client())
+    payload = {
+        "request": {
+            "ledger_request_id": "ledger-request",
+            "caller_id": "caller",
+            "request_id": "request",
+            "request_hash": "a" * 64,
+            "hash_algorithm": "active-v2",
+            "event_code": "SB",
+            "prediction_as_of": "2026-08-13",
+            "created_at": "2026-08-13T00:00:00+00:00",
+        },
+        "predictions": [],
+        "features": [],
+    }
+
+    assert db.mirror_prediction_ledger(payload) is True
+    assert captured[0][1]["ledger_payload"]["request"]["hash_algorithm"] == "active-v2"
+
+
 @pytest.fixture
 def tmp_store(tmp_path):
     """Create a ResultStore backed by a temporary database."""
@@ -114,3 +148,12 @@ class TestResultStore:
         assert tmp_store.get_competitors() == []
         df = tmp_store.get_all_as_dataframe()
         assert len(df) == 0
+
+    def test_prediction_ledger_factory_keeps_isolated_store_path_and_mirror(self, tmp_store):
+        def mirror(payload):
+            return payload
+
+        ledger = tmp_store.prediction_ledger(mirror=mirror)
+
+        assert ledger.path == tmp_store.path
+        assert ledger._mirror is mirror
