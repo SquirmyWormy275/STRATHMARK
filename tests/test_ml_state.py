@@ -128,6 +128,40 @@ class TestBestEffortContract:
 
 
 class TestPredictionLedgerMirror:
+    def test_prediction_rpc_migrations_validate_payload_shape_before_mutation(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        migrations = [
+            migration_dir / "20260811_005_prediction_v2.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.down.sql",
+        ]
+
+        for path in migrations:
+            sql = path.read_text(encoding="utf-8")
+            assert "ledger payload must be an object" in sql
+            assert "ledger payload must contain exactly one operation kind" in sql
+            assert "settlement payload must be a non-null object" in sql
+            assert "field request must be a non-null object" in sql
+            assert "field predictions must be a non-empty array" in sql
+            assert "field features must be an array" in sql
+            assert "prediction request linkage mismatch" in sql
+            assert "feature prediction linkage mismatch" in sql
+            assert "settlement prediction linkage mismatch" in sql
+
+    def test_rpc_owner_prerequisite_is_checked_in_and_requires_role_capability(self):
+        prerequisite = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "prerequisites"
+            / "prediction_rpc_owner.sql"
+        ).read_text(encoding="utf-8")
+
+        assert "CREATE ROLE strathmark_prediction_rpc_owner NOLOGIN NOBYPASSRLS" in prerequisite
+        assert "rolcanlogin" in prerequisite
+        assert "rolbypassrls" in prerequisite
+        assert "pg_has_role(current_user, 'pg_create_role', 'MEMBER')" in prerequisite
+
     def test_migration_forces_rls_and_revokes_public_writes(self):
         migration = (
             Path(__file__).parents[1]
@@ -156,9 +190,12 @@ class TestPredictionLedgerMirror:
         assert "request_row->>'hash_algorithm'" in migration
         assert "existing_algorithm" in migration
         assert "ledger request hash algorithm conflict" in migration
-        assert "REVOKE ALL ON FUNCTION append_prediction_ledger_v2(JSONB)" in migration
         assert (
-            "GRANT EXECUTE ON FUNCTION append_prediction_ledger_v2(JSONB) TO service_role"
+            "REVOKE ALL ON FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)"
+            in migration
+        )
+        assert (
+            "GRANT EXECUTE ON FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)"
             in migration
         )
 
@@ -178,7 +215,7 @@ class TestPredictionLedgerMirror:
             / "20260813_006_prediction_hash_algorithm.down.sql"
         ).read_text(encoding="utf-8")
         assert "cannot roll back migration 006 while active-v2 request rows exist" in rollback
-        assert "CREATE OR REPLACE FUNCTION append_prediction_ledger_v2" in rollback
+        assert "CREATE OR REPLACE FUNCTION public.append_prediction_ledger_v2" in rollback
         assert "ALTER TABLE prediction_ledger_requests DROP COLUMN hash_algorithm" in rollback
 
     def test_mirror_uses_one_sanitized_service_rpc(self, monkeypatch):

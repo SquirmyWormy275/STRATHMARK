@@ -13,21 +13,59 @@ ALTER TABLE prediction_ledger_requests
     ADD COLUMN IF NOT EXISTS hash_algorithm TEXT NOT NULL DEFAULT 'raw-v1'
         CHECK (hash_algorithm IN ('raw-v1', 'active-v2'));
 
-CREATE OR REPLACE FUNCTION append_prediction_ledger_v2(ledger_payload JSONB)
-RETURNS JSONB
+CREATE OR REPLACE FUNCTION public.append_prediction_ledger_v2(
+    ledger_payload pg_catalog.jsonb
+)
+RETURNS pg_catalog.jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = ''
 AS $$
 DECLARE
-    request_row JSONB;
-    incoming_algorithm TEXT;
-    existing_hash TEXT;
-    existing_algorithm TEXT;
-    existing_request_id TEXT;
+    request_row pg_catalog.jsonb;
+    settlement_row pg_catalog.jsonb;
+    incoming_algorithm pg_catalog.text;
+    existing_hash pg_catalog.text;
+    existing_algorithm pg_catalog.text;
+    existing_request_id pg_catalog.text;
 BEGIN
+    IF ledger_payload IS NULL
+       OR pg_catalog.jsonb_typeof(ledger_payload) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'ledger payload must be an object';
+    END IF;
     IF ledger_payload ? 'settlement' THEN
-        INSERT INTO prediction_ledger_settlements (
+        IF ledger_payload ? 'request'
+           OR ledger_payload ? 'predictions'
+           OR ledger_payload ? 'features' THEN
+            RAISE EXCEPTION 'ledger payload must contain exactly one operation kind';
+        END IF;
+        settlement_row := ledger_payload->'settlement';
+        IF pg_catalog.jsonb_typeof(settlement_row) IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'settlement payload must be a non-null object';
+        END IF;
+        IF NULLIF(settlement_row->>'settlement_id', '') IS NULL
+           OR NULLIF(settlement_row->>'prediction_id', '') IS NULL
+           OR NULLIF(settlement_row->>'competitor_id', '') IS NULL
+           OR NULLIF(settlement_row->>'event_code', '') IS NULL THEN
+            RAISE EXCEPTION 'settlement payload is missing required linkage fields';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM public.prediction_ledger_predictions AS prediction
+            WHERE prediction.prediction_id = settlement_row->>'prediction_id'
+              AND prediction.competitor_id = settlement_row->>'competitor_id'
+              AND prediction.event_code = settlement_row->>'event_code'
+        ) THEN
+            RAISE EXCEPTION 'settlement prediction linkage mismatch';
+        END IF;
+        IF NULLIF(settlement_row->>'supersedes_settlement_id', '') IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM public.prediction_ledger_settlements AS prior
+               WHERE prior.settlement_id = settlement_row->>'supersedes_settlement_id'
+                 AND prior.prediction_id = settlement_row->>'prediction_id'
+           ) THEN
+            RAISE EXCEPTION 'settlement prediction linkage mismatch';
+        END IF;
+        INSERT INTO public.prediction_ledger_settlements (
             settlement_id, prediction_id, revision, competitor_id, event_code,
             actual_time, residual, actor, reason, payload_hash,
             supersedes_settlement_id, settled_at
@@ -37,17 +75,55 @@ BEGIN
             row.competitor_id, row.event_code, row.actual_time, row.residual,
             row.actor, row.reason, row.payload_hash,
             row.supersedes_settlement_id, row.settled_at
-        FROM jsonb_to_record(ledger_payload->'settlement') AS row(
+        FROM pg_catalog.jsonb_to_record(ledger_payload->'settlement') AS row(
             settlement_id TEXT, prediction_id TEXT, revision INTEGER,
             competitor_id TEXT, event_code TEXT, actual_time NUMERIC,
             residual NUMERIC, actor TEXT, reason TEXT, payload_hash TEXT,
             supersedes_settlement_id TEXT, settled_at TIMESTAMPTZ
         )
         ON CONFLICT (prediction_id, payload_hash) DO NOTHING;
-        RETURN jsonb_build_object('accepted', TRUE, 'kind', 'settlement');
+        RETURN pg_catalog.jsonb_build_object('accepted', TRUE, 'kind', 'settlement');
     END IF;
 
+    IF NOT ledger_payload ? 'request' THEN
+        RAISE EXCEPTION 'field request must be a non-null object';
+    END IF;
+    IF NOT ledger_payload ? 'predictions' THEN
+        RAISE EXCEPTION 'field predictions must be a non-empty array';
+    END IF;
+    IF NOT ledger_payload ? 'features' THEN
+        RAISE EXCEPTION 'field features must be an array';
+    END IF;
     request_row := ledger_payload->'request';
+    IF pg_catalog.jsonb_typeof(request_row) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'field request must be a non-null object';
+    END IF;
+    IF pg_catalog.jsonb_typeof(ledger_payload->'predictions') IS DISTINCT FROM 'array'
+       OR pg_catalog.jsonb_array_length(ledger_payload->'predictions') = 0 THEN
+        RAISE EXCEPTION 'field predictions must be a non-empty array';
+    END IF;
+    IF pg_catalog.jsonb_typeof(ledger_payload->'features') IS DISTINCT FROM 'array' THEN
+        RAISE EXCEPTION 'field features must be an array';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_catalog.jsonb_array_elements(ledger_payload->'predictions') AS item
+        WHERE pg_catalog.jsonb_typeof(item) IS DISTINCT FROM 'object'
+           OR item->>'ledger_request_id' IS DISTINCT FROM request_row->>'ledger_request_id'
+           OR item->>'event_code' IS DISTINCT FROM request_row->>'event_code'
+    ) THEN
+        RAISE EXCEPTION 'prediction request linkage mismatch';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_catalog.jsonb_array_elements(ledger_payload->'features') AS feature
+        WHERE pg_catalog.jsonb_typeof(feature) IS DISTINCT FROM 'object'
+           OR NOT EXISTS (
+               SELECT 1
+               FROM pg_catalog.jsonb_array_elements(ledger_payload->'predictions') AS prediction
+               WHERE prediction->>'prediction_id' = feature->>'prediction_id'
+           )
+    ) THEN
+        RAISE EXCEPTION 'feature prediction linkage mismatch';
+    END IF;
     incoming_algorithm := COALESCE(
         NULLIF(request_row->>'hash_algorithm', ''),
         'raw-v1'
@@ -56,7 +132,7 @@ BEGIN
         RAISE EXCEPTION 'unsupported ledger request hash algorithm';
     END IF;
 
-    INSERT INTO prediction_ledger_requests (
+    INSERT INTO public.prediction_ledger_requests (
         ledger_request_id, caller_id, request_id, request_hash, hash_algorithm,
         event_code, prediction_as_of, created_at
     ) VALUES (
@@ -69,7 +145,7 @@ BEGIN
 
     SELECT ledger_request_id, request_hash, hash_algorithm
     INTO existing_request_id, existing_hash, existing_algorithm
-    FROM prediction_ledger_requests
+    FROM public.prediction_ledger_requests
     WHERE caller_id = request_row->>'caller_id'
       AND request_id = request_row->>'request_id';
     IF existing_algorithm IS DISTINCT FROM incoming_algorithm THEN
@@ -79,10 +155,12 @@ BEGIN
         RAISE EXCEPTION 'ledger request hash conflict';
     END IF;
     IF existing_request_id IS DISTINCT FROM request_row->>'ledger_request_id' THEN
-        RETURN jsonb_build_object('accepted', TRUE, 'kind', 'field', 'duplicate', TRUE);
+        RETURN pg_catalog.jsonb_build_object(
+            'accepted', TRUE, 'kind', 'field', 'duplicate', TRUE
+        );
     END IF;
 
-    INSERT INTO prediction_ledger_predictions (
+    INSERT INTO public.prediction_ledger_predictions (
         prediction_id, ledger_request_id, competitor_id, event_code,
         median_seconds, assigned_mark, source, training_eligible,
         engine_version, model_version, calibration_version, evidence_cutoff,
@@ -99,7 +177,7 @@ BEGIN
         row.interval_scope, COALESCE(row.ignored_factors, '[]'::jsonb),
         COALESCE(row.warnings, '[]'::jsonb), row.optimizer,
         COALESCE(row.optimizer_metadata, '{}'::jsonb), row.created_at
-    FROM jsonb_to_recordset(ledger_payload->'predictions') AS row(
+    FROM pg_catalog.jsonb_to_recordset(ledger_payload->'predictions') AS row(
         prediction_id TEXT, ledger_request_id TEXT, competitor_id TEXT,
         event_code TEXT, median_seconds NUMERIC, assigned_mark INTEGER,
         source TEXT, training_eligible BOOLEAN, engine_version TEXT,
@@ -111,25 +189,28 @@ BEGIN
     )
     ON CONFLICT (prediction_id) DO NOTHING;
 
-    INSERT INTO prediction_ledger_features (
+    INSERT INTO public.prediction_ledger_features (
         feature_snapshot_id, prediction_id, feature_name, numeric_value, created_at
     )
     SELECT
         row.feature_snapshot_id, row.prediction_id, row.feature_name,
         row.numeric_value, row.created_at
-    FROM jsonb_to_recordset(ledger_payload->'features') AS row(
+    FROM pg_catalog.jsonb_to_recordset(ledger_payload->'features') AS row(
         feature_snapshot_id TEXT, prediction_id TEXT, feature_name TEXT,
         numeric_value DOUBLE PRECISION, created_at TIMESTAMPTZ
     )
     ON CONFLICT (feature_snapshot_id) DO NOTHING;
 
-    RETURN jsonb_build_object('accepted', TRUE, 'kind', 'field');
+    RETURN pg_catalog.jsonb_build_object('accepted', TRUE, 'kind', 'field');
 END;
 $$;
 
-REVOKE ALL ON FUNCTION append_prediction_ledger_v2(JSONB)
+ALTER FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)
+    OWNER TO strathmark_prediction_rpc_owner;
+REVOKE ALL ON FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)
     FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION append_prediction_ledger_v2(JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)
+    TO service_role;
 
 COMMIT;
 
