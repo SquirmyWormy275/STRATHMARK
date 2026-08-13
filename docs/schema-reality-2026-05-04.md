@@ -2,8 +2,9 @@
 
 > Historical snapshot. This report describes read-only observations made on
 > 2026-05-04; it is not proof of the current live schema. Prediction Engine V2 later
-> added checked-in migration `20260811_005_prediction_v2.sql`, but that migration is
-> operator-applied and this repository does not claim it is live.
+> added checked-in migrations `20260811_005_prediction_v2.sql` and
+> `20260813_006_prediction_hash_algorithm.sql`, but those migrations are
+> operator-applied and this repository does not claim they are live.
 
 Status: PHASE 1 COMPLETE for column-level metadata. Indexes / RLS policies / triggers
 remain GATED behind pg_catalog (see "Known gaps" section below).
@@ -188,7 +189,8 @@ value present is `'initial-seed'`. Phase 2's audit deliverable is therefore shor
 V2 introduces a separate trusted ledger rather than treating the legacy `predictions`,
 `feature_store`, or `prediction_residuals` tables as its race-day authority. The
 checked-in, not-confirmed-applied migration 005 defines append-only request, prediction,
-numeric-feature, and settlement tables.
+numeric-feature, and settlement tables. Migration 006 versions request hashes while
+preserving rows and queued payloads created before active-evidence hashing.
 
 All four tables force RLS and reject UPDATE/DELETE. Browser roles are revoked; only the
 service-role append RPC can mirror fields or settlements. Display names, narrative
@@ -198,6 +200,6 @@ Local SQLite (`STRATHMARK_DB_PATH`, default `~/.strathmark/results.db`) remains 
 trusted race-day target. Cloud mirroring is best-effort. Stable competitor IDs are
 mandatory for trusted writes; public stateless routes create no ledger evidence.
 
-Before claiming the cloud mirror is live, independently verify migration 005, triggers,
-grants, forced RLS, RPC execution, and backup/rollback procedure against the target.
+Before claiming the cloud mirror is live, independently verify migrations 005-006,
+triggers, grants, forced RLS, RPC execution, and backup/rollback procedure against the target.
 This historical report does not supply that confirmation.

@@ -12,6 +12,7 @@ import json
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date
+from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
 import numpy as np
@@ -25,6 +26,7 @@ from strathmark.features import (
     PriorEvidence,
     build_prior_evidence,
     normalize_prediction_as_of,
+    parse_result_date_utc,
 )
 
 ENGINE_VERSION = "2.0.0"
@@ -44,10 +46,53 @@ MIN_TREND_SPAN_DAYS = 180
 CROSS_EVENT_MIN_PAIRS = 10
 CROSS_EVENT_RIDGE = 0.10
 CROSS_EVENT_CAP = 0.75
+PROPERTY_STANDARD_DEVIATION_LIMIT = 8.0
+CALIBRATION_COHORT_MIN_SAMPLES = 30
+CALIBRATION_EVENT_MIN_SAMPLES = 50
+CALIBRATION_GLOBAL_MIN_SAMPLES = 100
 NORMAL_90_RADIUS = 1.6448536269514722
 
 _EVENTS = ("SB", "UH")
+_HISTORY_BANDS = ("0", "1-3", "4+")
+_CROSS_EVENT_KEYS = ("SB_from_UH", "UH_from_SB")
+_CALIBRATION_FIELDS = {
+    "version",
+    "nominal_coverage",
+    "cohort_radii",
+    "cohort_counts",
+    "event_radii",
+    "event_counts",
+    "global_radius",
+    "global_count",
+    "max_evidence_date",
+}
+_VALIDATION_METRIC_FIELDS = {
+    "locked_count",
+    "locked_mae_seconds",
+    "locked_rmse_seconds",
+    "locked_median_absolute_error_seconds",
+    "incumbent_mae_seconds",
+    "incumbent_rmse_seconds",
+    "mae_relative_improvement",
+    "rmse_relative_worsening",
+}
 _BROAD_PRIORS = {"SB": (50.0, 0.45), "UH": (75.0, 0.45)}
+
+
+def _frozen_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return a defensive immutable copy suitable for a frozen artifact object."""
+
+    return MappingProxyType(dict(value))
+
+
+def _frozen_nested_mapping(
+    value: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Mapping[str, Any]]:
+    """Return a defensive immutable copy of a two-level artifact mapping."""
+
+    return MappingProxyType(
+        {str(key): MappingProxyType(dict(nested)) for key, nested in value.items()}
+    )
 
 
 @dataclass(frozen=True)
@@ -77,8 +122,9 @@ class PredictionV2Request:
         if not math.isfinite(float(self.diameter_mm)) or float(self.diameter_mm) <= 0:
             raise ValueError("diameter_mm must be positive and finite")
         for name in SPECIES_PROPERTY_FIELDS:
-            if not math.isfinite(float(getattr(self, name))):
-                raise ValueError(f"{name} must be finite")
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive and finite")
         object.__setattr__(self, "event", event)
         species = str(self.species).strip().upper()
         object.__setattr__(self, "species", species or MISSING_CATEGORY)
@@ -132,6 +178,13 @@ class ChronologicalCalibrator:
     global_count: int = 0
     max_evidence_date: Optional[date] = None
 
+    def __post_init__(self) -> None:
+        _validate_calibrator_semantics(self)
+        object.__setattr__(self, "cohort_radii", _frozen_nested_mapping(self.cohort_radii))
+        object.__setattr__(self, "cohort_counts", _frozen_nested_mapping(self.cohort_counts))
+        object.__setattr__(self, "event_radii", _frozen_mapping(self.event_radii))
+        object.__setattr__(self, "event_counts", _frozen_mapping(self.event_counts))
+
     @classmethod
     def fit(
         cls,
@@ -140,9 +193,13 @@ class ChronologicalCalibrator:
         version: str = "chronological-conformal-v1",
         nominal_coverage: float = 0.90,
     ) -> "ChronologicalCalibrator":
-        required = {"event", "history_count", "absolute_log_residual"}
+        if not math.isfinite(float(nominal_coverage)) or not 0 < nominal_coverage < 1:
+            raise ValueError("calibration nominal coverage must be between zero and one")
+        required = {"event", "history_count", "absolute_log_residual", "result_date"}
         missing = required - set(residuals.columns)
         if missing:
+            if missing == {"result_date"}:
+                raise ValueError("calibration residuals require an evidence date")
             raise ValueError(f"calibration residuals missing columns: {sorted(missing)}")
         frame = residuals.copy()
         frame["event"] = frame["event"].astype(str).str.upper()
@@ -150,10 +207,12 @@ class ChronologicalCalibrator:
         frame["absolute_log_residual"] = pd.to_numeric(
             frame["absolute_log_residual"], errors="coerce"
         )
+        frame["result_date"] = frame["result_date"].map(parse_result_date_utc)
         frame = frame[
             frame["event"].isin(_EVENTS)
             & np.isfinite(frame["absolute_log_residual"])
             & (frame["absolute_log_residual"] >= 0)
+            & frame["result_date"].notna()
         ].copy()
 
         cohort_radii: dict[str, dict[str, float]] = {}
@@ -161,7 +220,7 @@ class ChronologicalCalibrator:
         for (event, band), group in frame.groupby(["event", "history_band"], sort=True):
             count = len(group)
             cohort_counts.setdefault(event, {})[band] = count
-            if count >= 30:
+            if count >= CALIBRATION_COHORT_MIN_SAMPLES:
                 cohort_radii.setdefault(event, {})[band] = _finite_sample_higher_quantile(
                     group["absolute_log_residual"].to_numpy(), nominal_coverage
                 )
@@ -171,23 +230,21 @@ class ChronologicalCalibrator:
         for event, group in frame.groupby("event", sort=True):
             count = len(group)
             event_counts[event] = count
-            if count >= 50:
+            if count >= CALIBRATION_EVENT_MIN_SAMPLES:
                 event_radii[event] = _finite_sample_higher_quantile(
                     group["absolute_log_residual"].to_numpy(), nominal_coverage
                 )
 
         global_count = len(frame)
         global_radius = None
-        if global_count >= 100:
+        if global_count >= CALIBRATION_GLOBAL_MIN_SAMPLES:
             global_radius = _finite_sample_higher_quantile(
                 frame["absolute_log_residual"].to_numpy(), nominal_coverage
             )
 
         max_evidence_date = None
-        if "result_date" in frame and not frame.empty:
-            parsed = pd.to_datetime(frame["result_date"], errors="coerce", utc=True).dropna()
-            if not parsed.empty:
-                max_evidence_date = parsed.max().date()
+        if not frame.empty:
+            max_evidence_date = max(frame["result_date"])
 
         return cls(
             version=version,
@@ -236,29 +293,37 @@ class ChronologicalCalibrator:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ChronologicalCalibrator":
+        if not isinstance(value, Mapping) or set(value) != _CALIBRATION_FIELDS:
+            raise ValueError("artifact calibration fields are incompatible")
         max_date = value.get("max_evidence_date")
+        cohort_radii = _validated_calibration_cohort_mapping(
+            value["cohort_radii"], "radii", count_values=False
+        )
+        cohort_counts = _validated_calibration_cohort_mapping(
+            value["cohort_counts"], "counts", count_values=True
+        )
+        event_radii = _validated_sparse_event_mapping(
+            value["event_radii"], "calibration event radii", count_values=False
+        )
+        event_counts = _validated_sparse_event_mapping(
+            value["event_counts"], "calibration event counts", count_values=True
+        )
         return cls(
-            version=str(value["version"]),
-            nominal_coverage=float(value["nominal_coverage"]),
-            cohort_radii={
-                str(event): {str(band): float(radius) for band, radius in bands.items()}
-                for event, bands in value.get("cohort_radii", {}).items()
-            },
-            cohort_counts={
-                str(event): {str(band): int(count) for band, count in bands.items()}
-                for event, bands in value.get("cohort_counts", {}).items()
-            },
-            event_radii={
-                str(key): float(number) for key, number in value.get("event_radii", {}).items()
-            },
-            event_counts={
-                str(key): int(number) for key, number in value.get("event_counts", {}).items()
-            },
-            global_radius=(
-                None if value.get("global_radius") is None else float(value["global_radius"])
+            version=_validated_nonempty_string(value["version"], "calibration version"),
+            nominal_coverage=_validated_float(
+                value["nominal_coverage"], "calibration nominal coverage"
             ),
-            global_count=int(value.get("global_count", 0)),
-            max_evidence_date=date.fromisoformat(max_date) if max_date else None,
+            cohort_radii=cohort_radii,
+            cohort_counts=cohort_counts,
+            event_radii=event_radii,
+            event_counts=event_counts,
+            global_radius=(
+                None
+                if value["global_radius"] is None
+                else _validated_radius(value["global_radius"], "calibration global radius")
+            ),
+            global_count=_validated_count(value["global_count"], "calibration global count"),
+            max_evidence_date=_validated_optional_date(max_date, "calibration evidence date"),
         )
 
 
@@ -327,6 +392,21 @@ class PredictionV2Model:
     validation_metrics: Mapping[str, float] = field(default_factory=dict)
     engine_version: str = ENGINE_VERSION
     canonicalization_version: str = CANONICALIZATION_VERSION
+
+    def __post_init__(self) -> None:
+        _validate_model_semantics(self)
+        object.__setattr__(self, "property_means", _frozen_mapping(self.property_means))
+        object.__setattr__(self, "property_scales", _frozen_mapping(self.property_scales))
+        object.__setattr__(self, "diameter_support", _frozen_mapping(self.diameter_support))
+        object.__setattr__(self, "event_scales", _frozen_mapping(self.event_scales))
+        object.__setattr__(self, "event_counts", _frozen_mapping(self.event_counts))
+        object.__setattr__(
+            self, "cross_event_coefficients", _frozen_mapping(self.cross_event_coefficients)
+        )
+        object.__setattr__(
+            self, "species_properties", _frozen_nested_mapping(self.species_properties)
+        )
+        object.__setattr__(self, "validation_metrics", _frozen_mapping(self.validation_metrics))
 
     @classmethod
     def fit(
@@ -728,8 +808,16 @@ class PredictionV2Model:
             raise ValueError("artifact canonicalization version is incompatible")
         if payload["active_allowlist"] != list(MODEL_EVIDENCE_FIELDS):
             raise ValueError("artifact active allowlist is incompatible")
-        feature_names = tuple(str(value) for value in payload["feature_names"])
-        coefficients = tuple(float(value) for value in payload["coefficients"])
+        if not isinstance(payload["feature_names"], list) or not all(
+            isinstance(value, str) for value in payload["feature_names"]
+        ):
+            raise ValueError("artifact feature schema is incompatible")
+        feature_names = tuple(payload["feature_names"])
+        if not isinstance(payload["coefficients"], list):
+            raise ValueError("artifact coefficients are invalid")
+        coefficients = tuple(
+            _validated_float(value, "coefficients") for value in payload["coefficients"]
+        )
         if feature_names != _feature_names() or len(coefficients) != len(feature_names):
             raise ValueError("artifact feature schema is incompatible")
         property_means = _validated_property_mapping(payload["property_means"], "property means")
@@ -747,19 +835,27 @@ class PredictionV2Model:
             species_properties[species_key] = _validated_property_mapping(
                 values, f"species {species_key} properties"
             )
-        species_support = tuple(str(value).strip().upper() for value in payload["species_support"])
+        if not isinstance(payload["species_support"], list) or not all(
+            isinstance(value, str) for value in payload["species_support"]
+        ):
+            raise ValueError("artifact species support is incompatible")
+        species_support = tuple(value.strip().upper() for value in payload["species_support"])
         if schema_version == 2 and set(species_properties) != set(species_support):
             raise ValueError("artifact species lookup does not match species support")
         diameter_support = _validated_event_pair_mapping(payload["diameter_support"])
         event_scales = _validated_event_scalar_mapping(payload["event_scales"], positive=True)
         event_counts = _validated_event_count_mapping(payload["event_counts"])
         model = cls(
-            engine_version=str(payload["engine_version"]),
-            model_version=str(payload["model_version"]),
-            canonicalization_version=str(payload["canonicalization_version"]),
-            training_cutoff=date.fromisoformat(payload["training_cutoff"]),
-            evidence_max_date=date.fromisoformat(payload["evidence_max_date"]),
-            source_checksum=str(payload["source_checksum"]),
+            engine_version=_validated_nonempty_string(payload["engine_version"], "engine version"),
+            model_version=_validated_nonempty_string(payload["model_version"], "model version"),
+            canonicalization_version=_validated_nonempty_string(
+                payload["canonicalization_version"], "canonicalization version"
+            ),
+            training_cutoff=_validated_date(payload["training_cutoff"], "training cutoff"),
+            evidence_max_date=_validated_date(payload["evidence_max_date"], "evidence maximum"),
+            source_checksum=_validated_nonempty_string(
+                payload["source_checksum"], "source checksum"
+            ),
             feature_names=feature_names,
             coefficients=coefficients,
             property_means=property_means,
@@ -769,22 +865,245 @@ class PredictionV2Model:
             event_counts=event_counts,
             species_support=species_support,
             species_properties=species_properties,
-            cross_event_coefficients={
-                key: float(value) for key, value in payload["cross_event_coefficients"].items()
-            },
+            cross_event_coefficients=_validated_cross_event_mapping(
+                payload["cross_event_coefficients"]
+            ),
             calibration=ChronologicalCalibrator.from_dict(payload["calibration"]),
-            validation_metrics={
-                key: float(value) for key, value in payload["validation_metrics"].items()
-            },
+            validation_metrics=_validated_validation_metrics(payload["validation_metrics"]),
         )
-        source_checksum = model.source_checksum.lower()
-        if len(source_checksum) != 64 or any(
-            character not in "0123456789abcdef" for character in source_checksum
-        ):
-            raise ValueError("artifact source checksum is invalid")
-        if model.engine_version != ENGINE_VERSION:
-            raise ValueError("artifact engine version is incompatible")
         return model
+
+
+def _validate_calibrator_semantics(calibration: ChronologicalCalibrator) -> None:
+    if not isinstance(calibration.version, str) or not calibration.version.strip():
+        raise ValueError("artifact calibration version must be nonempty")
+    if not math.isfinite(float(calibration.nominal_coverage)) or not (
+        0 < float(calibration.nominal_coverage) < 1
+    ):
+        raise ValueError("artifact calibration nominal coverage must be between zero and one")
+
+    cohort_counts = _validated_calibration_cohort_mapping(
+        calibration.cohort_counts, "counts", count_values=True
+    )
+    cohort_radii = _validated_calibration_cohort_mapping(
+        calibration.cohort_radii, "radii", count_values=False
+    )
+    event_counts = _validated_sparse_event_mapping(
+        calibration.event_counts, "calibration event counts", count_values=True
+    )
+    event_radii = _validated_sparse_event_mapping(
+        calibration.event_radii, "calibration event radii", count_values=False
+    )
+    global_count = _validated_count(calibration.global_count, "calibration global count")
+    global_radius = calibration.global_radius
+    if global_radius is not None:
+        global_radius = _validated_radius(global_radius, "calibration global radius")
+
+    for event, bands in cohort_radii.items():
+        for band in bands:
+            if cohort_counts.get(event, {}).get(band, 0) < CALIBRATION_COHORT_MIN_SAMPLES:
+                raise ValueError("artifact calibration cohort radius lacks qualifying support")
+    for event in event_radii:
+        if event_counts.get(event, 0) < CALIBRATION_EVENT_MIN_SAMPLES:
+            raise ValueError("artifact calibration event radius lacks qualifying support")
+    if global_radius is not None and global_count < CALIBRATION_GLOBAL_MIN_SAMPLES:
+        raise ValueError("artifact calibration global radius lacks qualifying support")
+
+    has_radius = bool(cohort_radii or event_radii or global_radius is not None)
+    active = calibration.version != "uncalibrated" or has_radius
+    if active and calibration.max_evidence_date is None:
+        raise ValueError("active calibration requires a valid evidence date")
+    if calibration.max_evidence_date is not None and not isinstance(
+        calibration.max_evidence_date, date
+    ):
+        raise ValueError("artifact calibration evidence date is invalid")
+    if calibration.version == "uncalibrated" and has_radius:
+        raise ValueError("uncalibrated artifact cannot contain calibration radii")
+
+
+def _validate_model_semantics(model: PredictionV2Model) -> None:
+    if not isinstance(model.model_version, str) or not model.model_version.strip():
+        raise ValueError("artifact model version must be nonempty")
+    if model.engine_version != ENGINE_VERSION:
+        raise ValueError("artifact engine version is incompatible")
+    if model.canonicalization_version != CANONICALIZATION_VERSION:
+        raise ValueError("artifact canonicalization version is incompatible")
+    if not isinstance(model.training_cutoff, date) or not isinstance(model.evidence_max_date, date):
+        raise ValueError("artifact causal dates are invalid")
+    if model.evidence_max_date >= model.training_cutoff:
+        raise ValueError("artifact causal date ordering is invalid")
+    source_checksum = str(model.source_checksum).lower()
+    if len(source_checksum) != 64 or any(
+        character not in "0123456789abcdef" for character in source_checksum
+    ):
+        raise ValueError("artifact source checksum is invalid")
+    if tuple(model.feature_names) != _feature_names():
+        raise ValueError("artifact feature schema is incompatible")
+    if len(model.coefficients) != len(model.feature_names) or any(
+        not math.isfinite(float(value)) for value in model.coefficients
+    ):
+        raise ValueError("artifact coefficients are invalid")
+
+    _validated_property_mapping(model.property_means, "property means", positive=True)
+    _validated_property_mapping(model.property_scales, "property scales", positive=True)
+    _validated_event_pair_mapping(model.diameter_support)
+    _validated_event_scalar_mapping(model.event_scales, positive=True)
+    _validated_event_count_mapping(model.event_counts)
+    _validated_cross_event_mapping(model.cross_event_coefficients)
+
+    species_support = tuple(model.species_support)
+    if len(set(species_support)) != len(species_support) or any(
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip().upper()
+        or value == MISSING_CATEGORY
+        for value in species_support
+    ):
+        raise ValueError("artifact species support is invalid")
+    if not isinstance(model.species_properties, Mapping) or (
+        model.species_properties and set(model.species_properties) != set(species_support)
+    ):
+        raise ValueError("artifact species lookup does not match species support")
+    for species, values in model.species_properties.items():
+        _validated_property_mapping(values, f"species {species} properties", positive=True)
+
+    _validate_calibrator_semantics(model.calibration)
+    _validated_validation_metrics(model.validation_metrics)
+
+
+def _validated_nonempty_string(raw: Any, label: str) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"artifact {label} must be nonempty")
+    return raw
+
+
+def _validated_date(raw: Any, label: str) -> date:
+    if not isinstance(raw, str):
+        raise ValueError(f"artifact {label} is invalid")
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"artifact {label} is invalid") from exc
+
+
+def _validated_optional_date(raw: Any, label: str) -> Optional[date]:
+    if raw is None:
+        return None
+    return _validated_date(raw, label)
+
+
+def _validated_count(raw: Any, label: str) -> int:
+    if isinstance(raw, bool):
+        raise ValueError(f"artifact {label} is invalid")
+    try:
+        number = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"artifact {label} is invalid") from exc
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        raise ValueError(f"artifact {label} is invalid")
+    return int(number)
+
+
+def _validated_float(raw: Any, label: str) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"artifact {label} is invalid") from exc
+
+
+def _validated_radius(raw: Any, label: str) -> float:
+    radius = _validated_float(raw, label)
+    if not math.isfinite(radius) or radius < 0:
+        raise ValueError(f"artifact {label} is invalid")
+    return radius
+
+
+def _validated_calibration_cohort_mapping(
+    raw: Any, label: str, *, count_values: bool
+) -> dict[str, dict[str, int | float]]:
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"artifact calibration cohort {label} are invalid")
+    result: dict[str, dict[str, int | float]] = {}
+    for event, bands in raw.items():
+        if event not in _EVENTS or not isinstance(bands, Mapping):
+            raise ValueError(f"artifact calibration cohort {label} are invalid")
+        if any(band not in _HISTORY_BANDS for band in bands):
+            raise ValueError("artifact calibration history band labels are invalid")
+        result[event] = {
+            band: (
+                _validated_count(value, f"calibration cohort {label}")
+                if count_values
+                else _validated_radius(value, f"calibration cohort {label}")
+            )
+            for band, value in bands.items()
+        }
+    return result
+
+
+def _validated_sparse_event_mapping(
+    raw: Any, label: str, *, count_values: bool
+) -> dict[str, int | float]:
+    if not isinstance(raw, Mapping) or any(event not in _EVENTS for event in raw):
+        raise ValueError(f"artifact {label} are invalid")
+    return {
+        event: (_validated_count(value, label) if count_values else _validated_radius(value, label))
+        for event, value in raw.items()
+    }
+
+
+def _validated_cross_event_mapping(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, Mapping) or set(raw) != set(_CROSS_EVENT_KEYS):
+        raise ValueError("artifact cross-event coefficients are incompatible")
+    result = {
+        key: _validated_float(raw[key], "cross-event coefficients") for key in _CROSS_EVENT_KEYS
+    }
+    if any(not math.isfinite(value) or abs(value) > CROSS_EVENT_CAP for value in result.values()):
+        raise ValueError("artifact cross-event coefficients are invalid")
+    return result
+
+
+def _validated_validation_metrics(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("artifact validation metrics are invalid")
+    if not raw:
+        return {}
+    if set(raw) != _VALIDATION_METRIC_FIELDS:
+        raise ValueError("artifact validation metrics are incomplete")
+    metrics = {
+        key: _validated_float(raw[key], "validation metrics") for key in _VALIDATION_METRIC_FIELDS
+    }
+    if any(not math.isfinite(value) for value in metrics.values()):
+        raise ValueError("artifact validation metrics are invalid")
+    if (
+        metrics["locked_count"] <= 0
+        or not metrics["locked_count"].is_integer()
+        or any(
+            metrics[name] < 0
+            for name in (
+                "locked_mae_seconds",
+                "locked_rmse_seconds",
+                "locked_median_absolute_error_seconds",
+                "incumbent_mae_seconds",
+                "incumbent_rmse_seconds",
+            )
+        )
+        or metrics["incumbent_mae_seconds"] <= 0
+        or metrics["incumbent_rmse_seconds"] <= 0
+    ):
+        raise ValueError("artifact validation metrics are invalid")
+    expected_mae_improvement = (
+        metrics["incumbent_mae_seconds"] - metrics["locked_mae_seconds"]
+    ) / metrics["incumbent_mae_seconds"]
+    expected_rmse_worsening = (
+        metrics["locked_rmse_seconds"] - metrics["incumbent_rmse_seconds"]
+    ) / metrics["incumbent_rmse_seconds"]
+    if not math.isclose(
+        metrics["mae_relative_improvement"], expected_mae_improvement, abs_tol=1e-12
+    ) or not math.isclose(
+        metrics["rmse_relative_worsening"], expected_rmse_worsening, abs_tol=1e-12
+    ):
+        raise ValueError("artifact validation metrics are internally inconsistent")
+    return metrics
 
 
 def _validated_property_mapping(
@@ -792,7 +1111,7 @@ def _validated_property_mapping(
 ) -> dict[str, float]:
     if not isinstance(raw, Mapping) or set(raw) != set(SPECIES_PROPERTY_FIELDS):
         raise ValueError(f"artifact {label} fields are incompatible")
-    result = {name: float(raw[name]) for name in SPECIES_PROPERTY_FIELDS}
+    result = {name: _validated_float(raw[name], label) for name in SPECIES_PROPERTY_FIELDS}
     if any(not math.isfinite(value) or (positive and value <= 0) for value in result.values()):
         raise ValueError(f"artifact {label} values are invalid")
     return result
@@ -806,7 +1125,10 @@ def _validated_event_pair_mapping(raw: Any) -> dict[str, tuple[float, float]]:
         values = raw[event]
         if not isinstance(values, (list, tuple)) or len(values) != 2:
             raise ValueError("artifact diameter support values are invalid")
-        pair = (float(values[0]), float(values[1]))
+        pair = (
+            _validated_float(values[0], "diameter support"),
+            _validated_float(values[1], "diameter support"),
+        )
         if any(not math.isfinite(value) or value <= 0 for value in pair) or pair[0] > pair[1]:
             raise ValueError("artifact diameter support values are invalid")
         result[event] = pair
@@ -816,7 +1138,7 @@ def _validated_event_pair_mapping(raw: Any) -> dict[str, tuple[float, float]]:
 def _validated_event_scalar_mapping(raw: Any, *, positive: bool = False) -> dict[str, float]:
     if not isinstance(raw, Mapping) or set(raw) != set(_EVENTS):
         raise ValueError("artifact event scale fields are incompatible")
-    result = {event: float(raw[event]) for event in _EVENTS}
+    result = {event: _validated_float(raw[event], "event scales") for event in _EVENTS}
     if any(not math.isfinite(value) or (positive and value <= 0) for value in result.values()):
         raise ValueError("artifact event scales are invalid")
     return result
@@ -825,10 +1147,7 @@ def _validated_event_scalar_mapping(raw: Any, *, positive: bool = False) -> dict
 def _validated_event_count_mapping(raw: Any) -> dict[str, int]:
     if not isinstance(raw, Mapping) or set(raw) != set(_EVENTS):
         raise ValueError("artifact event count fields are incompatible")
-    result = {event: int(raw[event]) for event in _EVENTS}
-    if any(value < 0 for value in result.values()):
-        raise ValueError("artifact event counts are invalid")
-    return result
+    return {event: _validated_count(raw[event], "event counts") for event in _EVENTS}
 
 
 @dataclass(frozen=True)
@@ -878,7 +1197,15 @@ def _design_matrix(
     ]
     for name in SPECIES_PROPERTY_FIELDS:
         values = pd.to_numeric(frame[name], errors="coerce").fillna(property_means[name]).to_numpy()
-        columns.append((values - property_means[name]) / property_scales[name])
+        with np.errstate(over="ignore", invalid="ignore"):
+            standardized = (values - property_means[name]) / property_scales[name]
+        columns.append(
+            np.clip(
+                standardized,
+                -PROPERTY_STANDARD_DEVIATION_LIMIT,
+                PROPERTY_STANDARD_DEVIATION_LIMIT,
+            )
+        )
     columns.append(frame["species_missing"].astype(bool).astype(float).to_numpy())
     gender = frame["gender"].astype(str).str.upper().to_numpy()
     columns.extend(
@@ -998,12 +1325,13 @@ def _validate_canonical_rows(frame: pd.DataFrame, cutoff: date) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(columns=MODEL_EVIDENCE_FIELDS)
     frame = frame.copy()
-    frame["result_date"] = pd.to_datetime(frame["result_date"], errors="coerce", utc=True).dt.date
+    frame["result_date"] = frame["result_date"].map(parse_result_date_utc)
     frame["time_seconds"] = pd.to_numeric(frame["time_seconds"], errors="coerce")
     frame["diameter_mm"] = pd.to_numeric(frame["diameter_mm"], errors="coerce")
     for name in SPECIES_PROPERTY_FIELDS:
         frame[name] = pd.to_numeric(frame[name], errors="coerce")
-    finite_properties = np.all(np.isfinite(frame[list(SPECIES_PROPERTY_FIELDS)].to_numpy()), axis=1)
+    property_values = frame[list(SPECIES_PROPERTY_FIELDS)].to_numpy()
+    finite_properties = np.all(np.isfinite(property_values) & (property_values > 0), axis=1)
     mask = (
         frame["competitor_id"].notna()
         & frame["event"].astype(str).str.upper().isin(_EVENTS)

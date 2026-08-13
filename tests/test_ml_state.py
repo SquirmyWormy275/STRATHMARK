@@ -142,6 +142,45 @@ class TestPredictionLedgerMirror:
         assert "append_prediction_ledger_v2" in migration
         assert "SECURITY DEFINER" in migration
 
+    def test_hash_algorithm_migration_preserves_legacy_rows_and_updates_rpc(self):
+        migration = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260813_006_prediction_hash_algorithm.sql"
+        ).read_text(encoding="utf-8")
+
+        assert "ADD COLUMN IF NOT EXISTS hash_algorithm" in migration
+        assert "DEFAULT 'raw-v1'" in migration
+        assert "CHECK (hash_algorithm IN ('raw-v1', 'active-v2'))" in migration
+        assert "request_row->>'hash_algorithm'" in migration
+        assert "existing_algorithm" in migration
+        assert "ledger request hash algorithm conflict" in migration
+        assert "REVOKE ALL ON FUNCTION append_prediction_ledger_v2(JSONB)" in migration
+        assert (
+            "GRANT EXECUTE ON FUNCTION append_prediction_ledger_v2(JSONB) TO service_role"
+            in migration
+        )
+
+        migration_005 = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260811_005_prediction_v2.sql"
+        ).read_text(encoding="utf-8")
+        assert "active-v2 request hashes require migration 006" in migration_005
+        assert "request_row->>'hash_algorithm' <> 'raw-v1'" in migration_005
+
+        rollback = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "20260813_006_prediction_hash_algorithm.down.sql"
+        ).read_text(encoding="utf-8")
+        assert "cannot roll back migration 006 while active-v2 request rows exist" in rollback
+        assert "CREATE OR REPLACE FUNCTION append_prediction_ledger_v2" in rollback
+        assert "ALTER TABLE prediction_ledger_requests DROP COLUMN hash_algorithm" in rollback
+
     def test_mirror_uses_one_sanitized_service_rpc(self, monkeypatch):
         import strathmark.db as db
 
@@ -165,6 +204,7 @@ class TestPredictionLedgerMirror:
                 "caller_id": "api",
                 "request_id": "field-1",
                 "request_hash": "a" * 64,
+                "hash_algorithm": "active-v2",
                 "event_code": "SB",
                 "prediction_as_of": "2026-08-11",
                 "created_at": "2026-08-11T00:00:00+00:00",

@@ -1566,6 +1566,7 @@ _LEDGER_REQUEST_FIELDS = {
     "caller_id",
     "request_id",
     "request_hash",
+    "hash_algorithm",
     "event_code",
     "prediction_as_of",
     "created_at",
@@ -1643,6 +1644,8 @@ def mirror_prediction_ledger(payload: Mapping[str, Any]) -> bool:
         if not isinstance(request, Mapping):
             raise ValueError("ledger request mirror row must be an object")
         _reject_extra_fields(request, _LEDGER_REQUEST_FIELDS, "request")
+        if request.get("hash_algorithm") not in {"raw-v1", "active-v2"}:
+            raise ValueError("ledger request hash_algorithm is invalid")
         if not isinstance(predictions, list) or not isinstance(features, list):
             raise ValueError("ledger predictions and features must be lists")
         for prediction in predictions:

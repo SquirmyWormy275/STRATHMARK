@@ -459,11 +459,23 @@ class PredictionBundle:
         residual_active = bool(getattr(residual_loaded, "active", False))
         calibration_version = self.calibration_version
         calibration_available = bool(calibration_version and calibration_version != "uncalibrated")
+        compatibility_check = getattr(self.core, "is_compatible", None)
+        core_compatible = bool(
+            self.core is not None
+            and (not callable(compatibility_check) or compatibility_check(prediction_as_of))
+        )
+        calibration_compatible = bool(calibration_available and core_compatible)
         warnings = list(self.warnings)
         if self.core is not None and not calibration_available:
             warnings.append("calibration_unavailable")
+        if self.core is not None and not core_compatible:
+            warnings.append("core_artifact_incompatible_with_cutoff")
         return {
-            "core": {"available": self.core is not None, "version": self.core_version},
+            "core": {
+                "available": self.core is not None,
+                "compatible_with_cutoff": core_compatible,
+                "version": self.core_version,
+            },
             "residual": {
                 "available": residual_loaded is not None,
                 "active": residual_active,
@@ -471,12 +483,18 @@ class PredictionBundle:
             },
             "calibration": {
                 "available": calibration_available,
+                "compatible_with_cutoff": calibration_compatible,
                 "version": calibration_version,
             },
             "cutoff": prediction_as_of.isoformat(),
             "source": self.source,
             "warnings": list(dict.fromkeys(warnings)),
-            "degraded": bool(self.degraded or self.core is None or not calibration_available),
+            "degraded": bool(
+                self.degraded
+                or self.core is None
+                or not core_compatible
+                or not calibration_available
+            ),
         }
 
 
@@ -598,15 +616,18 @@ def _load_prediction_bundle(
 
     from strathmark.residual import ResidualRuntime, load_residual_artifact
 
-    loaded = load_residual_artifact(
-        residual_path,
-        expected_core_checksum=core.source_checksum,
-        expected_core_artifact_checksum=core.artifact_fingerprint(),
-        prediction_as_of=prediction_as_of,
-    )
-    residual = ResidualRuntime(loaded)
+    loaded = None
+    residual = None
+    if residual_path is not None:
+        loaded = load_residual_artifact(
+            residual_path,
+            expected_core_checksum=core.source_checksum,
+            expected_core_artifact_checksum=core.artifact_fingerprint(),
+            prediction_as_of=prediction_as_of,
+        )
+        residual = ResidualRuntime(loaded)
     warnings: list[str] = []
-    if loaded.warning:
+    if loaded is not None and loaded.warning:
         warnings.append(loaded.warning)
     if core.calibration.version == "uncalibrated":
         warnings.append("calibration_unavailable")
@@ -615,7 +636,9 @@ def _load_prediction_bundle(
         residual=residual,
         source=source,
         warnings=tuple(warnings),
-        degraded=bool(loaded.degraded or core.calibration.version == "uncalibrated"),
+        degraded=bool(
+            (loaded is not None and loaded.degraded) or core.calibration.version == "uncalibrated"
+        ),
     )
 
 
@@ -1702,7 +1725,8 @@ def _calculate_weight_simple(result_date, half_life_days: int = 730) -> float:
 # LLM prediction (ported from STRATHEX ai_predictor.py)
 # ---------------------------------------------------------------------------
 
-# JSON schema for LLM quality adjustment response (Ollama structured output)
+# Retained only for the unreachable pre-V2 implementation below. The public
+# compatibility entry point remains a numeric no-op.
 QUALITY_ADJUSTMENT_SCHEMA: dict = {
     "type": "object",
     "properties": {

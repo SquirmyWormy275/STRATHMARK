@@ -98,7 +98,7 @@ class HistoricalResultSchema(BaseModel):
 
 class CompetitorSchema(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    history: List[HistoricalResultSchema] = Field(default_factory=list, max_length=500)
+    history: List[HistoricalResultSchema] = Field(default_factory=list)
     division: Optional[str] = Field(default=None, max_length=100)
     manual_time_override: Optional[float] = Field(
         default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
@@ -236,8 +236,11 @@ class SettlementResponse(BaseModel):
 
 _store: Optional[ResultStore] = None
 _ledger: Optional[PredictionLedger] = None
+# The vectorized simulator holds several float/int matrices concurrently. Keep
+# one bounded request below a conservative worker-memory envelope until it is
+# redesigned to aggregate fixed-size batches.
 _MAX_SIMULATION_CELLS = 4_000_000
-_SIMULATION_SLOTS = threading.BoundedSemaphore(value=2)
+_SIMULATION_SLOTS = threading.BoundedSemaphore(value=1)
 
 
 def get_store() -> ResultStore:
@@ -388,13 +391,14 @@ app = FastAPI(
 
 @app.get("/health")
 def health(
+    prediction_as_of: Optional[date] = None,
     store: ResultStore = Depends(get_store),
     prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
 ) -> Dict[str, Any]:
     """Check Ollama connectivity and store availability."""
     from strathmark.features import normalize_prediction_as_of
 
-    cutoff = normalize_prediction_as_of(None)
+    cutoff = normalize_prediction_as_of(prediction_as_of)
     bundle = prediction_provider.snapshot(cutoff)
     active_engine = prediction_config.selected_engine()
     engine_health = bundle.health(cutoff)

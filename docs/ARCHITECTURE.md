@@ -118,7 +118,7 @@ Public `/predict` and `/calculate` do not write the ledger. Authenticated
 `/ledger/calculate` requires stable IDs and a request key. SQLite is authoritative for
 the race-day write. The canonical request is hashed; names, notes, and the full raw
 payload are not retained. Optional cloud mirroring uses a replayable local outbox plus
-migration 005's service-role RPC and forced RLS. Delivery is off the calculation
+migrations 005-006's service-role RPC, versioned request hashes, and forced RLS. Delivery is off the calculation
 response path; pending or failed delivery is visible in status and non-blocking.
 
 ## Artifact architecture

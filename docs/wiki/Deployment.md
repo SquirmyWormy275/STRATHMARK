@@ -6,8 +6,8 @@
 4. Start the service and inspect `/health`.
 5. Supply explicit `prediction_as_of` dates in operational requests.
 
-Core and calibration should be available. Residual inactive is expected in 2.0.0;
-Ollama status is narrative-only.
+Core and calibration should be available and compatible with the requested cutoff.
+Residual inactive is expected in 2.0.0; Ollama status is narrative-only.
 
 Important variables:
 
@@ -17,6 +17,10 @@ Important variables:
 - `STRATHMARK_DB_PATH`: SQLite result/ledger file.
 - `STRATHMARK_API_TOKEN`: protected route token.
 - `STRATHMARK_SUPABASE_URL` and `STRATHMARK_SUPABASE_KEY`: optional mirror.
+
+Apply migrations 005 and 006 in order before enabling the mirror. Migration 005 rejects
+active-v2 payloads until 006 is present, so they remain retryable in the local outbox.
+The guarded 006 rollback refuses to drop hash-version evidence after active-v2 rows exist.
 
 Do not rerun the 2.0.0 `--open-locked-test`; do not train during an event; do not
 hot-swap an artifact in a field; never expose a Supabase service key to a client.

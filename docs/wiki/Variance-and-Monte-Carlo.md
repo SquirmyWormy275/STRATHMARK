@@ -16,5 +16,6 @@ posterior sampling/search fails.
 
 The separate `run_monte_carlo_simulation` and `/simulate` path audits an already assigned
 mark sheet. The REST default and maximum are 250,000 races, further bounded by a
-4,000,000 cell limit. A simulation result is model-implied evidence, not proof that
+4,000,000 cell limit and one concurrent simulation per process. A simulation result is
+model-implied evidence, not proof that
 actual future fields will finish equally.

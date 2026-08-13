@@ -120,7 +120,8 @@ pip install "strathmark[api]"
 uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 ```
 
-- `GET /health` — core, residual, calibration, artifact, store, and narrative-LLM health
+- `GET /health` — core availability and cutoff compatibility, calibration, residual,
+  artifact, store, and narrative-LLM health; accepts optional `prediction_as_of`
 - `POST /predict` — one stateless prediction and all five compatibility keys
 - `POST /calculate` — stateless field prediction and mark assignment
 - `POST /simulate` — independent fairness simulation, capped at 250,000 races

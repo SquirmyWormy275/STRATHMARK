@@ -10,8 +10,6 @@ from __future__ import annotations
 import pytest
 
 from strathmark.drift import (
-    COVERAGE_HIGH_THRESHOLD,
-    COVERAGE_LOW_THRESHOLD,
     MEAN_SHIFT_SECONDS_THRESHOLD,
     MIN_RECENT_SAMPLES,
     VARIANCE_RATIO_THRESHOLD,
@@ -74,8 +72,7 @@ class TestNominalCase:
         assert report.coverage_alert is False
         assert report.recent_count == 50
         assert report.baseline_count == 100
-        # Empirical recent coverage should sit in the [0.85, 0.95] band.
-        assert COVERAGE_LOW_THRESHOLD <= report.recent_coverage_at_90 <= COVERAGE_HIGH_THRESHOLD
+        assert report.recent_coverage_at_90 is None
 
 
 class TestMeanShift:
@@ -138,12 +135,7 @@ class TestVarianceShift:
 
 
 class TestCoverageAlert:
-    """Coverage drift compares EMPIRICAL coverage of recent residuals against
-    a 90% prediction interval derived from baseline residual quantiles.
-    `baseline_coverage` (the static calibration-time number) is informational
-    only -- it is NOT the trigger. Reason: a model with good baseline
-    calibration of 0.90 still drifts as recent traffic shifts; only the
-    empirical-on-recent number detects that shift."""
+    """Residual-only reports never invent issued-interval coverage."""
 
     def test_recent_coverage_below_threshold_triggers_alert(self):
         # Baseline 5th-95th percentile interval is roughly [-1.8, 1.8].
@@ -157,9 +149,8 @@ class TestCoverageAlert:
             baseline_residuals=baseline,
             baseline_coverage=0.90,
         )
-        assert report.coverage_alert is True
-        assert report.overall_alert is True
-        assert report.recent_coverage_at_90 < COVERAGE_LOW_THRESHOLD
+        assert report.coverage_alert is False
+        assert report.recent_coverage_at_90 is None
 
     def test_recent_coverage_above_threshold_triggers_alert(self):
         # Recent residuals all sit at the baseline median -> coverage = 1.0.
@@ -174,9 +165,8 @@ class TestCoverageAlert:
             baseline_residuals=baseline,
             baseline_coverage=0.90,
         )
-        assert report.coverage_alert is True
-        assert report.overall_alert is True
-        assert report.recent_coverage_at_90 > COVERAGE_HIGH_THRESHOLD
+        assert report.coverage_alert is False
+        assert report.recent_coverage_at_90 is None
 
     def test_matching_distributions_do_not_trigger(self):
         # Same distribution for recent and baseline -> coverage in band.
@@ -190,7 +180,7 @@ class TestCoverageAlert:
             baseline_coverage=0.90,
         )
         assert report.coverage_alert is False
-        assert COVERAGE_LOW_THRESHOLD <= report.recent_coverage_at_90 <= COVERAGE_HIGH_THRESHOLD
+        assert report.recent_coverage_at_90 is None
 
     def test_no_baseline_residuals_does_not_trigger(self):
         # Empty baseline -> early return; no coverage signal possible.
@@ -245,6 +235,16 @@ class TestDriftReportSummary:
         s = report.summary()
         assert "insufficient" in s.lower()
 
+    def test_summary_labels_unavailable_point_shift(self):
+        report = DriftReport(
+            model_version_id="v2",
+            lookback_days=30,
+            recent_count=20,
+            baseline_count=0,
+        )
+
+        assert "mean_shift=unavailable" in report.summary()
+
 
 def test_settled_rows_exclude_manual_unsettled_and_invalid_predictions():
     rows = [
@@ -265,6 +265,13 @@ def test_settled_rows_exclude_manual_unsettled_and_invalid_predictions():
             "predicted_time": 48.0,
             "actual_time": None,
             "settled_at": None,
+        },
+        {
+            "source": "hierarchical_dynamic_core",
+            "predicted_time": 47.0,
+            "actual_time": 48.0,
+            "settled_at": "2026-08-01T00:00:00Z",
+            "training_eligible": False,
         },
     ]
 
@@ -293,6 +300,84 @@ def test_settled_drift_reports_sample_label():
 
     assert report.insufficient_recent_samples is True
     assert report.sample_label == "insufficient_recent_sample"
+
+
+def test_settled_drift_uses_direct_issued_interval_coverage_per_nominal_cohort():
+    rows = []
+    for index in range(20):
+        rows.append(
+            {
+                "source": "hierarchical_dynamic_core",
+                "predicted_time": 50.0,
+                "actual_time": 50.0 if index < 18 else 70.0,
+                "settled_at": "2026-08-01T00:00:00Z",
+                "interval_lower": 40.0,
+                "interval_upper": 60.0,
+                "nominal_coverage": 0.90,
+            }
+        )
+    for index in range(20):
+        rows.append(
+            {
+                "source": "hierarchical_dynamic_core",
+                "predicted_time": 50.0,
+                "actual_time": 50.0 if index < 5 else 70.0,
+                "settled_at": "2026-08-01T00:00:00Z",
+                "interval_lower": 40.0,
+                "interval_upper": 60.0,
+                "nominal_coverage": 0.80,
+            }
+        )
+    rows.append(
+        {
+            "source": "hierarchical_dynamic_core",
+            "predicted_time": 50.0,
+            "actual_time": 50.0,
+            "settled_at": "2026-08-01T00:00:00Z",
+            "interval_lower": None,
+            "interval_upper": None,
+            "nominal_coverage": None,
+        }
+    )
+
+    report = evaluate_settled_drift(
+        rows,
+        baseline_residuals=[-100.0, 100.0] * 50,
+        model_version_id="v2",
+    )
+
+    assert report.coverage_cohorts["0.90"].empirical_coverage == 0.9
+    assert report.coverage_cohorts["0.90"].coverage_alert is False
+    assert report.coverage_cohorts["0.80"].empirical_coverage == 0.25
+    assert report.coverage_cohorts["0.80"].coverage_alert is False
+    assert report.recent_coverage_at_90 == 0.9
+    assert report.coverage_unavailable_count == 1
+
+
+def test_only_ninety_percent_issued_interval_cohort_can_alert():
+    rows = [
+        {
+            "source": "hierarchical_dynamic_core",
+            "predicted_time": 50.0,
+            "actual_time": 70.0,
+            "settled_at": "2026-08-01T00:00:00Z",
+            "interval_lower": 40.0,
+            "interval_upper": 60.0,
+            "nominal_coverage": coverage,
+        }
+        for coverage in (0.9, 0.8)
+        for _ in range(MIN_RECENT_SAMPLES)
+    ]
+
+    report = evaluate_settled_drift(
+        rows,
+        baseline_residuals=[0.0] * 100,
+        model_version_id="v2",
+    )
+
+    assert report.coverage_cohorts["0.90"].coverage_alert is True
+    assert report.coverage_cohorts["0.80"].coverage_alert is False
+    assert report.coverage_alert is True
 
 
 def test_evaluate_drift_uses_injected_settled_ledger_only():
@@ -326,6 +411,64 @@ def test_evaluate_drift_uses_injected_settled_ledger_only():
 
     assert report.recent_count == 1
     assert ledger.kwargs["model_version"] == "v2"
+
+
+def test_ledger_correction_projects_only_latest_settlement_into_drift(tmp_path):
+    from datetime import date
+
+    from strathmark.ledger import LedgerPrediction, PredictionLedger
+
+    ledger = PredictionLedger(tmp_path / "drift-correction.db")
+    write = ledger.record_field(
+        "api",
+        "field",
+        {"event_code": "SB", "prediction_as_of": "2026-08-11"},
+        [
+            LedgerPrediction(
+                competitor_id="competitor-1",
+                event_code="SB",
+                median_seconds=42.5,
+                assigned_mark=3,
+                source="baseline",
+                training_eligible=True,
+                engine_version="2.0.0",
+                model_version="core-test",
+                calibration_version="cal-test",
+                evidence_cutoff=date(2026, 8, 11),
+                interval_lower=35.0,
+                interval_upper=52.0,
+                interval_coverage=0.9,
+                interval_state="calibrated",
+                interval_scope="global",
+                feature_snapshot={"history_count": 1.0},
+            )
+        ],
+    )
+    prediction_id = write.prediction_ids[0]
+    ledger.settle(prediction_id, "competitor-1", "SB", 70.0, "official")
+    ledger.settle(
+        prediction_id,
+        "competitor-1",
+        "SB",
+        43.0,
+        "official",
+        reason="corrected transcription",
+    )
+
+    rows = ledger.get_training_rows(model_version="core-test")
+    report = evaluate_settled_drift(
+        rows,
+        baseline_residuals=[0.0] * 100,
+        model_version_id="core-test",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["actual_time"] == 43.0
+    assert rows[0]["revision"] == 2
+    assert report.recent_count == 1
+    assert report.recent_mean is None
+    assert report.coverage_cohorts["0.90"].empirical_coverage == 1.0
+    assert report.coverage_cohorts["0.90"].sample_label == "insufficient_recent_sample"
 
 
 def test_evaluate_drift_requires_model_version_for_ledger():

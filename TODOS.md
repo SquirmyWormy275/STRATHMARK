@@ -1,110 +1,43 @@
-# TODOS
+# TODOs
 
-## P1 — Must Do Before Ensemble Implementation
+Prediction Engine V2 superseded the pre-2.0 numeric cascade and the proposed
+ensemble backlog. The historical design discussion remains available under
+`docs/solutions/architecture-decisions/ensemble-predictor-design-decisions.md`,
+but TODO-001 through TODO-011 are closed and must not be treated as active work.
 
-### TODO-001: Measure current cascade MAE (BASELINE)
-**What:** Run `backtest_predictions()` on existing historical data to measure current cascade MAE, RMSE, and within-3s percentage for competitors with 3+ results.
-**Why:** Without a baseline measurement, we don't know if the ensemble is the right approach. If current MAE is 1.2s, bias correction alone might suffice. If it's 4.0s, better individual methods are needed first.
-**Context:** Use `backtest_predictions()` in `analytics.py` with leave-one-out methodology. Record SB and UH separately. This determines implementation strategy.
-**Status (2026-04-15):** Script ready at `scripts/measure_baseline_mae.py`. Requires Supabase creds + historical data. Run on event laptop or any machine with `STRATHMARK_SUPABASE_*` env vars set:
-```
-python scripts/measure_baseline_mae.py --output baseline_mae_2026-04-15.json
-```
-**Effort:** S (human: ~2 hours / CC: ~15 min)
-**Priority:** P1
-**Depends on:** Nothing
-**Source:** CEO review outside voice (2026-03-23)
+## Active follow-up: tournament-management evidence
 
-### TODO-002: Investigate inverse-MAE vs. logistic regression for meta-learner
-**What:** Compare simple inverse-MAE weighting (`weight = 1/method_MAE`, normalized) against multinomial logistic regression for ensemble blend weights.
-**Why:** Outside voice argued logistic regression predicts "which method is best," not "optimal blend weight." Inverse-MAE is simpler, no sklearn dependency, more statistically sound for <100 data points.
-**Context:** Start with inverse-MAE, graduate to learned weights once ledger has 200+ entries. This also eliminates the sklearn ImportError rescue path.
-**Effort:** S (human: ~1 day / CC: ~15 min)
-**Priority:** P1
-**Depends on:** TODO-001
-**Source:** CEO review outside voice (2026-03-23)
+Division, round/heat, venue, lane/stand, run order, exact material identity, wood
+quality/moisture, weather, equipment, rest/fatigue, and penalty/DNF state remain
+numeric no-ops. Future tournament-management software may activate them only after
+it captures provenance-backed values over multiple seasons and a new model version
+passes prospectively frozen temporal validation.
 
-### TODO-003: Fix prediction ledger unique key (data integrity)
-**What:** Add `prediction_date` to the ledger's unique constraint to prevent cross-competition matching when `heat_id` is empty string.
-**Why:** Current design key `(competitor_name, heat_id, event_code, method)` collides when heat_id is '' (the default). Results from different competitions would incorrectly match.
-**Context:** Change to `(competitor_name, heat_id, event_code, method, prediction_date)` or add a `competition_id` field.
-**Status (2026-04-15):** The prediction ledger table does NOT exist in the codebase yet. Existing tables: `results` (store.py, key `(competitor_name, heat_id, event_code, time_seconds)` — correct as-is) and `prediction_residuals` (db.py, Supabase, no unique constraint). This TODO is forward-looking design guidance for when the ensemble ledger is implemented — NOT an active bug. Apply the recommended key `(competitor_name, heat_id, event_code, method, prediction_date)` at table creation time.
-**Effort:** S (human: ~1 hour / CC: ~10 min)
-**Priority:** P1 (design-time)
-**Depends on:** Nothing
-**Source:** CEO review outside voice (2026-03-23)
+## Active follow-up: operational evidence
 
-### TODO-004: Reconcile with existing select_best_prediction()
-**What:** `predictor.py` already has `select_best_prediction()` (~line 1814) doing expected-error scoring across methods. The ensemble must either replace it, wrap it, or reconcile with it.
-**Why:** Two competing method-selection systems is a maintenance nightmare.
-**Context:** Read and evaluate `select_best_prediction()` before building `ensemble.py`. If it already does competent method selection, the meta-learner may only need to add blend weighting on top.
-**Effort:** S (human: ~2 hours / CC: ~15 min)
-**Priority:** P1
-**Depends on:** Nothing
-**Source:** CEO review outside voice (2026-03-23)
+- Apply `strathmark/migrations/20260811_005_prediction_v2.sql` followed by
+  `strathmark/migrations/20260813_006_prediction_hash_algorithm.sql` to production
+  only through a separately authorized deployment. Local and CI validation never
+  apply them to a live database.
+- Accumulate trusted, settled V2 predictions before considering a residual learner,
+  new drift thresholds, or changes to the mark objective. Manual, degraded,
+  broad-prior, and provenance-incomplete rows are not training evidence.
+- A future accuracy claim requires a new dated manifest, pre-lock record, untouched
+  future test role, final report, and versioned artifact. The published locked role
+  is never reopened for tuning.
 
-### TODO-010: Investigate data-driven _expected_error() as simpler alternative
-**What:** Before building ensemble.py, test whether feeding actual per-method MAE data back into the existing `_expected_error()` function in `select_best_prediction()` achieves similar accuracy gains. This is a ~20-line change vs. a new module.
-**Why:** The ensemble may be overengineering the solution. If data-driven method selection (without blending) gets close to the same accuracy, the simpler approach wins.
-**Context:** `_expected_error()` at predictor.py:1855 uses hard-coded confidence-to-error mapping. Replace with actual MAE from the prediction ledger when available. Falls back to hard-coded values when no ledger data.
-**Effort:** S (human: ~2 hours / CC: ~15 min)
-**Priority:** P1
-**Depends on:** TODO-001 (baseline MAE measurement)
-**Source:** Eng review outside voice (2026-03-23)
+## Closed pre-2.0 backlog
 
-### TODO-011: Audit tournament weighting in ensemble blend
-**What:** Verify that 97%/3% tournament weighting is not double-counted when blending baseline + ML predictions. Baseline already applies tournament weighting; ML features also include tournament-weighted averages.
-**Why:** Double-counting would distort predictions for competitors with tournament_time set — overweighting same-tournament data.
-**Context:** Trace tournament_time through `predict_baseline()` and ML feature engineering. Document which methods apply tournament weighting and how the blend handles it.
-**Status (2026-04-15):** RESOLVED for current code. Audit done — no double-counting today. `tournament_time` is applied ONLY in `predict_baseline()` ([predictor.py:1218](strathmark/predictor.py#L1218)); `train_model.py` has no tournament feature; cascade selects ONE method (no blend). Writeup and guardrails for future ensemble work in [docs/solutions/architecture-decisions/tournament-weighting-audit-todo-011.md](docs/solutions/architecture-decisions/tournament-weighting-audit-todo-011.md).
-**Effort:** S (human: ~2 hours / CC: ~15 min)
-**Priority:** P1 → resolved (reopens when ensemble ships)
-**Depends on:** Nothing
-**Source:** Eng review outside voice (2026-03-23)
-
-## P2 — Implementation Notes
-
-### TODO-005: Change get_best_prediction() execution model
-**What:** Currently `get_best_prediction()` short-circuits (returns on first valid method). Ensemble requires all methods to run. Must call `get_all_predictions()` internally or restructure.
-**Why:** The ensemble blend needs outputs from all available methods, not just the first successful one.
-**Context:** Performance impact: always paying LLM + ML cost. Consider gating: only run all methods when ensemble has enough data to justify blending (>100 ledger entries).
-**Effort:** M (human: ~1 week / CC: ~30 min)
-**Priority:** P2
-**Depends on:** TODO-004
-**Source:** CEO review outside voice (2026-03-23)
-
-### TODO-006: Add hook in record_result() for ledger updates
-**What:** `store.py` `record_result()` is a simple INSERT with no hook mechanism. Needs to also UPDATE matching prediction rows with actual times.
-**Why:** The self-improvement loop depends on prediction-vs-actual matching.
-**Context:** Extend `record_result()` to run UPDATE on predictions table. Do not change the method signature (backward compatibility with STRATHEX).
-**Effort:** S (human: ~2 hours / CC: ~15 min)
-**Priority:** P2
-**Depends on:** TODO-003 (correct key design)
-**Source:** CEO review outside voice (2026-03-23)
-
-### TODO-007: Raise meta-learner activation threshold
-**What:** Change from 30 ledger entries to 100+ entries spanning 2+ distinct competition dates.
-**Why:** 30 entries mid-first-competition will overfit to single competition's conditions.
-**Context:** Track distinct `prediction_date` values in ledger. Require entries from at least 2 distinct dates AND 100+ total entries before activating ensemble.
-**Effort:** S (human: ~1 hour / CC: ~10 min)
-**Priority:** P2
-**Depends on:** Nothing
-**Source:** CEO review outside voice (2026-03-23)
-
-### TODO-008: Increase shadow evaluation sample size
-**What:** Increase from 20 to 50+ entries for shadow evaluation, or use a statistical significance test.
-**Why:** With ±3s variance, 20 samples cannot distinguish model quality from noise.
-**Context:** Consider using a paired t-test or Wilcoxon signed-rank test on old-vs-new model errors rather than raw MAE comparison.
-**Effort:** S (human: ~2 hours / CC: ~10 min)
-**Priority:** P2
-**Depends on:** Nothing
-**Source:** CEO review outside voice (2026-03-23)
-
-### TODO-009: Re-estimate effort with all accepted scope expansions
-**What:** The original Approach C was sized at "L (~1-2 hours CC)." Six scope expansions (confidence intervals, bias correction, accuracy tracking, anomaly flagging, method explanations, pairwise predictions) were accepted without resizing.
-**Why:** Pairwise outcome predictions alone is another L. Total scope is now XL.
-**Context:** Realistic estimate with all expansions: human ~2-3 months / CC: ~3-5 hours.
-**Effort:** S (effort estimation task)
-**Priority:** P2
-**Depends on:** Nothing
-**Source:** CEO review outside voice (2026-03-23)
+- Cascade MAE measurement and inverse-MAE/logistic ensemble experiments: replaced by
+  the frozen prior-only V2 comparison and strict residual-promotion gate.
+- Name/date-based prediction ledger key: replaced by stable competitor, request, and
+  prediction IDs in the append-only V2 ledger.
+- `select_best_prediction()` reconciliation and all-method execution: numeric LLM and
+  legacy ensemble selection are retired; V2 uses manual override, promoted residual,
+  core, then labeled broad fallback.
+- Same-tournament weighting audit: closed. The retired 65/80/90/97 percent blend is
+  inactive because current data cannot prove round or tournament provenance.
+- Result-hook settlement: replaced by explicit settlement using `prediction_id` and
+  immutable correction revisions.
+- Ensemble activation/shadow sample/effort tasks: superseded by prospective V2
+  validation, the trusted ledger, and the no-hot-path-training boundary.

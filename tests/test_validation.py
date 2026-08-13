@@ -65,6 +65,29 @@ def test_conformal_falls_back_to_analytic_when_all_pools_are_sparse():
     assert radius.value is None
 
 
+def test_active_calibration_rejects_undated_evidence():
+    residuals = pd.DataFrame(_residuals("SB", 0, 50, 0.1)).drop(columns="result_date")
+
+    with pytest.raises(ValueError, match="evidence date"):
+        ChronologicalCalibrator.fit(residuals, version="undated-calibration")
+
+
+def test_calibration_excludes_undated_rows_from_all_pools():
+    dated = pd.DataFrame(_residuals("SB", 0, 100, 0.1))
+    undated = dated.copy()
+    undated["result_date"] = None
+    undated["absolute_log_residual"] = 99.0
+    mixed = pd.concat([dated, undated], ignore_index=True)
+
+    expected = ChronologicalCalibrator.fit(dated, version="dated-only")
+    actual = ChronologicalCalibrator.fit(mixed, version="mixed")
+
+    assert actual.cohort_counts == expected.cohort_counts
+    assert actual.event_counts == expected.event_counts
+    assert actual.global_radius == expected.global_radius
+    assert actual.cohort_radii == expected.cohort_radii
+
+
 def test_chronological_backtest_refits_without_future_rows(monkeypatch):
     from strathmark import validation
 

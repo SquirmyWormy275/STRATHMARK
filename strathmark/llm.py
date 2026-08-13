@@ -3,12 +3,12 @@ LLM Integration (Ollama + Gemini)
 =================================
 
 Handles communication with a local Ollama instance (primary) and Google
-Gemini (cloud fallback) for AI-enhanced predictions and fairness assessments.
+Gemini (cloud fallback) for narrative fairness assessments. Prediction Engine
+V2 never uses LLM output for numeric predictions or marks.
 
 Connection status is cached to avoid repeated error messages within a session.
-All functions return None gracefully if both LLM tiers are unavailable so the
-prediction cascade (Manual > LLM > ML > Baseline > Panel Fallback) can fall
-through cleanly.
+All functions return None gracefully if both LLM tiers are unavailable. Numeric
+prediction remains deterministic and unaffected.
 
 Race-day discipline:
     - Single attempt per tier, no retries (retries add latency on race day).
@@ -134,10 +134,10 @@ def call_ollama(
         2. Google Gemini cloud fallback — only if Ollama returned None AND
            GEMINI_API_KEY is set in the environment
 
-    Both steps return None on any failure so the parent prediction cascade
-    (Manual > LLM > ML > Baseline > Panel Fallback) can fall through cleanly.
+    Both steps return None on any failure. Narrative generation has no numeric
+    prediction or mark fallback role in V2.
     There are no retries — on race day the cost of waiting is far higher than
-    the cost of dropping to ML/Baseline.
+    the cost of omitting optional narrative output.
 
     Features:
         - Connection status caching (avoids repeated error messages)

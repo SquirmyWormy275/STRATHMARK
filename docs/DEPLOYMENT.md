@@ -55,9 +55,11 @@ For the REST service:
 uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 ```
 
-Check `GET /health`. Before accepting calculations, confirm:
+Check `GET /health` (or `GET /health?prediction_as_of=YYYY-MM-DD` for a backdated field).
+Before accepting calculations, confirm:
 
 - `prediction_engine.core.available` is true;
+- `prediction_engine.core.compatible` is true for the intended cutoff;
 - calibration is available;
 - expected core/calibration versions are shown;
 - `source` is the intended environment, local, or package source;
@@ -94,7 +96,8 @@ IDs; a request-key payload conflict returns HTTP 409.
 
 Cloud mirroring is best-effort and off the calculation response path.
 `ledger_status=recorded_cloud_pending` means local trust evidence and a replayable mirror
-outbox entry exist; the daemon attempt or `flush_mirror_outbox()` can deliver it later.
+outbox entry exist. The ledger's single bounded background worker reclaims overflowed
+and restart-surviving rows; `flush_mirror_outbox()` remains an explicit bounded replay.
 `ledger_recorded=false`
 means marks are still valid but no trusted local record was made; preserve the request
 and investigate disk/path/permission state before settlement.
@@ -143,6 +146,11 @@ mixed field, but operational changes belong between fields and must be logged.
 6. Train only on rows explicitly marked eligible; manual, broad-prior, legacy-rollback,
    and degraded rows are excluded.
 
-Supabase migration 005 must be reviewed and applied separately before cloud mirroring.
-It forces RLS and grants its append RPC only to `service_role`; never expose the service
-key to browser or mobile clients.
+Supabase migrations 005 and 006 must be reviewed and applied in order, separately from
+the application release, before cloud mirroring. Migration 006 preserves old request
+rows as `raw-v1` while recording new active-evidence hashes as `active-v2`. The ledger
+schema forces RLS and grants its append RPC only to `service_role`; never expose the
+service key to browser or mobile clients.
+Migration 005 rejects explicit active-v2 payloads until 006 is installed, leaving them
+in the durable local outbox. The guarded 006 down migration restores the old RPC but
+aborts once any active-v2 cloud row exists; do not use it after active mirroring begins.

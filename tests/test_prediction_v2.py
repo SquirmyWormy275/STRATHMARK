@@ -14,6 +14,7 @@ import pytest
 from strathmark.features import MISSING_CATEGORY, MODEL_EVIDENCE_FIELDS
 from strathmark.prediction_v2 import (
     ARTIFACT_MAX_BYTES,
+    CROSS_EVENT_CAP,
     PredictionV2Model,
     PredictionV2Request,
 )
@@ -97,6 +98,15 @@ def _request(**updates) -> PredictionV2Request:
     return PredictionV2Request(**values)
 
 
+def _rechecksum(envelope: dict) -> str:
+    payload_bytes = json.dumps(
+        envelope["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    envelope["payload_bytes"] = len(payload_bytes)
+    envelope["payload_checksum"] = hashlib.sha256(payload_bytes).hexdigest()
+    return json.dumps(envelope)
+
+
 @pytest.fixture
 def model() -> PredictionV2Model:
     return PredictionV2Model.fit(
@@ -160,6 +170,69 @@ def test_history_exclusive_cutoff_prevents_same_day_and_future_access(model):
     assert contaminated_prediction == clean_prediction
 
 
+def test_history_cutoff_uses_utc_and_is_invariant_to_order_and_other_competitors(model):
+    cutoff = date(2026, 1, 1)
+    prior = _row("NEW", "SB", date(2025, 12, 31), 36.0)
+    utc_same_day = _row("NEW", "SB", date(2025, 12, 31), 4.0)
+    utc_same_day["result_date"] = "2025-12-31T23:30:00-12:00"
+    unrelated = _row("SOMEONE-ELSE", "SB", date(2025, 1, 1), 5.0)
+    clean = pd.DataFrame([prior])
+    contaminated = pd.DataFrame([unrelated, utc_same_day, prior]).sample(frac=1.0, random_state=7)
+
+    expected = model.predict(_request(prediction_as_of=cutoff), history=clean)
+    actual = model.predict(_request(prediction_as_of=cutoff), history=contaminated)
+
+    assert actual == expected
+
+
+def test_canonical_history_rejects_numeric_result_dates(model):
+    cutoff = date(2026, 1, 1)
+    valid = _row("NEW", "SB", date(2025, 1, 1), 36.0)
+    numeric = _row("NEW", "SB", date(2025, 1, 1), 1.0)
+    numeric["result_date"] = 20250101
+
+    expected = model.predict(_request(prediction_as_of=cutoff), history=pd.DataFrame([valid]))
+    actual = model.predict(
+        _request(prediction_as_of=cutoff), history=pd.DataFrame([valid, numeric])
+    )
+
+    assert actual == expected
+
+
+def test_model_cutoff_includes_calibration_evidence_date(model):
+    from strathmark.prediction_v2 import ChronologicalCalibrator
+
+    residuals = pd.DataFrame(
+        {
+            "event": ["SB"] * 100,
+            "history_count": [0] * 100,
+            "absolute_log_residual": np.linspace(0.05, 0.25, 100),
+            "result_date": [date(2025, 1, 1)] * 100,
+        }
+    )
+    calibrated = model.with_calibration(
+        ChronologicalCalibrator.fit(residuals, version="cutoff-calibration")
+    )
+
+    assert calibrated.is_compatible(date(2025, 1, 1)) is False
+    assert calibrated.is_compatible(date(2025, 1, 2)) is True
+
+
+def test_frozen_model_defensively_freezes_nested_artifact_state(model):
+    fingerprint = model.artifact_fingerprint()
+    expected = model.predict(_request())
+
+    with pytest.raises(TypeError):
+        model.event_scales["SB"] = 999.0
+    with pytest.raises(TypeError):
+        model.species_properties["S01"]["janka_hardness"] = 1.0
+    with pytest.raises(TypeError):
+        model.calibration.event_counts["SB"] = 0
+
+    assert model.artifact_fingerprint() == fingerprint
+    assert model.predict(_request()) == expected
+
+
 def test_unknown_metadata_widens_uncertainty_without_breaking_prediction(model):
     known = model.predict(_request())
     unknown = model.predict(
@@ -183,6 +256,26 @@ def test_extreme_diameter_is_clamped_and_reported(model):
     assert extreme.median == pytest.approx(edge.median)
     assert "diameter_outside_training_support" in extreme.warnings
     assert extreme.log_scale > edge.log_scale
+
+
+@pytest.mark.parametrize("property_name", PROPERTIES)
+def test_request_wood_properties_must_be_positive(property_name):
+    with pytest.raises(ValueError, match=f"{property_name} must be positive and finite"):
+        _request(**{property_name: 0.0})
+
+
+@pytest.mark.parametrize("property_name", PROPERTIES)
+def test_extreme_positive_property_effect_is_clamped_at_eight_standard_deviations(
+    model, property_name
+):
+    boundary = model.property_means[property_name] + 8.0 * model.property_scales[property_name]
+
+    bounded = model.predict(_request(**{property_name: boundary}))
+    extreme = model.predict(_request(**{property_name: 1e300}))
+
+    assert math.isfinite(extreme.median)
+    assert extreme.median == pytest.approx(bounded.median)
+    assert extreme.interval == bounded.interval
 
 
 def test_outlier_cannot_dominate_population_or_competitor_state(model):
@@ -297,3 +390,101 @@ def test_schema_valid_artifact_with_incomplete_species_mapping_is_rejected(model
 
     with pytest.raises(ValueError, match="species S01 properties"):
         PredictionV2Model.from_json(json.dumps(envelope))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        (
+            lambda payload: payload["calibration"].update(nominal_coverage=1.5),
+            "nominal coverage",
+        ),
+        (
+            lambda payload: payload["event_counts"].update(SB=-1),
+            "event counts",
+        ),
+        (
+            lambda payload: payload["cross_event_coefficients"].update(
+                SB_from_UH=CROSS_EVENT_CAP + 0.01
+            ),
+            "cross-event coefficients",
+        ),
+        (
+            lambda payload: payload.update(model_version=""),
+            "model version",
+        ),
+        (
+            lambda payload: payload["cross_event_coefficients"].pop("SB_from_UH"),
+            "cross-event coefficients",
+        ),
+        (
+            lambda payload: payload["calibration"].update(
+                cohort_radii={"SB": {"2-4": 0.2}},
+                cohort_counts={"SB": {"2-4": 30}},
+            ),
+            "history band labels",
+        ),
+        (
+            lambda payload: payload["calibration"].update(
+                version="under-supported-calibration",
+                cohort_radii={"SB": {"1-3": 0.2}},
+                cohort_counts={"SB": {"1-3": 29}},
+                max_evidence_date="2023-12-31",
+            ),
+            "qualifying support",
+        ),
+        (
+            lambda payload: payload["calibration"].update(
+                version="calibrated-without-date",
+                event_radii={"SB": 0.2},
+                event_counts={"SB": 50},
+                max_evidence_date=None,
+            ),
+            "evidence date",
+        ),
+        (
+            lambda payload: payload.update(evidence_max_date=payload["training_cutoff"]),
+            "causal date ordering",
+        ),
+        (
+            lambda payload: payload.update(
+                validation_metrics={
+                    "locked_count": 10.0,
+                    "locked_mae_seconds": 8.0,
+                    "locked_rmse_seconds": 12.0,
+                    "locked_median_absolute_error_seconds": 5.0,
+                    "incumbent_mae_seconds": 10.0,
+                    "incumbent_rmse_seconds": 11.0,
+                    "mae_relative_improvement": 0.5,
+                    "rmse_relative_worsening": 1.0 / 11.0,
+                }
+            ),
+            "validation metrics",
+        ),
+    ],
+)
+def test_rechecksummed_semantically_invalid_artifact_is_rejected(model, mutate, error):
+    envelope = json.loads(model.to_json())
+    mutate(envelope["payload"])
+
+    with pytest.raises(ValueError, match=error):
+        PredictionV2Model.from_json(_rechecksum(envelope))
+
+
+def test_supported_sparse_calibration_radius_maps_are_admitted(model):
+    envelope = json.loads(model.to_json())
+    envelope["payload"]["calibration"] = {
+        "version": "sparse-cal-v1",
+        "nominal_coverage": 0.9,
+        "cohort_radii": {"UH": {"4+": 0.4}},
+        "cohort_counts": {"UH": {"4+": 30}},
+        "event_radii": {"UH": 0.5},
+        "event_counts": {"UH": 50},
+        "global_radius": None,
+        "global_count": 80,
+        "max_evidence_date": "2023-12-31",
+    }
+
+    restored = PredictionV2Model.from_json(_rechecksum(envelope))
+
+    assert restored.calibration.radius("UH", 5).value == 0.4

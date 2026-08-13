@@ -29,6 +29,8 @@ the llm compatibility entry is always null. A single request uses one immutable 
 bundle.
 
 GET /health
+Optional query: prediction_as_of=YYYY-MM-DD. When supplied, artifact and calibration
+compatibility are evaluated for that historical exclusive cutoff; otherwise UTC today is used.
 -----------
 
 Returns store health, narrative Ollama availability, and independent prediction-engine
@@ -40,9 +42,17 @@ component health:
       "store_available": true,
       "store_results_count": 0,
       "prediction_engine": {
-        "core": {"available": true, "version": "prediction-v2-core-20260207"},
+        "core": {
+          "available": true,
+          "compatible_with_cutoff": true,
+          "version": "prediction-v2-core-20260207"
+        },
         "residual": {"available": false, "active": false, "version": null},
-        "calibration": {"available": true, "version": "prediction-v2-calibration-2025h1"},
+        "calibration": {
+          "available": true,
+          "compatible_with_cutoff": true,
+          "version": "prediction-v2-calibration-2025h1"
+        },
         "cutoff": "2026-08-11",
         "source": "package",
         "warnings": [],
@@ -50,7 +60,9 @@ component health:
       }
     }
 
-Ollama health is narrative-only and does not affect numeric V2 availability.
+Availability means an artifact is present. Compatibility additionally proves that its
+causal dates can serve the requested cutoff. Ollama health is narrative-only and does
+not affect numeric V2 availability.
 
 POST /predict
 -------------
@@ -150,8 +162,9 @@ POST /simulate
 
 Independent fairness simulation for an already assigned mark sheet. Requires 2-64
 competitors. num_simulations defaults to and is capped at 250,000. The API also caps
-the request to 4,000,000 competitor-by-simulation cells and admits two simulations at a
-time. This simulation audits a sheet; it is separate from the optimizer's fixed 2,048
+the request to 4,000,000 competitor-by-simulation cells and admits one simulation at a
+time. This bounds the vectorized simulator's peak memory. The simulation audits a sheet;
+it is separate from the optimizer's fixed 2,048
 samples.
 
 POST /results and GET /results/{competitor_name}

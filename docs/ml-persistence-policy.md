@@ -79,9 +79,11 @@ revision; no evidence row is updated or deleted.
 
 Local SQLite is authoritative for race-day writes. Supabase mirroring is optional and
 best-effort. Migration `20260811_005_prediction_v2.sql` creates separate request,
-prediction, feature, and settlement tables, forces RLS, revokes browser roles, adds
-immutable-row triggers, and grants a single transactional append function only to
-`service_role`.
+prediction, feature, and settlement tables. Migration
+`20260813_006_prediction_hash_algorithm.sql` preserves legacy request hashes as
+`raw-v1` and versions new active-evidence hashes as `active-v2`. Together they force
+RLS, revoke browser roles, add immutable-row triggers, and grant a single transactional
+append function only to `service_role`.
 
 The service key stays on a trusted server. Public `/calculate` and `/predict` are
 stateless. `/ledger/calculate` and settlement routes require the existing Bearer-token
@@ -106,7 +108,11 @@ guard. Do not mirror entries without stable competitor IDs.
 Drift checks use settled, stable-ID, model-source predictions and remain advisory. They
 may prompt investigation or a new prospectively locked training cycle but never
 auto-train, auto-activate, or silently switch engines. Forecast interval coverage and
-point residual movement must be reviewed separately from simulation fairness.
+point residual movement must be reviewed separately from simulation fairness. V2
+coverage is direct containment of each settled actual time inside the interval issued
+with that prediction, grouped by nominal coverage. Rows without issued bounds are
+reported as unavailable rather than assigned reconstructed limits; thresholds remain
+active only for the nominal 90 percent cohort.
 
 ## Temporary rollback
 

@@ -14,14 +14,20 @@ import os
 import sqlite3
 import threading
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from strathmark.provenance import ENGINE_VERSION, is_v2_training_source
+
 _ENV_VAR = "STRATHMARK_DB_PATH"
 _DEFAULT_PATH = Path.home() / ".strathmark" / "results.db"
 _LEDGER_NAMESPACE = uuid.UUID("2f08f564-cae9-54bf-b488-7d5a19831f80")
+_RAW_HASH_ALGORITHM = "raw-v1"
+_ACTIVE_HASH_ALGORITHM = "active-v2"
+MAX_MIRROR_QUEUE = 1024
 
 _NUMERIC_FEATURES = frozenset(
     {
@@ -56,6 +62,8 @@ CREATE TABLE IF NOT EXISTS prediction_requests (
     caller_id TEXT NOT NULL,
     request_id TEXT NOT NULL,
     request_hash TEXT NOT NULL,
+    hash_algorithm TEXT NOT NULL DEFAULT 'active-v2'
+        CHECK(hash_algorithm IN ('raw-v1', 'active-v2')),
     event_code TEXT NOT NULL CHECK(event_code IN ('SB', 'UH')),
     prediction_as_of TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -198,6 +206,7 @@ class LedgerWriteResult:
     status: str
     prediction_ids: tuple[str, ...]
     request_hash: str
+    hash_algorithm: str = _ACTIVE_HASH_ALGORITHM
     cloud_status: str = "not_configured"
 
 
@@ -288,7 +297,14 @@ class PredictionLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._mirror = mirror
         self._delivery_lock = threading.Lock()
+        self._worker_lock = threading.Lock()
+        self._delivery_queue: deque[tuple[str, str]] = deque()
+        self._delivery_in_flight: set[tuple[str, str]] = set()
+        self._mirror_worker: Optional[threading.Thread] = None
         self._init_schema()
+        if self._mirror is not None and self._has_pending_delivery():
+            with self._worker_lock:
+                self._start_mirror_worker_locked()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=30.0, isolation_level=None)
@@ -300,6 +316,18 @@ class PredictionLedger:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            request_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(prediction_requests)").fetchall()
+            }
+            if "hash_algorithm" not in request_columns:
+                # Rows written before active-v2 hashed raw request history.  The
+                # additive column labels them without rewriting immutable digests.
+                conn.execute(
+                    "ALTER TABLE prediction_requests ADD COLUMN hash_algorithm "
+                    "TEXT NOT NULL DEFAULT 'raw-v1' "
+                    "CHECK(hash_algorithm IN ('raw-v1', 'active-v2'))"
+                )
             conn.executescript(_IMMUTABILITY_TRIGGERS)
 
     def record_field(
@@ -308,6 +336,8 @@ class PredictionLedger:
         request_id: str,
         request_payload: Mapping[str, Any],
         predictions: Sequence[LedgerPrediction],
+        *,
+        legacy_request_payload: Optional[Mapping[str, Any]] = None,
     ) -> LedgerWriteResult:
         """Atomically append one complete field or return its original IDs."""
 
@@ -315,20 +345,30 @@ class PredictionLedger:
         idempotency_key = _identifier(request_id, "request_id")
         if not predictions:
             raise ValueError("predictions must not be empty")
-        validated = [self._validate_prediction(item) for item in predictions]
-        if len({item["competitor_id"] for item in validated}) != len(validated):
-            raise ValueError("competitor_id values must be unique within a field")
-        # Bind an idempotency key to the complete deterministic calculation,
-        # not inputs alone. Otherwise a retry after model activation could
-        # attach persisted IDs to newly computed, different predictions.
-        digest = canonical_hash({"request": request_payload, "predictions": validated})
-
         event_code = _event(request_payload.get("event_code"))
         prediction_as_of = str(request_payload.get("prediction_as_of") or "").strip()
         try:
-            date.fromisoformat(prediction_as_of)
+            request_cutoff = date.fromisoformat(prediction_as_of)
         except ValueError as exc:
             raise ValueError("prediction_as_of must be an ISO date") from exc
+        validated = [self._validate_prediction(item) for item in predictions]
+        if len({item["competitor_id"] for item in validated}) != len(validated):
+            raise ValueError("competitor_id values must be unique within a field")
+        legacy_validated = [dict(item) for item in validated]
+        for item in legacy_validated:
+            # raw-v1 predates the hardening release's search-strategy field.
+            # Preserve its exact serialized prediction shape for old retries.
+            legacy_optimizer = dict(item["optimizer_metadata"])
+            legacy_optimizer.pop("search_strategy", None)
+            item["optimizer_metadata"] = legacy_optimizer
+            if (
+                item["degraded"]
+                or item["engine_version"] != ENGINE_VERSION
+                or item["source"] not in {"baseline", "ml"}
+            ):
+                item["training_eligible"] = False
+        for item in validated:
+            item["training_eligible"] = self._training_eligible(item, request_cutoff)
 
         request_row_id = str(uuid.uuid5(_LEDGER_NAMESPACE, f"request:{caller}:{idempotency_key}"))
         timestamp = _now()
@@ -338,13 +378,27 @@ class PredictionLedger:
             try:
                 existing = conn.execute(
                     """
-                    SELECT ledger_request_id, request_hash
+                    SELECT ledger_request_id, request_hash, hash_algorithm
                     FROM prediction_requests
                     WHERE caller_id = ? AND request_id = ?
                     """,
                     (caller, idempotency_key),
                 ).fetchone()
                 if existing is not None:
+                    algorithm = str(existing["hash_algorithm"])
+                    digest_payload = (
+                        legacy_request_payload
+                        if algorithm == _RAW_HASH_ALGORITHM and legacy_request_payload is not None
+                        else request_payload
+                    )
+                    digest = canonical_hash(
+                        {
+                            "request": digest_payload,
+                            "predictions": (
+                                legacy_validated if algorithm == _RAW_HASH_ALGORITHM else validated
+                            ),
+                        }
+                    )
                     if existing["request_hash"] != digest:
                         raise LedgerConflictError(
                             "request_id was already used by this caller for a different payload"
@@ -365,21 +419,25 @@ class PredictionLedger:
                         status=status,
                         prediction_ids=tuple(row["prediction_id"] for row in rows),
                         request_hash=digest,
+                        hash_algorithm=algorithm,
                         cloud_status=cloud_status,
                     )
 
+                algorithm = _ACTIVE_HASH_ALGORITHM
+                digest = canonical_hash({"request": request_payload, "predictions": validated})
                 conn.execute(
                     """
                     INSERT INTO prediction_requests (
-                        ledger_request_id, caller_id, request_id, request_hash,
+                        ledger_request_id, caller_id, request_id, request_hash, hash_algorithm,
                         event_code, prediction_as_of, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         request_row_id,
                         caller,
                         idempotency_key,
                         digest,
+                        algorithm,
                         event_code,
                         prediction_as_of,
                         timestamp,
@@ -459,6 +517,7 @@ class PredictionLedger:
                     caller,
                     idempotency_key,
                     digest,
+                    algorithm,
                     event_code,
                     prediction_as_of,
                     prediction_ids,
@@ -484,6 +543,7 @@ class PredictionLedger:
             status=status,
             prediction_ids=tuple(prediction_ids),
             request_hash=digest,
+            hash_algorithm=algorithm,
             cloud_status=cloud_status,
         )
 
@@ -652,7 +712,12 @@ class PredictionLedger:
         *,
         since: Optional[date | datetime | str] = None,
         model_version: Optional[str] = None,
+        calibration_version: Optional[str] = None,
         event_code: Optional[str] = None,
+        history_band: Optional[str] = None,
+        nominal_coverage: Optional[float] = None,
+        interval_state: Optional[str] = None,
+        interval_scope: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """Return current settled, explicitly eligible model predictions."""
 
@@ -665,9 +730,31 @@ class PredictionLedger:
         if model_version is not None:
             conditions.append("p.model_version = ?")
             parameters.append(str(model_version))
+        if calibration_version is not None:
+            conditions.append("p.calibration_version = ?")
+            parameters.append(str(calibration_version))
         if event_code is not None:
             conditions.append("p.event_code = ?")
             parameters.append(_event(event_code))
+        if nominal_coverage is not None:
+            conditions.append("p.interval_coverage = ?")
+            parameters.append(_finite(nominal_coverage, "nominal_coverage", positive=True))
+        if interval_state is not None:
+            conditions.append("p.interval_state = ?")
+            parameters.append(_identifier(interval_state, "interval_state"))
+        if interval_scope is not None:
+            conditions.append("p.interval_scope = ?")
+            parameters.append(_identifier(interval_scope, "interval_scope"))
+        if history_band is not None:
+            band = str(history_band).strip()
+            if band not in {"0", "1-3", "4+", "unavailable"}:
+                raise ValueError("history_band must be '0', '1-3', '4+', or 'unavailable'")
+            conditions.append(
+                "CASE WHEN h.numeric_value IS NULL THEN 'unavailable' "
+                "WHEN h.numeric_value < 1 THEN '0' "
+                "WHEN h.numeric_value < 4 THEN '1-3' ELSE '4+' END = ?"
+            )
+            parameters.append(band)
         where = " AND ".join(conditions)
         with self._connect() as conn:
             rows = conn.execute(
@@ -676,10 +763,22 @@ class PredictionLedger:
                     p.prediction_id, p.competitor_id, p.event_code,
                     p.median_seconds AS predicted_time, p.source,
                     p.engine_version, p.model_version, p.calibration_version,
-                    p.evidence_cutoff, s.actual_time, s.residual, s.settled_at,
-                    s.revision
+                    p.evidence_cutoff, r.prediction_as_of,
+                    p.interval_lower, p.interval_upper,
+                    p.interval_coverage, p.interval_coverage AS nominal_coverage,
+                    p.interval_state, p.interval_scope,
+                    h.numeric_value AS history_count,
+                    CASE WHEN h.numeric_value IS NULL THEN 'unavailable'
+                         WHEN h.numeric_value < 1 THEN '0'
+                         WHEN h.numeric_value < 4 THEN '1-3'
+                         ELSE '4+' END AS history_band,
+                    s.actual_time, s.residual, s.settled_at, s.revision
                 FROM ledger_predictions p
+                JOIN prediction_requests r ON r.ledger_request_id = p.ledger_request_id
                 JOIN prediction_settlements s ON s.prediction_id = p.prediction_id
+                LEFT JOIN prediction_features h
+                  ON h.prediction_id = p.prediction_id
+                 AND h.feature_name = 'history_count'
                 WHERE {where}
                   AND s.revision = (
                     SELECT MAX(current.revision)
@@ -690,7 +789,11 @@ class PredictionLedger:
                 """,
                 parameters,
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            if row["history_count"] is not None:
+                row["history_count"] = int(float(row["history_count"]))
+        return result
 
     @staticmethod
     def _validate_prediction(prediction: LedgerPrediction) -> dict[str, Any]:
@@ -706,23 +809,23 @@ class PredictionLedger:
             raise ValueError("training_eligible must be a boolean")
         if not isinstance(item["degraded"], bool):
             raise ValueError("degraded must be a boolean")
-        if (
-            item["degraded"]
-            or item["engine_version"] != "2.0.0"
-            or item["source"] not in {"baseline", "ml"}
-        ):
-            item["training_eligible"] = False
         item["evidence_cutoff"] = (
             item["evidence_cutoff"].isoformat()
             if hasattr(item["evidence_cutoff"], "isoformat")
             else item["evidence_cutoff"]
         )
+        for key in ("engine_version", "model_version", "calibration_version"):
+            item[key] = str(item[key]).strip() if item[key] is not None else None
+        for key in ("interval_state", "interval_scope"):
+            item[key] = str(item[key]).strip() if item[key] is not None else None
         for key in ("interval_lower", "interval_upper", "interval_coverage"):
-            if item[key] is not None:
-                item[key] = _finite(item[key], key, positive=True)
-        if item["interval_lower"] is not None and item["interval_upper"] is not None:
-            if item["interval_lower"] > item["interval_upper"]:
-                raise ValueError("interval lower bound must not exceed upper bound")
+            try:
+                item[key] = None if item[key] is None else _finite(item[key], key)
+            except ValueError:
+                # Optional persistence never fails a field for incomplete issued
+                # provenance.  Unrepresentable values become unavailable and the
+                # authoritative eligibility derivation below fails closed.
+                item[key] = None
 
         clean_features: dict[str, float] = {}
         for name, value in item["feature_snapshot"].items():
@@ -737,11 +840,41 @@ class PredictionLedger:
         return item
 
     @staticmethod
+    def _training_eligible(item: Mapping[str, Any], request_cutoff: date) -> bool:
+        """Derive eligibility from complete immutable provenance, never caller intent alone."""
+
+        if not item["training_eligible"] or item["degraded"]:
+            return False
+        if item["engine_version"] != ENGINE_VERSION:
+            return False
+        if not is_v2_training_source(item["source"]):
+            return False
+        if not item["model_version"] or not item["calibration_version"]:
+            return False
+        try:
+            evidence_cutoff = date.fromisoformat(str(item["evidence_cutoff"]))
+        except (TypeError, ValueError):
+            return False
+        if evidence_cutoff != request_cutoff:
+            return False
+        lower = item["interval_lower"]
+        upper = item["interval_upper"]
+        coverage = item["interval_coverage"]
+        if lower is None or upper is None or coverage is None:
+            return False
+        if not (0 < lower <= item["median_seconds"] <= upper and lower < upper):
+            return False
+        if not 0 < coverage < 1:
+            return False
+        return bool(item["interval_state"] and item["interval_scope"])
+
+    @staticmethod
     def _cloud_field_payload(
         request_row_id: str,
         caller_id: str,
         request_id: str,
         request_hash: str,
+        hash_algorithm: str,
         event_code: str,
         prediction_as_of: str,
         prediction_ids: Sequence[str],
@@ -798,6 +931,7 @@ class PredictionLedger:
                 "caller_id": caller_id,
                 "request_id": request_id,
                 "request_hash": request_hash,
+                "hash_algorithm": hash_algorithm,
                 "event_code": event_code,
                 "prediction_as_of": prediction_as_of,
                 "created_at": timestamp,
@@ -882,7 +1016,7 @@ class PredictionLedger:
         return status
 
     def _schedule_delivery(self, kind: str, entity_id: str) -> str:
-        """Start best-effort outbox delivery without delaying race-day output."""
+        """Queue best-effort delivery on the ledger's sole daemon worker."""
 
         if self._mirror is None:
             return "not_configured"
@@ -901,14 +1035,89 @@ class PredictionLedger:
             return "pending"
         if row is not None and row["status"] == "recorded":
             return "recorded"
+        key = (kind, entity_id)
+        with self._worker_lock:
+            if key not in self._delivery_in_flight and len(self._delivery_queue) < MAX_MIRROR_QUEUE:
+                self._delivery_in_flight.add(key)
+                self._delivery_queue.append(key)
+            self._start_mirror_worker_locked()
+        return "pending"
+
+    def _start_mirror_worker_locked(self) -> None:
+        if self._mirror_worker is not None and self._mirror_worker.is_alive():
+            return
         worker = threading.Thread(
-            target=self._deliver_pending,
-            args=(kind, entity_id),
-            name="strathmark-ledger-mirror",
+            target=self._mirror_worker_loop,
+            name=f"strathmark-ledger-mirror-{id(self)}",
             daemon=True,
         )
+        self._mirror_worker = worker
         worker.start()
-        return "pending"
+
+    def _has_pending_delivery(self) -> bool:
+        try:
+            with self._connect() as conn:
+                return (
+                    conn.execute(
+                        """
+                        SELECT 1
+                        FROM prediction_mirror_outbox o
+                        LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                        WHERE d.status IS NULL OR d.status != 'recorded'
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    is not None
+                )
+        except sqlite3.Error:
+            return False
+
+    def _claim_pending_delivery(self, attempted: set[tuple[str, str]]) -> Optional[tuple[str, str]]:
+        """Claim one durable row not already attempted by this worker run."""
+
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT o.kind, o.entity_id
+                    FROM prediction_mirror_outbox o
+                    LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                    WHERE d.status IS NULL OR d.status != 'recorded'
+                    ORDER BY o.created_at, o.outbox_id
+                    """
+                ).fetchall()
+        except sqlite3.Error:
+            return None
+        with self._worker_lock:
+            for row in rows:
+                key = (str(row["kind"]), str(row["entity_id"]))
+                if key in attempted or key in self._delivery_in_flight:
+                    continue
+                self._delivery_in_flight.add(key)
+                return key
+        return None
+
+    def _mirror_worker_loop(self) -> None:
+        """Drain scheduled entities serially while durable outbox rows remain authority."""
+
+        attempted: set[tuple[str, str]] = set()
+        while True:
+            with self._worker_lock:
+                key = self._delivery_queue.popleft() if self._delivery_queue else None
+            if key is None:
+                key = self._claim_pending_delivery(attempted)
+            if key is None:
+                with self._worker_lock:
+                    if self._delivery_queue:
+                        continue
+                    self._mirror_worker = None
+                    return
+            attempted.add(key)
+            try:
+                self._deliver_pending(*key)
+            finally:
+                with self._worker_lock:
+                    self._delivery_in_flight.discard(key)
 
     def flush_mirror_outbox(self, *, limit: int = 100) -> dict[str, int]:
         """Synchronously retry a bounded number of pending mirror payloads off-path."""

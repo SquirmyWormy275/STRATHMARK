@@ -19,12 +19,17 @@ V2 coverage includes:
 - five-key compatibility, numeric LLM retirement, no-op inactive factors, and bundle
   consistency;
 - deterministic 2,048-sample optimizer invariants and fallback;
-- ledger atomicity, stable IDs, idempotency, privacy allowlist, settlement revisions,
-  and non-blocking mirror failure;
+- exhaustive small-field optimizer oracles plus the bounded 64-competitor capacity gate;
+- ledger atomicity, versioned request hashes, fail-closed training eligibility, direct
+  issued-interval coverage, privacy allowlist, settlement revisions, and one bounded
+  non-blocking mirror worker;
 - REST authentication, health metadata, stateless routes, and response fields.
 
-CI also installs the optional ML extra in a focused job. CatBoost availability alone
-does not make the residual active.
+CI also installs the optional ML extra in a focused job, tests coordinated oldest and
+current API dependency sets, verifies normalized output on Windows and Linux, and
+smoke-tests installed wheels and source distributions outside the checkout. CatBoost
+availability alone does not make the residual active.
 
-`python train_model.py` verifies published evidence without rescoring locked rows. Do
-not delete the report or invoke `--open-locked-test` for the 2.0.0 release.
+`python train_model.py` verifies the separately attested published evidence without
+rescoring locked rows. Do not regenerate the attestation, delete the report, or invoke
+`--open-locked-test` for the 2.0.0 release.

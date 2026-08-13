@@ -53,8 +53,9 @@ exists, this process will be tightened (likely Supabase CLI based, or a
 dedicated migration runner). Until then, the dashboard editor is the
 mechanism.
 
-Prediction Engine V2 migration `20260811_005_prediction_v2.sql` is also
-operator-applied, not automatic. Before applying it, confirm migrations 001-004 are
+Prediction Engine V2 migrations `20260811_005_prediction_v2.sql` and
+`20260813_006_prediction_hash_algorithm.sql` are also operator-applied, not automatic.
+Before applying them in order, confirm migrations 001-004 are
 present, take a schema backup, and verify that existing competitor IDs match the stable
 IDs trusted callers will send. Apply the complete transaction as a trusted operator.
 Never expose the `service_role` key to a browser or mobile client.
@@ -63,6 +64,12 @@ Migration 005 creates four additive append-only mirror tables and the
 `append_prediction_ledger_v2(JSONB)` transactional RPC. It forces RLS, revokes `anon`
 and `authenticated`, grants the RPC only to `service_role`, and installs UPDATE/DELETE
 rejection triggers. Local SQLite remains the race-day authority.
+
+Migration 006 adds the request `hash_algorithm` column and replaces the RPC so old
+`raw-v1` rows and queued payloads remain replayable while new `active-v2` hashes are
+recorded explicitly. It does not rewrite existing evidence.
+Its guarded `20260813_006_prediction_hash_algorithm.down.sql` rollback restores the
+pre-006 RPC and refuses to drop the version column after any `active-v2` row exists.
 
 ## What lives here
 
@@ -77,6 +84,11 @@ Current ordered migrations:
 3. `20260504_003_rls_reframe.sql`
 4. `20260508_004_atomic_model_swap_and_residual_dedup.sql`
 5. `20260811_005_prediction_v2.sql`
+6. `20260813_006_prediction_hash_algorithm.sql`
+
+Migration 005 rejects explicit `active-v2` payloads, so a deploy window with only 005
+cannot silently store an active digest as `raw-v1`; the durable local outbox retries it
+after 006 is installed.
 
 Migration 005's rollback drops mirrored ledger data and is therefore destructive to the
 cloud copy. Preserve required audit data before rollback. The local SQLite ledger is

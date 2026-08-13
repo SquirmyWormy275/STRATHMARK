@@ -166,8 +166,12 @@ The loader checks compatibility, cutoffs, and checksums. A field holds one immut
 `PredictionBundle`; files cannot change the model halfway through a request.
 
 `GET /health` reports core, residual, and calibration availability and versions,
-artifact source, cutoff, warnings, and degraded state. Ollama health is reported
-separately because it is narrative-only.
+artifact source, cutoff compatibility, warnings, and degraded state. A core file may
+be present but incompatible with a backdated request; operators must check both states.
+Pass `prediction_as_of=YYYY-MM-DD` to inspect a historical request cutoff; without it,
+health evaluates UTC today. The intentionally absent, unpromoted optional residual does
+not degrade a healthy calibrated core.
+Ollama health is reported separately because it is narrative-only.
 
 ## Locked release evidence
 
@@ -191,6 +195,13 @@ opening to improve results. Normal verification is safe and does not rescore tho
 ```bash
 python train_model.py
 ```
+
+The verifier also checks a separately reviewed fixed-digest attestation for the
+manifest, pre-lock record, final report, and packaged artifact. Ordinary verification
+never regenerates that trust anchor; changing it is a governance action reviewed
+separately from the payload change it authorizes. Because all of those files live in the
+repository, branch protection and independent review of attestation changes are the trust
+root; the local verifier alone cannot make a coordinated repository rewrite trustworthy.
 
 `python train_model.py --prepare` and `python train_model.py --open-locked-test` are
 governance operations for a new, prospectively locked benchmark only. The current tool
@@ -217,18 +228,25 @@ different canonical input or deterministic prediction output is a conflict. `POS
 an exact retry deduplicates, while a correction requires an actor-attributed reason and
 appends a new revision that supersedes the previous settlement. Rows are immutable.
 Manual, broad-prior, legacy-rollback, and otherwise degraded rows are not training
-eligible. Only explicitly eligible V2 core or promoted-residual rows can enter training
-and drift views.
+eligible. Only provenance-complete V2 core or promoted-residual rows can enter training
+and drift views. Drift computes coverage from each settled row's actual issued interval,
+grouped by nominal coverage. Alert thresholds apply to the nominal 90 percent cohort;
+other levels remain descriptive until separately approved. Rows without issued bounds
+do not enter a coverage denominator.
 
 SQLite at `STRATHMARK_DB_PATH` (default `~/.strathmark/results.db`) is the race-day
 authority. If cloud
 credentials exist, mirroring is best-effort through the service-role-only function from
-migration `20260811_005_prediction_v2.sql`. Browser roles have no ledger access and RLS
-is forced. Each sanitized mirror payload is committed to a local outbox with its field
-or settlement. Delivery runs on a daemon attempt or explicit `flush_mirror_outbox()` and
-does not delay the calculation response. Pending or failed delivery never invalidates
-returned marks. Local ledger write failure is also non-blocking for calculation; the response
-reports that trusted recording failed.
+migration `20260811_005_prediction_v2.sql`, extended with versioned request hashes by
+`20260813_006_prediction_hash_algorithm.sql`. Browser roles have no ledger access and
+RLS is forced. Each sanitized mirror payload is committed to a local outbox with its field
+or settlement. Delivery uses at most one background worker per ledger, deduplicates work
+already in flight. The sole worker reclaims durable rows that did not fit in memory and
+also resumes pending rows when a ledger process starts; explicit `flush_mirror_outbox()`
+remains available for bounded operator-driven replay.
+Delivery does not delay the calculation response. Pending or failed delivery never
+invalidates returned marks. Local ledger write failure is also non-blocking for
+calculation; the response reports that trusted recording failed.
 
 ## 2.0 migration and rollback
 
@@ -256,4 +274,5 @@ one-release compatibility tool, not a long-term alternate engine.
 - `strathmark/mark_optimizer.py` — deterministic joint marks
 - `strathmark/ledger.py` — local trusted ledger
 - `strathmark/migrations/20260811_005_prediction_v2.sql` — optional cloud mirror
+- `strathmark/migrations/20260813_006_prediction_hash_algorithm.sql` — hash-version compatibility
 - `docs/DEPLOYMENT.md` — operator runbook

@@ -20,6 +20,7 @@ from strathmark.ledger import (
     LedgerPrediction,
     PredictionLedger,
     SettlementConflictError,
+    canonical_hash,
 )
 from strathmark.predictor import (
     CompetitorRecord,
@@ -117,6 +118,159 @@ def test_record_field_is_atomic_and_exact_retry_returns_original_ids(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM prediction_requests").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM ledger_predictions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM prediction_features").fetchone()[0] == 3
+
+
+def test_new_requests_record_active_v2_hash_algorithm(tmp_path):
+    path = tmp_path / "ledger.db"
+    PredictionLedger(path).record_field("api", "active", _request_payload(), [_pred()])
+
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT hash_algorithm FROM prediction_requests").fetchone() == (
+            "active-v2",
+        )
+
+
+def test_existing_raw_v1_row_retries_with_its_recorded_algorithm(tmp_path):
+    path = tmp_path / "legacy.db"
+    raw_payload = _request_payload()
+    active_payload = {**raw_payload, "competitors": [{"competitor_id": "competitor-1"}]}
+    validated = PredictionLedger._validate_prediction(_pred())
+    raw_digest = canonical_hash({"request": raw_payload, "predictions": [validated]})
+    request_row_id = "legacy-request-row"
+    prediction_id = "legacy-prediction-row"
+
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE prediction_requests (
+                ledger_request_id TEXT PRIMARY KEY,
+                caller_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                event_code TEXT NOT NULL,
+                prediction_as_of TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(caller_id, request_id)
+            );
+            CREATE TABLE ledger_predictions (
+                prediction_id TEXT PRIMARY KEY,
+                ledger_request_id TEXT NOT NULL,
+                competitor_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                event_code TEXT NOT NULL,
+                median_seconds REAL NOT NULL,
+                assigned_mark INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                training_eligible INTEGER NOT NULL,
+                engine_version TEXT,
+                model_version TEXT,
+                calibration_version TEXT,
+                evidence_cutoff TEXT,
+                interval_lower REAL,
+                interval_upper REAL,
+                interval_coverage REAL,
+                interval_state TEXT,
+                interval_scope TEXT,
+                ignored_factors_json TEXT NOT NULL,
+                warnings_json TEXT NOT NULL,
+                optimizer TEXT,
+                optimizer_metadata_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(ledger_request_id, competitor_id)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO prediction_requests VALUES (?, 'api', 'legacy', ?, 'SB', "
+            "'2026-08-11', '2026-08-11T00:00:00Z')",
+            (request_row_id, raw_digest),
+        )
+        conn.execute(
+            """
+            INSERT INTO ledger_predictions VALUES (
+                ?, ?, 'competitor-1', 0, 'SB', 42.5, 3, 'baseline', 1,
+                '2.0.0', 'core-test', 'cal-test', '2026-08-11', 35.0, 52.0,
+                0.9, 'calibrated', 'global', '[]', '[]', 'joint_probability_v1',
+                '{}', '2026-08-11T00:00:00Z'
+            )
+            """,
+            (prediction_id, request_row_id),
+        )
+        conn.commit()
+
+    retry = PredictionLedger(path).record_field(
+        "api",
+        "legacy",
+        active_payload,
+        [_pred()],
+        legacy_request_payload=raw_payload,
+    )
+
+    assert retry.status == "duplicate"
+    assert retry.prediction_ids == (prediction_id,)
+    assert retry.request_hash == raw_digest
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT request_hash, hash_algorithm FROM prediction_requests"
+        ).fetchone() == (raw_digest, "raw-v1")
+
+
+def test_existing_raw_v1_retry_ignores_post_v1_optimizer_metadata(tmp_path):
+    path = tmp_path / "legacy-optimizer.db"
+    raw_payload = _request_payload()
+    active_payload = {**raw_payload, "competitors": [{"competitor_id": "competitor-1"}]}
+    prediction = _pred()
+    object.__setattr__(
+        prediction,
+        "optimizer_metadata",
+        {**prediction.optimizer_metadata, "search_strategy": "exhaustive_global"},
+    )
+    old_validated = PredictionLedger._validate_prediction(prediction)
+    old_validated["optimizer_metadata"].pop("search_strategy")
+    raw_digest = canonical_hash({"request": raw_payload, "predictions": [old_validated]})
+    request_row_id = "legacy-request-row"
+
+    ledger = PredictionLedger(path)
+    with ledger._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO prediction_requests (
+                ledger_request_id, caller_id, request_id, request_hash, hash_algorithm,
+                event_code, prediction_as_of, created_at
+            ) VALUES (?, 'api', 'legacy-optimizer', ?, 'raw-v1', 'SB',
+                      '2026-08-11', '2026-08-11T00:00:00Z')
+            """,
+            (request_row_id, raw_digest),
+        )
+        conn.execute(
+            """
+            INSERT INTO ledger_predictions (
+                prediction_id, ledger_request_id, competitor_id, ordinal, event_code,
+                median_seconds, assigned_mark, source, training_eligible,
+                engine_version, model_version, calibration_version, evidence_cutoff,
+                interval_lower, interval_upper, interval_coverage, interval_state,
+                interval_scope, ignored_factors_json, warnings_json, optimizer,
+                optimizer_metadata_json, created_at
+            ) VALUES (
+                'legacy-prediction-row', ?, 'competitor-1', 0, 'SB', 42.5, 3,
+                'baseline', 1, '2.0.0', 'core-test', 'cal-test', '2026-08-11',
+                35.0, 52.0, 0.9, 'calibrated', 'global', '[]', '[]',
+                'joint_probability_v1', '{}', '2026-08-11T00:00:00Z'
+            )
+            """,
+            (request_row_id,),
+        )
+
+    retry = ledger.record_field(
+        "api",
+        "legacy-optimizer",
+        active_payload,
+        [prediction],
+        legacy_request_payload=raw_payload,
+    )
+
+    assert retry.status == "duplicate"
+    assert retry.request_hash == raw_digest
 
 
 def test_same_caller_key_with_changed_payload_is_conflict(tmp_path):
@@ -337,6 +491,62 @@ def test_ledger_forces_legacy_and_degraded_predictions_ineligible(tmp_path):
     assert ledger.get_training_rows() == []
 
 
+def test_ledger_rejects_fabricated_residual_source_from_training(tmp_path):
+    ledger = PredictionLedger(tmp_path / "fabricated-source.db")
+    prediction = _pred(source="fabricated+catboost_residual", training_eligible=True)
+
+    write = ledger.record_field("api", "fabricated", _request_payload(), [prediction])
+    ledger.settle(write.prediction_ids[0], "competitor-1", "SB", 45.0, "official")
+
+    assert ledger.get_training_rows() == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model_version", None),
+        ("calibration_version", None),
+        ("evidence_cutoff", None),
+        ("interval_lower", None),
+        ("interval_upper", None),
+        ("interval_coverage", None),
+        ("interval_coverage", 1.0),
+        ("interval_state", None),
+        ("interval_scope", None),
+    ],
+)
+def test_ledger_fails_closed_training_eligibility_for_incomplete_provenance(tmp_path, field, value):
+    prediction = _pred(training_eligible=True)
+    object.__setattr__(prediction, field, value)
+    ledger = PredictionLedger(tmp_path / f"{field}.db")
+
+    write = ledger.record_field("api", field, _request_payload(), [prediction])
+    ledger.settle(write.prediction_ids[0], "competitor-1", "SB", 45.0, "official")
+
+    assert ledger.get_training_rows() == []
+
+
+def test_training_rows_project_issued_interval_and_cohort_metadata(tmp_path):
+    ledger = PredictionLedger(tmp_path / "cohorts.db")
+    write = ledger.record_field("api", "cohort", _request_payload(), [_pred()])
+    ledger.settle(write.prediction_ids[0], "competitor-1", "SB", 45.0, "official")
+
+    [row] = ledger.get_training_rows(
+        model_version="core-test",
+        calibration_version="cal-test",
+        event_code="SB",
+        history_band="4+",
+    )
+
+    assert row["interval_lower"] == 35.0
+    assert row["interval_upper"] == 52.0
+    assert row["nominal_coverage"] == 0.9
+    assert row["interval_state"] == "calibrated"
+    assert row["interval_scope"] == "global"
+    assert row["history_count"] == 4
+    assert row["history_band"] == "4+"
+
+
 def test_cloud_mirror_failure_is_sanitized_and_nonfatal(tmp_path):
     mirrored = []
 
@@ -381,6 +591,96 @@ def test_cloud_mirror_latency_is_off_the_calculation_response_path(tmp_path):
         release.set()
 
 
+def test_retry_storm_uses_one_nonblocking_worker_per_ledger(tmp_path, monkeypatch):
+    release = threading.Event()
+    started = threading.Event()
+    created_workers = []
+    real_thread = threading.Thread
+
+    def counting_thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        created_workers.append(worker)
+        return worker
+
+    def blocked(payload):
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr("strathmark.ledger.threading.Thread", counting_thread)
+    ledger = PredictionLedger(tmp_path / "storm.db", mirror=blocked)
+    try:
+        first = ledger.record_field("api", "storm", _request_payload(), [_pred()])
+        assert first.cloud_status == "pending"
+        assert started.wait(timeout=1)
+        for _ in range(100):
+            retry = ledger.record_field("api", "storm", _request_payload(), [_pred()])
+            assert retry.cloud_status == "pending"
+        second = ledger.record_field("api", "storm-2", _request_payload(), [_pred()])
+        assert second.cloud_status == "pending"
+        assert len(created_workers) == 1
+    finally:
+        release.set()
+        for worker in created_workers:
+            worker.join(timeout=1)
+
+
+def test_unique_mirror_storm_keeps_in_memory_queue_bounded(tmp_path, monkeypatch):
+    release = threading.Event()
+    started = threading.Event()
+    mirrored = []
+
+    def blocked(payload):
+        started.set()
+        release.wait(timeout=5)
+        mirrored.append(payload)
+
+    monkeypatch.setattr("strathmark.ledger.MAX_MIRROR_QUEUE", 2, raising=False)
+    ledger = PredictionLedger(tmp_path / "unique-storm.db", mirror=blocked)
+    try:
+        for index in range(6):
+            competitor_id = f"competitor-{index}"
+            ledger.record_field(
+                "api",
+                f"unique-{index}",
+                _request_payload(competitor_id),
+                [_pred(competitor_id)],
+            )
+        assert started.wait(timeout=1)
+        assert len(ledger._delivery_queue) <= 2
+        with ledger._connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM prediction_mirror_outbox").fetchone()[0] == 6
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 2
+    while len(mirrored) < 6 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(mirrored) == 6
+
+
+def test_explicit_flush_limit_preserves_remaining_durable_work(tmp_path):
+    path = tmp_path / "flush-limit.db"
+    ledger = PredictionLedger(path)
+    for index in range(3):
+        ledger.record_field("api", f"field-{index}", _request_payload(), [_pred()])
+
+    mirrored = []
+    ledger._mirror = mirrored.append
+    summary = ledger.flush_mirror_outbox(limit=2)
+
+    assert summary["recorded"] == 2
+    assert len(mirrored) == 2
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM prediction_mirror_outbox o
+            LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+            WHERE d.status IS NULL OR d.status != 'recorded'
+            """
+        ).fetchone() == (1,)
+
+
 def test_duplicate_retries_pending_cloud_outbox_without_new_local_rows(tmp_path):
     mirrored = []
 
@@ -413,16 +713,27 @@ def test_post_commit_delivery_state_failure_keeps_local_field_recorded(tmp_path,
     path = tmp_path / "ledger.db"
     ledger = PredictionLedger(path, mirror=lambda payload: True)
     original_connect = ledger._connect
-    calls = 0
 
-    def flaky_connect():
-        nonlocal calls
-        calls += 1
-        if calls == 3:
-            raise sqlite3.OperationalError("delivery state unavailable")
-        return original_connect()
+    class DeliveryStateFailure:
+        def __init__(self):
+            self.connection = original_connect()
 
-    monkeypatch.setattr(ledger, "_connect", flaky_connect)
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, statement, parameters=()):
+            if "INSERT INTO prediction_mirror_delivery" in statement:
+                raise sqlite3.OperationalError("delivery state unavailable")
+            return self.connection.execute(statement, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(ledger, "_connect", DeliveryStateFailure)
 
     result = ledger.record_field("api", "delivery-state", _request_payload(), [_pred()])
 

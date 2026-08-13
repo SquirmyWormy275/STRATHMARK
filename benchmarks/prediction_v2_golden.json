@@ -1,0 +1,69 @@
+{
+  "artifact_fingerprint": "5083ea2beb53a536180326a81a028960e7ccaf764e804c3edf89ccb0ba404df6",
+  "canonical_request_hash": "c517391cb1df4806fe9903908b455c6ca2b4c6ed0f10b07ea110e8c2ece315b3",
+  "marks": [
+    3,
+    3
+  ],
+  "optimizer_metadata": {
+    "legacy_objective": [
+      1.1920928955078125e-05,
+      19.46010310166931,
+      0,
+      [
+        3,
+        3
+      ]
+    ],
+    "objective": [
+      1.1920928955078125e-05,
+      19.46010310166931,
+      0,
+      [
+        3,
+        3
+      ]
+    ],
+    "optimizer": "posterior_crn_v2",
+    "passes": 0,
+    "reason": null,
+    "search_strategy": "exhaustive_global",
+    "seed": 20260811,
+    "simulations": 2048
+  },
+  "predictions": [
+    {
+      "competitor_id": "golden-competitor-a",
+      "interval": {
+        "coverage": 0.9,
+        "lower": 10.397991264870209,
+        "scope": "global",
+        "state": "calibrated",
+        "upper": 44.07168101526466
+      },
+      "median_seconds": 21.406937058460002,
+      "source": "conditional_population_prior",
+      "warnings": []
+    },
+    {
+      "competitor_id": "golden-competitor-b",
+      "interval": {
+        "coverage": 0.9,
+        "lower": 9.67361813954266,
+        "scope": "global",
+        "state": "calibrated",
+        "upper": 47.37182588918413
+      },
+      "median_seconds": 21.406937058460002,
+      "source": "conditional_population_prior",
+      "warnings": [
+        "unknown_gender"
+      ]
+    }
+  ],
+  "schema_version": "prediction-v2-golden/v1",
+  "stable_prediction_ids": [
+    "dea76b97-5fdd-5c97-9ec4-3bf5e4a3ac21",
+    "b85f25d9-52e3-519d-a600-4633521243e5"
+  ]
+}

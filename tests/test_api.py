@@ -46,6 +46,7 @@ def v2_provider():
 
         class calibration:
             version = "api-cal"
+            max_evidence_date = date(2025, 1, 1)
 
         def __init__(self):
             self.cutoffs = []
@@ -72,6 +73,9 @@ def v2_provider():
 
         def species_property_frame(self):
             return None
+
+        def is_compatible(self, prediction_as_of):
+            return self.calibration.max_evidence_date < prediction_as_of
 
         def predict(self, request, *, history=None, wood_df=None):
             self.cutoffs.append(request.prediction_as_of)
@@ -116,12 +120,39 @@ class TestHealthEndpoint:
         assert data["prediction_engine"]["core"]["available"] is True
         assert data["prediction_engine"]["core"]["version"] == "api-core"
         assert data["prediction_engine"]["core"]["serving_active"] is True
+        assert data["prediction_engine"]["core"]["compatible_with_cutoff"] is True
         assert "residual" in data["prediction_engine"]
         assert "calibration" in data["prediction_engine"]
         assert "cutoff" in data["prediction_engine"]
         assert "degraded" in data["prediction_engine"]
         assert data["prediction_engine"]["active_engine"] == "v2"
         assert "ollama_available" in data
+
+    def test_health_distinguishes_available_core_from_cutoff_compatibility(
+        self, client, v2_provider
+    ):
+        core, _ = v2_provider
+        core.calibration.max_evidence_date = date.max
+        provider = StaticPredictionProvider(PredictionBundle(core=core, source="api-test"))
+        app.dependency_overrides[get_prediction_provider] = lambda: provider
+
+        data = client.get("/health").json()["prediction_engine"]
+
+        assert data["core"]["available"] is True
+        assert data["core"]["compatible_with_cutoff"] is False
+        assert data["calibration"]["compatible_with_cutoff"] is False
+        assert data["degraded"] is True
+        assert "core_artifact_incompatible_with_cutoff" in data["warnings"]
+
+    def test_health_checks_the_requested_historical_cutoff(self, client, v2_provider):
+        core, provider = v2_provider
+        core.calibration.max_evidence_date = date(2025, 1, 1)
+        app.dependency_overrides[get_prediction_provider] = lambda: provider
+
+        data = client.get("/health?prediction_as_of=2025-01-01").json()["prediction_engine"]
+
+        assert data["cutoff"] == "2025-01-01"
+        assert data["core"]["compatible_with_cutoff"] is False
 
     def test_health_reports_legacy_when_rollback_is_active(self, client, monkeypatch):
         monkeypatch.setenv("STRATHMARK_PREDICTION_ENGINE", "legacy")
@@ -306,7 +337,7 @@ class TestCalculateEndpoint:
         assert result["provenance"]["engine"] == "prediction_v2"
         assert "division" in result["ignored_factors"]
 
-    def test_history_is_bounded_at_api_boundary(self, client):
+    def test_legacy_history_size_remains_accepted(self, client, v2_provider):
         history = [
             {
                 "event_code": "SB",
@@ -317,6 +348,8 @@ class TestCalculateEndpoint:
                 "result_date": "2025-01-01",
             }
         ] * 501
+        _, provider = v2_provider
+        app.dependency_overrides[get_prediction_provider] = lambda: provider
         response = client.post(
             "/calculate",
             json={
@@ -326,7 +359,7 @@ class TestCalculateEndpoint:
             },
         )
 
-        assert response.status_code == 422
+        assert response.status_code == 200
 
     def test_duplicate_name_keyed_override_is_rejected(self, client):
         resp = client.post(
@@ -552,8 +585,18 @@ class TestSimulateEndpoint:
         )
         assert resp.status_code == 422
 
+    def test_documented_default_accepts_sixteen_competitors(self, client, monkeypatch):
+        monkeypatch.setattr(
+            "strathmark.api.run_monte_carlo_simulation",
+            lambda **kwargs: {"competitor_time_stats": {}},
+        )
+        competitors = [{"name": f"A{i}", "mark": 3, "predicted_time": 50.0} for i in range(16)]
+
+        resp = client.post("/simulate", json={"competitors": competitors})
+
+        assert resp.status_code == 200
+
     def test_simulation_returns_busy_when_server_capacity_is_full(self, client):
-        assert _SIMULATION_SLOTS.acquire(blocking=False)
         assert _SIMULATION_SLOTS.acquire(blocking=False)
         try:
             resp = client.post(
@@ -567,7 +610,6 @@ class TestSimulateEndpoint:
                 },
             )
         finally:
-            _SIMULATION_SLOTS.release()
             _SIMULATION_SLOTS.release()
 
         assert resp.status_code == 429

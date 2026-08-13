@@ -28,8 +28,10 @@ validation support a future model version.
 ## Outputs and compatibility
 
 The core returns a positive median and chronological split-conformal central 90%
-interval. That interval is forecast uncertainty; `std_dev` remains race-performance
-variability for simulation.
+interval. That interval describes the predictive distribution of a future finish;
+`std_dev` remains a separate absolute-seconds performance summary for compatibility.
+Settled drift coverage is measured against the interval actually issued for each
+prediction, not reconstructed from residual quantiles.
 
 The five legacy keys map as follows:
 
@@ -71,11 +73,15 @@ Do not rerun `--open-locked-test` for this release.
 
 Public prediction routes are stateless. Authenticated `/ledger/calculate` requires a
 request ID and stable competitor IDs, writes one local append-only SQLite transaction,
-and mirrors to Supabase only best-effort through a replayable local outbox. Settlements
-are immutable revisions. The
-ledger stores hashes, stable IDs, versions, numeric allowlisted features, predictions,
-marks, and settlement provenance—not names, notes, or raw bodies. Migration 005 forces
-RLS and restricts the append RPC to `service_role`.
+and mirrors to Supabase only best-effort through a replayable local outbox. Each ledger
+process uses one bounded worker, which reclaims overflowed and restart-surviving rows
+from that durable outbox. `GET /health?prediction_as_of=YYYY-MM-DD` evaluates artifact
+compatibility for a historical exclusive cutoff.
+Settlements are immutable revisions. The ledger stores hashes, stable IDs, versions,
+numeric allowlisted features, predictions,
+marks, and settlement provenance—not names, notes, or raw bodies. Migrations 005-006
+force RLS, restrict the append RPC to `service_role`, and preserve versioned request
+hash compatibility without rewriting old evidence.
 
 For the complete source-controlled contract, see
 [`docs/PREDICTION_ENGINE_V2.md`](../PREDICTION_ENGINE_V2.md).

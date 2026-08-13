@@ -2,12 +2,15 @@
 
 The optimizer uses common random numbers so every candidate mark sheet is
 compared against the same posterior race outcomes.  It never relies on elapsed
-wall time: the work budget is a fixed sample count and a fixed maximum number
-of coordinate passes.
+wall time: the work budget is a fixed sample count plus either a bounded number
+of exhaustive candidates for tractable fields or a fixed maximum number of
+coordinate passes.
 """
 
 from __future__ import annotations
 
+import itertools
+import math
 from dataclasses import dataclass
 from typing import Sequence, TypeAlias
 
@@ -18,6 +21,7 @@ from strathmark.prediction_v2 import PredictiveDistribution
 DEFAULT_MARK_SAMPLES = 2048
 DEFAULT_MARK_SEED = 20260811
 MAX_COORDINATE_PASSES = 8
+MAX_EXHAUSTIVE_CANDIDATES = 4096
 OBJECTIVE_TOLERANCE = 1e-12
 
 MarkObjective: TypeAlias = tuple[float, float, int, tuple[int, ...]]
@@ -36,6 +40,7 @@ class MarkOptimizationResult:
     seed: int
     passes: int
     reason: str | None = None
+    search_strategy: str = "unspecified"
 
     def metadata(self) -> dict[str, object]:
         """Return JSON-safe optimizer metadata for each field result."""
@@ -51,6 +56,7 @@ class MarkOptimizationResult:
             "simulations": self.simulations,
             "seed": self.seed,
             "passes": self.passes,
+            "search_strategy": self.search_strategy,
             "objective": [
                 objective_probability,
                 objective_spread,
@@ -127,6 +133,36 @@ def _compare_objectives(left: MarkObjective, right: MarkObjective) -> int:
     return 0
 
 
+def _exhaustive_small_field_search(
+    samples: np.ndarray,
+    legacy_marks: tuple[int, ...],
+    ordered_indices: Sequence[int],
+    *,
+    ceiling: int,
+    floor: int,
+) -> tuple[tuple[int, ...], MarkObjective]:
+    """Return the global optimum after scoring every legal mark sheet."""
+
+    best_marks: tuple[int, ...] | None = None
+    best_objective: MarkObjective | None = None
+    for ordered_tail in itertools.combinations_with_replacement(
+        range(floor, ceiling + 1), len(ordered_indices) - 1
+    ):
+        ordered_marks = (floor, *ordered_tail)
+        marks = [floor] * len(ordered_indices)
+        for position, index in enumerate(ordered_indices):
+            marks[index] = ordered_marks[position]
+        marks_tuple = tuple(marks)
+        objective = _objective(samples, marks_tuple, legacy_marks, floor)
+        if best_objective is None or _compare_objectives(objective, best_objective) < 0:
+            best_marks = marks_tuple
+            best_objective = objective
+
+    if best_marks is None or best_objective is None:  # pragma: no cover - guarded input
+        raise ValueError("exhaustive search produced no candidates")
+    return best_marks, best_objective
+
+
 def _fallback_result(
     legacy_marks: tuple[int, ...],
     *,
@@ -151,6 +187,7 @@ def _fallback_result(
         simulations=simulations,
         seed=seed,
         passes=0,
+        search_strategy="rounded_gap_fallback",
         reason=reason,
     )
 
@@ -218,6 +255,7 @@ def optimize_joint_marks(
                 simulations=num_samples,
                 seed=seed,
                 passes=0,
+                search_strategy="single_competitor",
             )
 
         # A stable descending-median order defines the monotonicity constraint.
@@ -225,46 +263,61 @@ def optimize_joint_marks(
         ordered_indices = sorted(
             range(len(distributions)), key=lambda index: (-medians[index], index)
         )
-        order_position = {index: position for position, index in enumerate(ordered_indices)}
-        marks = list(legacy_marks)
-        best_objective = legacy_objective
-        completed_passes = 0
+        candidate_count = math.comb(
+            ceiling - floor + len(distributions) - 1, len(distributions) - 1
+        )
+        if candidate_count <= MAX_EXHAUSTIVE_CANDIDATES:
+            optimized_marks, best_objective = _exhaustive_small_field_search(
+                samples,
+                legacy_marks,
+                ordered_indices,
+                ceiling=ceiling,
+                floor=floor,
+            )
+            completed_passes = 0
+            search_strategy = "exhaustive_global"
+        else:
+            order_position = {index: position for position, index in enumerate(ordered_indices)}
+            marks = list(legacy_marks)
+            best_objective = legacy_objective
+            completed_passes = 0
 
-        for pass_number in range(max_passes):
-            changed = False
-            # The coordinate order is caller input order, not median order.
-            for index in range(len(marks)):
-                position = order_position[index]
-                if position == 0:
-                    candidates = (floor,)
-                else:
-                    lower = marks[ordered_indices[position - 1]]
-                    upper = (
-                        ceiling
-                        if position == len(marks) - 1
-                        else marks[ordered_indices[position + 1]]
-                    )
-                    candidates = range(lower, upper + 1)
+            for pass_number in range(max_passes):
+                changed = False
+                # The coordinate order is caller input order, not median order.
+                for index in range(len(marks)):
+                    position = order_position[index]
+                    if position == 0:
+                        candidates = (floor,)
+                    else:
+                        lower = marks[ordered_indices[position - 1]]
+                        upper = (
+                            ceiling
+                            if position == len(marks) - 1
+                            else marks[ordered_indices[position + 1]]
+                        )
+                        candidates = range(lower, upper + 1)
 
-                coordinate_mark = marks[index]
-                coordinate_objective = best_objective
-                for candidate in candidates:
-                    trial = list(marks)
-                    trial[index] = candidate
-                    trial_tuple = tuple(trial)
-                    trial_objective = _objective(samples, trial_tuple, legacy_marks, floor)
-                    if _compare_objectives(trial_objective, coordinate_objective) < 0:
-                        coordinate_mark = candidate
-                        coordinate_objective = trial_objective
-                if coordinate_mark != marks[index]:
-                    marks[index] = coordinate_mark
-                    best_objective = coordinate_objective
-                    changed = True
-            completed_passes = pass_number + 1
-            if not changed:
-                break
+                    coordinate_mark = marks[index]
+                    coordinate_objective = best_objective
+                    for candidate in candidates:
+                        trial = list(marks)
+                        trial[index] = candidate
+                        trial_tuple = tuple(trial)
+                        trial_objective = _objective(samples, trial_tuple, legacy_marks, floor)
+                        if _compare_objectives(trial_objective, coordinate_objective) < 0:
+                            coordinate_mark = candidate
+                            coordinate_objective = trial_objective
+                    if coordinate_mark != marks[index]:
+                        marks[index] = coordinate_mark
+                        best_objective = coordinate_objective
+                        changed = True
+                completed_passes = pass_number + 1
+                if not changed:
+                    break
 
-        optimized_marks = tuple(marks)
+            optimized_marks = tuple(marks)
+            search_strategy = "bounded_coordinate"
         # This is also a guard against future search changes accidentally
         # accepting a sheet that is inferior to the established fallback.
         if _compare_objectives(best_objective, legacy_objective) > 0:
@@ -284,6 +337,7 @@ def optimize_joint_marks(
             simulations=num_samples,
             seed=seed,
             passes=completed_passes,
+            search_strategy=search_strategy,
         )
     except Exception:  # Race-day fail-open boundary; details are never user data.
         return _fallback_result(
@@ -297,6 +351,7 @@ def optimize_joint_marks(
 __all__ = [
     "DEFAULT_MARK_SAMPLES",
     "DEFAULT_MARK_SEED",
+    "MAX_EXHAUSTIVE_CANDIDATES",
     "MAX_COORDINATE_PASSES",
     "MarkOptimizationResult",
     "legacy_rounded_gap_marks",

@@ -1,0 +1,10 @@
+{
+  "schema_version": "prediction-v2-release-attestation/v1",
+  "governance_policy": "fixed digests; governance-only updates reviewed independently from release payload changes",
+  "digests": {
+    "manifest_sha256": "b702f607a30aee2531f3f59064e2f8c67a96aa3f13cd74ce3f1fdcc1182f6899",
+    "prelock_sha256": "91432e7a0851ded20da2117efb16237bd7e99082684efa417d42e2f257ba6e2f",
+    "report_sha256": "ea76ce8935f7d83a70599a9886d7fab1082becafbed77d695364f25370fc1f93",
+    "artifact_sha256": "d564bf679244d9e39149c4bfd8ff50adc079e0696cde931d48a57dcb8b9c3f67"
+  }
+}

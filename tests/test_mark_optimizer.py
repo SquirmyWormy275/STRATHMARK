@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -35,6 +36,78 @@ def _distribution(
         effective_history_weight=3.0,
         metadata={"shared_log_scale": shared_log_scale},
     )
+
+
+def _exhaustive_oracle(
+    distributions: list[PredictiveDistribution],
+    *,
+    ceiling: int,
+    seed: int,
+    num_samples: int,
+    floor: int = 3,
+) -> tuple[tuple[int, ...], tuple[float, float, int, tuple[int, ...]]]:
+    """Independently score every legal small-field mark sheet."""
+
+    shared = np.random.default_rng(seed).standard_normal(num_samples)
+    samples = np.column_stack(
+        [
+            distribution.sample(
+                num_samples,
+                seed=seed + (index + 1) * 1_000_003,
+                shared_standard_normal=shared,
+            )
+            for index, distribution in enumerate(distributions)
+        ]
+    )
+    legacy = legacy_rounded_gap_marks(
+        [distribution.median for distribution in distributions],
+        ceiling=ceiling,
+        floor=floor,
+    )
+    ordered_indices = sorted(
+        range(len(distributions)),
+        key=lambda index: (-distributions[index].median, index),
+    )
+
+    best: tuple[tuple[int, ...], tuple[float, float, int, tuple[int, ...]]] | None = None
+    for ordered_tail in itertools.combinations_with_replacement(
+        range(floor, ceiling + 1), len(distributions) - 1
+    ):
+        marks_by_order = (floor, *ordered_tail)
+        marks = [floor] * len(distributions)
+        for position, index in enumerate(ordered_indices):
+            marks[index] = marks_by_order[position]
+        marks_tuple = tuple(marks)
+        finishes = samples + (np.asarray(marks_tuple, dtype=float) - floor)
+        winners = np.argmin(finishes, axis=1)
+        win_probabilities = np.bincount(winners, minlength=len(distributions)) / num_samples
+        objective = (
+            float(np.sum((win_probabilities - 1.0 / len(distributions)) ** 2)),
+            float(np.mean(np.ptp(finishes, axis=1))),
+            sum(
+                abs(mark - legacy_mark)
+                for mark, legacy_mark in zip(marks_tuple, legacy, strict=True)
+            ),
+            marks_tuple,
+        )
+        if best is None or _oracle_compare(objective, best[1]) < 0:
+            best = marks_tuple, objective
+
+    assert best is not None
+    return best
+
+
+def _oracle_compare(
+    left: tuple[float, float, int, tuple[int, ...]],
+    right: tuple[float, float, int, tuple[int, ...]],
+) -> int:
+    for left_value, right_value in zip(left[:2], right[:2], strict=True):
+        difference = float(left_value) - float(right_value)
+        if difference < -1e-12:
+            return -1
+        if difference > 1e-12:
+            return 1
+    return (left[2:] > right[2:]) - (left[2:] < right[2:])
 
 
 def test_legacy_marks_use_current_rounded_gap_contract() -> None:
@@ -98,6 +171,39 @@ def test_search_never_worsens_legacy_lexicographic_objective() -> None:
         [distribution.median for distribution in distributions], ceiling=80
     )
     assert result.optimizer in {"posterior_crn_v2", "rounded_gap_fallback"}
+
+
+def test_optimizer_matches_exhaustive_oracle_for_adversarial_small_fields() -> None:
+    scenarios = [
+        # A coordinate-search local minimum found by an exhaustive measurement.
+        ([40.0, 37.0, 34.0], [0.12, 0.04, 0.04], 8, 5),
+        # Equal medians retain caller order while all legal ties are scored.
+        ([40.0, 40.0, 35.0], [0.08, 0.20, 0.04], 7, 11),
+        # Four competitors under ceiling pressure exercise the larger state space.
+        ([50.0, 45.0, 40.0, 35.0], [0.04, 0.12, 0.20, 0.08], 7, 19),
+    ]
+
+    for medians, scales, ceiling, seed in scenarios:
+        distributions = [
+            _distribution(median, log_scale=scale)
+            for median, scale in zip(medians, scales, strict=True)
+        ]
+        result = optimize_joint_marks(
+            distributions,
+            ceiling=ceiling,
+            seed=seed,
+            num_samples=128,
+        )
+        oracle_marks, oracle_objective = _exhaustive_oracle(
+            distributions,
+            ceiling=ceiling,
+            seed=seed,
+            num_samples=128,
+        )
+
+        assert result.marks == oracle_marks
+        assert result.objective == oracle_objective
+        assert result.metadata()["search_strategy"] == "exhaustive_global"
 
 
 def test_single_competitor_always_receives_mark_three() -> None:

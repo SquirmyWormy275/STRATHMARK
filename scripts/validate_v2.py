@@ -13,7 +13,6 @@ import hashlib
 import json
 import math
 import sys
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
@@ -23,9 +22,7 @@ import pandas as pd
 
 from strathmark.features import (
     CANONICALIZATION_VERSION,
-    SPECIES_PROPERTY_FIELDS,
     build_prior_evidence,
-    resolve_species_properties,
 )
 from strathmark.loader import load_woodchopping_xlsx
 from strathmark.prediction_v2 import ChronologicalCalibrator, PredictionV2Model, history_band
@@ -40,7 +37,16 @@ from strathmark.validation import (
 BENCHMARK_SCHEMA = "prediction-v2-benchmark/v1"
 PRELOCK_SCHEMA = "prediction-v2-prelock/v1"
 REPORT_SCHEMA = "prediction-v2-validation-report/v1"
+ATTESTATION_SCHEMA = "prediction-v2-release-attestation/v1"
 ALGORITHM_CONTRACT = "prediction-v2-core-fixed-20260811"
+DEFAULT_PRELOCK_PATH = Path("benchmarks/prediction_v2_prelock.json")
+DEFAULT_ATTESTATION_PATH = Path("benchmarks/prediction_v2_release_attestation.json")
+REQUIRED_ATTESTATION_DIGESTS = {
+    "manifest_sha256",
+    "prelock_sha256",
+    "report_sha256",
+    "artifact_sha256",
+}
 REQUIRED_MANIFEST_FIELDS = {
     "schema_version",
     "source",
@@ -75,6 +81,34 @@ def load_benchmark_manifest(path: str | Path) -> dict[str, Any]:
         raise ValueError("benchmark canonicalization version is incompatible")
     if value["events"] != ["SB", "UH"]:
         raise ValueError("benchmark event allowlist is incompatible")
+    return value
+
+
+def load_release_attestation(path: str | Path) -> dict[str, Any]:
+    """Load the separately reviewed fixed-digest release trust anchor."""
+
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("release attestation is not readable JSON") from exc
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "governance_policy",
+        "digests",
+    }:
+        raise ValueError("release attestation fields do not match the fixed contract")
+    if value["schema_version"] != ATTESTATION_SCHEMA:
+        raise ValueError("release attestation schema is incompatible")
+    digests = value["digests"]
+    if not isinstance(digests, dict) or set(digests) != REQUIRED_ATTESTATION_DIGESTS:
+        raise ValueError("release attestation digest fields do not match the fixed contract")
+    for digest in digests.values():
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("release attestation contains an invalid SHA-256 digest")
     return value
 
 
@@ -304,64 +338,18 @@ def write_artifact(model: PredictionV2Model, path: str | Path) -> dict[str, Any]
     }
 
 
-def refresh_runtime_species_lookup(
-    report_path: str | Path,
-    artifact_path: str | Path,
-    manifest_path: str | Path,
-    source_path: str | Path,
-) -> dict[str, Any]:
-    """Embed the benchmark Wood-sheet lookup without evaluating result rows.
-
-    This is a packaging repair only: coefficients, calibration, validation
-    metrics, and locked-test evidence remain byte-for-byte equivalent in the
-    decoded model.  The command refuses to overwrite an already enriched core.
-    """
-
-    report = verify_release(report_path, artifact_path, manifest_path, source_path)
-    manifest = load_benchmark_manifest(manifest_path)
-    verify_source_checksum(source_path, manifest["source_sha256"])
-    model = PredictionV2Model.from_json(Path(artifact_path).read_bytes())
-    if model.species_properties:
-        raise ValueError("packaged artifact already contains a species-property lookup")
-    try:
-        wood_df = pd.read_excel(source_path, sheet_name="Wood")
-    except (OSError, ValueError) as exc:
-        raise ValueError("benchmark Wood sheet is not readable") from exc
-    lookup: dict[str, dict[str, float]] = {}
-    for species in model.species_support:
-        properties, missing = resolve_species_properties(species, wood_df)
-        if missing:
-            raise ValueError(f"artifact species {species!r} is absent from the Wood sheet")
-        lookup[species] = {name: float(properties[name]) for name in SPECIES_PROPERTY_FIELDS}
-    enriched = replace(model, species_properties=lookup)
-    if (
-        enriched.coefficients != model.coefficients
-        or enriched.calibration != model.calibration
-        or enriched.validation_metrics != model.validation_metrics
-    ):
-        raise ValueError("runtime lookup refresh altered locked numeric model state")
-    artifact_record = write_artifact(enriched, artifact_path)
-    report["artifact"] = artifact_record
-    report["runtime_lookup_refresh"] = {
-        "kind": "species_properties_from_pinned_wood_sheet",
-        "species_count": len(lookup),
-        "locked_rows_reopened": False,
-        "coefficients_or_locked_metrics_changed": False,
-        "served_feature_mapping_changed": True,
-    }
-    _write_json(report_path, report)
-    verify_release(report_path, artifact_path, manifest_path, source_path)
-    return report
-
-
 def verify_release(
     report_path: str | Path,
     artifact_path: str | Path,
     manifest_path: str | Path,
     source_path: str | Path,
+    *,
+    prelock_path: str | Path = DEFAULT_PRELOCK_PATH,
+    attestation_path: str | Path = DEFAULT_ATTESTATION_PATH,
 ) -> dict[str, Any]:
     """Validate published report/artifact integrity without reopening test rows."""
 
+    attestation = load_release_attestation(attestation_path)
     manifest = load_benchmark_manifest(manifest_path)
     verify_source_checksum(source_path, manifest["source_sha256"])
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
@@ -381,6 +369,13 @@ def verify_release(
     if not report.get("promotion", {}).get("core_promoted"):
         if artifact_record.get("packaged"):
             raise ValueError("failed core gate must not have a packaged artifact")
+        _verify_release_attestation(
+            attestation,
+            manifest_path=manifest_path,
+            prelock_path=prelock_path,
+            report_path=report_path,
+            artifact_path=artifact_path,
+        )
         return report
     artifact = Path(artifact_path)
     raw = artifact.read_bytes()
@@ -451,7 +446,36 @@ def verify_release(
             raise ValueError(f"packaged artifact metadata {name} is inconsistent")
     if artifact_record.get("bytes") != len(raw):
         raise ValueError("packaged artifact byte count is inconsistent")
+    _verify_release_attestation(
+        attestation,
+        manifest_path=manifest_path,
+        prelock_path=prelock_path,
+        report_path=report_path,
+        artifact_path=artifact_path,
+    )
     return report
+
+
+def _verify_release_attestation(
+    attestation: Mapping[str, Any],
+    *,
+    manifest_path: str | Path,
+    prelock_path: str | Path,
+    report_path: str | Path,
+    artifact_path: str | Path,
+) -> None:
+    """Bind all persisted release inputs to the independent fixed digests."""
+
+    paths = {
+        "manifest": manifest_path,
+        "prelock": prelock_path,
+        "report": report_path,
+        "artifact": artifact_path,
+    }
+    digests = attestation["digests"]
+    for name, path in paths.items():
+        if _file_sha256(path) != digests[f"{name}_sha256"]:
+            raise ValueError(f"release attestation digest mismatch for {name}")
 
 
 def _metric_bundle(
@@ -601,9 +625,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--manifest", type=Path, default=Path("benchmarks/prediction_v2_manifest.json")
     )
-    parser.add_argument(
-        "--prelock-report", type=Path, default=Path("benchmarks/prediction_v2_prelock.json")
-    )
+    parser.add_argument("--prelock-report", type=Path, default=DEFAULT_PRELOCK_PATH)
     parser.add_argument("--report", type=Path, default=Path("benchmarks/prediction_v2_report.json"))
     parser.add_argument(
         "--markdown-report", type=Path, default=Path("benchmarks/prediction_v2_report.md")
@@ -611,26 +633,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--artifact", type=Path, default=Path("strathmark/models/prediction_v2_core.json")
     )
+    parser.add_argument("--attestation", type=Path, default=DEFAULT_ATTESTATION_PATH)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prepare", action="store_true")
     mode.add_argument("--open-locked-test", action="store_true")
     mode.add_argument("--verify-release", action="store_true")
-    mode.add_argument("--refresh-runtime-species-lookup", action="store_true")
     args = parser.parse_args(argv)
 
     try:
         manifest = load_benchmark_manifest(args.manifest)
-        if args.refresh_runtime_species_lookup:
-            refresh_runtime_species_lookup(
+        if not args.prepare and not args.open_locked_test:
+            verify_release(
                 args.report,
                 args.artifact,
                 args.manifest,
                 args.source,
+                prelock_path=args.prelock_report,
+                attestation_path=args.attestation,
             )
-            print("Prediction V2 runtime species lookup packaged without opening result rows.")
-            return 0
-        if not args.prepare and not args.open_locked_test:
-            verify_release(args.report, args.artifact, args.manifest, args.source)
             print("Prediction V2 release evidence verified without reopening locked rows.")
             return 0
 

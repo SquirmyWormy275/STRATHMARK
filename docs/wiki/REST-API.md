@@ -17,6 +17,9 @@ OpenAPI docs are at `/docs`.
 Set `STRATHMARK_API_TOKEN` to enable protected routes. If it is absent they return 503;
 an invalid token returns 401.
 
+`/health` accepts optional `prediction_as_of=YYYY-MM-DD` to evaluate the core and
+calibration against a historical exclusive cutoff; without it, UTC today is used.
+
 `/calculate` accepts competitors, wood, event code, and optional exclusive
 `prediction_as_of`. Results include the predicted time, mark, method, forecast interval,
 performance `std_dev`, versions, optimizer metadata, warnings, and degraded state.
@@ -26,8 +29,9 @@ retries return original prediction IDs; changed inputs or deterministic predicti
 outputs under the same key return 409. Settlement verifies prediction/competitor/event, deduplicates exact retries, and
 requires a reason for corrections.
 
-`/simulate` defaults to and caps at 250,000 races. It is a post-mark audit, separate
-from the optimizer's fixed 2,048 samples.
+`/simulate` defaults to and caps at 250,000 races, with a 4,000,000
+competitor-by-simulation cell limit and one concurrent simulation per process. It is a
+post-mark audit, separate from the optimizer's fixed 2,048 samples.
 
 See the repository's `STRATHMARK API.txt` for request/response details and [Prediction
 Engine V2](Prediction-Engine-V2) for numeric semantics.

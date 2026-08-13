@@ -486,7 +486,7 @@ class DecayConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    """Ollama + Gemini LLM settings for AI-enhanced predictions"""
+    """Ollama + Gemini settings for optional narrative analysis."""
 
     DEFAULT_MODEL: str = "qwen3.5:9b"
     """Default Ollama model (Qwen 3.5 9B — fits 8GB VRAM at Q4_K_M, released Feb 2026)"""

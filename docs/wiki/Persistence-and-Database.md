@@ -27,10 +27,11 @@ retries, and append attributed correction revisions rather than updating rows.
 
 ## Cloud mirror
 
-Migration `20260811_005_prediction_v2.sql` defines an optional Supabase mirror. It
-forces RLS, revokes browser roles, rejects UPDATE/DELETE, and grants the append RPC only
-to `service_role`. The migration is operator-applied; its presence in the repository is
-not proof that a live project has it.
+Migration `20260811_005_prediction_v2.sql` defines an optional Supabase mirror, and
+`20260813_006_prediction_hash_algorithm.sql` adds explicit `raw-v1`/`active-v2` request
+hash compatibility. They force RLS, revoke browser roles, reject UPDATE/DELETE, and
+grant the append RPC only to `service_role`. These migrations are operator-applied;
+their presence in the repository is not proof that a live project has them.
 
 SQLite is authoritative. Cloud mirroring is best-effort and cannot block marks. Keep
 the service key server-side. A sanitized local outbox is committed with each trusted

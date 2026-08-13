@@ -1,0 +1,23 @@
+{
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.3"
+  },
+  "limits": {
+    "elapsed_seconds": 10.0,
+    "incremental_peak_rss_mib": 256.0
+  },
+  "measurement": {
+    "elapsed_seconds": 0.8565225000002101,
+    "incremental_peak_rss_mib": 3.2421875,
+    "optimizer": "posterior_crn_v2",
+    "passes": 4
+  },
+  "passed": true,
+  "scenario": {
+    "ceiling": 183,
+    "field_size": 64,
+    "simulations": 2048
+  },
+  "schema_version": "prediction-v2-optimizer-capacity/v1"
+}

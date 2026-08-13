@@ -34,6 +34,47 @@ from strathmark.predictor import (
 )
 
 
+class _FixedProvider(PredictionEngineProvider):
+    def snapshot(self, prediction_as_of):
+        class Core:
+            model_version = "core-fixed"
+            source_checksum = "c" * 64
+
+            class calibration:
+                version = "cal-fixed"
+
+            def predict(self, request, *, history=None, wood_df=None):
+                return PredictiveDistribution(
+                    median=40.0,
+                    log_location=3.688879454,
+                    log_scale=0.2,
+                    interval=ForecastInterval(30.0, 55.0),
+                    source="hierarchical_dynamic_core",
+                    history_count=1,
+                    effective_history_weight=1.0,
+                    model_version=self.model_version,
+                    calibration_version="cal-fixed",
+                )
+
+            def resolve_species_properties(self, species):
+                return (
+                    {
+                        "janka_hardness": 1690.0,
+                        "specific_gravity": 0.34,
+                        "crush_strength": 4000.0,
+                        "shear_strength": 1000.0,
+                        "modulus_of_rupture": 8000.0,
+                        "modulus_of_elasticity": 1_000_000.0,
+                    },
+                    False,
+                )
+
+            def species_property_frame(self):
+                return None
+
+        return PredictionBundle(core=Core(), source="fixed-test")
+
+
 class _MutatingProvider(PredictionEngineProvider):
     def __init__(self):
         self.calls = 0
@@ -158,6 +199,93 @@ def test_timezone_aware_utc_same_day_history_cannot_change_manual_marks() -> Non
     assert [(row.name, row.std_dev, row.mark) for row in dirty_results] == [
         (row.name, row.std_dev, row.mark) for row in clean_results
     ]
+
+
+def test_active_ledger_identity_ignores_excluded_history_but_conflicts_on_prior_history(
+    tmp_path,
+) -> None:
+    from strathmark.ledger import PredictionLedger
+
+    cutoff = date(2026, 1, 1)
+    prior = HistoricalResult("SB", 40.0, "Pine", 300.0, 5, date(2025, 1, 1))
+    excluded = HistoricalResult("SB", 5.0, "Pine", 300.0, 5, cutoff)
+    changed_prior = HistoricalResult("SB", 41.0, "Pine", 300.0, 5, date(2025, 1, 1))
+    ledger = PredictionLedger(tmp_path / "active-identity.db")
+    calculator = HandicapCalculator(prediction_provider=_FixedProvider(), ledger_sink=ledger)
+    context = PredictionContext(prediction_as_of=cutoff, request_id="field-active", seed=31)
+
+    first = calculator.calculate(
+        [CompetitorRecord("Alice", [prior], competitor_id="athlete-a")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+    excluded_retry = calculator.calculate(
+        [CompetitorRecord("Alice", [prior, excluded], competitor_id="athlete-a")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+    active_change = calculator.calculate(
+        [CompetitorRecord("Alice", [changed_prior], competitor_id="athlete-a")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+
+    assert first.ledger_status == "recorded"
+    assert excluded_retry.ledger_status == "duplicate"
+    assert excluded_retry.prediction_id == first.prediction_id
+    assert active_change.ledger_status == "idempotency_conflict"
+
+
+def test_active_ledger_identity_normalizes_equivalent_species_case(tmp_path) -> None:
+    from strathmark.ledger import PredictionLedger
+
+    ledger = PredictionLedger(tmp_path / "species-case.db")
+    calculator = HandicapCalculator(prediction_provider=_FixedProvider(), ledger_sink=ledger)
+    competitors = [CompetitorRecord("Alice", competitor_id="athlete-a")]
+    context = PredictionContext(
+        prediction_as_of=date(2026, 1, 1), request_id="field-species", seed=31
+    )
+
+    first = calculator.calculate(competitors, WoodProfile("pine", 300.0, 5), "SB", context=context)[
+        0
+    ]
+    retry = calculator.calculate(competitors, WoodProfile("PINE", 300.0, 5), "SB", context=context)[
+        0
+    ]
+
+    assert first.ledger_status == "recorded"
+    assert retry.ledger_status == "duplicate"
+    assert retry.prediction_id == first.prediction_id
+
+
+def test_active_ledger_identity_normalizes_equivalent_unknown_gender(tmp_path) -> None:
+    from strathmark.ledger import PredictionLedger
+
+    ledger = PredictionLedger(tmp_path / "gender-normalization.db")
+    calculator = HandicapCalculator(prediction_provider=_FixedProvider(), ledger_sink=ledger)
+    context = PredictionContext(
+        prediction_as_of=date(2026, 1, 1), request_id="field-gender", seed=31
+    )
+
+    first = calculator.calculate(
+        [CompetitorRecord("Alice", competitor_id="athlete-a", gender="")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+    retry = calculator.calculate(
+        [CompetitorRecord("Alice", competitor_id="athlete-a", gender="unknown")],
+        PINE_300,
+        "SB",
+        context=context,
+    )[0]
+
+    assert first.ledger_status == "recorded"
+    assert retry.ledger_status == "duplicate"
+    assert retry.prediction_id == first.prediction_id
 
 
 def _competitor(

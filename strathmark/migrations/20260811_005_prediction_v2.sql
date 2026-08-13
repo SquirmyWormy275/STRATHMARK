@@ -167,6 +167,10 @@ BEGIN
     END IF;
 
     request_row := ledger_payload->'request';
+    IF NULLIF(request_row->>'hash_algorithm', '') IS NOT NULL
+       AND request_row->>'hash_algorithm' <> 'raw-v1' THEN
+        RAISE EXCEPTION 'active-v2 request hashes require migration 006';
+    END IF;
     INSERT INTO prediction_ledger_requests (
         ledger_request_id, caller_id, request_id, request_hash,
         event_code, prediction_as_of, created_at

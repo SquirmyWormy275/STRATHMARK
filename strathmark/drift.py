@@ -2,9 +2,10 @@
 Calibration drift detection
 ===========================
 
-Compares a rolling window of recent residuals (from `prediction_residuals`)
-against the residual distribution captured at calibration time (in
-`calibration_tables.holdout_residuals`). Surfaces advisory alerts. Never
+Compares a rolling window of recent residuals against the residual distribution
+captured at calibration time. Trusted ledger rows also report direct empirical
+coverage from their issued intervals, grouped by nominal coverage. Surfaces
+advisory alerts. Never
 auto-deactivates a model or triggers retraining — alerts prompt the
 operator to consider an early retraining; the operator decides.
 
@@ -42,6 +43,18 @@ COVERAGE_HIGH_THRESHOLD: float = 0.95
 MIN_RECENT_SAMPLES: int = 20  # below this, drift signal is too noisy to act on
 
 
+@dataclass(frozen=True)
+class CoverageCohort:
+    """Direct containment evidence for one issued nominal coverage level."""
+
+    nominal_coverage: float
+    eligible_count: int
+    covered_count: int
+    empirical_coverage: Optional[float]
+    sample_label: str
+    coverage_alert: bool = False
+
+
 @dataclass
 class DriftReport:
     """Result of a drift evaluation. Plain data, no behavior."""
@@ -62,10 +75,11 @@ class DriftReport:
 
     # Coverage at 90% from the calibration_tables row, if available
     baseline_coverage_at_90: Optional[float] = None
-    # Empirical 90% coverage on the recent residual window. This is the
-    # number compared against [COVERAGE_LOW_THRESHOLD, COVERAGE_HIGH_THRESHOLD]
-    # to surface drift -- baseline_coverage_at_90 is informational context.
+    # Empirical containment for the issued 90% interval cohort. This is the
+    # only nominal cohort compared against the current coverage thresholds.
     recent_coverage_at_90: Optional[float] = None
+    coverage_cohorts: dict[str, CoverageCohort] = field(default_factory=dict)
+    coverage_unavailable_count: int = 0
 
     # Boolean flags for each rule
     mean_shift_alert: bool = False
@@ -94,9 +108,10 @@ class DriftReport:
                 f"drift status: insufficient samples (recent_n={self.recent_count}, "
                 f"need >= {MIN_RECENT_SAMPLES})"
             )
+        mean_shift = "unavailable" if self.mean_shift is None else f"{self.mean_shift:+.2f}s"
         return (
             f"drift status: nominal (model={self.model_version_id}, "
-            f"recent_n={self.recent_count}, mean_shift={self.mean_shift:+.2f}s)"
+            f"recent_n={self.recent_count}, mean_shift={mean_shift})"
         )
 
     def _flags_compact(self) -> str:
@@ -202,13 +217,15 @@ def evaluate_drift(
     recent_rows = res_resp.data or []
     recent_residuals = [float(r["residual"]) for r in recent_rows if r.get("residual") is not None]
 
-    return _build_report(
+    report = _build_report(
         model_version_id=model_version_id,
         lookback_days=lookback_days,
         recent_residuals=recent_residuals,
         baseline_residuals=baseline_residuals,
         baseline_coverage=(float(baseline_coverage) if baseline_coverage is not None else None),
     )
+    _record_unavailable_intervals(report, len(recent_residuals), "residual-only rows")
+    return report
 
 
 def is_drifting(
@@ -303,48 +320,16 @@ def _build_report(
                 f"(threshold |x| > {VARIANCE_RATIO_THRESHOLD:.0%})"
             )
 
-    # Coverage drift: compute empirical 90% coverage on recent residuals
-    # against the 90% prediction interval derived from the baseline residual
-    # distribution (5th-95th percentile). Compare empirical coverage against
-    # [COVERAGE_LOW_THRESHOLD, COVERAGE_HIGH_THRESHOLD]. This detects drift
-    # in coverage on recent traffic, which is what the policy actually
-    # specifies. The baseline coverage_at_90 stored in calibration_tables is
-    # informational only -- it's a static calibration-time number, not a
-    # drift signal.
-    if len(baseline_residuals) >= 2:
-        sorted_baseline = sorted(baseline_residuals)
-        n = len(sorted_baseline)
-        # Linear interpolation between the bracketing samples for the 5th
-        # and 95th percentiles.
-        lo_pos = 0.05 * (n - 1)
-        hi_pos = 0.95 * (n - 1)
-        lo_idx = int(lo_pos)
-        hi_idx = int(hi_pos)
-        lo_frac = lo_pos - lo_idx
-        hi_frac = hi_pos - hi_idx
-        baseline_lo = sorted_baseline[lo_idx] + lo_frac * (
-            sorted_baseline[min(lo_idx + 1, n - 1)] - sorted_baseline[lo_idx]
-        )
-        baseline_hi = sorted_baseline[hi_idx] + hi_frac * (
-            sorted_baseline[min(hi_idx + 1, n - 1)] - sorted_baseline[hi_idx]
-        )
-        inside = sum(1 for r in recent_residuals if baseline_lo <= r <= baseline_hi)
-        report.recent_coverage_at_90 = inside / len(recent_residuals)
-        if (
-            report.recent_coverage_at_90 < COVERAGE_LOW_THRESHOLD
-            or report.recent_coverage_at_90 > COVERAGE_HIGH_THRESHOLD
-        ):
-            report.coverage_alert = True
-            report.notes.append(
-                f"recent 90% coverage {report.recent_coverage_at_90:.2f} outside "
-                f"[{COVERAGE_LOW_THRESHOLD:.2f}, {COVERAGE_HIGH_THRESHOLD:.2f}] "
-                f"(baseline interval [{baseline_lo:+.2f}, {baseline_hi:+.2f}]s)"
-            )
-
-    report.overall_alert = (
-        report.mean_shift_alert or report.variance_ratio_alert or report.coverage_alert
-    )
+    report.overall_alert = report.mean_shift_alert or report.variance_ratio_alert
     return report
+
+
+def _record_unavailable_intervals(report: DriftReport, count: int, label: str) -> None:
+    """Record rows that cannot contribute to direct issued-interval coverage."""
+
+    report.coverage_unavailable_count = count
+    if count:
+        report.notes.append(f"issued interval unavailable for {count} {label}")
 
 
 def settled_model_prediction_rows(
@@ -355,7 +340,12 @@ def settled_model_prediction_rows(
     eligible: list[dict[str, Any]] = []
     for raw in rows:
         source = str(raw.get("source", "")).strip().lower()
-        if source == "manual" or not source:
+        if (
+            source in {"manual", "panel", "broad_prior", "broad_event_prior"}
+            or not source
+            or raw.get("training_eligible") is False
+            or bool(raw.get("degraded", False))
+        ):
             continue
         if raw.get("settled_at") in (None, ""):
             continue
@@ -388,10 +378,72 @@ def evaluate_settled_drift(
 
     eligible = settled_model_prediction_rows(rows)
     residuals = [float(row["residual"]) for row in eligible]
-    return _build_report(
+    report = _build_report(
         model_version_id=model_version_id,
         lookback_days=lookback_days,
         recent_residuals=residuals,
         baseline_residuals=[float(value) for value in baseline_residuals],
         baseline_coverage=baseline_coverage,
     )
+    grouped: dict[float, list[bool]] = {}
+    for row in eligible:
+        try:
+            lower = float(row.get("interval_lower"))
+            upper = float(row.get("interval_upper"))
+            nominal = float(row.get("nominal_coverage", row.get("interval_coverage")))
+        except (TypeError, ValueError, OverflowError):
+            report.coverage_unavailable_count += 1
+            continue
+        if not (
+            math.isfinite(lower)
+            and math.isfinite(upper)
+            and math.isfinite(nominal)
+            and 0 < lower < upper
+            and 0 < nominal < 1
+        ):
+            report.coverage_unavailable_count += 1
+            continue
+        grouped.setdefault(nominal, []).append(lower <= row["actual_time"] <= upper)
+
+    for nominal in sorted(grouped):
+        observations = grouped[nominal]
+        count = len(observations)
+        covered = sum(observations)
+        empirical = covered / count
+        adequate = count >= MIN_RECENT_SAMPLES
+        is_ninety = math.isclose(nominal, 0.90, rel_tol=0.0, abs_tol=1e-12)
+        alert = bool(
+            is_ninety
+            and adequate
+            and (empirical < COVERAGE_LOW_THRESHOLD or empirical > COVERAGE_HIGH_THRESHOLD)
+        )
+        key = _coverage_key(nominal)
+        report.coverage_cohorts[key] = CoverageCohort(
+            nominal_coverage=nominal,
+            eligible_count=count,
+            covered_count=covered,
+            empirical_coverage=empirical,
+            sample_label=("sample_adequate" if adequate else "insufficient_recent_sample"),
+            coverage_alert=alert,
+        )
+        if is_ninety:
+            report.recent_coverage_at_90 = empirical
+            report.coverage_alert = alert
+            if alert:
+                report.notes.append(
+                    f"issued 90% coverage {empirical:.2f} outside "
+                    f"[{COVERAGE_LOW_THRESHOLD:.2f}, {COVERAGE_HIGH_THRESHOLD:.2f}]"
+                )
+    _record_unavailable_intervals(report, report.coverage_unavailable_count, "settled rows")
+    report.overall_alert = bool(
+        report.mean_shift_alert or report.variance_ratio_alert or report.coverage_alert
+    )
+    return report
+
+
+def _coverage_key(nominal: float) -> str:
+    text = f"{nominal:.12g}"
+    if "." not in text:
+        return f"{text}.00"
+    whole, fraction = text.split(".", 1)
+    return f"{whole}.{fraction.ljust(2, '0')}"

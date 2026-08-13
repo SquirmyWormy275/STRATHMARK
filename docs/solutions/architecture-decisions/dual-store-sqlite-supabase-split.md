@@ -12,11 +12,17 @@ tags:
   - "event-deployment"
 confidence: high
 created: 2026-04-21
-last_updated: 2026-05-04
+last_updated: 2026-08-13
 source: "v0.2.0 Supabase integration + Apr 7 deployment-readiness session + 2026-05-04 controlled-write reframe"
 ---
 
 # Triple Store — SQLite Local + STRATHMARK Supabase Cache + MNEMEX Authority
+
+> **Historical architecture with a V2 addendum.** References below to a prediction
+> “cascade” describe the pre-2.0 engine. Prediction Engine V2 snapshots one causal
+> bundle and does not query these stores per competitor. Its separate append-only
+> ledger and optional mirror are documented in
+> [`docs/PREDICTION_ENGINE_V2.md`](../../PREDICTION_ENGINE_V2.md).
 
 ## Context (post-2026-05-04)
 

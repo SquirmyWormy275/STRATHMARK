@@ -24,6 +24,7 @@ import pytest
 from strathmark.calculator import HandicapCalculator
 from strathmark.predictor import (
     CompetitorRecord,
+    FilePredictionProvider,
     HistoricalResult,
     WoodProfile,
     get_best_prediction,
@@ -89,6 +90,16 @@ class TestNoSupabase:
         assert pred.metadata["source"] == "conditional_population_prior"
         assert 3.0 <= pred.value <= 183.0
         assert pred.confidence == "LOW"
+
+    def test_packaged_core_is_healthy_without_an_optional_residual(self):
+        bundle = FilePredictionProvider().snapshot(date(2026, 8, 13))
+        health = bundle.health(date(2026, 8, 13))
+
+        assert bundle.core is not None
+        assert bundle.degraded is False
+        assert health["degraded"] is False
+        assert health["residual"]["available"] is False
+        assert "residual_artifact_missing" not in health["warnings"]
 
 
 # ---------------------------------------------------------------------------

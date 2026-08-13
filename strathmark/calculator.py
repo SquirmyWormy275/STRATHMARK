@@ -15,7 +15,7 @@ Key constraints (must never be violated):
                     Individual event configs may set a lower ceiling.
     - Gap logic:    slowest predicted time -> Mark 3;
                     each full second faster -> +1 mark (ceiling arithmetic).
-    - Rounding:     marks always rounded UP (ceiling, not nearest).
+    - Rounding:     rounded-gap fallback uses Python's half-to-even ``round``.
 
 Source references (STRATHEX):
     woodchopping/handicaps/calculator.py  -> calculate_ai_enhanced_handicaps()
@@ -47,8 +47,34 @@ from strathmark.predictor import (
     get_best_prediction,
     get_prediction_provider,
 )
+from strathmark.provenance import ENGINE_VERSION, is_v2_training_source
 
 _log = logging.getLogger(__name__)
+
+_NUMERIC_EVIDENCE_FIELDS = frozenset(
+    {
+        "time_seconds",
+        "diameter_mm",
+        "janka_hardness",
+        "specific_gravity",
+        "crush_strength",
+        "shear_strength",
+        "modulus_of_rupture",
+        "modulus_of_elasticity",
+    }
+)
+
+
+def _serialize_evidence_value(name: str, value: Any) -> str | float | bool:
+    """Serialize one canonical evidence value without changing its domain type."""
+
+    if isinstance(value, date):
+        return value.isoformat()
+    if name == "species_missing":
+        return bool(value)
+    if name in _NUMERIC_EVIDENCE_FIELDS:
+        return float(value)
+    return str(value)
 
 
 def _is_positive_finite(value: object) -> bool:
@@ -446,7 +472,8 @@ class HandicapCalculator:
 
         Returns:
             List of MarkResult, sorted slowest-to-fastest (front marker first).
-            Marks are in [MARK_FLOOR, effective_ceiling], rounded up.
+            Marks are in [MARK_FLOOR, effective_ceiling]. The deterministic
+            rounded-gap fallback uses half-to-even rounding.
 
         Raises:
             ValueError: If event_code is not 'SB' or 'UH'.
@@ -684,8 +711,8 @@ class HandicapCalculator:
                         source=result.method_used,
                         training_eligible=bool(
                             not prediction.degraded
-                            and prediction.engine_version == "2.0.0"
-                            and prediction.method in {"baseline", "ml"}
+                            and prediction.engine_version == ENGINE_VERSION
+                            and is_v2_training_source(prediction.method)
                             and metadata.get("source") != "broad_event_prior"
                         ),
                         engine_version=result.engine_version,
@@ -710,9 +737,16 @@ class HandicapCalculator:
                 caller_id=self._ledger_caller_id,
                 request_id=str(context.request_id).strip(),
                 request_payload=self._canonical_ledger_request(
-                    competitors, wood, event_code, context
+                    competitors,
+                    wood,
+                    event_code,
+                    context,
+                    prediction_bundle=prediction_bundle,
                 ),
                 predictions=ledger_predictions,
+                legacy_request_payload=self._raw_v1_ledger_request(
+                    competitors, wood, event_code, context
+                ),
             )
             if len(write.prediction_ids) != len(results):
                 raise RuntimeError("ledger returned an incomplete prediction ID set")
@@ -738,8 +772,91 @@ class HandicapCalculator:
         wood: WoodProfile,
         event_code: str,
         context: PredictionContext,
+        *,
+        prediction_bundle: Any = None,
     ) -> Dict[str, Any]:
-        """Return only request inputs that can affect V2 predictions or marks."""
+        """Return the active-v2 request projection used by prediction itself."""
+
+        from strathmark.features import (
+            MISSING_CATEGORY,
+            MODEL_EVIDENCE_FIELDS,
+            build_prior_evidence,
+            resolve_species_properties,
+        )
+
+        core = getattr(prediction_bundle, "core", None)
+        property_frame = self.wood_df
+        if property_frame is None and callable(getattr(core, "species_property_frame", None)):
+            property_frame = core.species_property_frame()
+        if self.wood_df is None and callable(getattr(core, "resolve_species_properties", None)):
+            target_properties, target_species_missing = core.resolve_species_properties(
+                wood.species
+            )
+        else:
+            target_properties, target_species_missing = resolve_species_properties(
+                wood.species, self.wood_df
+            )
+
+        competitor_payloads = []
+        for record in competitors:
+            gender = str(record.gender or "").strip().upper()
+            gender = gender if gender in {"M", "F"} else MISSING_CATEGORY
+            raw_history = pd.DataFrame(
+                [
+                    {
+                        "competitor_id": str(record.competitor_id).strip(),
+                        "event": item.event_code,
+                        "time_seconds": item.time_seconds,
+                        "result_date": item.result_date,
+                        "diameter_mm": item.diameter_mm,
+                        "species": item.species,
+                        "gender": record.gender,
+                    }
+                    for item in record.history
+                ]
+            )
+            evidence = build_prior_evidence(
+                raw_history,
+                context.prediction_as_of,
+                wood_df=property_frame,
+            ).rows
+            history = []
+            for row in evidence.loc[:, MODEL_EVIDENCE_FIELDS].to_dict("records"):
+                history.append(
+                    {name: _serialize_evidence_value(name, value) for name, value in row.items()}
+                )
+            history.sort(key=lambda item: tuple(str(item[name]) for name in MODEL_EVIDENCE_FIELDS))
+            competitor_payloads.append(
+                {
+                    "competitor_id": str(record.competitor_id).strip(),
+                    "gender": gender,
+                    "manual_time_override": record.manual_time_override,
+                    "history": history,
+                }
+            )
+        return {
+            "event_code": event_code,
+            "prediction_as_of": context.prediction_as_of.isoformat(),
+            "diameter_mm": float(wood.diameter_mm),
+            "species": str(wood.species).strip().upper(),
+            "wood_properties": {
+                **{name: float(value) for name, value in sorted(target_properties.items())},
+                "species_missing": bool(target_species_missing),
+            },
+            "seed": int(context.seed),
+            "engine": str(context.engine or "v2").strip().lower(),
+            "effective_mark_ceiling": int(self.effective_ceiling),
+            "competitors": competitor_payloads,
+        }
+
+    def _raw_v1_ledger_request(
+        self,
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+    ) -> Dict[str, Any]:
+        """Reproduce the immutable first-release request projection for retries."""
 
         competitor_payloads = []
         for record in competitors:
