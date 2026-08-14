@@ -173,3 +173,17 @@ def test_rehearsal_checks_postgres_empty_search_path_catalog_encoding() -> None:
 
     assert source.count('search_path=\\"\\"') == 2
     assert "ARRAY['search_path=']" not in source
+
+
+def test_temp_shadowing_probe_resets_service_role_before_direct_table_read() -> None:
+    source = Path(rehearsal.__file__).read_text(encoding="utf-8")
+    probe = source.split("shadow_sql = (", 1)[1].split("_assert_scalar(target, dsn, shadow_sql", 1)[
+        0
+    ]
+
+    reset_at = probe.index('"RESET ROLE; "')
+    direct_read_at = probe.index(
+        '"SELECT pg_catalog.count(*) FROM public.prediction_ledger_requests "'
+    )
+
+    assert reset_at < direct_read_at

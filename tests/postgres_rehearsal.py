@@ -1634,8 +1634,9 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
         "SET ROLE service_role; "
         "CREATE TEMP TABLE prediction_ledger_requests (sentinel pg_catalog.text); "
         f"SELECT public.append_prediction_ledger_v2('{_json_literal(shadow)}'::pg_catalog.jsonb); "
+        "RESET ROLE; "
         "SELECT pg_catalog.count(*) FROM public.prediction_ledger_requests "
-        "WHERE ledger_request_id='ledger-shadow'; RESET ROLE;"
+        "WHERE ledger_request_id='ledger-shadow';"
     )
     _assert_scalar(target, dsn, shadow_sql, "1", "temporary object shadowing is harmless")
     checks += 1
