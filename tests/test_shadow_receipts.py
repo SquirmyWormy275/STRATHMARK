@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -34,6 +34,54 @@ from strathmark.shadow import (
     ShadowPredictionService,
     ShadowReceiptCorruptionError,
 )
+from strathmark.store import (
+    EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
+    EvidenceSnapshotPayload,
+    ResultStore,
+    canonical_evidence_source_digest,
+)
+
+_TrustedShadowPredictionService = ShadowPredictionService
+
+
+def _prepared_store(path) -> ResultStore:
+    store = ResultStore(path)
+    if store.get_evidence_snapshot_status() is not None:
+        return store
+    cutoff = date(2026, 11, 2)
+    captured_at = datetime.now(timezone.utc)
+    source_id = "test:history-export:empty"
+    source_digest = canonical_evidence_source_digest(
+        source_id=source_id,
+        cutoff=cutoff,
+        captured_at=captured_at,
+        rows=(),
+    )
+    payload = EvidenceSnapshotPayload(
+        schema_version=EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
+        source_id=source_id,
+        cutoff=cutoff,
+        captured_at=captured_at,
+        rows=(),
+        source_digest=source_digest,
+    )
+
+    class Source:
+        def load_snapshot(self, *, cutoff):
+            return payload
+
+    store.refresh_evidence_snapshot(Source(), cutoff=cutoff)
+    return store
+
+
+def ShadowPredictionService(ledger, **kwargs):
+    """Construct trusted service tests with an explicit verified local snapshot."""
+
+    return _TrustedShadowPredictionService(
+        ledger,
+        result_store=_prepared_store(ledger.path),
+        **kwargs,
+    )
 
 
 class _Core:
@@ -310,67 +358,67 @@ def test_same_request_changed_active_payload_conflicts_before_calculation(tmp_pa
         PredictionLedger(path), prediction_provider=changed_provider
     )
 
-    with pytest.raises(LedgerConflictError, match="different active input"):
+    with pytest.raises(LedgerConflictError, match="different request"):
         changed_service.calculate(_request(schedule_fingerprint="9" * 64), _competitors(), WOOD)
 
     assert changed_provider.calls == 0
 
 
-def test_same_request_changed_event_ceiling_conflicts_before_calculation(tmp_path):
+def test_same_request_changed_event_ceiling_replays_before_calculation(tmp_path):
     path = tmp_path / "shadow.db"
-    ShadowPredictionService(
+    first = ShadowPredictionService(
         PredictionLedger(path), prediction_provider=_Provider(), event_ceiling=80
     ).calculate(_request(), _competitors(), WOOD)
     changed_provider = _Provider()
 
-    with pytest.raises(LedgerConflictError, match="different active input"):
-        ShadowPredictionService(
-            PredictionLedger(path),
-            prediction_provider=changed_provider,
-            event_ceiling=81,
-        ).calculate(_request(), _competitors(), WOOD)
+    replay = ShadowPredictionService(
+        PredictionLedger(path),
+        prediction_provider=changed_provider,
+        event_ceiling=81,
+    ).calculate(_request(), _competitors(), WOOD)
 
     assert changed_provider.calls == 0
+    assert replay.receipt.core_json == first.receipt.core_json
 
 
-def test_same_request_changed_configured_wood_properties_conflicts_before_calculation(
+def test_same_request_changed_configured_wood_properties_replays_before_calculation(
     tmp_path,
 ):
     path = tmp_path / "shadow.db"
-    ShadowPredictionService(
+    first = ShadowPredictionService(
         PredictionLedger(path),
         prediction_provider=_Provider(),
         wood_df=_wood_properties(1690.0),
     ).calculate(_request(), _competitors(), WOOD)
     changed_provider = _Provider()
 
-    with pytest.raises(LedgerConflictError, match="different active input"):
-        ShadowPredictionService(
-            PredictionLedger(path),
-            prediction_provider=changed_provider,
-            wood_df=_wood_properties(1700.0),
-        ).calculate(_request(), _competitors(), WOOD)
+    replay = ShadowPredictionService(
+        PredictionLedger(path),
+        prediction_provider=changed_provider,
+        wood_df=_wood_properties(1700.0),
+    ).calculate(_request(), _competitors(), WOOD)
 
     assert changed_provider.calls == 0
+    assert replay.receipt.core_json == first.receipt.core_json
 
 
-def test_same_request_observation_only_change_replays_exact_receipt(tmp_path):
+def test_same_request_observation_only_change_conflicts_before_calculation(tmp_path):
     path = tmp_path / "shadow.db"
     first = ShadowPredictionService(
         PredictionLedger(path), prediction_provider=_Provider()
     ).calculate(_request(), _competitors(), WOOD)
     replay_provider = _Provider("core-b", 99.0, "d" * 64)
-    replay = ShadowPredictionService(
-        PredictionLedger(path), prediction_provider=replay_provider
-    ).calculate(
-        _request(observation_fingerprint="8" * 64),
-        _competitors(),
-        replace(WOOD, quality=2),
-    )
+    with pytest.raises(LedgerConflictError, match="different request"):
+        ShadowPredictionService(
+            PredictionLedger(path), prediction_provider=replay_provider
+        ).calculate(
+            _request(observation_fingerprint="8" * 64),
+            _competitors(),
+            WOOD,
+        )
 
     assert replay_provider.calls == 0
-    assert replay.receipt is not None and first.receipt is not None
-    assert replay.receipt.core_json == first.receipt.core_json
+    assert first.receipt is not None
 
 
 def test_same_request_id_is_isolated_by_namespaced_consumer(tmp_path):
@@ -397,7 +445,7 @@ def test_context_only_fingerprint_change_leaves_active_hash_and_output_unchanged
             observation_fingerprint="8" * 64,
         ),
         _competitors(),
-        replace(WOOD, quality=2),
+        WOOD,
     )
 
     assert first.receipt is not None and second.receipt is not None
@@ -411,6 +459,10 @@ def test_context_only_fingerprint_change_leaves_active_hash_and_output_unchanged
     assert (
         first.receipt.core["observation"]["fingerprint"]
         != second.receipt.core["observation"]["fingerprint"]
+    )
+    assert (
+        first.receipt.core["request_projection"]["observation_fingerprint"]
+        != second.receipt.core["request_projection"]["observation_fingerprint"]
     )
 
 

@@ -14,6 +14,7 @@ import json
 import sqlite3
 import time
 from dataclasses import asdict
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -42,7 +43,12 @@ from strathmark.shadow import (  # noqa: E402
     ShadowLiveStatus,
     ShadowReceipt,
 )
-from strathmark.store import ResultStore  # noqa: E402
+from strathmark.store import (  # noqa: E402
+    EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
+    EvidenceSnapshotPayload,
+    ResultStore,
+    canonical_evidence_source_digest,
+)
 
 CONSUMER = "missoula:service:shadow"
 ACTOR = "missoula:operator:7"
@@ -114,6 +120,35 @@ def _calculate_payload():
         "wood": {"species": "Pine", "diameter_mm": 300, "quality": 7},
         "timeout_ms": 2000,
     }
+
+
+def _empty_snapshot_store(path, *, captured_at=None):
+    store = ResultStore(path)
+    snapshot_cutoff = date.today()
+    observed_at = captured_at or datetime.now(timezone.utc)
+    source_id = "test:history-export:empty"
+    source_digest = canonical_evidence_source_digest(
+        source_id=source_id,
+        cutoff=snapshot_cutoff,
+        captured_at=observed_at,
+        rows=(),
+    )
+    payload = EvidenceSnapshotPayload(
+        schema_version=EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
+        source_id=source_id,
+        cutoff=snapshot_cutoff,
+        captured_at=observed_at,
+        rows=(),
+        source_digest=source_digest,
+    )
+
+    class SnapshotSource:
+        def load_snapshot(self, *, cutoff):
+            assert cutoff == snapshot_cutoff
+            return payload
+
+    store.refresh_evidence_snapshot(SnapshotSource(), cutoff=snapshot_cutoff)
+    return store
 
 
 class _ShadowService:
@@ -280,10 +315,11 @@ def shadow_client(monkeypatch, tmp_path):
     ledger = _Ledger()
     ledger.path = tmp_path / "shadow-api-ledger.db"
     PredictionLedger(ledger.path)
+    snapshot_store = _empty_snapshot_store(tmp_path / "shadow-api-results.db")
     monkeypatch.setenv("STRATHMARK_DB_PATH", str(ledger.path))
     app.dependency_overrides[get_shadow_service] = lambda: service
     app.dependency_overrides[get_ledger] = lambda: ledger
-    app.dependency_overrides[get_store] = lambda: ResultStore(tmp_path / "shadow-api-results.db")
+    app.dependency_overrides[get_store] = lambda: snapshot_store
     try:
         yield TestClient(app), service, ledger
     finally:
@@ -850,6 +886,10 @@ def test_health_fails_closed_until_durable_single_writer_topology_is_attested(
     assert ready["topology_claim"] == "single-writer-durable"
     assert ready["topology_assurance"] == "operator-attested-not-infrastructure-proven"
     assert ready["ledger_persistence"]["persistence_observed"] is True
+    assert ready["evidence_snapshot"]["state"] == "active"
+    assert ready["evidence_snapshot"]["integrity"] == "verified"
+    assert ready["evidence_snapshot"]["completeness"] == "empty"
+    assert ready["evidence_snapshot"]["ready_for_offline"] is True
     assert ready["ready_for_trusted_shadow"] is True
 
 
@@ -876,6 +916,50 @@ def test_health_inspects_active_ledger_instead_of_a_changed_environment_path(
     assert missing["ledger_persistence"]["read_write_open_observed"] is False
     assert missing["ledger_persistence"]["assurance"] == "unverified"
     assert missing["ready_for_trusted_shadow"] is False
+
+
+def test_health_snapshot_gate_fails_closed_for_missing_stale_and_tampered(
+    shadow_client, monkeypatch, tmp_path
+):
+    client, _, _ = shadow_client
+    monkeypatch.setenv("STRATHMARK_TRUSTED_TOPOLOGY", "single-writer-durable")
+
+    missing_store = ResultStore(tmp_path / "missing-snapshot.db")
+    app.dependency_overrides[get_store] = lambda: missing_store
+    missing = client.get("/health").json()["shadow_service"]
+    assert missing["evidence_snapshot"] == {
+        "schema_version": "strathmark.evidence-snapshot-health.v1",
+        "state": "missing",
+        "integrity": "unavailable",
+        "ready_for_offline": False,
+    }
+    assert missing["ready_for_trusted_shadow"] is False
+
+    stale_store = _empty_snapshot_store(
+        tmp_path / "stale-snapshot.db",
+        captured_at=datetime.now(timezone.utc) - timedelta(days=8),
+    )
+    app.dependency_overrides[get_store] = lambda: stale_store
+    stale = client.get("/health").json()["shadow_service"]
+    assert stale["evidence_snapshot"]["state"] == "active"
+    assert stale["evidence_snapshot"]["freshness"] == "stale"
+    assert stale["evidence_snapshot"]["ready_for_offline"] is False
+    assert stale["ready_for_trusted_shadow"] is False
+
+    tampered_store = _empty_snapshot_store(tmp_path / "tampered-snapshot.db")
+    with sqlite3.connect(tampered_store.path) as conn:
+        conn.execute("DROP TRIGGER evidence_snapshots_no_update")
+        conn.execute("UPDATE evidence_snapshots SET source_id = 'test:tampered'")
+        conn.commit()
+    app.dependency_overrides[get_store] = lambda: tampered_store
+    tampered = client.get("/health").json()["shadow_service"]
+    assert tampered["evidence_snapshot"] == {
+        "schema_version": "strathmark.evidence-snapshot-health.v1",
+        "state": "invalid",
+        "integrity": "failed",
+        "ready_for_offline": False,
+    }
+    assert tampered["ready_for_trusted_shadow"] is False
 
 
 def test_calculation_capacity_and_timeout_have_explicit_recovery_semantics(shadow_client):

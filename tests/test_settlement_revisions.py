@@ -26,7 +26,11 @@ from strathmark.ledger import (
 from strathmark.ledger import (
     PredictionLedger as _PredictionLedger,
 )
-from strathmark.shadow import RECEIPT_CORE_SCHEMA_VERSION
+from strathmark.shadow import (
+    RECEIPT_CORE_SCHEMA_VERSION,
+    REQUEST_PROJECTION_SCHEMA_VERSION,
+    SHADOW_TARGET_SINGLE_ELAPSED,
+)
 from strathmark.store import ResultStore
 
 
@@ -61,6 +65,64 @@ def _prediction(competitor_id: str) -> LedgerPrediction:
     )
 
 
+def _receipt_metadata(
+    caller_id: str,
+    request_id: str,
+    run_revision: str,
+    competitor_ids: tuple[str, ...],
+    active_input: dict[str, object],
+) -> dict[str, object]:
+    projection_core = {
+        "schema_version": REQUEST_PROJECTION_SCHEMA_VERSION,
+        "consumer_id": caller_id,
+        "tournament_id": "missoula:tournament:2027",
+        "event_occurrence_id": "missoula:event:sb",
+        "field_run_id": "missoula:field-run:1",
+        "operator_id": "missoula:operator:judge-1",
+        "request_id": request_id,
+        "run_revision": run_revision,
+        "event_code": "SB",
+        "target_contract": SHADOW_TARGET_SINGLE_ELAPSED,
+        "prediction_as_of": "2026-08-11",
+        "cutoff_semantics": "exclusive-utc-date",
+        "schedule_fingerprint": "1" * 64,
+        "observation_schema_version": "strathmark.shadow-observation-fingerprint.v1",
+        "observation_fingerprint": "2" * 64,
+        "seed": 20260811,
+        "competitors": [
+            {"competitor_id": competitor_id, "gender": "UNKNOWN"}
+            for competitor_id in competitor_ids
+        ],
+        "wood": {"species": "PINE", "diameter_mm": 300.0, "quality": 5},
+    }
+    return {
+        "schema_version": RECEIPT_CORE_SCHEMA_VERSION,
+        "consumer_id": caller_id,
+        "tournament_id": projection_core["tournament_id"],
+        "event_occurrence_id": projection_core["event_occurrence_id"],
+        "field_run_id": projection_core["field_run_id"],
+        "operator_id": projection_core["operator_id"],
+        "request_id": request_id,
+        "run_revision": run_revision,
+        "event_code": "SB",
+        "target_contract": SHADOW_TARGET_SINGLE_ELAPSED,
+        "prediction_as_of": "2026-08-11",
+        "cutoff_semantics": "exclusive-utc-date",
+        "observation": {
+            "schema_version": projection_core["observation_schema_version"],
+            "fingerprint": projection_core["observation_fingerprint"],
+        },
+        "request_projection": {
+            **projection_core,
+            "fingerprint": canonical_hash(projection_core),
+        },
+        "active_input": {
+            **active_input,
+            "fingerprint": canonical_hash(active_input),
+        },
+    }
+
+
 def _field(
     ledger: PredictionLedger,
     *competitor_ids: str,
@@ -80,16 +142,13 @@ def _field(
             "competitors": [{"competitor_id": item} for item in competitor_ids],
         },
         [_prediction(item) for item in competitor_ids],
-        receipt_metadata={
-            "schema_version": RECEIPT_CORE_SCHEMA_VERSION,
-            "consumer_id": caller_id,
-            "request_id": request_id,
-            "run_revision": run_revision,
-            "active_input": {
-                **active_input,
-                "fingerprint": canonical_hash(active_input),
-            },
-        },
+        receipt_metadata=_receipt_metadata(
+            caller_id,
+            request_id,
+            run_revision,
+            tuple(competitor_ids),
+            active_input,
+        ),
     ).prediction_ids
 
 
@@ -108,13 +167,13 @@ def _field_with_receipt(ledger: PredictionLedger, competitor_id: str) -> tuple[s
             "competitors": [{"competitor_id": competitor_id}],
         },
         [_prediction(competitor_id)],
-        receipt_metadata={
-            "schema_version": RECEIPT_CORE_SCHEMA_VERSION,
-            "consumer_id": caller_id,
-            "request_id": request_id,
-            "run_revision": "missoula:run-revision:receipt-field",
-            "active_input": {**active_input, "fingerprint": fingerprint},
-        },
+        receipt_metadata=_receipt_metadata(
+            caller_id,
+            request_id,
+            "missoula:run-revision:receipt-field",
+            (competitor_id,),
+            active_input,
+        ),
     ).prediction_ids
     return prediction_ids[0], request_id, fingerprint
 

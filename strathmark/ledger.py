@@ -1014,6 +1014,7 @@ class PredictionLedger:
 
         from strathmark.shadow import (
             RECEIPT_CORE_SCHEMA_VERSION,
+            REQUEST_PROJECTION_SCHEMA_VERSION,
             ShadowLiveStatus,
             ShadowReceipt,
             ShadowReceiptCorruptionError,
@@ -1037,6 +1038,39 @@ class PredictionLedger:
             raise ShadowReceiptCorruptionError("persisted shadow receipt schema is unsupported")
         if core.get("consumer_id") != caller or core.get("request_id") != idempotency_key:
             raise ShadowReceiptCorruptionError("persisted shadow receipt identity is inconsistent")
+        request_projection = core.get("request_projection")
+        if not isinstance(request_projection, Mapping):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt request projection is missing"
+            )
+        projection_without_fingerprint = dict(request_projection)
+        projection_fingerprint = str(projection_without_fingerprint.pop("fingerprint", ""))
+        observation = core.get("observation")
+        if (
+            projection_without_fingerprint.get("schema_version")
+            != REQUEST_PROJECTION_SCHEMA_VERSION
+            or canonical_hash(projection_without_fingerprint) != projection_fingerprint
+            or projection_without_fingerprint.get("consumer_id") != caller
+            or projection_without_fingerprint.get("request_id") != idempotency_key
+            or projection_without_fingerprint.get("run_revision") != core.get("run_revision")
+            or projection_without_fingerprint.get("tournament_id") != core.get("tournament_id")
+            or projection_without_fingerprint.get("event_occurrence_id")
+            != core.get("event_occurrence_id")
+            or projection_without_fingerprint.get("field_run_id") != core.get("field_run_id")
+            or projection_without_fingerprint.get("operator_id") != core.get("operator_id")
+            or projection_without_fingerprint.get("event_code") != core.get("event_code")
+            or projection_without_fingerprint.get("target_contract") != core.get("target_contract")
+            or projection_without_fingerprint.get("prediction_as_of")
+            != core.get("prediction_as_of")
+            or not isinstance(observation, Mapping)
+            or projection_without_fingerprint.get("observation_schema_version")
+            != observation.get("schema_version")
+            or projection_without_fingerprint.get("observation_fingerprint")
+            != observation.get("fingerprint")
+        ):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt request projection is inconsistent"
+            )
         try:
             recorded_run_revision = _namespaced_identifier(
                 core.get("run_revision"), "persisted run_revision"
@@ -1115,11 +1149,18 @@ class PredictionLedger:
                 )
         caller_input = active_input.get("caller_input")
         entrants = caller_input.get("competitors") if isinstance(caller_input, Mapping) else None
+        request_entrants = request_projection.get("competitors")
         if not isinstance(entrants, list) or {
             item.get("competitor_id") for item in entrants if isinstance(item, Mapping)
         } != {child["competitor_id"] for child in child_rows}:
             raise ShadowReceiptCorruptionError(
                 "persisted shadow receipt entrant set is inconsistent"
+            )
+        if not isinstance(request_entrants, list) or [
+            item.get("competitor_id") for item in request_entrants if isinstance(item, Mapping)
+        ] != [item.get("competitor_id") for item in entrants if isinstance(item, Mapping)]:
+            raise ShadowReceiptCorruptionError(
+                "persisted request projection entrant order is inconsistent"
             )
 
         freshness = (

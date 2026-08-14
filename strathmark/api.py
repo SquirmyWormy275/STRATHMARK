@@ -88,7 +88,7 @@ from strathmark.shadow import (
     ShadowPredictionService,
     ShadowReceiptCorruptionError,
 )
-from strathmark.store import ResultStore
+from strathmark.store import EvidenceSnapshotIntegrityError, ResultStore
 from strathmark.variance import run_monte_carlo_simulation
 
 # ---------------------------------------------------------------------------
@@ -269,19 +269,9 @@ class StrictShadowSchema(BaseModel):
 _NAMESPACED_ID_PATTERN = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 
 
-class TrustedHistoricalResultSchema(StrictShadowSchema):
-    event_code: Literal["SB", "UH"]
-    time_seconds: float = Field(gt=0, le=MAX_NUMERIC_RAW_TIME_SECONDS)
-    species: str = Field(min_length=1, max_length=100)
-    diameter_mm: float = Field(ge=data_req.MIN_DIAMETER_MM, le=data_req.MAX_DIAMETER_MM)
-    quality: int = Field(ge=1, le=10)
-    result_date: Optional[date] = None
-
-
 class TrustedCompetitorSchema(StrictShadowSchema):
     competitor_id: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     gender: Optional[Literal["M", "F"]] = None
-    history: List[TrustedHistoricalResultSchema] = Field(default_factory=list, max_length=128)
 
 
 class TrustedWoodSchema(StrictShadowSchema):
@@ -408,11 +398,16 @@ def get_ledger() -> PredictionLedger:
 
 def get_shadow_service(
     ledger: PredictionLedger = Depends(get_ledger),
+    store: ResultStore = Depends(get_store),
     prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
 ) -> ShadowPredictionService:
     """Construct the thin recovery-first facade over the shared durable ledger."""
 
-    return ShadowPredictionService(ledger, prediction_provider=prediction_provider)
+    return ShadowPredictionService(
+        ledger,
+        prediction_provider=prediction_provider,
+        result_store=store,
+    )
 
 
 def require_shadow_body_limit(request: Request) -> None:
@@ -592,17 +587,7 @@ def _to_trusted_competitor_record(schema: TrustedCompetitorSchema) -> Competitor
         name=schema.competitor_id,
         competitor_id=schema.competitor_id,
         gender=schema.gender,
-        history=[
-            HistoricalResult(
-                event_code=item.event_code,
-                time_seconds=item.time_seconds,
-                species=item.species,
-                diameter_mm=item.diameter_mm,
-                quality=item.quality,
-                result_date=item.result_date,
-            )
-            for item in schema.history
-        ],
+        history=[],
     )
 
 
@@ -813,12 +798,45 @@ def health(
         engine_health[component]["serving_active"] = active_engine == "v2"
     ollama_ok = check_ollama_connection()
     store_count = store.count()
+    try:
+        evidence_status = store.get_evidence_snapshot_status()
+    except EvidenceSnapshotIntegrityError:
+        evidence_snapshot = {
+            "schema_version": "strathmark.evidence-snapshot-health.v1",
+            "state": "invalid",
+            "integrity": "failed",
+            "ready_for_offline": False,
+        }
+        evidence_ready = False
+    else:
+        if evidence_status is None:
+            evidence_snapshot = {
+                "schema_version": "strathmark.evidence-snapshot-health.v1",
+                "state": "missing",
+                "integrity": "unavailable",
+                "ready_for_offline": False,
+            }
+            evidence_ready = False
+        else:
+            evidence_snapshot = {
+                "schema_version": "strathmark.evidence-snapshot-health.v1",
+                "state": "active",
+                "attestation": evidence_status.receipt_projection(),
+                "integrity": evidence_status.integrity,
+                "freshness": evidence_status.freshness,
+                "completeness": evidence_status.completeness,
+                "ready_for_offline": evidence_status.ready_for_offline,
+            }
+            evidence_ready = evidence_status.ready_for_offline
     auth_status = shadow_auth_configuration_status()
     topology = os.environ.get("STRATHMARK_TRUSTED_TOPOLOGY", "").strip().lower()
     topology_attested = topology in {"single-writer-durable", "offline-single-writer-durable"}
     persistence = _ledger_persistence_health(ledger)
     shadow_ready = (
-        auth_status == "configured" and topology_attested and persistence["persistence_observed"]
+        auth_status == "configured"
+        and topology_attested
+        and persistence["persistence_observed"]
+        and evidence_ready
     )
     return {
         "status": "ok",
@@ -834,6 +852,7 @@ def health(
             "topology_claim": topology if topology_attested else None,
             "topology_assurance": "operator-attested-not-infrastructure-proven",
             "ledger_persistence": persistence,
+            "evidence_snapshot": evidence_snapshot,
             "ready_for_trusted_shadow": shadow_ready,
             "readiness": "ready" if shadow_ready else "not-ready",
         },
