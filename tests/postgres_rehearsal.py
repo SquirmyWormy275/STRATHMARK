@@ -1399,7 +1399,8 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
         target,
         dsn,
         "SELECT (NOT r.rolcanlogin AND NOT r.rolbypassrls AND "
-        "p.proowner=r.oid AND p.prosecdef AND p.proconfig @> ARRAY['search_path='])::text "
+        "p.proowner=r.oid AND p.prosecdef "
+        "AND p.proconfig @> ARRAY['search_path=\"\"'])::text "
         "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles r ON r.oid=p.proowner "
         "WHERE p.oid='public.append_prediction_ledger_v2(pg_catalog.jsonb)'::pg_catalog.regprocedure;",
         "true",
@@ -2077,7 +2078,7 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
         target,
         dsn,
         "SELECT (NOT r.rolcanlogin AND NOT r.rolbypassrls AND p.proowner=r.oid "
-        "AND p.prosecdef AND p.proconfig @> ARRAY['search_path='] AND "
+        "AND p.prosecdef AND p.proconfig @> ARRAY['search_path=\"\"'] AND "
         "pg_catalog.has_function_privilege('service_role', "
         "'public.append_shadow_mirror_v1(pg_catalog.jsonb)', 'EXECUTE') AND "
         "NOT pg_catalog.has_function_privilege('anon', "

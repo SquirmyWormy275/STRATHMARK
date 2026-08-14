@@ -166,3 +166,10 @@ def test_rehearsal_contains_bounded_concurrency_process_helpers() -> None:
     assert "pg_catalog.pg_locks" in source
     assert "timeout=30" in source
     assert "process.kill()" in source
+
+
+def test_rehearsal_checks_postgres_empty_search_path_catalog_encoding() -> None:
+    source = Path(rehearsal.__file__).read_text(encoding="utf-8")
+
+    assert source.count('search_path=\\"\\"') == 2
+    assert "ARRAY['search_path=']" not in source
