@@ -151,6 +151,19 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 
+from strathmark.mirror_contract import (
+    MIRROR_DELIVERY_SCHEMA_VERSION as _MIRROR_DELIVERY_SCHEMA_VERSION,
+)
+from strathmark.mirror_contract import (
+    NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION as _NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION,
+)
+from strathmark.mirror_contract import (
+    SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION as _SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+)
+from strathmark.mirror_contract import (
+    SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION as _SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION,
+)
+
 # ---------------------------------------------------------------------------
 # Internal: date serialisation helper
 # ---------------------------------------------------------------------------
@@ -1618,10 +1631,6 @@ _LEDGER_SETTLEMENT_FIELDS = {
     "supersedes_settlement_id",
     "settled_at",
 }
-_SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION = "strathmark.shadow-mirror-envelope.v1"
-_MIRROR_DELIVERY_SCHEMA_VERSION = "strathmark.mirror-delivery.v1"
-_SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION = "strathmark.shadow-receipt-mirror.v1"
-_NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION = "strathmark.shadow-numeric-outcome-mirror.v1"
 _SHADOW_RECEIPT_FIELDS = {
     "schema_version",
     "ledger_request_id",

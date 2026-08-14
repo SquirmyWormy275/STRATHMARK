@@ -173,18 +173,21 @@ class ShadowPredictionService:
             effective_mark_ceiling,
         )
 
+        prediction_context = PredictionContext(
+            prediction_as_of=cutoff,
+            request_id=request.request_id,
+            seed=request.seed,
+            engine="v2",
+        )
+        mark_ceiling = effective_mark_ceiling(self._event_ceiling)
+
         caller_input = canonical_active_v2_request(
             effective_competitors,
             wood,
             request.event_code,
-            PredictionContext(
-                prediction_as_of=cutoff,
-                request_id=request.request_id,
-                seed=request.seed,
-                engine="v2",
-            ),
+            prediction_context,
             wood_df=self._wood_df,
-            effective_ceiling=effective_mark_ceiling(self._event_ceiling),
+            effective_ceiling=mark_ceiling,
         )
         active_input = {
             "schema_version": ACTIVE_INPUT_SCHEMA_VERSION,
@@ -204,14 +207,9 @@ class ShadowPredictionService:
             effective_competitors,
             wood,
             request.event_code,
-            PredictionContext(
-                prediction_as_of=cutoff,
-                request_id=request.request_id,
-                seed=request.seed,
-                engine="v2",
-            ),
+            prediction_context,
             wood_df=self._wood_df,
-            effective_ceiling=effective_mark_ceiling(self._event_ceiling),
+            effective_ceiling=mark_ceiling,
             prediction_bundle=prediction_bundle,
         )
 
@@ -252,12 +250,7 @@ class ShadowPredictionService:
             effective_competitors,
             wood,
             request.event_code,
-            context=PredictionContext(
-                prediction_as_of=cutoff,
-                request_id=request.request_id,
-                seed=request.seed,
-                engine="v2",
-            ),
+            context=prediction_context,
             receipt_metadata=receipt_metadata,
             prediction_bundle=prediction_bundle,
         )

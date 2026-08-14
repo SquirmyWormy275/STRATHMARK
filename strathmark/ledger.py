@@ -22,6 +22,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from strathmark.mirror_contract import (
+    MIRROR_DELIVERY_SCHEMA_VERSION,
+    NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION,
+    SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+    SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION,
+)
 from strathmark.provenance import ENGINE_VERSION, is_v2_training_source
 
 _ENV_VAR = "STRATHMARK_DB_PATH"
@@ -33,10 +39,6 @@ MAX_MIRROR_QUEUE = 1024
 MAX_NUMERIC_SETTLEMENTS_PER_REVISION = 512
 MAX_NUMERIC_RAW_TIME_SECONDS = 300.0
 MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER = 4096
-SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION = "strathmark.shadow-mirror-envelope.v1"
-MIRROR_DELIVERY_SCHEMA_VERSION = "strathmark.mirror-delivery.v1"
-SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION = "strathmark.shadow-receipt-mirror.v1"
-NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION = "strathmark.shadow-numeric-outcome-mirror.v1"
 NUMERIC_OUTCOME_REASON_CODES = frozenset(
     {
         "corrected_time",
