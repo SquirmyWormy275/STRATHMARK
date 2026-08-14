@@ -125,6 +125,18 @@ from strathmark.predictor import (
     predict_baseline,
     select_best_prediction,
 )
+from strathmark.shadow import (
+    ACTIVE_INPUT_SCHEMA_VERSION,
+    IDENTITY_SCHEMA_VERSION,
+    OBSERVATION_SCHEMA_VERSION,
+    RECEIPT_CORE_SCHEMA_VERSION,
+    SHADOW_TARGET_SINGLE_ELAPSED,
+    ShadowCalculationResult,
+    ShadowFieldRequest,
+    ShadowLiveStatus,
+    ShadowPredictionService,
+    ShadowReceipt,
+)
 from strathmark.store import ResultStore
 from strathmark.sync import (
     SyncResult,
@@ -139,7 +151,10 @@ from strathmark.variance import (
     quick_fairness_check,
     run_monte_carlo_simulation,
 )
-from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
+from strathmark.visualization import (
+    generate_simulation_summary,
+    visualize_simulation_results,
+)
 
 __all__ = [
     # Core calculation
@@ -183,6 +198,16 @@ __all__ = [
     "LedgerConflictError",
     "SettlementResult",
     "SettlementConflictError",
+    "ShadowFieldRequest",
+    "ShadowLiveStatus",
+    "ShadowReceipt",
+    "ShadowCalculationResult",
+    "ShadowPredictionService",
+    "RECEIPT_CORE_SCHEMA_VERSION",
+    "ACTIVE_INPUT_SCHEMA_VERSION",
+    "IDENTITY_SCHEMA_VERSION",
+    "OBSERVATION_SCHEMA_VERSION",
+    "SHADOW_TARGET_SINGLE_ELAPSED",
     # Simulation
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",

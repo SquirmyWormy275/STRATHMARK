@@ -139,6 +139,17 @@ CREATE TABLE IF NOT EXISTS prediction_mirror_delivery (
     last_attempt_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS shadow_receipts (
+    ledger_request_id TEXT PRIMARY KEY REFERENCES prediction_requests(ledger_request_id),
+    caller_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    active_input_fingerprint TEXT NOT NULL,
+    core_schema_version TEXT NOT NULL,
+    core_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(caller_id, request_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_ledger_predictions_competitor
     ON ledger_predictions(competitor_id, event_code);
 CREATE INDEX IF NOT EXISTS idx_prediction_settlements_prediction
@@ -162,6 +173,10 @@ CREATE TRIGGER IF NOT EXISTS prediction_settlements_no_update
 BEFORE UPDATE ON prediction_settlements BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
 CREATE TRIGGER IF NOT EXISTS prediction_settlements_no_delete
 BEFORE DELETE ON prediction_settlements BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS shadow_receipts_no_update
+BEFORE UPDATE ON shadow_receipts BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS shadow_receipts_no_delete
+BEFORE DELETE ON shadow_receipts BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
 """
 
 
@@ -338,6 +353,7 @@ class PredictionLedger:
         predictions: Sequence[LedgerPrediction],
         *,
         legacy_request_payload: Optional[Mapping[str, Any]] = None,
+        receipt_metadata: Optional[Mapping[str, Any]] = None,
     ) -> LedgerWriteResult:
         """Atomically append one complete field or return its original IDs."""
 
@@ -512,6 +528,43 @@ class PredictionLedger:
                                 timestamp,
                             ),
                         )
+                if receipt_metadata is not None:
+                    receipt_core = self._shadow_receipt_core(
+                        receipt_metadata,
+                        request_hash=digest,
+                        hash_algorithm=algorithm,
+                        predictions=validated,
+                        prediction_ids=prediction_ids,
+                        timestamp=timestamp,
+                    )
+                    active_input = receipt_core.get("active_input")
+                    if not isinstance(active_input, Mapping):
+                        raise ValueError("receipt active_input must be an object")
+                    active_fingerprint = str(active_input.get("fingerprint") or "").strip()
+                    if len(active_fingerprint) != 64:
+                        raise ValueError("receipt active input fingerprint must be SHA-256")
+                    core_schema_version = str(receipt_core.get("schema_version") or "").strip()
+                    if not core_schema_version:
+                        raise ValueError("receipt schema_version must not be empty")
+                    core_json = self._canonical_json(receipt_core)
+                    conn.execute(
+                        """
+                        INSERT INTO shadow_receipts (
+                            ledger_request_id, caller_id, request_id,
+                            active_input_fingerprint, core_schema_version,
+                            core_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            request_row_id,
+                            caller,
+                            idempotency_key,
+                            active_fingerprint,
+                            core_schema_version,
+                            core_json,
+                            timestamp,
+                        ),
+                    )
                 cloud_payload = self._cloud_field_payload(
                     request_row_id,
                     caller,
@@ -545,6 +598,179 @@ class PredictionLedger:
             request_hash=digest,
             hash_algorithm=algorithm,
             cloud_status=cloud_status,
+        )
+
+    def get_shadow_receipt(
+        self,
+        caller_id: str,
+        request_id: str,
+        *,
+        current_active_fingerprint: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Return the exact immutable core plus a freshly derived status view."""
+
+        caller = _identifier(caller_id, "caller_id")
+        idempotency_key = _identifier(request_id, "request_id")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT q.ledger_request_id, q.request_hash, q.hash_algorithm,
+                       r.core_json, r.active_input_fingerprint, r.core_schema_version,
+                       d.status AS delivery_status
+                FROM prediction_requests q
+                LEFT JOIN shadow_receipts r
+                  ON r.ledger_request_id = q.ledger_request_id
+                LEFT JOIN prediction_mirror_outbox o
+                  ON o.kind = 'field' AND o.entity_id = q.ledger_request_id
+                LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                WHERE q.caller_id = ? AND q.request_id = ?
+                """,
+                (caller, idempotency_key),
+            ).fetchone()
+            child_rows = (
+                []
+                if row is None
+                else conn.execute(
+                    """
+                    SELECT prediction_id, competitor_id, ordinal, event_code,
+                           median_seconds, assigned_mark, source, training_eligible,
+                           engine_version, model_version, calibration_version,
+                           evidence_cutoff, interval_lower, interval_upper,
+                           interval_coverage, interval_state, interval_scope,
+                           ignored_factors_json, warnings_json, optimizer,
+                           optimizer_metadata_json
+                    FROM ledger_predictions
+                    WHERE ledger_request_id = ? ORDER BY ordinal
+                    """,
+                    (row["ledger_request_id"],),
+                ).fetchall()
+            )
+        if row is None:
+            return None
+        if row["core_json"] is None:
+            raise LedgerConflictError(
+                "request_id already has an incomplete legacy ledger field without a receipt"
+            )
+
+        from strathmark.shadow import (
+            RECEIPT_CORE_SCHEMA_VERSION,
+            ShadowLiveStatus,
+            ShadowReceipt,
+            ShadowReceiptCorruptionError,
+        )
+
+        core_json = str(row["core_json"])
+        try:
+            core = json.loads(core_json)
+        except (TypeError, ValueError) as exc:
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt contains malformed JSON"
+            ) from exc
+        if not isinstance(core, Mapping):
+            raise ShadowReceiptCorruptionError("persisted shadow receipt core is not an object")
+        if self._canonical_json(core) != core_json:
+            raise ShadowReceiptCorruptionError("persisted shadow receipt JSON is not canonical")
+        if (
+            core.get("schema_version") != RECEIPT_CORE_SCHEMA_VERSION
+            or row["core_schema_version"] != RECEIPT_CORE_SCHEMA_VERSION
+        ):
+            raise ShadowReceiptCorruptionError("persisted shadow receipt schema is unsupported")
+        if core.get("consumer_id") != caller or core.get("request_id") != idempotency_key:
+            raise ShadowReceiptCorruptionError("persisted shadow receipt identity is inconsistent")
+        ledger_core = core.get("ledger")
+        if not isinstance(ledger_core, Mapping) or (
+            ledger_core.get("request_hash") != row["request_hash"]
+            or ledger_core.get("hash_algorithm") != row["hash_algorithm"]
+        ):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt ledger identity is inconsistent"
+            )
+        active_input = core.get("active_input")
+        if not isinstance(active_input, Mapping):
+            raise ShadowReceiptCorruptionError("persisted shadow receipt active input is missing")
+        active_without_fingerprint = dict(active_input)
+        embedded_fingerprint = str(active_without_fingerprint.pop("fingerprint", ""))
+        recorded_fingerprint = str(row["active_input_fingerprint"])
+        if (
+            embedded_fingerprint != recorded_fingerprint
+            or canonical_hash(active_without_fingerprint) != recorded_fingerprint
+        ):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt active fingerprint is inconsistent"
+            )
+        predictions = core.get("predictions")
+        if not isinstance(predictions, list) or len(predictions) != len(child_rows):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt prediction set is incomplete"
+            )
+        for ordinal, (item, child) in enumerate(zip(predictions, child_rows, strict=True)):
+            if not isinstance(item, Mapping) or (
+                item.get("ordinal") != ordinal
+                or item.get("prediction_id") != child["prediction_id"]
+                or item.get("competitor_id") != child["competitor_id"]
+                or item.get("event_code") != child["event_code"]
+                or child["ordinal"] != ordinal
+            ):
+                raise ShadowReceiptCorruptionError(
+                    "persisted shadow receipt prediction identity is inconsistent"
+                )
+            try:
+                ignored_factors = json.loads(str(child["ignored_factors_json"]))
+                warnings = json.loads(str(child["warnings_json"]))
+                optimizer_metadata = json.loads(str(child["optimizer_metadata_json"]))
+                persisted_projection = self._shadow_prediction_projection(
+                    {
+                        **dict(child),
+                        "training_eligible": bool(child["training_eligible"]),
+                        "ignored_factors": ignored_factors,
+                        "warnings": warnings,
+                        "optimizer_metadata": optimizer_metadata,
+                    },
+                    prediction_id=str(child["prediction_id"]),
+                    ordinal=ordinal,
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ShadowReceiptCorruptionError(
+                    "persisted ledger prediction projection is malformed"
+                ) from exc
+            if self._canonical_json(dict(item)) != self._canonical_json(persisted_projection):
+                raise ShadowReceiptCorruptionError(
+                    "persisted shadow receipt prediction payload is inconsistent"
+                )
+        caller_input = active_input.get("caller_input")
+        entrants = caller_input.get("competitors") if isinstance(caller_input, Mapping) else None
+        if not isinstance(entrants, list) or {
+            item.get("competitor_id") for item in entrants if isinstance(item, Mapping)
+        } != {child["competitor_id"] for child in child_rows}:
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt entrant set is inconsistent"
+            )
+
+        freshness = (
+            "current"
+            if current_active_fingerprint is None
+            or str(current_active_fingerprint) == recorded_fingerprint
+            else "stale"
+        )
+        delivery_status = row["delivery_status"]
+        if self._mirror is None:
+            mirror = "not-configured"
+        elif delivery_status == "recorded":
+            mirror = "recorded"
+        elif delivery_status == "failed":
+            mirror = "retryable-failed"
+        else:
+            mirror = "pending"
+        status = ShadowLiveStatus(
+            trust="recorded",
+            mirror=mirror,
+            freshness=freshness,
+            ready_for_review=freshness == "current",
+        )
+        return ShadowReceipt(
+            core_json=core_json,
+            core=core,
+            status=status,
         )
 
     def settle(
@@ -794,6 +1020,88 @@ class PredictionLedger:
             if row["history_count"] is not None:
                 row["history_count"] = int(float(row["history_count"]))
         return result
+
+    @staticmethod
+    def _canonical_json(value: Mapping[str, Any]) -> str:
+        """Serialize an immutable receipt with one stable byte representation."""
+
+        return json.dumps(
+            _json_value(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+    @classmethod
+    def _shadow_receipt_core(
+        cls,
+        metadata: Mapping[str, Any],
+        *,
+        request_hash: str,
+        hash_algorithm: str,
+        predictions: Sequence[Mapping[str, Any]],
+        prediction_ids: Sequence[str],
+        timestamp: str,
+    ) -> dict[str, Any]:
+        """Complete caller metadata with ledger-owned prediction identities."""
+
+        if len(predictions) != len(prediction_ids):
+            raise ValueError("receipt prediction identities are incomplete")
+        core = dict(_json_value(metadata))
+        core["ledger"] = {
+            "request_hash": request_hash,
+            "hash_algorithm": hash_algorithm,
+        }
+        core["created_at"] = timestamp
+        core["predictions"] = [
+            cls._shadow_prediction_projection(
+                item,
+                prediction_id=prediction_id,
+                ordinal=ordinal,
+            )
+            for ordinal, (prediction_id, item) in enumerate(
+                zip(prediction_ids, predictions, strict=True)
+            )
+        ]
+        return core
+
+    @staticmethod
+    def _shadow_prediction_projection(
+        item: Mapping[str, Any],
+        *,
+        prediction_id: str,
+        ordinal: int,
+    ) -> dict[str, Any]:
+        """Project persisted prediction evidence into the immutable receipt shape."""
+
+        return {
+            "ordinal": ordinal,
+            "prediction_id": prediction_id,
+            "competitor_id": item["competitor_id"],
+            "event_code": item["event_code"],
+            "median_seconds": item["median_seconds"],
+            "assigned_mark": item["assigned_mark"],
+            "source": item["source"],
+            "training_eligible": item["training_eligible"],
+            "versions": {
+                "engine": item["engine_version"],
+                "model": item["model_version"],
+                "calibration": item["calibration_version"],
+            },
+            "evidence_cutoff": item["evidence_cutoff"],
+            "interval": {
+                "lower": item["interval_lower"],
+                "upper": item["interval_upper"],
+                "nominal_coverage": item["interval_coverage"],
+                "calibration_state": item["interval_state"],
+                "scope": item["interval_scope"],
+            },
+            "optimizer": item["optimizer"],
+            "optimizer_metadata": _json_value(item["optimizer_metadata"]),
+            "warnings": list(item["warnings"]),
+            "ignored_factors": list(item["ignored_factors"]),
+        }
 
     @staticmethod
     def _validate_prediction(prediction: LedgerPrediction) -> dict[str, Any]:
@@ -1058,15 +1366,13 @@ class PredictionLedger:
         try:
             with self._connect() as conn:
                 return (
-                    conn.execute(
-                        """
+                    conn.execute("""
                         SELECT 1
                         FROM prediction_mirror_outbox o
                         LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
                         WHERE d.status IS NULL OR d.status != 'recorded'
                         LIMIT 1
-                        """
-                    ).fetchone()
+                        """).fetchone()
                     is not None
                 )
         except sqlite3.Error:
@@ -1077,15 +1383,13 @@ class PredictionLedger:
 
         try:
             with self._connect() as conn:
-                rows = conn.execute(
-                    """
+                rows = conn.execute("""
                     SELECT o.kind, o.entity_id
                     FROM prediction_mirror_outbox o
                     LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
                     WHERE d.status IS NULL OR d.status != 'recorded'
                     ORDER BY o.created_at, o.outbox_id
-                    """
-                ).fetchall()
+                    """).fetchall()
         except sqlite3.Error:
             return None
         with self._worker_lock:
