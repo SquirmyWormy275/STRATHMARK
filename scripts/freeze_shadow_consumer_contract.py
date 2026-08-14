@@ -7,6 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from strathmark.auth import (
+    ACTOR_ATTESTATION_SCHEMA_VERSION,
+    REQUEST_DIGEST_SCHEMA_VERSION,
+    SHADOW_ACTION_ROLES,
+    SHADOW_ATTESTATION_AUDIENCE,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "strathmark" / "contracts" / "shadow_consumer_v1.openapi.json"
 CHECKSUM = ROOT / "strathmark" / "contracts" / "shadow_consumer_v1.openapi.sha256"
@@ -46,6 +53,7 @@ def nullable(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def response_schemas() -> dict[str, Any]:
+    allowed_roles = sorted({role for roles in SHADOW_ACTION_ROLES.values() for role in roles})
     integer_map = {"type": "object", "additionalProperties": {"type": "integer"}}
     calculation_competitor = obj(
         {
@@ -103,6 +111,39 @@ def response_schemas() -> dict[str, Any]:
         ]
     }
     return {
+        "ErrorResponse": obj(
+            {
+                "detail": {"type": "string", "minLength": 1},
+            }
+        ),
+        "ActorAttestationClaims": obj(
+            {
+                "schema_version": {"const": ACTOR_ATTESTATION_SCHEMA_VERSION},
+                "consumer_id": NAMESPACED_ID,
+                "actor_id": NAMESPACED_ID,
+                "roles": array(
+                    {
+                        "enum": allowed_roles,
+                    },
+                    minItems=1,
+                    maxItems=8,
+                    uniqueItems=True,
+                ),
+                "action": {"enum": sorted(SHADOW_ACTION_ROLES)},
+                "subject_revision": NAMESPACED_ID,
+                "request_digest_schema_version": {"const": REQUEST_DIGEST_SCHEMA_VERSION},
+                "request_digest": DIGEST,
+                "audience": {"const": SHADOW_ATTESTATION_AUDIENCE},
+                "nonce": {
+                    "type": "string",
+                    "minLength": 16,
+                    "maxLength": 128,
+                    "pattern": r"^[A-Za-z0-9._:-]+$",
+                },
+                "issued_at": {"type": "integer"},
+                "expires_at": {"type": "integer"},
+            }
+        ),
         "IntegerMap": integer_map,
         "WoodProperties": obj(
             {
@@ -903,15 +944,522 @@ def response_examples() -> dict[str, Any]:
     }
 
 
+def request_schemas() -> dict[str, Any]:
+    """Return the reviewed request-side contract source.
+
+    This is deliberately independent of the generated OpenAPI artifact.  The
+    freezer must be able to recreate that artifact in a clean checkout and
+    must never carry unknown fields forward from an edited output file.
+    """
+    namespaced_id = {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 128,
+        "pattern": r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$",
+    }
+    digest = {"type": "string", "pattern": r"^[0-9a-f]{64}$"}
+    schemas = {
+        "NamespacedId": namespaced_id,
+        "Digest": digest,
+        "Competitor": obj(
+            {
+                "competitor_id": NAMESPACED_ID,
+                "gender": {"type": ["string", "null"], "enum": ["M", "F", None]},
+            },
+            required=["competitor_id"],
+        ),
+        "Wood": obj(
+            {
+                "species": {"type": "string", "minLength": 1, "maxLength": 100},
+                "diameter_mm": {"type": "number", "minimum": 225, "maximum": 500},
+                "quality": {"type": "integer", "minimum": 1, "maximum": 10},
+            }
+        ),
+        "CalculateRequest": obj(
+            {
+                "schema_version": {"const": "strathmark.shadow-calculate.v1"},
+                "consumer_id": NAMESPACED_ID,
+                "tournament_id": NAMESPACED_ID,
+                "event_occurrence_id": NAMESPACED_ID,
+                "field_run_id": NAMESPACED_ID,
+                "operator_id": NAMESPACED_ID,
+                "request_id": NAMESPACED_ID,
+                "run_revision": NAMESPACED_ID,
+                "event_code": {"enum": ["SB", "UH"]},
+                "target_contract": {"const": "single-elapsed-seconds.v1"},
+                "prediction_as_of": DATE,
+                "schedule_fingerprint": DIGEST,
+                "observation_schema_version": {
+                    "const": "strathmark.shadow-observation-fingerprint.v1"
+                },
+                "observation_fingerprint": DIGEST,
+                "competitors": array(ref("Competitor"), minItems=1, maxItems=64),
+                "wood": ref("Wood"),
+                "seed": {"type": "integer", "default": 20260811},
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 25,
+                    "maximum": 10_000,
+                    "default": 5000,
+                },
+            },
+            required=[
+                "schema_version",
+                "consumer_id",
+                "tournament_id",
+                "event_occurrence_id",
+                "field_run_id",
+                "operator_id",
+                "request_id",
+                "run_revision",
+                "event_code",
+                "target_contract",
+                "prediction_as_of",
+                "schedule_fingerprint",
+                "observation_schema_version",
+                "observation_fingerprint",
+                "competitors",
+                "wood",
+            ],
+        ),
+        "LookupRequest": obj(
+            {
+                "schema_version": {"const": "strathmark.shadow-receipt-lookup.v1"},
+                "consumer_id": NAMESPACED_ID,
+                "request_id": NAMESPACED_ID,
+                "run_revision": NAMESPACED_ID,
+                "current_active_fingerprint": nullable(DIGEST),
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 25,
+                    "maximum": 10_000,
+                    "default": 2000,
+                },
+            },
+            required=["schema_version", "consumer_id", "request_id", "run_revision"],
+        ),
+        "StatusRequest": obj(
+            {
+                "schema_version": {"const": "strathmark.shadow-status.v1"},
+                "consumer_id": NAMESPACED_ID,
+                "request_id": NAMESPACED_ID,
+                "run_revision": NAMESPACED_ID,
+                "current_active_fingerprint": nullable(DIGEST),
+                "model_version": {"type": ["string", "null"], "maxLength": 128},
+                "timeout_ms": {"type": "integer", "minimum": 25, "maximum": 10_000},
+            },
+            required=["schema_version", "consumer_id", "request_id", "run_revision"],
+        ),
+        "NumericOutcomeRequest": obj(
+            {
+                "schema_version": {"const": "strathmark.shadow-numeric-outcome.v1"},
+                "consumer_id": NAMESPACED_ID,
+                "request_id": NAMESPACED_ID,
+                "run_revision": NAMESPACED_ID,
+                "outcome_revision_id": NAMESPACED_ID,
+                "reason_code": {
+                    "type": ["string", "null"],
+                    "enum": [
+                        "corrected_time",
+                        "retract_invalid_numeric_evidence",
+                        "valid_replacement",
+                        None,
+                    ],
+                },
+                "revisions": array(ref("NumericRevision"), minItems=1, maxItems=512),
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 25,
+                    "maximum": 10_000,
+                    "default": 5000,
+                },
+            },
+            required=[
+                "schema_version",
+                "consumer_id",
+                "request_id",
+                "run_revision",
+                "outcome_revision_id",
+                "revisions",
+            ],
+        ),
+        "MirrorReplayRequest": obj(
+            {
+                "schema_version": {"const": "strathmark.shadow-mirror-replay.v1"},
+                "consumer_id": NAMESPACED_ID,
+                "run_revision": NAMESPACED_ID,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "timeout_ms": {"type": "integer", "minimum": 25, "maximum": 10_000},
+            },
+            required=["schema_version", "consumer_id", "run_revision"],
+        ),
+        "DriftRequest": obj(
+            {
+                "schema_version": {"const": "strathmark.shadow-drift.v1"},
+                "consumer_id": NAMESPACED_ID,
+                "run_revision": NAMESPACED_ID,
+                "model_version": {"type": "string", "minLength": 1, "maxLength": 128},
+                "lookback_days": {"type": "integer", "minimum": 1, "maximum": 365},
+                "baseline_residuals": array(
+                    {"type": "number", "minimum": -300, "maximum": 300},
+                    minItems=1,
+                    maxItems=5000,
+                ),
+                "timeout_ms": {"type": "integer", "minimum": 25, "maximum": 10_000},
+            },
+            required=[
+                "schema_version",
+                "consumer_id",
+                "run_revision",
+                "model_version",
+                "baseline_residuals",
+            ],
+        ),
+    }
+    return schemas
+
+
+def request_examples() -> dict[str, Any]:
+    return {
+        "/v1/shadow/calculate": {
+            "schema_version": "strathmark.shadow-calculate.v1",
+            "consumer_id": "missoula:service:shadow",
+            "tournament_id": "missoula:tournament:2027",
+            "event_occurrence_id": "missoula:event:225-sb",
+            "field_run_id": "missoula:field-run:001",
+            "operator_id": "missoula:operator:007",
+            "request_id": "missoula:request:001",
+            "run_revision": "missoula:run-revision:001",
+            "event_code": "SB",
+            "target_contract": "single-elapsed-seconds.v1",
+            "prediction_as_of": "2026-11-01",
+            "schedule_fingerprint": "1" * 64,
+            "observation_schema_version": "strathmark.shadow-observation-fingerprint.v1",
+            "observation_fingerprint": "2" * 64,
+            "competitors": [
+                {"competitor_id": "missoula:competitor:001", "gender": "F"},
+                {"competitor_id": "missoula:competitor:002", "gender": "M"},
+            ],
+            "wood": {"species": "PINE", "diameter_mm": 300, "quality": 5},
+            "seed": 20260811,
+            "timeout_ms": 5000,
+        },
+        "/v1/shadow/receipts/lookup": {
+            "schema_version": "strathmark.shadow-receipt-lookup.v1",
+            "consumer_id": "missoula:service:shadow",
+            "request_id": "missoula:request:001",
+            "run_revision": "missoula:run-revision:001",
+            "current_active_fingerprint": None,
+        },
+        "/v1/shadow/status": {
+            "schema_version": "strathmark.shadow-status.v1",
+            "consumer_id": "missoula:service:shadow",
+            "request_id": "missoula:request:001",
+            "run_revision": "missoula:run-revision:001",
+            "current_active_fingerprint": None,
+            "model_version": None,
+            "timeout_ms": 2000,
+        },
+        "/v1/shadow/outcomes/apply": {
+            "schema_version": "strathmark.shadow-numeric-outcome.v1",
+            "consumer_id": "missoula:service:shadow",
+            "request_id": "missoula:request:001",
+            "run_revision": "missoula:run-revision:001",
+            "outcome_revision_id": "missoula:outcome-revision:001",
+            "reason_code": None,
+            "revisions": [
+                {
+                    "prediction_id": "00000000-0000-0000-0000-000000000001",
+                    "competitor_id": "missoula:competitor:001",
+                    "event_code": "SB",
+                    "action": "settle",
+                    "actual_time": 42.5,
+                    "expected_revision": 0,
+                }
+            ],
+        },
+        "/v1/shadow/mirror/replay": {
+            "schema_version": "strathmark.shadow-mirror-replay.v1",
+            "consumer_id": "missoula:service:shadow",
+            "run_revision": "missoula:run-revision:001",
+            "limit": 25,
+            "timeout_ms": 5000,
+        },
+        "/v1/shadow/drift": {
+            "schema_version": "strathmark.shadow-drift.v1",
+            "consumer_id": "missoula:service:shadow",
+            "run_revision": "missoula:run-revision:001",
+            "model_version": "v2-core-2026-08",
+            "lookback_days": 30,
+            "baseline_residuals": [-0.5, 0.0, 0.5],
+            "timeout_ms": 5000,
+        },
+    }
+
+
+def source_document() -> dict[str, Any]:
+    """Build the complete contract from reviewed code, never generated output."""
+    schemas = request_schemas()
+    schemas.update(response_schemas())
+    descriptions = {
+        "/health": "Current service and trusted-shadow readiness",
+        "/v1/shadow/calculate": "Immutable receipt and current live projection",
+        "/v1/shadow/receipts/lookup": "Exact persisted core with a current live projection",
+        "/v1/shadow/status": (
+            "Payload-free current trust, freshness, mirror, numeric and drift axes"
+        ),
+        "/v1/shadow/outcomes/apply": "Field-atomic append-only numeric revision",
+        "/v1/shadow/mirror/replay": "Bounded off-path replay summary",
+        "/v1/shadow/drift": "Bounded advisory-only drift report",
+    }
+    operations = {
+        "/v1/shadow/calculate": ("calculateOrRecoverShadowField", "CalculateRequest"),
+        "/v1/shadow/receipts/lookup": ("lookupShadowReceipt", "LookupRequest"),
+        "/v1/shadow/status": ("readShadowStatus", "StatusRequest"),
+        "/v1/shadow/outcomes/apply": ("applyNumericOutcomeRevision", "NumericOutcomeRequest"),
+        "/v1/shadow/mirror/replay": ("replayShadowMirror", "MirrorReplayRequest"),
+        "/v1/shadow/drift": ("readShadowDrift", "DriftRequest"),
+    }
+    response_names = {
+        "/health": "HealthResponse",
+        "/v1/shadow/calculate": "CalculateResponse",
+        "/v1/shadow/receipts/lookup": "LookupResponse",
+        "/v1/shadow/status": "StatusResponse",
+        "/v1/shadow/outcomes/apply": "NumericOutcomeResponse",
+        "/v1/shadow/mirror/replay": "MirrorReplayResponse",
+        "/v1/shadow/drift": "DriftResponse",
+    }
+    examples = response_examples()
+    paths: dict[str, Any] = {
+        "/health": {
+            "get": {
+                "operationId": "readServiceHealth",
+                "parameters": [
+                    {
+                        "in": "query",
+                        "name": "prediction_as_of",
+                        "required": False,
+                        "schema": DATE,
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": descriptions["/health"],
+                        "content": {
+                            "application/json": {
+                                "schema": ref(response_names["/health"]),
+                                "example": examples["/health"],
+                            }
+                        },
+                    }
+                },
+            }
+        }
+    }
+    requests = request_examples()
+    for path, (operation_id, request_name) in operations.items():
+        paths[path] = {
+            "post": {
+                "operationId": operation_id,
+                "security": [{"serviceBearer": [], "actorAttestation": []}],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": ref(request_name),
+                            "example": requests[path],
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": descriptions[path],
+                        "content": {
+                            "application/json": {
+                                "schema": ref(response_names[path]),
+                                "example": examples[path],
+                            }
+                        },
+                    }
+                },
+            }
+        }
+    return {
+        "openapi": "3.1.0",
+        "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+        "info": {
+            "title": "STRATHMARK Trusted Shadow Consumer Contract",
+            "version": "1.1.0",
+            "x-strathmark-contract-version": "strathmark.shadow-consumer-contract.v1",
+        },
+        "servers": [{"url": "http://127.0.0.1:8000"}],
+        "paths": paths,
+        "components": {
+            "securitySchemes": {
+                "serviceBearer": {"type": "http", "scheme": "bearer"},
+                "actorAttestation": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "X-STRATHMARK-Actor-Attestation",
+                    "description": "",
+                },
+            },
+            "schemas": schemas,
+        },
+    }
+
+
 def main() -> int:
-    document = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    document = source_document()
     schemas = document["components"]["schemas"]
     schemas["Wood"]["properties"]["diameter_mm"].update({"minimum": 225, "maximum": 500})
-    schemas["NumericRevision"]["properties"]["actual_time"]["maximum"] = 300
+    revision_identity = {
+        "prediction_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "competitor_id": NAMESPACED_ID,
+        "event_code": {"enum": ["SB", "UH"]},
+        "expected_revision": {"type": "integer", "minimum": 0, "maximum": 1_000_000},
+    }
+    schemas["NumericSettleRevision"] = obj(
+        {
+            **revision_identity,
+            "action": {"const": "settle"},
+            "actual_time": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 300,
+            },
+        }
+    )
+    schemas["NumericVoidRevision"] = obj(
+        {
+            **revision_identity,
+            "action": {"const": "void"},
+            "actual_time": {"type": "null"},
+        },
+        required=[
+            "prediction_id",
+            "competitor_id",
+            "event_code",
+            "action",
+            "expected_revision",
+        ],
+    )
+    schemas["NumericRevision"] = {
+        "oneOf": [ref("NumericSettleRevision"), ref("NumericVoidRevision")],
+        "discriminator": {
+            "propertyName": "action",
+            "mapping": {
+                "settle": "#/components/schemas/NumericSettleRevision",
+                "void": "#/components/schemas/NumericVoidRevision",
+            },
+        },
+    }
+    schemas["NumericOutcomeRequest"]["allOf"] = [
+        {
+            "if": {
+                "properties": {
+                    "revisions": {
+                        "contains": {
+                            "anyOf": [
+                                ref("NumericVoidRevision"),
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "expected_revision": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                        }
+                                    },
+                                    "required": ["expected_revision"],
+                                },
+                            ]
+                        }
+                    },
+                },
+                "required": ["revisions"],
+            },
+            "then": {
+                "properties": {
+                    "reason_code": {
+                        "enum": [
+                            "corrected_time",
+                            "retract_invalid_numeric_evidence",
+                            "valid_replacement",
+                        ]
+                    }
+                },
+                "required": ["reason_code"],
+            },
+        }
+    ]
+    schemas["NumericOutcomeRequest"]["properties"]["timeout_ms"] = {
+        "type": "integer",
+        "minimum": 25,
+        "maximum": 10_000,
+        "default": 5000,
+    }
+    schemas["LookupRequest"]["properties"]["timeout_ms"] = {
+        "type": "integer",
+        "minimum": 25,
+        "maximum": 10_000,
+        "default": 2000,
+    }
     schemas["DriftRequest"]["properties"]["baseline_residuals"]["items"].update(
         {"minimum": -300, "maximum": 300}
     )
     schemas.update(response_schemas())
+    document["info"]["version"] = "1.1.0"
+    document["info"]["x-strathmark-actor-attestation-schema"] = ACTOR_ATTESTATION_SCHEMA_VERSION
+    document["info"]["x-strathmark-request-digest-schema"] = REQUEST_DIGEST_SCHEMA_VERSION
+    role_actions: dict[str, list[str]] = {}
+    for action, roles in SHADOW_ACTION_ROLES.items():
+        for role in roles:
+            role_actions.setdefault(role, []).append(action)
+    document["info"]["x-strathmark-role-actions"] = {
+        role: sorted(actions) for role, actions in sorted(role_actions.items())
+    }
+    document["components"]["securitySchemes"]["actorAttestation"]["description"] = (
+        "Canonical compact HMAC assertion whose decoded claims validate against "
+        "ActorAttestationClaims. The required request_digest binds the action and "
+        "subject run revision to the exact validated request body before nonce claim."
+    )
+    actions = {
+        "/v1/shadow/calculate": "shadow.calculate",
+        "/v1/shadow/receipts/lookup": "shadow.receipt.lookup",
+        "/v1/shadow/status": "shadow.status.read",
+        "/v1/shadow/outcomes/apply": "shadow.outcome.apply",
+        "/v1/shadow/mirror/replay": "shadow.mirror.replay",
+        "/v1/shadow/drift": "shadow.drift.read",
+    }
+    error_response = {
+        "description": "Closed payload-free error response",
+        "content": {
+            "application/json": {
+                "schema": ref("ErrorResponse"),
+                "example": {"detail": "Request failed schema validation."},
+            }
+        },
+    }
+    for path, action in actions.items():
+        operation = document["paths"][path]["post"]
+        operation["x-strathmark-action"] = action
+        operation["x-strathmark-subject-revision-field"] = "run_revision"
+        operation["x-strathmark-request-digest-schema"] = REQUEST_DIGEST_SCHEMA_VERSION
+        for status_code in (
+            "400",
+            "401",
+            "403",
+            "404",
+            "409",
+            "411",
+            "413",
+            "422",
+            "429",
+            "503",
+            "504",
+        ):
+            operation["responses"][status_code] = error_response
+    document["paths"]["/health"]["get"]["responses"]["422"] = error_response
     for path, example in response_examples().items():
         method = "get" if path == "/health" else "post"
         document["paths"][path][method]["responses"]["200"]["content"]["application/json"][

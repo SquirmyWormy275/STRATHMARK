@@ -128,9 +128,24 @@ uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 - `POST /ledger/calculate` — authenticated, idempotent trusted calculation
 - `POST /ledger/predictions/{prediction_id}/settle` — authenticated immutable settlement
 - `POST /results` and `GET /results/{competitor_name}` — authenticated local history
+- `POST /v1/shadow/calculate` — trusted field calculation or exact receipt recovery
+- `POST /v1/shadow/receipts/lookup` — immutable receipt lookup with live status
+- `POST /v1/shadow/status` — trust, freshness, mirror, outcome, and drift status
+- `POST /v1/shadow/outcomes/apply` — field-atomic settlement or void revision
+- `POST /v1/shadow/mirror/replay` — bounded administrator mirror replay
+- `POST /v1/shadow/drift` — bounded advisory-only drift report
 
 Public calculation routes do not write trusted training evidence. Ledger and result
 routes require `STRATHMARK_API_TOKEN`.
+
+All six `/v1/shadow/*` routes require both a consumer-specific bearer credential and a
+short-lived v2 actor attestation. The attestation binds the action, run revision, and
+canonical validated request digest. Trusted calculation also requires an attested
+`offline-single-writer-durable` topology and a current, integrity-verified local
+evidence snapshot. Receipt-bound settlement/void remains available when the current
+snapshot is stale or missing so evidence can be corrected safely. See the canonical
+[Shadow Consumer Contract](docs/SHADOW_CONSUMER_CONTRACT.md) for roles, request limits,
+readiness gates, frozen OpenAPI checksum, and the complete offline lifecycle.
 
 ## Stable design rules
 
@@ -148,6 +163,7 @@ routes require `STRATHMARK_API_TOKEN`.
 - [Prediction Engine V2](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md)
 - [Architecture](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md)
 - [Deployment runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md)
+- [Shadow Consumer Contract](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/SHADOW_CONSUMER_CONTRACT.md)
 - [Wiki source](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki)
 - [Contributing](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CONTRIBUTING.md)
 - [Changelog](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CHANGELOG.md)

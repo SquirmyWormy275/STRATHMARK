@@ -77,7 +77,9 @@ tuple, so a mutable or stateful adapter cannot verify one export and persist ano
    followed by another explicit refresh.
 8. Restart STRATHMARK and read `get_evidence_snapshot_status()` again. The digest,
    counts, source, cutoff, and completeness must match. Run one isolated preflight
-   calculation for the intended cutoff.
+   calculation for the intended cutoff. A cold public `/health` intentionally reports
+   evidence unavailable until this full verification or the authenticated bounded
+   preflight populates the in-process health attestation.
 9. Disconnect or block the network for the dress rehearsal. Calculation, local
    receipt persistence, restart recovery, and snapshot freshness must still work.
 
@@ -143,6 +145,13 @@ threshold is seven days and can be evaluated with
 `get_evidence_snapshot_status(max_age_days=...)`. Staleness does not silently fetch
 new data. It blocks every new trusted calculation, while exact old-receipt recovery
 continues to work. Refresh deliberately, then issue a new superseding request.
+
+Public `/health` uses only the last in-process fully verified attestation. It derives
+freshness from current UTC time without reopening SQLite, and invalidates the attestation
+when bounded filesystem metadata shows the database or SQLite sidecars changed. It does
+not scan activation history or evidence rows. This makes liveness probes safe under load,
+while process restart, cache miss, and observed file mutation fail closed until an
+authenticated bounded operation verifies the active snapshot again.
 
 ## Isolated verification
 

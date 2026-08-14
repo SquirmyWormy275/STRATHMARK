@@ -117,6 +117,7 @@ def test_cleanup_failure_is_reported_with_primary_failure_as_cause(monkeypatch) 
         return ""
 
     monkeypatch.setattr(rehearsal, "_create_roles", fake_create_roles)
+    monkeypatch.setattr(rehearsal, "_ensure_rpc_owner", lambda *_args: None)
     monkeypatch.setattr(rehearsal, "_psql", fake_psql)
     monkeypatch.setattr(
         rehearsal,
@@ -143,3 +144,12 @@ def test_prediction_v2_migrations_execute_against_disposable_postgres() -> None:
     assert report.database.startswith("strathmark_rehearsal_")
     assert report.checks_run >= 20
     assert report.database_dropped is True
+
+
+def test_rehearsal_contains_bounded_concurrency_process_helpers() -> None:
+    source = Path(rehearsal.__file__).read_text(encoding="utf-8")
+
+    assert "subprocess.Popen" in source
+    assert "pg_catalog.pg_locks" in source
+    assert "timeout=30" in source
+    assert "process.kill()" in source

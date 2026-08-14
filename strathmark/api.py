@@ -22,26 +22,34 @@ Endpoints:
     POST /results                  -- Record a tournament result to the store
     GET  /results/{competitor}     -- Get competitor history from the store
 
+Trusted shadow capacity is isolated by workload: calculations and outcome
+writes share the critical pool, receipt/status recovery has its own pool, and
+mirror/drift work uses a separate maintenance pool. Timed-out writes retain
+their critical slot until their worker actually finishes.
+
 Optional dependency:
     pip install fastapi uvicorn[standard]
 """
 
 from __future__ import annotations
 
+import copy
 import hmac
 import os
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
-    from pydantic import BaseModel, ConfigDict, Field
+    from fastapi.exception_handlers import request_validation_exception_handler
+    from fastapi.exceptions import RequestValidationError
+    from pydantic import BaseModel, ConfigDict, Field, model_validator
     from starlette.responses import JSONResponse
 
     _FASTAPI_AVAILABLE = True
@@ -54,13 +62,16 @@ from strathmark.auth import (
     ShadowAuthenticationConfigurationError,
     ShadowAuthenticationError,
     ShadowAuthorizationError,
+    canonical_shadow_request_digest,
     preauthenticate_shadow_service,
     shadow_auth_configuration_status,
     verify_shadow_action,
 )
 from strathmark.calculator import HandicapCalculator
 from strathmark.config import data_req, llm_config, prediction_config, rules, sim_config
+from strathmark.consumer_contract import load_shadow_consumer_contract
 from strathmark.drift import MAX_DRIFT_ROWS, DriftRowLimitError, evaluate_drift
+from strathmark.identity import NAMESPACED_ID_PATTERN
 from strathmark.ledger import (
     MAX_NUMERIC_RAW_TIME_SECONDS,
     LedgerConflictError,
@@ -87,8 +98,13 @@ from strathmark.shadow import (
     ShadowFieldRequest,
     ShadowPredictionService,
     ShadowReceiptCorruptionError,
+    derive_current_receipt_status,
 )
-from strathmark.store import EvidenceSnapshotIntegrityError, ResultStore
+from strathmark.store import (
+    EvidenceSnapshotConflictError,
+    EvidenceSnapshotIntegrityError,
+    ResultStore,
+)
 from strathmark.variance import run_monte_carlo_simulation
 
 # ---------------------------------------------------------------------------
@@ -266,7 +282,7 @@ class StrictShadowSchema(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-_NAMESPACED_ID_PATTERN = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+_NAMESPACED_ID_PATTERN = NAMESPACED_ID_PATTERN
 
 
 class TrustedCompetitorSchema(StrictShadowSchema):
@@ -276,8 +292,12 @@ class TrustedCompetitorSchema(StrictShadowSchema):
 
 class TrustedWoodSchema(StrictShadowSchema):
     species: str = Field(min_length=1, max_length=100)
-    diameter_mm: float = Field(ge=data_req.MIN_DIAMETER_MM, le=data_req.MAX_DIAMETER_MM)
-    quality: int = Field(ge=1, le=10)
+    diameter_mm: float = Field(
+        strict=True,
+        ge=data_req.MIN_DIAMETER_MM,
+        le=data_req.MAX_DIAMETER_MM,
+    )
+    quality: int = Field(strict=True, ge=1, le=10)
 
 
 class ShadowCalculateRequest(StrictShadowSchema):
@@ -297,8 +317,8 @@ class ShadowCalculateRequest(StrictShadowSchema):
     observation_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     competitors: List[TrustedCompetitorSchema] = Field(min_length=1, max_length=64)
     wood: TrustedWoodSchema
-    seed: int = 20260811
-    timeout_ms: int = Field(default=5000, ge=25, le=10_000)
+    seed: int = Field(default=20260811, strict=True)
+    timeout_ms: int = Field(default=5000, strict=True, ge=25, le=10_000)
 
 
 class ShadowReceiptLookupRequest(StrictShadowSchema):
@@ -307,6 +327,7 @@ class ShadowReceiptLookupRequest(StrictShadowSchema):
     request_id: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     run_revision: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     current_active_fingerprint: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    timeout_ms: int = Field(default=2000, strict=True, ge=25, le=10_000)
 
 
 class ShadowStatusRequest(StrictShadowSchema):
@@ -316,16 +337,31 @@ class ShadowStatusRequest(StrictShadowSchema):
     run_revision: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     current_active_fingerprint: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     model_version: Optional[str] = Field(default=None, max_length=128)
-    timeout_ms: int = Field(default=2000, ge=25, le=10_000)
+    timeout_ms: int = Field(default=2000, strict=True, ge=25, le=10_000)
 
 
-class NumericSettlementRevisionSchema(StrictShadowSchema):
+class NumericSettleRevisionSchema(StrictShadowSchema):
     prediction_id: str = Field(min_length=1, max_length=128)
     competitor_id: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     event_code: Literal["SB", "UH"]
-    action: Literal["settle", "void"]
-    actual_time: Optional[float] = Field(default=None, gt=0, le=MAX_NUMERIC_RAW_TIME_SECONDS)
-    expected_revision: int = Field(ge=0, le=1_000_000)
+    action: Literal["settle"]
+    actual_time: float = Field(strict=True, gt=0, le=MAX_NUMERIC_RAW_TIME_SECONDS)
+    expected_revision: int = Field(strict=True, ge=0, le=1_000_000)
+
+
+class NumericVoidRevisionSchema(StrictShadowSchema):
+    prediction_id: str = Field(min_length=1, max_length=128)
+    competitor_id: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
+    event_code: Literal["SB", "UH"]
+    action: Literal["void"]
+    actual_time: Literal[None] = None
+    expected_revision: int = Field(strict=True, ge=0, le=1_000_000)
+
+
+NumericSettlementRevisionSchema = Annotated[
+    Union[NumericSettleRevisionSchema, NumericVoidRevisionSchema],
+    Field(discriminator="action"),
+]
 
 
 class ShadowNumericOutcomeRequest(StrictShadowSchema):
@@ -338,14 +374,24 @@ class ShadowNumericOutcomeRequest(StrictShadowSchema):
         Literal["corrected_time", "retract_invalid_numeric_evidence", "valid_replacement"]
     ] = None
     revisions: List[NumericSettlementRevisionSchema] = Field(min_length=1, max_length=512)
+    timeout_ms: int = Field(default=5000, strict=True, ge=25, le=10_000)
+
+    @model_validator(mode="after")
+    def require_revision_reason(self) -> "ShadowNumericOutcomeRequest":
+        if (
+            any(item.action == "void" or item.expected_revision > 0 for item in self.revisions)
+            and self.reason_code is None
+        ):
+            raise ValueError("void and correction revisions require an explicit reason_code")
+        return self
 
 
 class ShadowMirrorReplayRequest(StrictShadowSchema):
     schema_version: Literal["strathmark.shadow-mirror-replay.v1"]
     consumer_id: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     run_revision: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
-    limit: int = Field(default=25, ge=1, le=100)
-    timeout_ms: int = Field(default=5000, ge=25, le=10_000)
+    limit: int = Field(default=25, strict=True, ge=1, le=100)
+    timeout_ms: int = Field(default=5000, strict=True, ge=25, le=10_000)
 
 
 class ShadowDriftRequest(StrictShadowSchema):
@@ -353,9 +399,21 @@ class ShadowDriftRequest(StrictShadowSchema):
     consumer_id: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     run_revision: str = Field(min_length=3, max_length=128, pattern=_NAMESPACED_ID_PATTERN)
     model_version: str = Field(min_length=1, max_length=128)
-    lookback_days: int = Field(default=30, ge=1, le=365)
-    baseline_residuals: List[float] = Field(min_length=1, max_length=5000)
-    timeout_ms: int = Field(default=5000, ge=25, le=10_000)
+    lookback_days: int = Field(default=30, strict=True, ge=1, le=365)
+    baseline_residuals: List[
+        Annotated[
+            float,
+            Field(
+                strict=True,
+                ge=-MAX_NUMERIC_RAW_TIME_SECONDS,
+                le=MAX_NUMERIC_RAW_TIME_SECONDS,
+            ),
+        ]
+    ] = Field(
+        min_length=1,
+        max_length=5000,
+    )
+    timeout_ms: int = Field(default=5000, strict=True, ge=25, le=10_000)
 
 
 # ---------------------------------------------------------------------------
@@ -365,13 +423,38 @@ class ShadowDriftRequest(StrictShadowSchema):
 _store: Optional[ResultStore] = None
 _ledger: Optional[PredictionLedger] = None
 _MAX_SHADOW_BODY_BYTES = 262_144
-_SHADOW_OPERATION_SLOTS = threading.BoundedSemaphore(value=2)
-_SHADOW_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="strathmark-shadow")
+_SHADOW_CRITICAL_SLOTS = threading.BoundedSemaphore(value=2)
+_SHADOW_CRITICAL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="strathmark-shadow-critical"
+)
+# Compatibility names retained for existing in-process monitors and tests.
+_SHADOW_OPERATION_SLOTS = _SHADOW_CRITICAL_SLOTS
+_SHADOW_EXECUTOR = _SHADOW_CRITICAL_EXECUTOR
+_SHADOW_RECOVERY_SLOTS = threading.BoundedSemaphore(value=2)
+_SHADOW_RECOVERY_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="strathmark-shadow-recovery"
+)
+_SHADOW_MAINTENANCE_SLOTS = threading.BoundedSemaphore(value=2)
+_SHADOW_MAINTENANCE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="strathmark-shadow-maintenance"
+)
 # The vectorized simulator holds several float/int matrices concurrently. Keep
 # one bounded request below a conservative worker-memory envelope until it is
 # redesigned to aggregate fixed-size batches.
 _MAX_SIMULATION_CELLS = 4_000_000
 _SIMULATION_SLOTS = threading.BoundedSemaphore(value=1)
+
+
+class _DeferredShadowNonceValidation:
+    """Validate an attestation without mutating replay state before evidence preflight."""
+
+    @staticmethod
+    def claim_actor_attestation_nonce(**unused: Any) -> bool:
+        del unused
+        return True
+
+
+_DEFERRED_SHADOW_NONCE_VALIDATION = _DeferredShadowNonceValidation()
 
 
 def get_store() -> ResultStore:
@@ -413,21 +496,28 @@ def get_shadow_service(
 def require_shadow_body_limit(request: Request) -> None:
     """Reject declared oversized trusted bodies before model or ledger work."""
 
-    raw_length = request.headers.get("content-length")
+    _parse_trusted_content_length(request.headers.get("content-length"))
+
+
+def _parse_trusted_content_length(raw_length: str | bytes | None) -> int:
+    """Parse the one declared body bound shared by ASGI and route defenses."""
+
     if raw_length is None:
         raise HTTPException(
             status_code=411,
             detail="Trusted shadow requests require a bounded Content-Length header.",
         )
     try:
-        length = int(raw_length)
-    except ValueError:
+        text = raw_length.decode("ascii") if isinstance(raw_length, bytes) else raw_length
+        length = int(text)
+    except (UnicodeDecodeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
     if length < 0 or length > _MAX_SHADOW_BODY_BYTES:
         raise HTTPException(
             status_code=413,
             detail=f"Trusted shadow request body must not exceed {_MAX_SHADOW_BODY_BYTES} bytes.",
         )
+    return length
 
 
 def _authorize_shadow_action(
@@ -438,6 +528,7 @@ def _authorize_shadow_action(
     actor_id: Optional[str],
     action: str,
     subject_revision: str,
+    request_payload: BaseModel,
     ledger: PredictionLedger,
 ) -> Any:
     try:
@@ -448,6 +539,9 @@ def _authorize_shadow_action(
             expected_actor_id=actor_id,
             expected_action=action,
             expected_subject_revision=subject_revision,
+            expected_request_digest=canonical_shadow_request_digest(
+                request_payload.model_dump(mode="json", exclude_unset=True)
+            ),
             ledger=ledger,
         )
     except ShadowAuthenticationConfigurationError as exc:
@@ -472,11 +566,79 @@ def _receipt_response(receipt: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def _get_current_shadow_monitoring_status(
+    ledger: PredictionLedger,
+    store: ResultStore,
+    req: ShadowStatusRequest,
+    query_deadline: SQLiteQueryDeadline,
+) -> Any:
+    """Overlay ledger aggregates with freshness derived from durable local evidence."""
+
+    receipt = ledger.get_shadow_receipt(
+        req.consumer_id,
+        req.request_id,
+        expected_run_revision=req.run_revision,
+        query_deadline=query_deadline,
+    )
+    query_deadline.raise_if_expired()
+    status = ledger.get_monitoring_status(
+        model_version=req.model_version,
+        caller_id=req.consumer_id,
+        request_id=req.request_id,
+        expected_run_revision=req.run_revision,
+        query_deadline=query_deadline,
+        validated_receipt=receipt,
+    )
+    if status.local_trust != "recorded":
+        return status
+    if receipt is None:
+        return replace(
+            status,
+            local_trust="missing",
+            receipt_freshness="missing",
+            receipt_readiness="not-ready",
+        )
+    current = derive_current_receipt_status(
+        receipt,
+        store,
+        claimed_active_fingerprint=req.current_active_fingerprint,
+        query_deadline=query_deadline,
+    )
+    return replace(
+        status,
+        local_trust=current.status.trust,
+        receipt_freshness=current.status.freshness,
+        receipt_readiness="ready" if current.status.ready_for_review else "not-ready",
+    )
+
+
+def _get_current_shadow_receipt(
+    ledger: PredictionLedger,
+    store: ResultStore,
+    req: ShadowReceiptLookupRequest,
+    query_deadline: SQLiteQueryDeadline,
+) -> Optional[Any]:
+    """Load and project one receipt entirely inside the bounded worker slot."""
+
+    receipt = ledger.get_shadow_receipt(
+        req.consumer_id,
+        req.request_id,
+        expected_run_revision=req.run_revision,
+        query_deadline=query_deadline,
+    )
+    if receipt is None:
+        return None
+    query_deadline.raise_if_expired()
+    return derive_current_receipt_status(
+        receipt,
+        store,
+        claimed_active_fingerprint=req.current_active_fingerprint,
+        query_deadline=query_deadline,
+    )
+
+
 def _run_bounded_shadow_calculation(
-    service: ShadowPredictionService,
-    request: ShadowFieldRequest,
-    competitors: List[CompetitorRecord],
-    wood: WoodProfile,
+    operation: Any,
     *,
     timeout_ms: int,
 ) -> Any:
@@ -485,18 +647,45 @@ def _run_bounded_shadow_calculation(
             status_code=429,
             detail="Trusted shadow calculation capacity is busy. Retry by receipt lookup first.",
         )
-    future = _SHADOW_EXECUTOR.submit(service.calculate, request, competitors, wood)
-    future.add_done_callback(lambda unused: _SHADOW_OPERATION_SLOTS.release())
+    query_deadline = SQLiteQueryDeadline(timeout_seconds=timeout_ms / 1000.0)
+    nonce_claimed = threading.Event()
+
+    def invoke() -> Any:
+        try:
+            return operation(query_deadline, nonce_claimed.set)
+        finally:
+            _SHADOW_OPERATION_SLOTS.release()
+
+    future = _SHADOW_EXECUTOR.submit(invoke)
     try:
         return future.result(timeout=timeout_ms / 1000.0)
-    except FutureTimeoutError:
+    except (FutureTimeoutError, LedgerQueryTimeoutError) as exc:
+        query_deadline.cancel()
+        if not nonce_claimed.is_set():
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    "Trusted calculation evidence preflight timed out without claiming "
+                    "the actor attestation nonce or changing trusted state."
+                ),
+            ) from exc
         raise HTTPException(
             status_code=504,
             detail=(
                 "Trusted calculation outcome is unknown after timeout. "
                 "Recover by receipt lookup before retrying calculation."
             ),
-        )
+        ) from exc
+    except sqlite3.OperationalError as exc:
+        if query_deadline.cancelled:
+            detail = (
+                "Trusted calculation outcome is unknown after timeout. "
+                "Recover by receipt lookup before retrying calculation."
+                if nonce_claimed.is_set()
+                else "Trusted calculation evidence preflight timed out without changing state."
+            )
+            raise HTTPException(status_code=504, detail=detail) from exc
+        raise
 
 
 def _run_bounded_shadow_read(
@@ -504,8 +693,47 @@ def _run_bounded_shadow_read(
     *,
     timeout_ms: int,
     timeout_detail: str,
+    slots: Any = None,
+    executor: Optional[ThreadPoolExecutor] = None,
+    busy_detail: str = "Trusted shadow operation capacity is busy.",
 ) -> Any:
     """Run one cooperative SQLite read and reclaim capacity before timeout response."""
+
+    selected_slots = _SHADOW_RECOVERY_SLOTS if slots is None else slots
+    selected_executor = _SHADOW_RECOVERY_EXECUTOR if executor is None else executor
+    if not selected_slots.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail=busy_detail)
+    query_deadline = SQLiteQueryDeadline(timeout_seconds=timeout_ms / 1000.0)
+
+    def invoke() -> Any:
+        try:
+            return operation(query_deadline)
+        finally:
+            selected_slots.release()
+
+    future = selected_executor.submit(invoke)
+    try:
+        return future.result(timeout=timeout_ms / 1000.0)
+    except (FutureTimeoutError, LedgerQueryTimeoutError) as exc:
+        query_deadline.cancel()
+        try:
+            future.result(timeout=0.5)
+        except (FutureTimeoutError, LedgerQueryTimeoutError, sqlite3.OperationalError):
+            pass
+        raise HTTPException(status_code=504, detail=timeout_detail) from exc
+    except sqlite3.OperationalError as exc:
+        if query_deadline.cancelled:
+            raise HTTPException(status_code=504, detail=timeout_detail) from exc
+        raise
+
+
+def _run_bounded_shadow_write(
+    operation: Any,
+    *,
+    timeout_ms: int,
+    outcome_revision_id: str,
+) -> Any:
+    """Run one atomic SQLite write with an honest ambiguous-timeout contract."""
 
     if not _SHADOW_OPERATION_SLOTS.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Trusted shadow operation capacity is busy.")
@@ -518,14 +746,17 @@ def _run_bounded_shadow_read(
             _SHADOW_OPERATION_SLOTS.release()
 
     future = _SHADOW_EXECUTOR.submit(invoke)
+    timeout_detail = (
+        f"Numeric outcome {outcome_revision_id} may have committed before timeout. "
+        "Recover by retrying only the identical payload with that exact "
+        "outcome_revision_id; an already committed write returns its duplicate result."
+    )
     try:
         return future.result(timeout=timeout_ms / 1000.0)
     except (FutureTimeoutError, LedgerQueryTimeoutError) as exc:
         query_deadline.cancel()
-        try:
-            future.result(timeout=0.5)
-        except (FutureTimeoutError, LedgerQueryTimeoutError, sqlite3.OperationalError):
-            pass
+        # The slot stays owned until the worker actually stops. Releasing it here
+        # could overlap a post-commit continuation with a new trusted write.
         raise HTTPException(status_code=504, detail=timeout_detail) from exc
     except sqlite3.OperationalError as exc:
         if query_deadline.cancelled:
@@ -542,7 +773,12 @@ def require_results_token(authorization: Optional[str] = Header(default=None)) -
             detail="Results endpoints are disabled until STRATHMARK_API_TOKEN is configured.",
         )
     supplied_token = (authorization or "").removeprefix("Bearer ")
-    if not hmac.compare_digest(supplied_token, expected_token):
+    if not expected_token.isascii():
+        raise HTTPException(
+            status_code=503,
+            detail="Results endpoints are disabled because STRATHMARK_API_TOKEN is invalid.",
+        )
+    if not supplied_token.isascii() or not hmac.compare_digest(supplied_token, expected_token):
         raise HTTPException(
             status_code=401, detail="Valid bearer token required for results endpoints."
         )
@@ -655,40 +891,47 @@ def _mark_result_response(result: Any) -> MarkResultResponse:
 
 
 def _ledger_persistence_health(ledger: PredictionLedger) -> Dict[str, Any]:
-    """Observe the active ledger target without altering immutable evidence."""
+    """Read a cached initialization attestation without opening SQLite."""
+
+    cached_health = getattr(ledger, "cached_persistence_health", None)
+    if callable(cached_health):
+        return dict(cached_health())
 
     path = Path(ledger.path)
     memory = str(ledger.path) == ":memory:"
     exists = False if memory else path.is_file()
-    readable = bool(exists and os.access(path, os.R_OK))
-    writable = bool(exists and os.access(path, os.W_OK))
-    read_write_open_observed = False
-    if readable and writable:
-        try:
-            with sqlite3.connect(
-                f"file:{path.as_posix()}?mode=rw",
-                uri=True,
-                timeout=0.1,
-                isolation_level=None,
-            ) as conn:
-                conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-                conn.execute("BEGIN IMMEDIATE")
-                conn.rollback()
-            read_write_open_observed = True
-        except sqlite3.Error:
-            read_write_open_observed = False
-    observed = bool(exists and read_write_open_observed)
     return {
         "configured_as_memory": memory,
         "path_exists": exists,
-        "readable": readable and read_write_open_observed,
-        "writable": writable and read_write_open_observed,
-        "read_write_open_observed": read_write_open_observed,
-        "persistence_observed": observed,
-        "assurance": (
-            "sqlite-read-write-observed-not-durability-proof" if observed else "unverified"
-        ),
+        "readable": False,
+        "writable": False,
+        "read_write_open_observed": False,
+        "persistence_observed": False,
+        "assurance": "unverified",
     }
+
+
+def _require_trusted_shadow_ledger_write_ready(*, ledger: PredictionLedger) -> None:
+    """Require authenticated durable single-writer state before claiming a nonce."""
+
+    topology = os.environ.get("STRATHMARK_TRUSTED_TOPOLOGY", "").strip().lower()
+    topology_ready = topology in {
+        "single-writer-durable",
+        "offline-single-writer-durable",
+    }
+    if not (
+        shadow_auth_configuration_status() == "configured"
+        and topology_ready
+        and _ledger_persistence_health(ledger)["persistence_observed"]
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Trusted shadow writes require configured authentication, an attested "
+                "single-writer durable topology, and a persistent local ledger. "
+                "Recovery reads remain available."
+            ),
+        )
 
 
 class TrustedShadowRequestGate:
@@ -703,17 +946,10 @@ class TrustedShadowRequestGate:
             return
 
         headers = {bytes(key).lower(): bytes(value) for key, value in scope.get("headers", [])}
-        raw_length = headers.get(b"content-length")
-        if raw_length is None:
-            await self._reject(scope, receive, send, 411, "Bounded Content-Length required.")
-            return
         try:
-            declared_length = int(raw_length.decode("ascii"))
-        except (UnicodeDecodeError, ValueError):
-            await self._reject(scope, receive, send, 400, "Invalid Content-Length header.")
-            return
-        if declared_length < 0 or declared_length > _MAX_SHADOW_BODY_BYTES:
-            await self._reject(scope, receive, send, 413, "Trusted shadow body is too large.")
+            declared_length = _parse_trusted_content_length(headers.get(b"content-length"))
+        except HTTPException as exc:
+            await self._reject(scope, receive, send, exc.status_code, str(exc.detail))
             return
         try:
             preauthenticate_shadow_service(headers.get(b"authorization", b"").decode("latin-1"))
@@ -779,6 +1015,21 @@ app = FastAPI(
 app.add_middleware(TrustedShadowRequestGate)
 
 
+@app.exception_handler(RequestValidationError)
+async def closed_request_validation_error(
+    request: Request,
+    error: RequestValidationError,
+) -> JSONResponse:
+    """Keep frozen consumer validation errors on the payload-free shape."""
+
+    if request.url.path != "/health" and not request.url.path.startswith("/v1/shadow/"):
+        return await request_validation_exception_handler(request, error)
+    return JSONResponse(
+        {"detail": "Request failed schema validation."},
+        status_code=422,
+    )
+
+
 @app.get("/health")
 def health(
     prediction_as_of: Optional[date] = None,
@@ -798,36 +1049,26 @@ def health(
         engine_health[component]["serving_active"] = active_engine == "v2"
     ollama_ok = check_ollama_connection()
     store_count = store.count()
-    try:
-        evidence_status = store.get_evidence_snapshot_status()
-    except EvidenceSnapshotIntegrityError:
+    evidence_status = store.cached_evidence_snapshot_status()
+    if evidence_status is None:
         evidence_snapshot = {
             "schema_version": "strathmark.evidence-snapshot-health.v1",
-            "state": "invalid",
-            "integrity": "failed",
+            "state": "missing",
+            "integrity": "unavailable",
             "ready_for_offline": False,
         }
         evidence_ready = False
     else:
-        if evidence_status is None:
-            evidence_snapshot = {
-                "schema_version": "strathmark.evidence-snapshot-health.v1",
-                "state": "missing",
-                "integrity": "unavailable",
-                "ready_for_offline": False,
-            }
-            evidence_ready = False
-        else:
-            evidence_snapshot = {
-                "schema_version": "strathmark.evidence-snapshot-health.v1",
-                "state": "active",
-                "attestation": evidence_status.receipt_projection(),
-                "integrity": evidence_status.integrity,
-                "freshness": evidence_status.freshness,
-                "completeness": evidence_status.completeness,
-                "ready_for_offline": evidence_status.ready_for_offline,
-            }
-            evidence_ready = evidence_status.ready_for_offline
+        evidence_snapshot = {
+            "schema_version": "strathmark.evidence-snapshot-health.v1",
+            "state": "active",
+            "attestation": evidence_status.receipt_projection(),
+            "integrity": evidence_status.integrity,
+            "freshness": evidence_status.freshness,
+            "completeness": evidence_status.completeness,
+            "ready_for_offline": evidence_status.ready_for_offline,
+        }
+        evidence_ready = evidence_status.ready_for_offline
     auth_status = shadow_auth_configuration_status()
     topology = os.environ.get("STRATHMARK_TRUSTED_TOPOLOGY", "").strip().lower()
     topology_attested = topology in {"single-writer-durable", "offline-single-writer-durable"}
@@ -977,6 +1218,7 @@ def lookup_shadow_receipt(
     authorization: Optional[str] = Header(default=None),
     actor_attestation: Optional[str] = Header(default=None, alias="X-STRATHMARK-Actor-Attestation"),
     ledger: PredictionLedger = Depends(get_ledger),
+    store: ResultStore = Depends(get_store),
 ) -> Dict[str, Any]:
     """Recover one exact immutable receipt core without recalculation."""
 
@@ -987,14 +1229,22 @@ def lookup_shadow_receipt(
         actor_id=None,
         action="shadow.receipt.lookup",
         subject_revision=req.run_revision,
+        request_payload=req,
         ledger=ledger,
     )
     try:
-        receipt = ledger.get_shadow_receipt(
-            req.consumer_id,
-            req.request_id,
-            current_active_fingerprint=req.current_active_fingerprint,
-            expected_run_revision=req.run_revision,
+        receipt = _run_bounded_shadow_read(
+            lambda query_deadline: _get_current_shadow_receipt(
+                ledger,
+                store,
+                req,
+                query_deadline,
+            ),
+            timeout_ms=req.timeout_ms,
+            timeout_detail=(
+                "Receipt lookup timed out without changing trusted state. "
+                "Retry the exact receipt lookup; do not recalculate."
+            ),
         )
     except LedgerConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -1019,19 +1269,12 @@ def calculate_shadow_field(
     authorization: Optional[str] = Header(default=None),
     actor_attestation: Optional[str] = Header(default=None, alias="X-STRATHMARK-Actor-Attestation"),
     ledger: PredictionLedger = Depends(get_ledger),
+    store: ResultStore = Depends(get_store),
     service: ShadowPredictionService = Depends(get_shadow_service),
 ) -> Dict[str, Any]:
     """Recover first, or atomically calculate and record one trusted field."""
 
-    _authorize_shadow_action(
-        authorization=authorization,
-        actor_attestation=actor_attestation,
-        consumer_id=req.consumer_id,
-        actor_id=req.operator_id,
-        action="shadow.calculate",
-        subject_revision=req.run_revision,
-        ledger=ledger,
-    )
+    _require_trusted_shadow_ledger_write_ready(ledger=ledger)
     request = ShadowFieldRequest(
         consumer_id=req.consumer_id,
         tournament_id=req.tournament_id,
@@ -1050,12 +1293,67 @@ def calculate_shadow_field(
     )
     competitors = [_to_trusted_competitor_record(item) for item in req.competitors]
     wood = _to_wood_profile(req.wood)
-    try:
-        result = _run_bounded_shadow_calculation(
-            service,
+    # Preserve the frozen authentication failure contract without consuming the
+    # replay nonce. The identical verification runs against the durable ledger
+    # only after the admitted evidence preflight succeeds.
+    _authorize_shadow_action(
+        authorization=authorization,
+        actor_attestation=actor_attestation,
+        consumer_id=req.consumer_id,
+        actor_id=req.operator_id,
+        action="shadow.calculate",
+        subject_revision=req.run_revision,
+        request_payload=req,
+        ledger=_DEFERRED_SHADOW_NONCE_VALIDATION,
+    )
+
+    def calculate_with_verified_evidence(
+        query_deadline: SQLiteQueryDeadline,
+        mark_nonce_claimed: Any,
+    ) -> Any:
+        selection = store.load_evidence_for_competitors(
+            [str(competitor.competitor_id) for competitor in competitors],
+            query_deadline=query_deadline,
+        )
+        if (
+            selection is None
+            or not selection.status.ready_for_offline
+            or selection.status.cutoff != request.prediction_as_of
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Trusted shadow calculation requires current verified local evidence "
+                    "for the exact field cutoff. Receipt recovery and immutable "
+                    "receipt-bound outcomes remain available."
+                ),
+            )
+        store.require_evidence_selection_active(
+            selection,
+            query_deadline=query_deadline,
+        )
+        query_deadline.raise_if_expired()
+        _authorize_shadow_action(
+            authorization=authorization,
+            actor_attestation=actor_attestation,
+            consumer_id=req.consumer_id,
+            actor_id=req.operator_id,
+            action="shadow.calculate",
+            subject_revision=req.run_revision,
+            request_payload=req,
+            ledger=ledger,
+        )
+        mark_nonce_claimed()
+        return service.calculate(
             request,
             competitors,
             wood,
+            evidence_selection=selection,
+        )
+
+    try:
+        result = _run_bounded_shadow_calculation(
+            calculate_with_verified_evidence,
             timeout_ms=req.timeout_ms,
         )
     except LedgerConflictError as exc:
@@ -1064,6 +1362,10 @@ def calculate_shadow_field(
         raise HTTPException(
             status_code=409, detail="Persisted shadow receipt failed integrity checks."
         )
+    except EvidenceSnapshotConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except EvidenceSnapshotIntegrityError:
+        raise HTTPException(status_code=503, detail="Local evidence integrity verification failed.")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return {
@@ -1084,6 +1386,7 @@ def read_shadow_status(
     authorization: Optional[str] = Header(default=None),
     actor_attestation: Optional[str] = Header(default=None, alias="X-STRATHMARK-Actor-Attestation"),
     ledger: PredictionLedger = Depends(get_ledger),
+    store: ResultStore = Depends(get_store),
 ) -> Dict[str, Any]:
     """Return payload-free current trust, freshness, mirror, and evidence axes."""
 
@@ -1094,23 +1397,26 @@ def read_shadow_status(
         actor_id=None,
         action="shadow.status.read",
         subject_revision=req.run_revision,
+        request_payload=req,
         ledger=ledger,
     )
     try:
         status = _run_bounded_shadow_read(
-            lambda query_deadline: ledger.get_monitoring_status(
-                model_version=req.model_version,
-                caller_id=req.consumer_id,
-                request_id=req.request_id,
-                current_active_fingerprint=req.current_active_fingerprint,
-                expected_run_revision=req.run_revision,
-                query_deadline=query_deadline,
+            lambda query_deadline: _get_current_shadow_monitoring_status(
+                ledger,
+                store,
+                req,
+                query_deadline,
             ),
             timeout_ms=req.timeout_ms,
             timeout_detail=("Shadow status read timed out without changing trusted state."),
         )
     except LedgerConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except ShadowReceiptCorruptionError:
+        raise HTTPException(
+            status_code=409, detail="Persisted shadow receipt failed integrity checks."
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return {
@@ -1131,6 +1437,7 @@ def apply_shadow_numeric_outcome(
 ) -> Dict[str, Any]:
     """Append one field-atomic numeric settlement/void projection."""
 
+    _require_trusted_shadow_ledger_write_ready(ledger=ledger)
     actor = _authorize_shadow_action(
         authorization=authorization,
         actor_attestation=actor_attestation,
@@ -1138,17 +1445,23 @@ def apply_shadow_numeric_outcome(
         actor_id=None,
         action="shadow.outcome.apply",
         subject_revision=req.run_revision,
+        request_payload=req,
         ledger=ledger,
     )
     try:
-        result = ledger.apply_numeric_outcome_revision(
-            req.outcome_revision_id,
-            [item.model_dump() for item in req.revisions],
-            caller_id=req.consumer_id,
-            request_id=req.request_id,
-            run_revision=req.run_revision,
-            actor=actor.actor_id,
-            reason_code=req.reason_code,
+        result = _run_bounded_shadow_write(
+            lambda query_deadline: ledger.apply_numeric_outcome_revision(
+                req.outcome_revision_id,
+                [item.model_dump() for item in req.revisions],
+                caller_id=req.consumer_id,
+                request_id=req.request_id,
+                run_revision=req.run_revision,
+                actor=actor.actor_id,
+                reason_code=req.reason_code,
+                query_deadline=query_deadline,
+            ),
+            timeout_ms=req.timeout_ms,
+            outcome_revision_id=req.outcome_revision_id,
         )
     except SettlementConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -1179,16 +1492,17 @@ def replay_shadow_mirror(
         actor_id=None,
         action="shadow.mirror.replay",
         subject_revision=req.run_revision,
+        request_payload=req,
         ledger=ledger,
     )
-    if not _SHADOW_OPERATION_SLOTS.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="Trusted shadow operation capacity is busy.")
-    future = _SHADOW_EXECUTOR.submit(
+    if not _SHADOW_MAINTENANCE_SLOTS.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Shadow maintenance capacity is busy.")
+    future = _SHADOW_MAINTENANCE_EXECUTOR.submit(
         ledger.flush_mirror_outbox,
         limit=req.limit,
         caller_id=req.consumer_id,
     )
-    future.add_done_callback(lambda unused: _SHADOW_OPERATION_SLOTS.release())
+    future.add_done_callback(lambda unused: _SHADOW_MAINTENANCE_SLOTS.release())
     try:
         summary = future.result(timeout=req.timeout_ms / 1000.0)
     except FutureTimeoutError:
@@ -1226,6 +1540,7 @@ def read_shadow_drift(
         actor_id=None,
         action="shadow.drift.read",
         subject_revision=req.run_revision,
+        request_payload=req,
         ledger=ledger,
     )
     try:
@@ -1241,6 +1556,9 @@ def read_shadow_drift(
             ),
             timeout_ms=req.timeout_ms,
             timeout_detail=("Advisory drift evaluation timed out without changing trusted state."),
+            slots=_SHADOW_MAINTENANCE_SLOTS,
+            executor=_SHADOW_MAINTENANCE_EXECUTOR,
+            busy_detail="Shadow maintenance capacity is busy.",
         )
     except DriftRowLimitError as exc:
         raise HTTPException(status_code=413, detail=str(exc))
@@ -1408,3 +1726,61 @@ def get_results(
         }
         for r in history
     ]
+
+
+# Keep the generated documentation for the broad legacy API, but replace the
+# seven trusted-consumer operations with the independently frozen and
+# checksum-verified contract.  This makes /openapi.json and the interactive
+# docs authoritative without allowing a FastAPI/Pydantic upgrade to silently
+# widen a reviewed request or response boundary.
+_generated_openapi = app.openapi
+
+
+def _rewrite_schema_ref(value: Any, *, old: str, new: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "$ref" and child == old:
+                value[key] = new
+            else:
+                _rewrite_schema_ref(child, old=old, new=new)
+    elif isinstance(value, list):
+        for child in value:
+            _rewrite_schema_ref(child, old=old, new=new)
+
+
+def _authoritative_openapi() -> Dict[str, Any]:
+    if app.openapi_schema is not None:
+        return app.openapi_schema
+
+    generated = copy.deepcopy(_generated_openapi())
+    frozen = load_shadow_consumer_contract()
+    generated_components = generated.setdefault("components", {})
+    generated_schemas = generated_components.setdefault("schemas", {})
+    frozen_schemas = frozen["components"]["schemas"]
+
+    # The legacy /calculate request and the shadow calculation request use the
+    # same component name.  Rename only the generated component and its refs
+    # before adding the exact frozen components, preserving both surfaces.
+    for name in sorted(set(generated_schemas).intersection(frozen_schemas)):
+        legacy_name = f"Legacy{name}"
+        if legacy_name in generated_schemas:
+            raise RuntimeError(f"OpenAPI legacy component collision: {legacy_name}")
+        generated_schemas[legacy_name] = generated_schemas.pop(name)
+        _rewrite_schema_ref(
+            generated,
+            old=f"#/components/schemas/{name}",
+            new=f"#/components/schemas/{legacy_name}",
+        )
+
+    for component_kind, components in frozen["components"].items():
+        target = generated_components.setdefault(component_kind, {})
+        for name, component in components.items():
+            target[name] = copy.deepcopy(component)
+    for path, path_item in frozen["paths"].items():
+        generated["paths"][path] = copy.deepcopy(path_item)
+
+    app.openapi_schema = generated
+    return generated
+
+
+app.openapi = _authoritative_openapi

@@ -6,9 +6,11 @@ an injected callable and never contacts Supabase.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
+import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
@@ -679,6 +681,137 @@ def test_explicit_flush_limit_preserves_remaining_durable_work(tmp_path):
             WHERE d.status IS NULL OR d.status != 'recorded'
             """
         ).fetchone() == (1,)
+
+
+def test_explicit_flush_prioritizes_never_attempted_rows_before_failed_retries(tmp_path):
+    attempts = []
+
+    def always_fails(payload):
+        attempts.append(payload["request"]["request_id"])
+        raise OSError("offline")
+
+    path = tmp_path / "fair-flush.db"
+    ledger = PredictionLedger(path)
+    ledger.record_field("api", "oldest", _request_payload(), [_pred()])
+    ledger.record_field("api", "newer", _request_payload(), [_pred()])
+    ledger._mirror = always_fails
+
+    first = ledger.flush_mirror_outbox(limit=1)
+    second = ledger.flush_mirror_outbox(limit=1)
+
+    assert first["failed"] == 1
+    assert second["failed"] == 1
+    assert attempts == ["oldest", "newer"]
+
+
+def test_explicit_flush_retries_oldest_last_attempt_with_deterministic_ties(tmp_path):
+    attempts = []
+
+    def always_fails(payload):
+        attempts.append(payload["request"]["request_id"])
+        raise OSError("offline")
+
+    path = tmp_path / "fair-retry.db"
+    ledger = PredictionLedger(path)
+    for request_id in ("first", "second"):
+        ledger.record_field("api", request_id, _request_payload(), [_pred()])
+    ledger._mirror = always_fails
+    ledger.flush_mirror_outbox(limit=2)
+    attempts.clear()
+    with ledger._connect() as conn:
+        conn.execute(
+            "UPDATE prediction_mirror_delivery SET last_attempt_at = ?",
+            ("2026-08-14T00:00:00+00:00",),
+        )
+
+    ledger.flush_mirror_outbox(limit=1)
+
+    assert attempts == ["first"]
+
+
+def test_pending_mirror_claim_uses_bounded_keyset_pages_without_starvation(tmp_path, monkeypatch):
+    monkeypatch.setattr("strathmark.ledger.MAX_MIRROR_PENDING_SCAN", 2)
+    ledger = PredictionLedger(tmp_path / "pending-keyset.db")
+    for index in range(7):
+        competitor_id = f"competitor-{index}"
+        ledger.record_field(
+            "api",
+            f"keyset-{index}",
+            _request_payload(competitor_id),
+            [_pred(competitor_id)],
+        )
+    with ledger._connect() as conn:
+        ordered = [
+            (str(row["kind"]), str(row["entity_id"]))
+            for row in conn.execute(
+                """
+                SELECT kind, entity_id FROM prediction_mirror_outbox
+                ORDER BY created_at, outbox_id
+                """
+            ).fetchall()
+        ]
+        indexes = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA index_list(prediction_mirror_outbox)").fetchall()
+        }
+    assert "idx_prediction_mirror_outbox_pending_scan" in indexes
+
+    attempted = set(ordered[:5])
+    cursor = None
+    claimed = []
+    exhausted = False
+    for _ in range(10):
+        key, cursor, exhausted = ledger._claim_pending_delivery(attempted, after=cursor)
+        if key is not None:
+            claimed.append(key)
+            attempted.add(key)
+            with ledger._worker_lock:
+                ledger._delivery_in_flight.discard(key)
+        if exhausted:
+            break
+    else:
+        pytest.fail("bounded pending cursor did not reach the end of the durable backlog")
+
+    assert claimed == ordered[5:]
+
+
+def test_automatic_mirror_scan_memory_is_bounded_by_page_not_backlog(tmp_path, monkeypatch):
+    ledger = PredictionLedger(tmp_path / "bounded-auto-scan.db", mirror=lambda payload: None)
+    payload = json.dumps({"schema_version": "test"})
+    backlog = 2_000
+    with ledger._connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO prediction_mirror_outbox (
+                outbox_id, kind, entity_id, payload_json, created_at
+            ) VALUES (?, 'field', ?, ?, ?)
+            """,
+            [
+                (
+                    f"outbox-{index:05d}",
+                    f"entity-{index:05d}",
+                    payload,
+                    f"2026-08-14T00:00:{index // 1_000:02d}.{index:06d}+00:00",
+                )
+                for index in range(backlog)
+            ],
+        )
+    attempts = 0
+
+    def fail_without_allocating(kind, entity_id):
+        nonlocal attempts
+        del kind, entity_id
+        attempts += 1
+        return "failed"
+
+    monkeypatch.setattr(ledger, "_deliver_pending", fail_without_allocating)
+    tracemalloc.start()
+    ledger._mirror_worker_loop()
+    _, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert attempts == backlog
+    assert peak_bytes < 350_000
 
 
 def test_duplicate_retries_pending_cloud_outbox_without_new_local_rows(tmp_path):

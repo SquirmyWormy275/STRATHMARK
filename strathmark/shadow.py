@@ -15,6 +15,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
 from strathmark.features import normalize_prediction_as_of
+from strathmark.identity import IDENTITY_SCHEMA_VERSION, validate_namespaced_identity
 from strathmark.ledger import LedgerConflictError, PredictionLedger, canonical_hash
 from strathmark.predictor import (
     CompetitorRecord,
@@ -25,16 +26,18 @@ from strathmark.predictor import (
 )
 
 if TYPE_CHECKING:
-    from strathmark.store import ResultStore
+    from strathmark.store import (
+        EvidenceSnapshotSelection,
+        QueryDeadline,
+        ResultStore,
+    )
 
 RECEIPT_CORE_SCHEMA_VERSION = "strathmark.shadow-receipt-core.v1"
 ACTIVE_INPUT_SCHEMA_VERSION = "strathmark.shadow-active-input.v1"
-IDENTITY_SCHEMA_VERSION = "strathmark.namespaced-identity.v1"
 OBSERVATION_SCHEMA_VERSION = "strathmark.shadow-observation-fingerprint.v1"
 SHADOW_TARGET_SINGLE_ELAPSED = "single-elapsed-seconds.v1"
 REQUEST_PROJECTION_SCHEMA_VERSION = "strathmark.shadow-request-projection.v1"
 
-_NAMESPACED_ID = re.compile(r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -119,6 +122,9 @@ class ShadowPredictionService:
         request: ShadowFieldRequest,
         competitors: Sequence[CompetitorRecord],
         wood: WoodProfile,
+        *,
+        evidence_selection: EvidenceSnapshotSelection | None = None,
+        query_deadline: QueryDeadline | None = None,
     ) -> ShadowCalculationResult:
         """Recover an exact receipt or calculate and atomically record a new one."""
 
@@ -129,6 +135,7 @@ class ShadowPredictionService:
             request.consumer_id,
             request.request_id,
             expected_run_revision=request.run_revision,
+            query_deadline=query_deadline,
         )
         if existing is not None:
             recorded_projection = existing.core.get("request_projection")
@@ -139,12 +146,19 @@ class ShadowPredictionService:
                 raise LedgerConflictError(
                     "request_id was already used by this caller for a different request"
                 )
-            existing = derive_current_receipt_status(existing, self._result_store)
+            existing = derive_current_receipt_status(
+                existing,
+                self._result_store,
+                query_deadline=query_deadline,
+            )
             return ShadowCalculationResult(receipt=existing, status=existing.status)
 
-        selection = self._result_store.load_evidence_for_competitors(
-            [str(competitor.competitor_id) for competitor in competitors]
-        )
+        selection = evidence_selection
+        if selection is None:
+            selection = self._result_store.load_evidence_for_competitors(
+                [str(competitor.competitor_id) for competitor in competitors],
+                query_deadline=query_deadline,
+            )
         if selection is None:
             raise ValueError(
                 "a verified local evidence snapshot is required before trusted shadow calculation"
@@ -159,6 +173,10 @@ class ShadowPredictionService:
                 "active evidence snapshot cutoff does not match the field cutoff; "
                 "perform an explicit operator refresh"
             )
+        self._result_store.require_evidence_selection_active(
+            selection,
+            query_deadline=query_deadline,
+        )
         effective_competitors = [
             replace(
                 competitor,
@@ -260,8 +278,14 @@ class ShadowPredictionService:
             request.request_id,
             current_active_fingerprint=active_fingerprint,
             expected_run_revision=request.run_revision,
+            query_deadline=query_deadline,
         )
         if receipt is not None:
+            receipt = derive_current_receipt_status(
+                receipt,
+                self._result_store,
+                query_deadline=query_deadline,
+            )
             return ShadowCalculationResult(receipt=receipt, status=receipt.status)
 
         trust = (
@@ -400,12 +424,15 @@ def _request_projection(
 def derive_current_receipt_status(
     receipt: ShadowReceipt,
     result_store: ResultStore,
+    *,
+    claimed_active_fingerprint: str | None = None,
+    query_deadline: QueryDeadline | None = None,
 ) -> ShadowReceipt:
     """Attach a local, read-time evidence view without changing immutable core bytes."""
 
     freshness = "invalid"
     try:
-        current = result_store.get_evidence_snapshot_status()
+        current = result_store.get_evidence_snapshot_status(query_deadline=query_deadline)
         active_input = receipt.core.get("active_input")
         recorded_evidence = (
             active_input.get("evidence_snapshot") if isinstance(active_input, Mapping) else None
@@ -423,9 +450,20 @@ def derive_current_receipt_status(
             else:
                 freshness = "stale"
     except Exception:
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         # Immutable receipt recovery must survive unavailable or corrupt current
         # evidence.  The failure is represented in the mutable live projection.
         freshness = "invalid"
+    if claimed_active_fingerprint is not None and freshness in {"current", "stale"}:
+        active_input = receipt.core.get("active_input")
+        recorded_active_fingerprint = (
+            active_input.get("fingerprint") if isinstance(active_input, Mapping) else None
+        )
+        if recorded_active_fingerprint != claimed_active_fingerprint:
+            freshness = "stale"
+    if query_deadline is not None:
+        query_deadline.raise_if_expired()
     live_status = ShadowLiveStatus(
         trust=receipt.status.trust,
         mirror=receipt.status.mirror,
@@ -433,15 +471,6 @@ def derive_current_receipt_status(
         ready_for_review=receipt.status.trust == "recorded" and freshness == "current",
     )
     return replace(receipt, status=live_status)
-
-
-def validate_namespaced_identity(value: Any, label: str) -> str:
-    text = str(value or "").strip()
-    if len(text) > 128:
-        raise ValueError(f"{label} must be at most 128 characters")
-    if not _NAMESPACED_ID.fullmatch(text):
-        raise ValueError(f"{label} must be namespaced as 'namespace:value'")
-    return text
 
 
 def _validate_digest(value: Any, label: str) -> str:

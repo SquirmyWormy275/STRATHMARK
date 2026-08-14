@@ -16,11 +16,22 @@ BEGIN
         SELECT 1
         FROM pg_catalog.pg_roles
         WHERE rolname = 'strathmark_prediction_rpc_owner'
+          AND NOT rolinherit
+          AND NOT rolsuper
+          AND NOT rolcreatedb
+          AND NOT rolcreaterole
+          AND NOT rolreplication
           AND NOT rolcanlogin
           AND NOT rolbypassrls
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_auth_members AS membership
+              WHERE membership.member = pg_roles.oid
+                 OR membership.roleid = pg_roles.oid
+          )
     ) THEN
         RAISE EXCEPTION
-            'strathmark_prediction_rpc_owner must exist as NOLOGIN NOBYPASSRLS';
+            'strathmark_prediction_rpc_owner must be isolated and unprivileged';
     END IF;
 END;
 $$;
@@ -107,12 +118,48 @@ CREATE TABLE IF NOT EXISTS public.shadow_numeric_settlement_revisions (
     UNIQUE (field_revision_id, prediction_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_shadow_receipt_caller_request
+CREATE INDEX IF NOT EXISTS public.idx_shadow_receipt_caller_request
     ON public.shadow_receipt_cores(caller_id, request_id);
-CREATE INDEX IF NOT EXISTS idx_shadow_numeric_outcome_request
+CREATE INDEX IF NOT EXISTS public.idx_shadow_numeric_outcome_request
     ON public.shadow_numeric_outcome_revisions(ledger_request_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_shadow_numeric_settlement_current
+CREATE INDEX IF NOT EXISTS public.idx_shadow_numeric_settlement_current
     ON public.shadow_numeric_settlement_revisions(prediction_id, revision DESC);
+
+CREATE OR REPLACE FUNCTION public.reject_legacy_settlement_after_shadow_authority()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+    -- Use the same per-prediction lock as both append RPCs.  This closes the
+    -- direct-INSERT race as well as protecting callers that bypass the RPC.
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(NEW.prediction_id, 0)
+    );
+    IF EXISTS (
+        SELECT 1
+        FROM public.shadow_numeric_settlement_revisions AS numeric_authority
+        WHERE numeric_authority.prediction_id = NEW.prediction_id
+    ) THEN
+        RAISE EXCEPTION 'numeric authority rejects legacy settlement append';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+ALTER FUNCTION public.reject_legacy_settlement_after_shadow_authority()
+    OWNER TO strathmark_prediction_rpc_owner;
+REVOKE ALL ON FUNCTION public.reject_legacy_settlement_after_shadow_authority()
+    FROM PUBLIC, anon, authenticated, service_role;
+
+DROP TRIGGER IF EXISTS prediction_ledger_settlements_numeric_authority
+    ON public.prediction_ledger_settlements;
+CREATE CONSTRAINT TRIGGER prediction_ledger_settlements_numeric_authority
+AFTER INSERT ON public.prediction_ledger_settlements
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION public.reject_legacy_settlement_after_shadow_authority();
 
 DROP TRIGGER IF EXISTS shadow_mirror_deliveries_immutable
     ON public.shadow_mirror_deliveries;
@@ -200,6 +247,8 @@ DECLARE
     existing_delivery public.shadow_mirror_deliveries%ROWTYPE;
     existing_receipt public.shadow_receipt_cores%ROWTYPE;
     existing_outcome public.shadow_numeric_outcome_revisions%ROWTYPE;
+    canonical_payload_body pg_catalog.jsonb;
+    canonical_payload_text pg_catalog.text;
     mirror_kind pg_catalog.text;
     caller_namespace pg_catalog.text;
     delivery_exists pg_catalog.boolean := FALSE;
@@ -207,13 +256,14 @@ DECLARE
     prior_revision_id pg_catalog.text;
     prior_action pg_catalog.text;
     prediction_median pg_catalog.numeric;
+    lock_prediction_id pg_catalog.text;
 BEGIN
     IF mirror_payload IS NULL
        OR pg_catalog.jsonb_typeof(mirror_payload) IS DISTINCT FROM 'object' THEN
         RAISE EXCEPTION 'shadow mirror payload must be an object';
     END IF;
-    IF pg_catalog.pg_column_size(mirror_payload) > 1048576 THEN
-        RAISE EXCEPTION 'shadow mirror payload exceeds the 1 MiB limit';
+    IF pg_catalog.pg_column_size(mirror_payload) > 2621440 THEN
+        RAISE EXCEPTION 'shadow mirror transport payload exceeds the 2.5 MiB limit';
     END IF;
     IF mirror_payload->>'schema_version'
        IS DISTINCT FROM 'strathmark.shadow-mirror-envelope.v1' THEN
@@ -265,7 +315,8 @@ BEGIN
         WHERE pg_catalog.lower(node_key) IN (
             'name', 'display_name', 'fatigue', 'fatigue_notes', 'medical',
             'medical_notes', 'weather', 'equipment', 'outcome_history',
-            'context_history', 'penalty', 'dnf', 'dq', 'notes', 'secret'
+            'context_history', 'penalty', 'dnf', 'dq', 'notes', 'secret',
+            'email'
         )
     ) THEN
         RAISE EXCEPTION 'shadow mirror contains prohibited operational or free-text data';
@@ -276,11 +327,12 @@ BEGIN
        OR EXISTS (
            SELECT 1 FROM pg_catalog.jsonb_object_keys(delivery_row) AS key
            WHERE key NOT IN (
-               'schema_version', 'outbox_id', 'entity_id', 'created_at', 'payload_hash'
+               'schema_version', 'outbox_id', 'entity_id', 'created_at',
+               'canonical_payload', 'payload_hash'
            )
        ) OR (
            SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(delivery_row)
-       ) <> 5 THEN
+       ) <> 6 THEN
         RAISE EXCEPTION 'shadow mirror delivery has unknown or missing properties';
     END IF;
     IF delivery_row->>'schema_version'
@@ -289,9 +341,32 @@ BEGIN
        OR pg_catalog.length(delivery_row->>'outbox_id') > 128
        OR NULLIF(delivery_row->>'entity_id', '') IS NULL
        OR pg_catalog.length(delivery_row->>'entity_id') > 128
+       OR pg_catalog.jsonb_typeof(delivery_row->'canonical_payload')
+          IS DISTINCT FROM 'string'
+       OR pg_catalog.octet_length(delivery_row->>'canonical_payload') = 0
+       OR pg_catalog.octet_length(delivery_row->>'canonical_payload') > 1048576
        OR delivery_row->>'payload_hash' !~ '^[0-9a-f]{64}$'
        OR NULLIF(delivery_row->>'created_at', '') IS NULL THEN
         RAISE EXCEPTION 'shadow mirror delivery metadata is invalid';
+    END IF;
+
+    canonical_payload_text := delivery_row->>'canonical_payload';
+    BEGIN
+        canonical_payload_body := canonical_payload_text::pg_catalog.jsonb;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION 'shadow mirror canonical payload is invalid JSON';
+    END;
+    IF canonical_payload_body IS DISTINCT FROM (mirror_payload - 'delivery') THEN
+        RAISE EXCEPTION 'shadow mirror canonical payload semantics do not match';
+    END IF;
+    IF pg_catalog.pg_column_size(canonical_payload_body) > 1048576 THEN
+        RAISE EXCEPTION 'shadow mirror canonical payload exceeds the 1 MiB limit';
+    END IF;
+    IF delivery_row->>'payload_hash' IS DISTINCT FROM pg_catalog.encode(
+        pg_catalog.sha256(pg_catalog.convert_to(canonical_payload_text, 'UTF8')),
+        'hex'
+    ) THEN
+        RAISE EXCEPTION 'shadow mirror canonical payload digest does not match';
     END IF;
 
     SELECT * INTO existing_delivery
@@ -302,7 +377,6 @@ BEGIN
         IF existing_delivery.schema_version IS DISTINCT FROM delivery_row->>'schema_version'
            OR existing_delivery.entity_kind IS DISTINCT FROM mirror_kind
            OR existing_delivery.entity_id IS DISTINCT FROM delivery_row->>'entity_id'
-           OR existing_delivery.payload_hash IS DISTINCT FROM delivery_row->>'payload_hash'
            OR existing_delivery.producer_created_at IS DISTINCT FROM
               (delivery_row->>'created_at')::pg_catalog.timestamptz THEN
             RAISE EXCEPTION 'shadow mirror outbox conflict';
@@ -455,6 +529,372 @@ BEGIN
            OR pg_catalog.pg_column_size(receipt_row->'core') > 786432 THEN
             RAISE EXCEPTION 'shadow receipt schema or size is invalid';
         END IF;
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.jsonb_object_keys(receipt_row->'core') AS key
+            WHERE key NOT IN (
+                'schema_version', 'identity_schema_version', 'consumer_id',
+                'tournament_id', 'event_occurrence_id', 'field_run_id',
+                'operator_id', 'request_id', 'run_revision', 'event_code',
+                'target_contract', 'prediction_as_of', 'cutoff_semantics',
+                'request_projection', 'active_input', 'calculation_input',
+                'observation', 'evidence_snapshot', 'artifact',
+                'evidence_diagnostics', 'ledger', 'created_at', 'predictions'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(receipt_row->'core')
+        ) <> 23 THEN
+            RAISE EXCEPTION 'shadow receipt core has unknown or missing properties';
+        END IF;
+        IF pg_catalog.jsonb_typeof(receipt_row#>'{core,request_projection}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,active_input}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,calculation_input}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,observation}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,evidence_snapshot}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,artifact}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,evidence_diagnostics}')
+              IS DISTINCT FROM 'array'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,ledger}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,predictions}')
+              IS DISTINCT FROM 'array' THEN
+            RAISE EXCEPTION 'shadow receipt core nested shape is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_each(receipt_row->'core') AS member
+            WHERE member.key IN (
+                'schema_version', 'identity_schema_version', 'consumer_id',
+                'tournament_id', 'event_occurrence_id', 'field_run_id',
+                'operator_id', 'request_id', 'run_revision', 'event_code',
+                'target_contract', 'prediction_as_of', 'cutoff_semantics',
+                'created_at'
+            )
+              AND pg_catalog.jsonb_typeof(member.value) IS DISTINCT FROM 'string'
+        )
+           OR receipt_row#>>'{core,target_contract}'
+              IS DISTINCT FROM 'single-elapsed-seconds.v1'
+           OR receipt_row#>>'{core,cutoff_semantics}'
+              IS DISTINCT FROM 'exclusive-utc-date'
+           OR receipt_row#>>'{core,event_code}' NOT IN ('SB', 'UH') THEN
+            RAISE EXCEPTION 'shadow receipt core scalar contract is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM (VALUES
+                (receipt_row#>>'{core,consumer_id}'),
+                (receipt_row#>>'{core,tournament_id}'),
+                (receipt_row#>>'{core,event_occurrence_id}'),
+                (receipt_row#>>'{core,field_run_id}'),
+                (receipt_row#>>'{core,operator_id}'),
+                (receipt_row#>>'{core,request_id}'),
+                (receipt_row#>>'{core,run_revision}')
+            ) AS identity(value)
+            WHERE identity.value
+                    !~ '^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$'
+        ) THEN
+            RAISE EXCEPTION 'shadow receipt core identity namespace is invalid';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,request_projection}'
+            ) AS key
+            WHERE key NOT IN (
+                'schema_version', 'consumer_id', 'tournament_id',
+                'event_occurrence_id', 'field_run_id', 'operator_id',
+                'request_id', 'run_revision', 'event_code', 'target_contract',
+                'prediction_as_of', 'cutoff_semantics', 'schedule_fingerprint',
+                'observation_schema_version', 'observation_fingerprint', 'seed',
+                'competitors', 'wood', 'fingerprint'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,request_projection}'
+            )
+        ) <> 19 THEN
+            RAISE EXCEPTION 'shadow receipt request projection has unknown or missing properties';
+        END IF;
+        IF receipt_row#>>'{core,request_projection,schema_version}'
+              IS DISTINCT FROM 'strathmark.shadow-request-projection.v1'
+           OR receipt_row#>>'{core,request_projection,consumer_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,consumer_id}'
+           OR receipt_row#>>'{core,request_projection,tournament_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,tournament_id}'
+           OR receipt_row#>>'{core,request_projection,event_occurrence_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,event_occurrence_id}'
+           OR receipt_row#>>'{core,request_projection,field_run_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,field_run_id}'
+           OR receipt_row#>>'{core,request_projection,operator_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,operator_id}'
+           OR receipt_row#>>'{core,request_projection,request_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,request_id}'
+           OR receipt_row#>>'{core,request_projection,run_revision}'
+              IS DISTINCT FROM receipt_row#>>'{core,run_revision}'
+           OR receipt_row#>>'{core,request_projection,event_code}'
+              IS DISTINCT FROM receipt_row#>>'{core,event_code}'
+           OR receipt_row#>>'{core,request_projection,target_contract}'
+              IS DISTINCT FROM receipt_row#>>'{core,target_contract}'
+           OR receipt_row#>>'{core,request_projection,prediction_as_of}'
+              IS DISTINCT FROM receipt_row#>>'{core,prediction_as_of}'
+           OR receipt_row#>>'{core,request_projection,cutoff_semantics}'
+              IS DISTINCT FROM receipt_row#>>'{core,cutoff_semantics}'
+           OR receipt_row#>>'{core,request_projection,observation_schema_version}'
+              IS DISTINCT FROM receipt_row#>>'{core,observation,schema_version}'
+           OR receipt_row#>>'{core,request_projection,observation_fingerprint}'
+              IS DISTINCT FROM receipt_row#>>'{core,observation,fingerprint}'
+           OR receipt_row#>>'{core,request_projection,schedule_fingerprint}'
+              !~ '^[0-9a-f]{64}$'
+           OR receipt_row#>>'{core,request_projection,fingerprint}'
+              !~ '^[0-9a-f]{64}$'
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,request_projection,seed}'
+              ) IS DISTINCT FROM 'number'
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,request_projection,competitors}'
+              ) IS DISTINCT FROM 'array'
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,request_projection,wood}'
+              ) IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'shadow receipt request projection linkage is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,request_projection,wood}'
+            ) AS key
+            WHERE key NOT IN ('species', 'diameter_mm', 'quality')
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,request_projection,wood}'
+            )
+        ) <> 3
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,request_projection,wood,species}'
+              ) IS DISTINCT FROM 'string'
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,request_projection,wood,diameter_mm}'
+              ) IS DISTINCT FROM 'number'
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,request_projection,wood,quality}'
+              ) IS DISTINCT FROM 'number' THEN
+            RAISE EXCEPTION 'shadow receipt request wood contract is invalid';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,active_input}') AS key
+            WHERE key NOT IN (
+                'schema_version', 'tournament_id', 'event_occurrence_id',
+                'field_run_id', 'target_contract', 'schedule_fingerprint',
+                'caller_input', 'evidence_snapshot', 'fingerprint'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,active_input}')
+        ) <> 9
+           OR receipt_row#>>'{core,active_input,schema_version}'
+              IS DISTINCT FROM 'strathmark.shadow-active-input.v1'
+           OR receipt_row#>>'{core,active_input,tournament_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,tournament_id}'
+           OR receipt_row#>>'{core,active_input,event_occurrence_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,event_occurrence_id}'
+           OR receipt_row#>>'{core,active_input,field_run_id}'
+              IS DISTINCT FROM receipt_row#>>'{core,field_run_id}'
+           OR receipt_row#>>'{core,active_input,target_contract}'
+              IS DISTINCT FROM receipt_row#>>'{core,target_contract}'
+           OR receipt_row#>>'{core,active_input,schedule_fingerprint}'
+              IS DISTINCT FROM receipt_row#>>'{core,request_projection,schedule_fingerprint}'
+           OR receipt_row#>>'{core,active_input,fingerprint}' !~ '^[0-9a-f]{64}$'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,active_input,caller_input}')
+              IS DISTINCT FROM 'object'
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,active_input,evidence_snapshot}')
+              IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'shadow receipt active input contract is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,active_input,caller_input}'
+            ) AS key
+            WHERE key NOT IN (
+                'event_code', 'prediction_as_of', 'diameter_mm', 'species',
+                'wood_properties', 'seed', 'engine', 'effective_mark_ceiling',
+                'competitors'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,active_input,caller_input}'
+            )
+        ) <> 9
+           OR receipt_row#>'{core,active_input,caller_input,competitors}'
+              IS DISTINCT FROM receipt_row#>'{core,calculation_input,competitors}' THEN
+            RAISE EXCEPTION 'shadow receipt active caller input contract is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,active_input,evidence_snapshot}'
+            ) AS key
+            WHERE key NOT IN (
+                'schema_version', 'snapshot_digest', 'source_schema_version',
+                'source_id', 'source_digest', 'cutoff', 'cutoff_semantics',
+                'captured_at', 'activation_id', 'activation_revision',
+                'previous_activation_id', 'supersedes_snapshot_digest',
+                'completeness', 'supplied_row_count', 'accepted_row_count',
+                'rejected_row_count', 'diagnostics'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,active_input,evidence_snapshot}'
+            )
+        ) <> 17
+           OR receipt_row#>'{core,active_input,evidence_snapshot}' IS DISTINCT FROM (
+               receipt_row#>'{core,evidence_snapshot}' - ARRAY[
+                   'activated_at', 'age_days_at_calculation',
+                   'freshness_at_calculation', 'integrity',
+                   'ready_for_offline_at_calculation'
+               ]::pg_catalog.text[]
+           ) THEN
+            RAISE EXCEPTION 'shadow receipt active evidence snapshot contract is invalid';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,calculation_input}') AS key
+            WHERE key NOT IN (
+                'event_code', 'prediction_as_of', 'diameter_mm', 'species',
+                'wood_properties', 'seed', 'engine', 'effective_mark_ceiling',
+                'competitors'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,calculation_input}')
+        ) <> 9
+           OR pg_catalog.jsonb_typeof(receipt_row#>'{core,calculation_input,competitors}')
+              IS DISTINCT FROM 'array' THEN
+            RAISE EXCEPTION 'shadow receipt calculation input has unknown or missing properties';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,calculation_input,competitors}'
+            ) WITH ORDINALITY AS entrant(item, position)
+            WHERE pg_catalog.jsonb_typeof(item) IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(item) AS key
+                   WHERE key NOT IN (
+                       'competitor_id', 'gender', 'manual_time_override', 'history'
+                   )
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(item)) <> 4
+               OR item->>'competitor_id'
+                  !~ '^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$'
+               OR pg_catalog.jsonb_typeof(item->'history') IS DISTINCT FROM 'array'
+               OR pg_catalog.jsonb_typeof(item->'manual_time_override')
+                  IS DISTINCT FROM 'null'
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.jsonb_array_elements(
+                       receipt_row#>'{core,predictions}'
+                   ) WITH ORDINALITY AS prediction(item, position)
+                   WHERE prediction.position = entrant.position
+                     AND prediction.item->>'competitor_id' = entrant.item->>'competitor_id'
+               )
+        ) OR pg_catalog.jsonb_array_length(
+            receipt_row#>'{core,calculation_input,competitors}'
+        ) IS DISTINCT FROM pg_catalog.jsonb_array_length(receipt_row#>'{core,predictions}') THEN
+            RAISE EXCEPTION 'shadow receipt calculation competitor identities are invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,calculation_input,competitors}'
+            ) AS entrant
+            CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(
+                entrant->'history'
+            ) AS history_row
+            WHERE pg_catalog.jsonb_typeof(history_row) IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(history_row) AS key
+                   WHERE key NOT IN (
+                       'competitor_id', 'event', 'time_seconds', 'result_date',
+                       'diameter_mm', 'species', 'gender', 'janka_hardness',
+                       'specific_gravity', 'crush_strength', 'shear_strength',
+                       'modulus_of_rupture', 'modulus_of_elasticity',
+                       'species_missing'
+                   )
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(history_row))
+                  <> 14
+               OR history_row->>'competitor_id' IS DISTINCT FROM entrant->>'competitor_id'
+               OR history_row->>'competitor_id'
+                  !~ '^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$'
+               OR history_row->>'event' NOT IN ('SB', 'UH')
+               OR history_row->>'gender' NOT IN ('M', 'F', '__MISSING__')
+        ) THEN
+            RAISE EXCEPTION 'shadow receipt calculation history contract is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM (VALUES
+                (receipt_row#>'{core,calculation_input,wood_properties}'),
+                (receipt_row#>'{core,active_input,caller_input,wood_properties}')
+            ) AS wood(value)
+            WHERE pg_catalog.jsonb_typeof(wood.value) IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(wood.value) AS key
+                   WHERE key NOT IN (
+                       'janka_hardness', 'specific_gravity', 'crush_strength',
+                       'shear_strength', 'modulus_of_rupture',
+                       'modulus_of_elasticity', 'species_missing'
+                   )
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(wood.value)) <> 7
+        ) THEN
+            RAISE EXCEPTION 'shadow receipt calculation wood properties are invalid';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,observation}') AS key
+            WHERE key NOT IN ('schema_version', 'fingerprint')
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,observation}')
+        ) <> 2
+           OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,ledger}') AS key
+               WHERE key NOT IN ('request_hash', 'hash_algorithm')
+           )
+           OR (
+               SELECT pg_catalog.count(*)
+               FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,ledger}')
+           ) <> 2
+           OR receipt_row#>>'{core,ledger,request_hash}'
+              IS DISTINCT FROM ledger_row#>>'{request,request_hash}'
+           OR receipt_row#>>'{core,ledger,hash_algorithm}'
+              IS DISTINCT FROM ledger_row#>>'{request,hash_algorithm}'
+           OR receipt_row#>>'{core,event_code}'
+              IS DISTINCT FROM ledger_row#>>'{request,event_code}'
+           OR receipt_row#>>'{core,prediction_as_of}'
+              IS DISTINCT FROM ledger_row#>>'{request,prediction_as_of}'
+           OR receipt_row#>>'{core,created_at}'
+              IS DISTINCT FROM ledger_row#>>'{request,created_at}' THEN
+            RAISE EXCEPTION 'shadow receipt observation or ledger core contract is invalid';
+        END IF;
         IF delivery_row->>'entity_id' IS DISTINCT FROM receipt_row->>'ledger_request_id'
            OR ledger_row#>>'{request,ledger_request_id}'
               IS DISTINCT FROM receipt_row->>'ledger_request_id'
@@ -480,6 +920,180 @@ BEGIN
               IS DISTINCT FROM pg_catalog.split_part(receipt_row->>'request_id', ':', 1) THEN
             RAISE EXCEPTION 'shadow receipt identity namespace is invalid';
         END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,artifact}') AS key
+            WHERE key NOT IN (
+                'provider_source', 'source_digest', 'artifact_digest',
+                'model_version', 'calibration_version', 'residual_version'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,artifact}')
+        ) <> 6 THEN
+            RAISE EXCEPTION 'shadow receipt artifact has unknown or missing properties';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,evidence_snapshot}') AS key
+            WHERE key NOT IN (
+                'schema_version', 'snapshot_digest', 'source_schema_version',
+                'source_id', 'source_digest', 'cutoff', 'cutoff_semantics',
+                'captured_at', 'activation_id', 'activation_revision',
+                'previous_activation_id', 'supersedes_snapshot_digest',
+                'completeness', 'supplied_row_count', 'accepted_row_count',
+                'rejected_row_count', 'diagnostics', 'activated_at',
+                'age_days_at_calculation', 'freshness_at_calculation',
+                'integrity', 'ready_for_offline_at_calculation'
+            )
+        ) OR (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(receipt_row#>'{core,evidence_snapshot}')
+        ) <> 22
+           OR receipt_row#>>'{core,evidence_snapshot,schema_version}'
+              IS DISTINCT FROM 'strathmark.evidence-snapshot.v1'
+           OR receipt_row#>>'{core,evidence_snapshot,source_id}'
+              !~ '^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$'
+           OR receipt_row#>>'{core,evidence_snapshot,snapshot_digest}' !~ '^[0-9a-f]{64}$'
+           OR receipt_row#>>'{core,evidence_snapshot,source_digest}' !~ '^[0-9a-f]{64}$'
+           OR receipt_row#>>'{core,evidence_snapshot,cutoff_semantics}'
+              IS DISTINCT FROM 'exclusive-utc-date'
+           OR pg_catalog.jsonb_typeof(
+                  receipt_row#>'{core,evidence_snapshot,diagnostics}'
+              ) IS DISTINCT FROM 'object' THEN
+            RAISE EXCEPTION 'shadow receipt evidence snapshot contract is invalid';
+        END IF;
+        IF (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_object_keys(
+                receipt_row#>'{core,evidence_snapshot,diagnostics}'
+            )
+        ) > 128
+           OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.jsonb_each(
+                   receipt_row#>'{core,evidence_snapshot,diagnostics}'
+               ) AS member
+               WHERE member.key !~ '^[a-z][a-z0-9_]{0,63}$'
+                  OR CASE
+                      WHEN pg_catalog.jsonb_typeof(member.value) = 'number'
+                      THEN (member.value#>>'{}') !~ '^(0|[1-9][0-9]*)$'
+                        OR (member.value#>>'{}')::pg_catalog.numeric < 0
+                        OR (member.value#>>'{}')::pg_catalog.numeric > 2147483647
+                        OR pg_catalog.floor((member.value#>>'{}')::pg_catalog.numeric)
+                           IS DISTINCT FROM (member.value#>>'{}')::pg_catalog.numeric
+                      ELSE TRUE
+                  END
+           ) THEN
+            RAISE EXCEPTION
+                'shadow receipt evidence snapshot diagnostics must be a bounded count map';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,evidence_diagnostics}'
+            ) AS item
+            WHERE pg_catalog.jsonb_typeof(item) IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(item) AS key
+                   WHERE key NOT IN (
+                       'ordinal', 'competitor_id', 'total_rows', 'included_rows',
+                       'excluded_rows', 'excluded_by_reason',
+                       'canonicalization_version'
+                   )
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(item)) <> 7
+               OR item->>'competitor_id'
+                  !~ '^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$'
+               OR pg_catalog.jsonb_typeof(item->'excluded_by_reason') IS DISTINCT FROM 'object'
+        ) THEN
+            RAISE EXCEPTION 'shadow receipt evidence diagnostics contract is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,evidence_diagnostics}'
+            ) AS item
+            WHERE EXISTS (
+                SELECT 1
+                FROM pg_catalog.jsonb_each(item) AS member
+                WHERE member.key IN (
+                    'ordinal', 'total_rows', 'included_rows', 'excluded_rows'
+                )
+                  AND CASE
+                      WHEN pg_catalog.jsonb_typeof(member.value) = 'number'
+                      THEN (member.value#>>'{}') !~ '^(0|[1-9][0-9]*)$'
+                        OR (member.value#>>'{}')::pg_catalog.numeric < 0
+                        OR (member.value#>>'{}')::pg_catalog.numeric > 2147483647
+                        OR pg_catalog.floor((member.value#>>'{}')::pg_catalog.numeric)
+                           IS DISTINCT FROM (member.value#>>'{}')::pg_catalog.numeric
+                      ELSE TRUE
+                  END
+            )
+        ) THEN
+            RAISE EXCEPTION
+                'shadow receipt evidence diagnostic counts must be bounded nonnegative integers';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,evidence_diagnostics}'
+            ) AS item
+            WHERE pg_catalog.jsonb_typeof(item->'canonicalization_version')
+                  IS DISTINCT FROM 'string'
+               OR NULLIF(pg_catalog.btrim(item->>'canonicalization_version'), '') IS NULL
+               OR pg_catalog.octet_length(item->>'canonicalization_version') > 128
+        ) THEN
+            RAISE EXCEPTION
+                'shadow receipt evidence canonicalization_version is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,evidence_diagnostics}'
+            ) AS item
+            WHERE (
+                SELECT pg_catalog.count(*)
+                FROM pg_catalog.jsonb_object_keys(item->'excluded_by_reason')
+            ) > 128
+               OR EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.jsonb_each(item->'excluded_by_reason') AS member
+                   WHERE member.key !~ '^[a-z][a-z0-9_]{0,63}$'
+                      OR CASE
+                          WHEN pg_catalog.jsonb_typeof(member.value) = 'number'
+                          THEN (member.value#>>'{}') !~ '^(0|[1-9][0-9]*)$'
+                            OR (member.value#>>'{}')::pg_catalog.numeric < 0
+                            OR (member.value#>>'{}')::pg_catalog.numeric > 2147483647
+                            OR pg_catalog.floor((member.value#>>'{}')::pg_catalog.numeric)
+                               IS DISTINCT FROM (member.value#>>'{}')::pg_catalog.numeric
+                          ELSE TRUE
+                      END
+               )
+        ) THEN
+            RAISE EXCEPTION 'shadow receipt excluded_by_reason must be a bounded count map';
+        END IF;
+        IF pg_catalog.jsonb_array_length(receipt_row#>'{core,evidence_diagnostics}')
+              IS DISTINCT FROM pg_catalog.jsonb_array_length(receipt_row#>'{core,predictions}')
+           OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.jsonb_array_elements(
+                   receipt_row#>'{core,evidence_diagnostics}'
+               ) WITH ORDINALITY AS diagnostic(item, position)
+               WHERE (diagnostic.item->>'ordinal')::pg_catalog.numeric
+                     IS DISTINCT FROM (diagnostic.position - 1)::pg_catalog.numeric
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM pg_catalog.jsonb_array_elements(
+                          receipt_row#>'{core,predictions}'
+                      ) WITH ORDINALITY AS prediction(item, position)
+                      WHERE prediction.position = diagnostic.position
+                        AND prediction.item->>'competitor_id'
+                            = diagnostic.item->>'competitor_id'
+                  )
+           ) THEN
+            RAISE EXCEPTION 'shadow receipt evidence diagnostic identities are invalid';
+        END IF;
         IF pg_catalog.jsonb_typeof(receipt_row#>'{core,predictions}')
               IS DISTINCT FROM 'array'
            OR pg_catalog.jsonb_array_length(receipt_row#>'{core,predictions}') = 0
@@ -487,6 +1101,156 @@ BEGIN
            OR pg_catalog.jsonb_array_length(receipt_row#>'{core,predictions}')
               IS DISTINCT FROM pg_catalog.jsonb_array_length(ledger_row->'predictions') THEN
             RAISE EXCEPTION 'shadow receipt predictions are incomplete';
+        END IF;
+        IF (
+            SELECT pg_catalog.count(*)
+            FROM pg_catalog.jsonb_array_elements(receipt_row#>'{core,predictions}') AS item
+        ) IS DISTINCT FROM (
+            SELECT pg_catalog.count(DISTINCT item->>'prediction_id')
+            FROM pg_catalog.jsonb_array_elements(receipt_row#>'{core,predictions}') AS item
+        )
+           OR EXISTS (
+               SELECT 1
+               FROM pg_catalog.jsonb_array_elements(ledger_row->'predictions') AS item
+               WHERE NOT EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.jsonb_array_elements(
+                       receipt_row#>'{core,predictions}'
+                   ) AS core_item
+                   WHERE core_item->>'prediction_id' = item->>'prediction_id'
+               )
+           ) THEN
+            RAISE EXCEPTION
+                'shadow receipt prediction identities are incomplete or duplicated';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,predictions}'
+            ) WITH ORDINALITY AS core_prediction(item, position)
+            WHERE pg_catalog.jsonb_typeof(item) IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(item) AS key
+                   WHERE key NOT IN (
+                       'ordinal', 'prediction_id', 'competitor_id', 'event_code',
+                       'median_seconds', 'assigned_mark', 'source',
+                       'training_eligible', 'versions', 'evidence_cutoff',
+                       'interval', 'optimizer', 'optimizer_metadata', 'warnings',
+                       'ignored_factors'
+                   )
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(item)) <> 15
+               OR pg_catalog.jsonb_typeof(item->'ordinal') IS DISTINCT FROM 'number'
+               OR (item->>'ordinal')::pg_catalog.numeric
+                  IS DISTINCT FROM (position - 1)::pg_catalog.numeric
+               OR NULLIF(item->>'prediction_id', '') IS NULL
+               OR pg_catalog.length(item->>'prediction_id') > 128
+               OR item->>'competitor_id'
+                  !~ '^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$'
+               OR pg_catalog.jsonb_typeof(item->'versions') IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(item->'versions') AS key
+                   WHERE key NOT IN ('engine', 'model', 'calibration')
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(item->'versions'))
+                  <> 3
+               OR pg_catalog.jsonb_typeof(item->'interval') IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(item->'interval') AS key
+                   WHERE key NOT IN (
+                       'lower', 'upper', 'nominal_coverage',
+                       'calibration_state', 'scope'
+                   )
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(item->'interval'))
+                  <> 5
+               OR pg_catalog.jsonb_typeof(item->'optimizer_metadata')
+                  IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.jsonb_object_keys(item->'optimizer_metadata') AS key
+                   WHERE key NOT IN (
+                       'optimizer', 'simulations', 'seed', 'passes', 'reason',
+                       'search_strategy', 'objective', 'legacy_objective'
+                   )
+               )
+               OR (
+                   SELECT pg_catalog.count(*)
+                   FROM pg_catalog.jsonb_object_keys(item->'optimizer_metadata')
+               ) NOT IN (5, 8)
+               OR NOT (item->'optimizer_metadata') ?& ARRAY[
+                   'optimizer', 'simulations', 'seed', 'passes', 'reason'
+               ]::pg_catalog.text[]
+               OR (
+                   (SELECT pg_catalog.count(*)
+                    FROM pg_catalog.jsonb_object_keys(item->'optimizer_metadata')) = 8
+                   AND NOT (item->'optimizer_metadata') ?& ARRAY[
+                       'search_strategy', 'objective', 'legacy_objective'
+                   ]::pg_catalog.text[]
+               )
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.jsonb_array_elements(
+                       ledger_row->'predictions'
+                   ) WITH ORDINALITY AS ledger_prediction(item, position)
+                   WHERE ledger_prediction.item->>'prediction_id'
+                         = core_prediction.item->>'prediction_id'
+                     AND ledger_prediction.position = core_prediction.position
+                     AND core_prediction.item = pg_catalog.jsonb_build_object(
+                         'ordinal', ledger_prediction.position - 1,
+                         'prediction_id', ledger_prediction.item->'prediction_id',
+                         'competitor_id', ledger_prediction.item->'competitor_id',
+                         'event_code', ledger_prediction.item->'event_code',
+                         'median_seconds', ledger_prediction.item->'median_seconds',
+                         'assigned_mark', ledger_prediction.item->'assigned_mark',
+                         'source', ledger_prediction.item->'source',
+                         'training_eligible', ledger_prediction.item->'training_eligible',
+                         'versions', pg_catalog.jsonb_build_object(
+                             'engine', ledger_prediction.item->'engine_version',
+                             'model', ledger_prediction.item->'model_version',
+                             'calibration', ledger_prediction.item->'calibration_version'
+                         ),
+                         'evidence_cutoff', ledger_prediction.item->'evidence_cutoff',
+                         'interval', pg_catalog.jsonb_build_object(
+                             'lower', ledger_prediction.item->'interval_lower',
+                             'upper', ledger_prediction.item->'interval_upper',
+                             'nominal_coverage', ledger_prediction.item->'interval_coverage',
+                             'calibration_state', ledger_prediction.item->'interval_state',
+                             'scope', ledger_prediction.item->'interval_scope'
+                         ),
+                         'optimizer', ledger_prediction.item->'optimizer',
+                         'optimizer_metadata', ledger_prediction.item->'optimizer_metadata',
+                         'warnings', ledger_prediction.item->'warnings',
+                         'ignored_factors', ledger_prediction.item->'ignored_factors'
+                     )
+               )
+        ) THEN
+            RAISE EXCEPTION 'shadow receipt prediction contract is invalid';
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_catalog.jsonb_array_elements(
+                receipt_row#>'{core,request_projection,competitors}'
+            ) WITH ORDINALITY AS entrant(item, position)
+            WHERE pg_catalog.jsonb_typeof(item) IS DISTINCT FROM 'object'
+               OR EXISTS (
+                   SELECT 1 FROM pg_catalog.jsonb_object_keys(item) AS key
+                   WHERE key NOT IN ('competitor_id', 'gender')
+               )
+               OR (SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(item)) <> 2
+               OR item->>'gender' NOT IN ('M', 'F', 'UNKNOWN')
+               OR NOT EXISTS (
+                   SELECT 1
+                   FROM pg_catalog.jsonb_array_elements(
+                       receipt_row#>'{core,predictions}'
+                   ) WITH ORDINALITY AS prediction(item, position)
+                   WHERE prediction.position = entrant.position
+                     AND prediction.item->>'competitor_id' = entrant.item->>'competitor_id'
+               )
+        ) OR pg_catalog.jsonb_array_length(
+            receipt_row#>'{core,request_projection,competitors}'
+        ) IS DISTINCT FROM pg_catalog.jsonb_array_length(receipt_row#>'{core,predictions}') THEN
+            RAISE EXCEPTION 'shadow receipt request competitor identities are invalid';
         END IF;
 
         IF delivery_exists THEN
@@ -738,6 +1502,19 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'numeric settlement revision linkage or value is invalid';
     END IF;
+
+    -- A numeric envelope may revise several predictions.  Take every shared
+    -- authority lock in deterministic prediction-ID order before inspecting
+    -- either legacy or shadow history, preventing split authority and deadlock.
+    FOR lock_prediction_id IN
+        SELECT DISTINCT item->>'prediction_id' AS prediction_id
+        FROM pg_catalog.jsonb_array_elements(outcome_row->'revisions') AS item
+        ORDER BY prediction_id
+    LOOP
+        PERFORM pg_catalog.pg_advisory_xact_lock(
+            pg_catalog.hashtextextended(lock_prediction_id, 0)
+        );
+    END LOOP;
 
     IF delivery_exists THEN
         SELECT * INTO existing_outcome

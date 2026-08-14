@@ -126,8 +126,8 @@ the tournament manager's domain contract.
   - lifecycle: draft, prepared, preflight-approved, calculated, reviewed,
     shadow-issued, outcomes-complete, superseded, cancelled;
   - trust: unrecorded, recorded, conflict, write-failed;
-  - mirror: not-configured, pending, recorded, retryable-failed,
-    permanent-failed;
+  - mirror: not-configured, pending, recorded, retryable-failed; a terminal
+    `permanent-failed` policy is deferred until archive/recovery rules are approved;
   - freshness: current, stale;
   - outcomes: none, partial, complete, corrected.
   Persist only lifecycle decisions and their optimistic-concurrency revision.
@@ -227,7 +227,7 @@ explicit unknown value, and no unknown inactive factor blocks shadow issuance.
 - **R30.** Database rehearsal uses a disposable, Supabase-shaped PostgreSQL
   instance with prerequisite tables and roles. A blank generic database is not
   accepted as proof, and no hosted production project is contacted.
-- **R31.** The executable matrix applies and exercises migrations 005/006, forced
+- **R31.** The executable matrix applies and exercises migrations 005/006/007, forced
   RLS, grants, triggers, indexes, security-definer RPC behavior, exact retry,
   conflict, FK rollback, settlement/correction atomicity, and rerun idempotency.
   Every new security-definer function uses a dedicated non-login owner, an empty
@@ -256,9 +256,16 @@ explicit unknown value, and no unknown inactive factor blocks shadow issuance.
   for the approved multi-season evidence purpose. Production retention/deletion
   activation requires a later operator-approved policy.
 - **R37.** All external requests and exports have versioned schemas and explicit
-  size, cardinality, string, nesting, pagination, concurrency, timeout, and outbox
-  capacity limits. Unknown properties and oversized inputs fail before calculation
-  or persistence.
+  size, cardinality, string, nesting, pagination, concurrency, and timeout limits.
+  Outbox scans, replay batches, and concurrent delivery work are bounded. The durable
+  append-only queue itself is not hard-capped because silently deleting undelivered
+  evidence would violate R14; archive/compaction, finite-capacity, and terminal-failure
+  policy remain an explicit follow-up. Unknown properties and oversized inputs fail
+  before calculation or persistence. Calculation evidence verification is admitted
+  to the bounded critical pool and charged to the request deadline before the actor
+  nonce is claimed; verified selection is handed to hydration with an activation-tip
+  compare-and-swap check. Snapshot rows are verified as a stream, and automatic mirror
+  traversal retains only bounded page/cursor state rather than one key per backlog row.
 - **R38.** Before offline operation, a verified prior-history snapshot is refreshed
   into STRATHMARK's durable local result store. Preflight and receipts expose its
   source, cutoff, age, completeness, and digest; offline calculation and freshness
@@ -288,8 +295,9 @@ explicit unknown value, and no unknown inactive factor blocks shadow issuance.
 
 - **F1 — Database rehearsal:** create disposable Supabase-shaped PostgreSQL ->
   seed stable prerequisites -> apply 005 -> prove raw-v1 and active-v2 rejection ->
-  apply 006 -> replay and prove RLS/RPC/atomicity -> prove safe rollback boundary ->
-  destroy disposable database.
+  apply 006 -> replay active-v2 -> apply 007 -> prove shadow receipt/numeric revision
+  RLS/RPC/atomicity -> prove each guarded rollback boundary -> destroy disposable
+  database.
 - **F2 — Prepare:** operator configures a shadow-capable event -> resolves stable
   identities and wood -> completes scheduling/field prep -> selects explicit cutoff
   -> freezes an ordered whole-field input snapshot -> preflight approves that exact
@@ -315,7 +323,7 @@ explicit unknown value, and no unknown inactive factor blocks shadow issuance.
 
 ### Acceptance Examples
 
-- **AE1.** Applying migrations 005/006 to the disposable fixture proves actual
+- **AE1.** Applying migrations 005/006/007 to the disposable fixture proves actual
   service-role RPC access while anon/authenticated direct read/write and direct
   table mutation fail under forced RLS.
 - **AE2.** The same caller/request/input after an artifact upgrade retrieves the
@@ -352,7 +360,7 @@ explicit unknown value, and no unknown inactive factor blocks shadow issuance.
 ### Success Criteria
 
 - **SC1.** Disposable PostgreSQL behavior proof is executable locally and in CI,
-  isolates all credentials/data, and covers the full 005/006 matrix.
+  isolates all credentials/data, and covers the full 005/006/007 matrix.
 - **SC2.** STRATHMARK returns and retrieves immutable field receipts with exact
   core replay across restart/artifact upgrade and field-atomic numeric settlement
   or void revisions.
@@ -484,7 +492,7 @@ flowchart LR
     ADAPTER --> SHADOW["Versioned shadow facade"]
     SHADOW --> CALC["V2 calculator and optimizer"]
     SHADOW --> LEDGER["Durable single-writer local ledger"]
-    LEDGER --> OUTBOX["Bounded mirror outbox"]
+    LEDGER --> OUTBOX["Durable append-only mirror outbox"]
     OUTBOX -. "best effort" .-> CLOUD["Supabase mirror"]
     OPS --> SCORE["Existing official scoring and payouts"]
     SHADOW -. "recommendation only" .-> UI
@@ -526,7 +534,7 @@ sequenceDiagram
         S->>L: Atomic receipt and predictions
         L-->>S: Durable receipt ID
         S-->>M: Trusted receipt
-        L-->>C: Bounded asynchronous mirror
+        L-->>C: Asynchronous mirror via bounded batches
     end
 ```
 
@@ -538,9 +546,10 @@ sequenceDiagram
     T->>P: Apply migration 005
     T->>P: Prove raw-v1 works and active-v2 rejects
     T->>P: Apply migration 006 and replay active-v2
+    T->>P: Apply migration 007 and replay shadow evidence
     T->>P: Exercise RLS, RPC, retries, conflicts, and rollback
-    T->>P: Roll back before active evidence, then reapply
-    T->>P: Insert active-v2 and prove rollback refusal
+    T->>P: Roll back before active evidence, then reapply 006/007
+    T->>P: Insert active evidence and prove guarded rollback refusal
     T->>P: Destroy disposable database
 ```
 
@@ -586,6 +595,8 @@ sequenceDiagram
 - The future feature-schema and promotion criteria after multiple seasons of
   prospective context.
 - Event-specific multi-run/best-run target definitions.
+- Durable mirror-outbox archive/compaction, finite-capacity behavior that preserves
+  undelivered evidence, and terminal/permanent-failure classification and recovery.
 
 ### System-Wide Impact
 
@@ -615,8 +626,10 @@ sequenceDiagram
   settlement/void revisions. Training/drift uses only the latest eligible numeric
   revision.
 - **Performance:** calculation remains one bundle snapshot per field with no hot-
-  path training; receipt lookup avoids duplicate computation; mirror work remains
-  bounded/off-path.
+  path training; receipt lookup avoids duplicate computation; mirror scans, batches,
+  deadlines, and concurrency remain bounded/off-path. The durable append-only queue
+  has no destructive finite cap pending the policy recorded under Deferred Product
+  Questions and `TODOS.md`.
 - **Documentation:** both repos' canonical docs, operator runbooks, deployment/
   persistence notes, API examples, stale cascade pages, and wiki sources must
   agree on the new boundary.
@@ -645,9 +658,11 @@ sequenceDiagram
 - **RISK7 — Bad correction contaminates model evidence.** Current positive-time-only
   correction cannot retract. Mitigation: append-only void revisions and latest-
   revision eligibility before any automatic Missoula settlement.
-- **RISK8 — Race-day cloud outage.** Mitigation: durable local authority, bounded
-  outbox, exact restart lookup, verified local history snapshot, checksummed
-  operator export, visible backlog, and nonblocking mirror.
+- **RISK8 — Race-day cloud outage or unbounded backlog growth.** Mitigation: durable
+  local authority, bounded scans/replay/concurrency, exact restart lookup, verified
+  local history snapshot, checksummed operator export, visible count/oldest-age
+  backlog, disk provisioning or mirror disablement, and nonblocking mirror. A safe
+  archive/compaction and finite-capacity policy remains active follow-up work.
 - **RISK9 — Scope collision with dirty Missoula work.** Mitigation: isolated
   worktree, file-level reconciliation before PR, no staging/discard in original.
 - **RISK10 — Context accidentally becomes a model feature.** Mitigation: separate
@@ -669,7 +684,8 @@ sequenceDiagram
 
 - STRATHMARK patterns: `strathmark/ledger.py`, `strathmark/calculator.py`,
   `strathmark/api.py`, `strathmark/drift.py`, `strathmark/store.py`, migrations
-  `20260811_005_prediction_v2.sql` and `20260813_006_prediction_hash_algorithm.sql`,
+  `20260811_005_prediction_v2.sql`, `20260813_006_prediction_hash_algorithm.sql`, and
+  `20260813_007_shadow_mirror_contract.sql`,
   `docs/PREDICTION_ENGINE_V2.md`, and `docs/DEPLOYMENT.md`.
 - Missoula authority and seams: `docs/DOMAIN_CONTRACT.md`,
   `docs/MARK_ASSIGNMENT_WORKFLOW.md`, `models/event.py`,

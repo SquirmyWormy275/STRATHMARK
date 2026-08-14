@@ -18,18 +18,31 @@ BEGIN
         FROM pg_catalog.pg_roles
         WHERE rolname = 'strathmark_prediction_rpc_owner'
     ) THEN
-        CREATE ROLE strathmark_prediction_rpc_owner NOLOGIN NOBYPASSRLS;
+        CREATE ROLE strathmark_prediction_rpc_owner
+            NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION
+            NOLOGIN NOBYPASSRLS;
     END IF;
 
     IF NOT EXISTS (
         SELECT 1
         FROM pg_catalog.pg_roles
         WHERE rolname = 'strathmark_prediction_rpc_owner'
+          AND NOT rolinherit
+          AND NOT rolsuper
+          AND NOT rolcreatedb
+          AND NOT rolcreaterole
+          AND NOT rolreplication
           AND NOT rolcanlogin
           AND NOT rolbypassrls
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_auth_members AS membership
+              WHERE membership.member = pg_roles.oid
+                 OR membership.roleid = pg_roles.oid
+          )
     ) THEN
         RAISE EXCEPTION
-            'strathmark_prediction_rpc_owner must be NOLOGIN NOBYPASSRLS';
+            'strathmark_prediction_rpc_owner must be isolated and unprivileged';
     END IF;
 END;
 $$;

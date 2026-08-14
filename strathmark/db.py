@@ -145,6 +145,7 @@ import json
 import logging
 import math
 import os
+import re
 import statistics
 from datetime import date
 from typing import Any, Dict, List, Mapping, Optional
@@ -1647,6 +1648,7 @@ _MIRROR_DELIVERY_FIELDS = {
     "outbox_id",
     "entity_id",
     "created_at",
+    "canonical_payload",
     "payload_hash",
 }
 _NUMERIC_OUTCOME_MIRROR_FIELDS = {
@@ -1687,6 +1689,20 @@ _FORBIDDEN_SHADOW_KEYS = {
     "dq",
     "notes",
     "secret",
+    "email",
+}
+_MACHINE_COUNT_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_MAX_EVIDENCE_COUNT_MAP_ENTRIES = 128
+_MAX_EVIDENCE_COUNT = 2_147_483_647
+_MAX_CANONICALIZATION_VERSION_BYTES = 128
+_EVIDENCE_DIAGNOSTIC_FIELDS = {
+    "ordinal",
+    "competitor_id",
+    "total_rows",
+    "included_rows",
+    "excluded_rows",
+    "excluded_by_reason",
+    "canonicalization_version",
 }
 
 
@@ -1706,6 +1722,49 @@ def _require_exact_fields(record: Mapping[str, Any], expected: set[str], label: 
 
 def _is_json_number(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def _validate_bounded_machine_count_map(value: Any, label: str) -> None:
+    if not isinstance(value, Mapping) or len(value) > _MAX_EVIDENCE_COUNT_MAP_ENTRIES:
+        raise ValueError(f"{label} must be a bounded machine count map")
+    for key, count in value.items():
+        if (
+            not isinstance(key, str)
+            or _MACHINE_COUNT_KEY.fullmatch(key) is None
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 0 <= count <= _MAX_EVIDENCE_COUNT
+        ):
+            raise ValueError(f"{label} must be a bounded machine count map")
+
+
+def _validate_evidence_diagnostic(diagnostic: Mapping[str, Any]) -> None:
+    _require_exact_fields(
+        diagnostic,
+        _EVIDENCE_DIAGNOSTIC_FIELDS,
+        "shadow receipt evidence diagnostic",
+    )
+    for key in ("ordinal", "total_rows", "included_rows", "excluded_rows"):
+        value = diagnostic.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= _MAX_EVIDENCE_COUNT
+        ):
+            raise ValueError(
+                "shadow receipt evidence diagnostic counts must be bounded nonnegative integers"
+            )
+    version = diagnostic.get("canonicalization_version")
+    if (
+        not isinstance(version, str)
+        or not version.strip()
+        or len(version.encode("utf-8")) > _MAX_CANONICALIZATION_VERSION_BYTES
+    ):
+        raise ValueError("shadow receipt evidence diagnostic canonicalization_version is invalid")
+    _validate_bounded_machine_count_map(
+        diagnostic.get("excluded_by_reason"),
+        "shadow receipt excluded_by_reason",
+    )
 
 
 def _validate_shadow_ledger_projection(ledger: Mapping[str, Any]) -> None:
@@ -1804,6 +1863,11 @@ def _validate_shadow_ledger_projection(ledger: Mapping[str, Any]) -> None:
 
 
 def _validate_legacy_mirror_payload(payload: Mapping[str, Any]) -> None:
+    try:
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ledger mirror payload must be finite JSON") from exc
+    _reject_forbidden_shadow_keys(payload)
     keys = set(payload)
     if keys == {"request", "predictions", "features"}:
         request = payload["request"]
@@ -1811,29 +1875,68 @@ def _validate_legacy_mirror_payload(payload: Mapping[str, Any]) -> None:
         features = payload["features"]
         if not isinstance(request, Mapping):
             raise ValueError("ledger request mirror row must be an object")
-        _reject_extra_fields(request, _LEDGER_REQUEST_FIELDS, "request")
-        if request.get("hash_algorithm") not in {"raw-v1", "active-v2"}:
+        request_fields = set(request)
+        legacy_request_fields = _LEDGER_REQUEST_FIELDS - {"hash_algorithm"}
+        if request_fields != _LEDGER_REQUEST_FIELDS and request_fields != legacy_request_fields:
+            missing = sorted(legacy_request_fields - request_fields)
+            extras = sorted(request_fields - _LEDGER_REQUEST_FIELDS)
+            raise ValueError(f"invalid request fields: missing={missing}, extra={extras}")
+        hash_algorithm = request.get("hash_algorithm", "raw-v1")
+        if hash_algorithm not in {"raw-v1", "active-v2"}:
             raise ValueError("ledger request hash_algorithm is invalid")
         if not isinstance(predictions, list) or not isinstance(features, list):
             raise ValueError("ledger predictions and features must be lists")
-        for prediction in predictions:
-            if not isinstance(prediction, Mapping):
-                raise ValueError("ledger prediction row must be an object")
-            _reject_extra_fields(prediction, _LEDGER_PREDICTION_FIELDS, "prediction")
-            if not str(prediction.get("competitor_id") or "").strip():
-                raise ValueError("cloud ledger predictions require stable competitor_id")
-        for feature in features:
-            if not isinstance(feature, Mapping):
-                raise ValueError("ledger feature row must be an object")
-            _reject_extra_fields(feature, _LEDGER_FEATURE_FIELDS, "feature")
+        normalized_request = dict(request)
+        normalized_request["hash_algorithm"] = hash_algorithm
+        _validate_shadow_ledger_projection(
+            {
+                "request": normalized_request,
+                "predictions": predictions,
+                "features": features,
+            }
+        )
         return
     if keys == {"settlement"}:
         settlement = payload["settlement"]
         if not isinstance(settlement, Mapping):
             raise ValueError("ledger settlement mirror row must be an object")
-        _reject_extra_fields(settlement, _LEDGER_SETTLEMENT_FIELDS, "settlement")
-        if not str(settlement.get("competitor_id") or "").strip():
-            raise ValueError("cloud ledger settlements require stable competitor_id")
+        _require_exact_fields(settlement, _LEDGER_SETTLEMENT_FIELDS, "settlement")
+        required_strings = {
+            "settlement_id",
+            "prediction_id",
+            "competitor_id",
+            "event_code",
+            "actor",
+            "payload_hash",
+            "settled_at",
+        }
+        if not all(
+            isinstance(settlement.get(key), str) and settlement.get(key).strip()
+            for key in required_strings
+        ):
+            raise ValueError("invalid ledger settlement JSON types")
+        if settlement.get("event_code") not in {"SB", "UH"}:
+            raise ValueError("invalid ledger settlement event_code")
+        revision = settlement.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError("invalid ledger settlement revision")
+        actual_time = settlement.get("actual_time")
+        residual = settlement.get("residual")
+        if (
+            not _is_json_number(actual_time)
+            or not 0 < actual_time <= 300
+            or not _is_json_number(residual)
+        ):
+            raise ValueError("invalid ledger settlement numeric values")
+        reason = settlement.get("reason")
+        supersedes = settlement.get("supersedes_settlement_id")
+        if reason is not None and not isinstance(reason, str):
+            raise ValueError("invalid ledger settlement reason")
+        if supersedes is not None and (not isinstance(supersedes, str) or not supersedes.strip()):
+            raise ValueError("invalid ledger settlement supersession")
+        payload_hash = settlement.get("payload_hash")
+        if not re.fullmatch(r"[0-9a-f]{64}", payload_hash):
+            raise ValueError("invalid ledger settlement payload_hash")
         return
     raise ValueError("ledger mirror payload has an invalid or unsanitized shape")
 
@@ -1855,8 +1958,8 @@ def _validate_shadow_mirror_payload(payload: Mapping[str, Any]) -> None:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError("shadow mirror payload must be finite JSON") from exc
-    if len(encoded.encode("utf-8")) > 1_048_576:
-        raise ValueError("shadow mirror payload exceeds the 1 MiB limit")
+    if len(encoded.encode("utf-8")) > 2_621_440:
+        raise ValueError("shadow mirror transport payload exceeds the 2.5 MiB limit")
     _reject_forbidden_shadow_keys(payload)
 
     if payload.get("schema_version") != _SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION:
@@ -1876,7 +1979,7 @@ def _validate_shadow_mirror_payload(payload: Mapping[str, Any]) -> None:
     delivery = payload.get("delivery")
     if not isinstance(delivery, Mapping):
         raise ValueError("shadow mirror delivery must be an object")
-    _reject_extra_fields(delivery, _MIRROR_DELIVERY_FIELDS, "shadow delivery")
+    _require_exact_fields(delivery, _MIRROR_DELIVERY_FIELDS, "shadow delivery")
     if delivery.get("schema_version") != _MIRROR_DELIVERY_SCHEMA_VERSION:
         raise ValueError("shadow mirror delivery schema_version is invalid")
     for key in ("outbox_id", "entity_id", "created_at"):
@@ -1888,17 +1991,23 @@ def _validate_shadow_mirror_payload(payload: Mapping[str, Any]) -> None:
         raise ValueError("shadow mirror delivery payload_hash is invalid")
     semantic_payload = dict(payload)
     semantic_payload.pop("delivery", None)
-    expected_payload_hash = hashlib.sha256(
-        json.dumps(
-            semantic_payload,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
+    canonical_payload = delivery.get("canonical_payload")
+    if not isinstance(canonical_payload, str):
+        raise ValueError("shadow mirror delivery canonical_payload must be a string")
+    canonical_bytes = canonical_payload.encode("utf-8")
+    if not canonical_bytes or len(canonical_bytes) > 1_048_576:
+        raise ValueError("shadow mirror delivery canonical_payload exceeds the 1 MiB limit")
+    try:
+        parsed_canonical_payload = json.loads(canonical_payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("shadow mirror delivery canonical_payload is invalid JSON") from exc
+    if parsed_canonical_payload != semantic_payload:
+        raise ValueError(
+            "shadow mirror delivery canonical payload does not match envelope semantics"
+        )
+    expected_payload_hash = hashlib.sha256(canonical_bytes).hexdigest()
     if payload_hash != expected_payload_hash:
-        raise ValueError("shadow mirror delivery payload_hash does not match the envelope")
+        raise ValueError("shadow mirror delivery canonical payload digest does not match")
 
     if kind == "shadow_receipt":
         ledger = payload.get("ledger")
@@ -1913,6 +2022,23 @@ def _validate_shadow_mirror_payload(payload: Mapping[str, Any]) -> None:
         request = ledger.get("request")
         if not isinstance(core, Mapping) or not isinstance(request, Mapping):
             raise ValueError("shadow receipt core and request must be objects")
+        evidence_snapshot = core.get("evidence_snapshot")
+        evidence_diagnostics = core.get("evidence_diagnostics")
+        if evidence_snapshot is not None or evidence_diagnostics is not None:
+            if not isinstance(evidence_snapshot, Mapping) or not isinstance(
+                evidence_diagnostics, list
+            ):
+                raise ValueError("shadow receipt evidence diagnostics must be structured objects")
+            _validate_bounded_machine_count_map(
+                evidence_snapshot.get("diagnostics"),
+                "shadow receipt evidence snapshot diagnostics",
+            )
+            for diagnostic in evidence_diagnostics:
+                if not isinstance(diagnostic, Mapping):
+                    raise ValueError(
+                        "shadow receipt evidence diagnostics must be structured objects"
+                    )
+                _validate_evidence_diagnostic(diagnostic)
         observation = core.get("observation")
         if not isinstance(observation, Mapping):
             raise ValueError("shadow receipt observation metadata must be an object")

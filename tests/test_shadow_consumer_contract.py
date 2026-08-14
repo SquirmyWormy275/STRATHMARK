@@ -7,10 +7,9 @@ test fixture before any STRATHMARK object is created.
 
 from __future__ import annotations
 
-import base64
 import copy
 import hashlib
-import hmac
+import importlib.util
 import json
 import math
 import time
@@ -35,6 +34,12 @@ from strathmark.api import (  # noqa: E402
     get_shadow_service,
     get_store,
 )
+from strathmark.auth import (  # noqa: E402
+    ACTOR_ATTESTATION_SCHEMA_VERSION,
+    REQUEST_DIGEST_SCHEMA_VERSION,
+    canonical_shadow_request_digest,
+    sign_actor_attestation,
+)
 from strathmark.config import data_req  # noqa: E402
 from strathmark.consumer_contract import (
     SHADOW_CONSUMER_CONTRACT_VERSION,
@@ -55,29 +60,31 @@ _TOKEN = "isolated-shadow-contract-token"
 _KEY = "isolated-shadow-contract-attestation-key"
 
 
-def _b64(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def _headers(action: str, revision: str, *, roles=("judge",)) -> dict[str, str]:
+def _headers(
+    action: str,
+    revision: str,
+    request_payload: dict,
+    *,
+    roles=("judge",),
+) -> dict[str, str]:
     now = int(time.time())
     payload = {
-        "schema_version": "strathmark.actor-attestation.v1",
+        "schema_version": ACTOR_ATTESTATION_SCHEMA_VERSION,
         "consumer_id": _CONSUMER,
         "actor_id": _ACTOR,
         "roles": list(roles),
         "action": action,
         "subject_revision": revision,
+        "request_digest_schema_version": REQUEST_DIGEST_SCHEMA_VERSION,
+        "request_digest": canonical_shadow_request_digest(request_payload),
         "audience": "strathmark.shadow.v1",
         "nonce": f"u6-{action}-{time.time_ns()}",
         "issued_at": now,
         "expires_at": now + 30,
     }
-    encoded = _b64(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
-    signature = _b64(hmac.new(_KEY.encode(), encoded.encode(), hashlib.sha256).digest())
     return {
         "Authorization": f"Bearer {_TOKEN}",
-        "X-STRATHMARK-Actor-Attestation": f"{encoded}.{signature}",
+        "X-STRATHMARK-Actor-Attestation": sign_actor_attestation(payload, _KEY),
     }
 
 
@@ -141,6 +148,41 @@ def test_packaged_contract_is_canonical_and_checksum_verified():
     }
 
 
+def test_freezer_rebuilds_from_independent_source_without_preserving_stale_output(
+    tmp_path, monkeypatch
+):
+    root = Path(__file__).resolve().parents[1]
+    freezer_path = root / "scripts" / "freeze_shadow_consumer_contract.py"
+    spec = importlib.util.spec_from_file_location("shadow_contract_freezer_test", freezer_path)
+    assert spec is not None and spec.loader is not None
+    freezer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(freezer)
+
+    contract = tmp_path / "shadow_consumer_v1.openapi.json"
+    checksum = tmp_path / "shadow_consumer_v1.openapi.sha256"
+    monkeypatch.setattr(freezer, "CONTRACT", contract)
+    monkeypatch.setattr(freezer, "CHECKSUM", checksum)
+
+    # Missing generated files are a supported clean-build state.
+    assert freezer.main() == 0
+    pristine = contract.read_bytes()
+    assert checksum.read_text(encoding="ascii") == hashlib.sha256(pristine).hexdigest() + "\n"
+    assert pristine == shadow_consumer_contract_bytes()
+
+    # Generated output is never an input: stale paths/schemas cannot survive regeneration.
+    poisoned = json.loads(pristine)
+    poisoned["paths"]["/v1/shadow/stale"] = {"get": {}}
+    poisoned["components"]["schemas"]["StaleInjectedSchema"] = {"type": "string"}
+    contract.write_text(json.dumps(poisoned), encoding="utf-8")
+    checksum.unlink()
+
+    assert freezer.main() == 0
+    assert contract.read_bytes() == pristine
+    rebuilt = json.loads(pristine)
+    assert "/v1/shadow/stale" not in rebuilt["paths"]
+    assert "StaleInjectedSchema" not in rebuilt["components"]["schemas"]
+
+
 def test_every_frozen_example_validates_against_its_schema_and_live_request_model():
     document = load_shadow_consumer_contract()
     request_models = {
@@ -179,9 +221,130 @@ def test_every_frozen_example_validates_against_its_schema_and_live_request_mode
         _validate(document, schema_name, example)
 
 
+def test_live_openapi_exposes_the_exact_checksum_verified_shadow_contract():
+    """The interactive docs are not a weaker, generated approximation."""
+
+    frozen = load_shadow_consumer_contract()
+    live = app.openapi()
+
+    for path, path_item in frozen["paths"].items():
+        assert live["paths"][path] == path_item
+    for component_kind, components in frozen["components"].items():
+        for name, component in components.items():
+            assert live["components"][component_kind][name] == component
+
+    # The frozen CalculateRequest name collides with the pre-existing public
+    # calculator endpoint.  Preserve that endpoint's generated documentation
+    # under a private legacy component name instead of weakening either API.
+    legacy_ref = live["paths"]["/calculate"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    assert legacy_ref == "#/components/schemas/LegacyCalculateRequest"
+    assert "LegacyCalculateRequest" in live["components"]["schemas"]
+
+
+def test_trusted_numeric_models_reject_values_the_frozen_schema_rejects():
+    """Pydantic must not coerce JSON strings or booleans into contract numbers."""
+
+    document = load_shadow_consumer_contract()
+    examples = {
+        "CalculateRequest": (
+            ShadowCalculateRequest,
+            "/v1/shadow/calculate",
+        ),
+        "LookupRequest": (
+            ShadowReceiptLookupRequest,
+            "/v1/shadow/receipts/lookup",
+        ),
+        "StatusRequest": (
+            ShadowStatusRequest,
+            "/v1/shadow/status",
+        ),
+        "NumericOutcomeRequest": (
+            ShadowNumericOutcomeRequest,
+            "/v1/shadow/outcomes/apply",
+        ),
+        "MirrorReplayRequest": (
+            ShadowMirrorReplayRequest,
+            "/v1/shadow/mirror/replay",
+        ),
+        "DriftRequest": (
+            ShadowDriftRequest,
+            "/v1/shadow/drift",
+        ),
+    }
+    cases = [
+        ("CalculateRequest", ("timeout_ms",), "5000"),
+        ("CalculateRequest", ("seed",), "20260811"),
+        ("CalculateRequest", ("wood", "diameter_mm"), "300"),
+        ("CalculateRequest", ("wood", "quality"), "5"),
+        ("LookupRequest", ("timeout_ms",), "2000"),
+        ("StatusRequest", ("timeout_ms",), "2000"),
+        ("NumericOutcomeRequest", ("timeout_ms",), "5000"),
+        ("NumericOutcomeRequest", ("revisions", 0, "expected_revision"), "0"),
+        ("NumericOutcomeRequest", ("revisions", 0, "actual_time"), "42.5"),
+        ("MirrorReplayRequest", ("limit",), "25"),
+        ("MirrorReplayRequest", ("timeout_ms",), "5000"),
+        ("DriftRequest", ("lookback_days",), "30"),
+        ("DriftRequest", ("baseline_residuals", 0), "0.5"),
+        ("DriftRequest", ("timeout_ms",), "5000"),
+    ]
+
+    for schema_name, location, rejected in cases:
+        model, path = examples[schema_name]
+        payload = copy.deepcopy(
+            document["paths"][path]["post"]["requestBody"]["content"]["application/json"]["example"]
+        )
+        target = payload
+        for part in location[:-1]:
+            target = target[part]
+        target[location[-1]] = rejected
+        with pytest.raises(ValidationError):
+            _validate(document, schema_name, payload)
+        with pytest.raises(ValueError):
+            model.model_validate(payload)
+
+        # JSON booleans are numbers in Python's type hierarchy, but neither the
+        # frozen JSON Schema nor the trusted request models may accept them.
+        target[location[-1]] = True
+        with pytest.raises(ValidationError):
+            _validate(document, schema_name, payload)
+        with pytest.raises(ValueError):
+            model.model_validate(payload)
+
+
+def test_numeric_outcome_contract_freezes_the_bounded_write_deadline():
+    document = load_shadow_consumer_contract()
+    timeout = document["components"]["schemas"]["NumericOutcomeRequest"]["properties"]["timeout_ms"]
+
+    assert timeout == {
+        "type": "integer",
+        "minimum": 25,
+        "maximum": 10000,
+        "default": 5000,
+    }
+
+
+def test_receipt_lookup_contract_freezes_the_bounded_read_deadline():
+    document = load_shadow_consumer_contract()
+    timeout = document["components"]["schemas"]["LookupRequest"]["properties"]["timeout_ms"]
+
+    assert timeout == {
+        "type": "integer",
+        "minimum": 25,
+        "maximum": 10000,
+        "default": 2000,
+    }
+
+
 def test_request_boundaries_match_live_validation_exactly():
     document = load_shadow_consumer_contract()
     calculate = _calculate_payload()
+    lookup = copy.deepcopy(
+        document["paths"]["/v1/shadow/receipts/lookup"]["post"]["requestBody"]["content"][
+            "application/json"
+        ]["example"]
+    )
     numeric = copy.deepcopy(
         document["paths"]["/v1/shadow/outcomes/apply"]["post"]["requestBody"]["content"][
             "application/json"
@@ -192,6 +355,17 @@ def test_request_boundaries_match_live_validation_exactly():
             "example"
         ]
     )
+
+    for accepted in (25, 10_000):
+        lookup["timeout_ms"] = accepted
+        _validate(document, "LookupRequest", lookup)
+        ShadowReceiptLookupRequest.model_validate(lookup)
+    for rejected in (24, 10_001):
+        lookup["timeout_ms"] = rejected
+        with pytest.raises(ValidationError):
+            _validate(document, "LookupRequest", lookup)
+        with pytest.raises(ValueError):
+            ShadowReceiptLookupRequest.model_validate(lookup)
 
     wood_schema = document["components"]["schemas"]["Wood"]["properties"]["diameter_mm"]
     assert wood_schema["minimum"] == data_req.MIN_DIAMETER_MM == 225
@@ -210,7 +384,7 @@ def test_request_boundaries_match_live_validation_exactly():
         with pytest.raises(ValueError):
             ShadowCalculateRequest.model_validate(calculate)
 
-    revision_schema = document["components"]["schemas"]["NumericRevision"]["properties"][
+    revision_schema = document["components"]["schemas"]["NumericSettleRevision"]["properties"][
         "actual_time"
     ]
     assert revision_schema["maximum"] == MAX_NUMERIC_RAW_TIME_SECONDS == 300.0
@@ -222,6 +396,50 @@ def test_request_boundaries_match_live_validation_exactly():
         _validate(document, "NumericOutcomeRequest", numeric)
     with pytest.raises(ValueError):
         ShadowNumericOutcomeRequest.model_validate(numeric)
+
+    settle_missing_time = copy.deepcopy(
+        document["paths"]["/v1/shadow/outcomes/apply"]["post"]["requestBody"]["content"][
+            "application/json"
+        ]["example"]
+    )
+    settle_missing_time["revisions"][0].pop("actual_time")
+    with pytest.raises(ValidationError):
+        _validate(document, "NumericOutcomeRequest", settle_missing_time)
+    with pytest.raises(ValueError):
+        ShadowNumericOutcomeRequest.model_validate(settle_missing_time)
+
+    void_without_reason = copy.deepcopy(settle_missing_time)
+    void_without_reason["revisions"][0]["action"] = "void"
+    void_without_reason["revisions"][0]["actual_time"] = None
+    with pytest.raises(ValidationError):
+        _validate(document, "NumericOutcomeRequest", void_without_reason)
+    with pytest.raises(ValueError):
+        ShadowNumericOutcomeRequest.model_validate(void_without_reason)
+
+    valid_void = copy.deepcopy(void_without_reason)
+    valid_void["reason_code"] = "retract_invalid_numeric_evidence"
+    _validate(document, "NumericOutcomeRequest", valid_void)
+    ShadowNumericOutcomeRequest.model_validate(valid_void)
+
+    void_with_numeric_time = copy.deepcopy(valid_void)
+    void_with_numeric_time["revisions"][0]["actual_time"] = 42.5
+    with pytest.raises(ValidationError):
+        _validate(document, "NumericOutcomeRequest", void_with_numeric_time)
+    with pytest.raises(ValueError):
+        ShadowNumericOutcomeRequest.model_validate(void_with_numeric_time)
+
+    correction_without_reason = copy.deepcopy(numeric)
+    correction_without_reason["revisions"][0]["actual_time"] = 42.5
+    correction_without_reason["revisions"][0]["expected_revision"] = 1
+    correction_without_reason["reason_code"] = None
+    with pytest.raises(ValidationError):
+        _validate(document, "NumericOutcomeRequest", correction_without_reason)
+    with pytest.raises(ValueError):
+        ShadowNumericOutcomeRequest.model_validate(correction_without_reason)
+
+    correction_without_reason["reason_code"] = "corrected_time"
+    _validate(document, "NumericOutcomeRequest", correction_without_reason)
+    ShadowNumericOutcomeRequest.model_validate(correction_without_reason)
 
     residual_schema = document["components"]["schemas"]["DriftRequest"]["properties"][
         "baseline_residuals"
@@ -241,6 +459,8 @@ def test_request_boundaries_match_live_validation_exactly():
         drift["baseline_residuals"] = [rejected]
         with pytest.raises(ValidationError):
             _validate(document, "DriftRequest", drift)
+        with pytest.raises(ValueError):
+            ShadowDriftRequest.model_validate(drift)
 
 
 def test_response_schemas_recursively_close_objects_and_type_arrays():
@@ -299,6 +519,123 @@ def test_existing_installed_distribution_smoke_verifies_frozen_contract_in_ci():
     assert "load_shadow_consumer_contract" in script
     assert "shadow_consumer_contract_digest" in script
     assert "EXPECTED_SHADOW_CONSUMER_PATHS" in script
+    assert "app.openapi()" in script
+
+
+def test_api_compatibility_matrix_executes_the_complete_shadow_contract_suite():
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    api_job = workflow.split("  api:\n", 1)[1].split("\n  optional-ml:", 1)[0]
+
+    assert "compatible-set: [oldest, current]" in api_job
+    run_line = next(
+        line.strip() for line in api_job.splitlines() if "pytest tests/test_api.py" in line
+    )
+    assert "tests/test_shadow_api.py" in run_line
+    assert "tests/test_shadow_consumer_contract.py" in run_line
+
+
+def test_frozen_auth_semantics_and_live_non_200_matrix_are_closed(tmp_path, monkeypatch):
+    document = load_shadow_consumer_contract()
+    protected = {
+        "/v1/shadow/calculate": "shadow.calculate",
+        "/v1/shadow/receipts/lookup": "shadow.receipt.lookup",
+        "/v1/shadow/status": "shadow.status.read",
+        "/v1/shadow/outcomes/apply": "shadow.outcome.apply",
+        "/v1/shadow/mirror/replay": "shadow.mirror.replay",
+        "/v1/shadow/drift": "shadow.drift.read",
+    }
+    claims = document["components"]["schemas"]["ActorAttestationClaims"]
+    assert claims["additionalProperties"] is False
+    assert claims["properties"]["schema_version"]["const"] == (ACTOR_ATTESTATION_SCHEMA_VERSION)
+    assert claims["properties"]["request_digest_schema_version"]["const"] == (
+        REQUEST_DIGEST_SCHEMA_VERSION
+    )
+    assert "scorer" not in claims["properties"]["roles"]["items"]["enum"]
+    assert document["info"]["x-strathmark-role-actions"]["system-adapter"] == [
+        "shadow.outcome.apply"
+    ]
+    for path, action in protected.items():
+        operation = document["paths"][path]["post"]
+        assert operation["x-strathmark-action"] == action
+        assert operation["x-strathmark-subject-revision-field"] == "run_revision"
+        assert operation["x-strathmark-request-digest-schema"] == (REQUEST_DIGEST_SCHEMA_VERSION)
+        for status_code in (
+            "400",
+            "401",
+            "403",
+            "404",
+            "409",
+            "411",
+            "413",
+            "422",
+            "429",
+            "503",
+            "504",
+        ):
+            assert operation["responses"][status_code]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+
+    for name in (
+        "STRATHMARK_SUPABASE_URL",
+        "STRATHMARK_SUPABASE_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_KEY",
+        "DATABASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("STRATHMARK_SHADOW_SERVICE_CREDENTIALS", json.dumps({_CONSUMER: _TOKEN}))
+    monkeypatch.setenv("STRATHMARK_SHADOW_ATTESTATION_KEYS", json.dumps({_CONSUMER: _KEY}))
+    monkeypatch.setenv("STRATHMARK_TRUSTED_TOPOLOGY", "offline-single-writer-durable")
+    path = Path(tmp_path) / "error-contract.db"
+    store = _prepared_store(path)
+    ledger = PredictionLedger(path)
+    provider = _Provider(version="core-a", median=42.0, digest="a" * 64)
+    service = ShadowPredictionService(ledger, result_store=store, prediction_provider=provider)
+    app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_ledger] = lambda: ledger
+    app.dependency_overrides[get_shadow_service] = lambda: service
+    monkeypatch.setattr(api_module, "check_ollama_connection", lambda: False)
+    try:
+        with TestClient(app) as client:
+            for path in protected:
+                request_payload = copy.deepcopy(
+                    document["paths"][path]["post"]["requestBody"]["content"]["application/json"][
+                        "example"
+                    ]
+                )
+                response = client.post(
+                    path,
+                    json=request_payload,
+                    headers={"Authorization": f"Bearer {_TOKEN}"},
+                )
+                assert response.status_code == 401, (path, response.text)
+                _validate(document, "ErrorResponse", response.json())
+            for path, action in protected.items():
+                request_payload = copy.deepcopy(
+                    document["paths"][path]["post"]["requestBody"]["content"]["application/json"][
+                        "example"
+                    ]
+                )
+                request_payload["timeout_ms"] = "5000"
+                response = client.post(
+                    path,
+                    json=request_payload,
+                    headers=_headers(
+                        action,
+                        request_payload["run_revision"],
+                        request_payload,
+                        roles=("admin",) if path.endswith("/mirror/replay") else ("judge",),
+                    ),
+                )
+                assert response.status_code == 422, (path, response.text)
+                _validate(document, "ErrorResponse", response.json())
+            health_error = client.get("/health", params={"prediction_as_of": "not-a-date"})
+            assert health_error.status_code == 422
+            _validate(document, "ErrorResponse", health_error.json())
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_path, monkeypatch):
@@ -331,7 +668,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             payload = _calculate_payload()
             calculated = client.post(
                 "/v1/shadow/calculate",
-                headers=_headers("shadow.calculate", payload["run_revision"]),
+                headers=_headers("shadow.calculate", payload["run_revision"], payload),
                 json=payload,
             )
             assert calculated.status_code == 200, calculated.text
@@ -359,7 +696,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             context_only["observation_fingerprint"] = "3" * 64
             changed = client.post(
                 "/v1/shadow/calculate",
-                headers=_headers("shadow.calculate", context_only["run_revision"]),
+                headers=_headers("shadow.calculate", context_only["run_revision"], context_only),
                 json=context_only,
             )
             assert changed.status_code == 200, changed.text
@@ -379,7 +716,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             conflicting_context["observation_fingerprint"] = "4" * 64
             conflict = client.post(
                 "/v1/shadow/calculate",
-                headers=_headers("shadow.calculate", payload["run_revision"]),
+                headers=_headers("shadow.calculate", payload["run_revision"], conflicting_context),
                 json=conflicting_context,
             )
             assert conflict.status_code == 409, conflict.text
@@ -401,7 +738,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
 
             replay = client.post(
                 "/v1/shadow/calculate",
-                headers=_headers("shadow.calculate", payload["run_revision"]),
+                headers=_headers("shadow.calculate", payload["run_revision"], payload),
                 json=payload,
             )
             assert replay.status_code == 200, replay.text
@@ -416,7 +753,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             }
             lookup = client.post(
                 "/v1/shadow/receipts/lookup",
-                headers=_headers("shadow.receipt.lookup", payload["run_revision"]),
+                headers=_headers("shadow.receipt.lookup", payload["run_revision"], lookup_payload),
                 json=lookup_payload,
             )
             assert lookup.status_code == 200, lookup.text
@@ -435,7 +772,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             }
             status = client.post(
                 "/v1/shadow/status",
-                headers=_headers("shadow.status.read", payload["run_revision"]),
+                headers=_headers("shadow.status.read", payload["run_revision"], status_payload),
                 json=status_payload,
             )
             assert status.status_code == 200, status.text
@@ -465,7 +802,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             }
             settled = client.post(
                 "/v1/shadow/outcomes/apply",
-                headers=_headers("shadow.outcome.apply", payload["run_revision"]),
+                headers=_headers("shadow.outcome.apply", payload["run_revision"], settle_payload),
                 json=settle_payload,
             )
             assert settled.status_code == 200, settled.text
@@ -482,7 +819,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
             )
             voided = client.post(
                 "/v1/shadow/outcomes/apply",
-                headers=_headers("shadow.outcome.apply", payload["run_revision"]),
+                headers=_headers("shadow.outcome.apply", payload["run_revision"], void_payload),
                 json=void_payload,
             )
             assert voided.status_code == 200, voided.text
@@ -490,7 +827,7 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
 
             after_void = client.post(
                 "/v1/shadow/status",
-                headers=_headers("shadow.status.read", payload["run_revision"]),
+                headers=_headers("shadow.status.read", payload["run_revision"], status_payload),
                 json=status_payload,
             ).json()["status"]
             assert after_void["numeric_revision_count"] == 2
@@ -516,33 +853,40 @@ def test_offline_consumer_lifecycle_replays_core_and_projects_current_state(tmp_
                 _reject_extra_field(document, "HealthResponse", health.json(), nested_path)
             assert health.json()["shadow_service"]["ready_for_trusted_shadow"] is True
 
+            mirror_payload = {
+                "schema_version": "strathmark.shadow-mirror-replay.v1",
+                "consumer_id": _CONSUMER,
+                "run_revision": payload["run_revision"],
+                "limit": 25,
+                "timeout_ms": 5000,
+            }
             mirror = client.post(
                 "/v1/shadow/mirror/replay",
-                headers=_headers("shadow.mirror.replay", payload["run_revision"], roles=("admin",)),
-                json={
-                    "schema_version": "strathmark.shadow-mirror-replay.v1",
-                    "consumer_id": _CONSUMER,
-                    "run_revision": payload["run_revision"],
-                    "limit": 25,
-                    "timeout_ms": 5000,
-                },
+                headers=_headers(
+                    "shadow.mirror.replay",
+                    payload["run_revision"],
+                    mirror_payload,
+                    roles=("admin",),
+                ),
+                json=mirror_payload,
             )
             assert mirror.status_code == 200, mirror.text
             _validate(document, "MirrorReplayResponse", mirror.json())
             _reject_extra_field(document, "MirrorReplayResponse", mirror.json(), ("summary",))
 
+            drift_payload = {
+                "schema_version": "strathmark.shadow-drift.v1",
+                "consumer_id": _CONSUMER,
+                "run_revision": payload["run_revision"],
+                "model_version": "fixture-core-a",
+                "lookback_days": 30,
+                "baseline_residuals": [-0.5, 0.0, 0.5],
+                "timeout_ms": 5000,
+            }
             drift = client.post(
                 "/v1/shadow/drift",
-                headers=_headers("shadow.drift.read", payload["run_revision"]),
-                json={
-                    "schema_version": "strathmark.shadow-drift.v1",
-                    "consumer_id": _CONSUMER,
-                    "run_revision": payload["run_revision"],
-                    "model_version": "fixture-core-a",
-                    "lookback_days": 30,
-                    "baseline_residuals": [-0.5, 0.0, 0.5],
-                    "timeout_ms": 5000,
-                },
+                headers=_headers("shadow.drift.read", payload["run_revision"], drift_payload),
+                json=drift_payload,
             )
             assert drift.status_code == 200, drift.text
             _validate(document, "DriftResponse", drift.json())

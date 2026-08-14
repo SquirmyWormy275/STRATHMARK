@@ -90,8 +90,21 @@ append RPC. Receipt envelopes include the immutable receipt core, its namespaced
 identity linkage, observation fingerprint metadata, and the minimum 005/006 ledger rows
 needed for foreign keys. Numeric envelopes contain only eligible settle/void revisions.
 They never copy Missoula operational outcome/context history, names, free-text notes,
-medical data, or credentials. All four additive tables force RLS and reject mutation;
-the cloud remains a non-authoritative copy.
+medical data, email addresses, or credentials. Delivery metadata binds SHA-256 to an
+explicit JSON body string. The append RPC recomputes that digest with PostgreSQL
+built-ins and requires the parsed body to equal the submitted envelope without delivery
+metadata; there is no extension or client-only trust dependency. Equivalent retry JSON
+may differ lexically, but frozen receipt-core structure, nested identity linkage, and
+the exact unique ledger prediction-ID set must remain identical. All four additive
+tables force RLS and reject mutation; the cloud remains a non-authoritative copy.
+
+The embedded 005/006 ledger projection is closed before PostgreSQL converts JSON into
+typed rows: request, prediction, feature, and settlement objects must contain their
+complete versioned allowlists with the correct JSON types. Only the request
+`hash_algorithm` key may be absent for queued legacy `raw-v1` replay. Shadow evidence
+count maps are limited to 128 lowercase machine-code keys and exact nonnegative
+32-bit-signed integers; Boolean, fractional, string, negative, and nested values never
+cross the client boundary or pass the direct append RPC.
 
 The service key stays on a trusted server. Public `/calculate` and `/predict` are
 stateless. `/ledger/calculate` and settlement routes require the existing Bearer-token

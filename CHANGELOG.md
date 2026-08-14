@@ -24,6 +24,9 @@ All notable changes to STRATHMARK will be documented in this file.
 - Added migration 007's versioned, append-only shadow mirror for immutable receipt
   cores and eligible numeric settle/void revisions. The cloud copy remains optional,
   non-authoritative, stable-ID-only, and excludes operational context and free text.
+  The RPC recomputes each delivery digest from an explicit JSON body, validates the
+  frozen nested receipt contract, and requires receipt prediction identities to exactly
+  match the embedded ledger without duplicates.
 
 ## [2.0.0] - 2026-08-11
 

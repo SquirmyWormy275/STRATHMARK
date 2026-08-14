@@ -13,15 +13,17 @@ import binascii
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
-from strathmark.shadow import validate_namespaced_identity
+from strathmark.identity import validate_namespaced_identity
 
-ACTOR_ATTESTATION_SCHEMA_VERSION = "strathmark.actor-attestation.v1"
+ACTOR_ATTESTATION_SCHEMA_VERSION = "strathmark.actor-attestation.v2"
+REQUEST_DIGEST_SCHEMA_VERSION = "strathmark.shadow-request-digest.v1"
 SHADOW_ATTESTATION_AUDIENCE = "strathmark.shadow.v1"
 MAX_ATTESTATION_LIFETIME_SECONDS = 60
 MAX_ATTESTATION_CLOCK_SKEW_SECONDS = 5
@@ -29,14 +31,15 @@ MAX_ATTESTATION_CLOCK_SKEW_SECONDS = 5
 _SERVICE_CREDENTIALS_ENV = "STRATHMARK_SHADOW_SERVICE_CREDENTIALS"
 _ATTESTATION_KEYS_ENV = "STRATHMARK_SHADOW_ATTESTATION_KEYS"
 _NONCE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
-_ROLE_ACTIONS = {
+SHADOW_ACTION_ROLES = {
     "shadow.calculate": frozenset({"admin", "judge"}),
     "shadow.receipt.lookup": frozenset({"admin", "judge"}),
     "shadow.status.read": frozenset({"admin", "judge"}),
-    "shadow.outcome.apply": frozenset({"admin", "judge", "scorer"}),
+    "shadow.outcome.apply": frozenset({"admin", "judge", "system-adapter"}),
     "shadow.mirror.replay": frozenset({"admin"}),
     "shadow.drift.read": frozenset({"admin", "judge"}),
 }
+_ROLE_ACTIONS = SHADOW_ACTION_ROLES
 _ALLOWED_ROLES = frozenset({role for roles in _ROLE_ACTIONS.values() for role in roles})
 _ATTESTATION_FIELDS = frozenset(
     {
@@ -46,6 +49,8 @@ _ATTESTATION_FIELDS = frozenset(
         "roles",
         "action",
         "subject_revision",
+        "request_digest_schema_version",
+        "request_digest",
         "audience",
         "nonce",
         "issued_at",
@@ -90,6 +95,8 @@ class VerifiedActorAttestation:
     roles: tuple[str, ...]
     action: str
     subject_revision: str
+    request_digest_schema_version: str
+    request_digest: str
     audience: str
     nonce: str
     issued_at: int
@@ -104,6 +111,7 @@ def verify_shadow_action(
     expected_actor_id: str | None,
     expected_action: str,
     expected_subject_revision: str,
+    expected_request_digest: str,
     ledger: NonceLedger,
     now: int | None = None,
 ) -> VerifiedActorAttestation:
@@ -115,10 +123,6 @@ def verify_shadow_action(
         raise ShadowAuthorizationError("unsupported shadow action")
 
     credentials = _load_secret_map(_SERVICE_CREDENTIALS_ENV)
-    if len(set(credentials.values())) != len(credentials):
-        raise ShadowAuthenticationConfigurationError(
-            "shadow authentication configuration is invalid"
-        )
     supplied_token = _bearer_token(authorization)
     authenticated_consumers = {
         configured_consumer
@@ -131,10 +135,7 @@ def verify_shadow_action(
         raise ShadowAuthorizationError("service credential is not scoped to this consumer")
 
     keys = _load_secret_map(_ATTESTATION_KEYS_ENV)
-    if set(keys) != set(credentials) or len(set(keys.values())) != len(keys):
-        raise ShadowAuthenticationConfigurationError(
-            "shadow authentication configuration is invalid"
-        )
+    _validate_secret_configuration(credentials, keys)
     signing_key = keys.get(consumer)
     if not signing_key:
         raise ShadowAuthenticationConfigurationError(
@@ -155,6 +156,9 @@ def verify_shadow_action(
         raise ShadowAuthorizationError("actor attestation action does not match")
     if attestation.subject_revision != subject_revision:
         raise ShadowAuthorizationError("actor attestation subject revision does not match")
+    request_digest = _validate_digest(expected_request_digest)
+    if not hmac.compare_digest(attestation.request_digest, request_digest):
+        raise ShadowAuthorizationError("actor attestation request digest does not match")
     if attestation.audience != SHADOW_ATTESTATION_AUDIENCE:
         raise ShadowAuthorizationError("actor attestation audience does not match")
     permitted_roles = _ROLE_ACTIONS[expected_action]
@@ -183,10 +187,8 @@ def preauthenticate_shadow_service(authorization: str | None) -> None:
     """Validate that a bearer belongs to some configured service before app work."""
 
     credentials = _load_secret_map(_SERVICE_CREDENTIALS_ENV)
-    if len(set(credentials.values())) != len(credentials):
-        raise ShadowAuthenticationConfigurationError(
-            "shadow authentication configuration is invalid"
-        )
+    keys = _load_secret_map(_ATTESTATION_KEYS_ENV)
+    _validate_secret_configuration(credentials, keys)
     supplied_token = _bearer_token(authorization)
     authenticated = False
     for configured_token in credentials.values():
@@ -198,7 +200,7 @@ def preauthenticate_shadow_service(authorization: str | None) -> None:
 def sign_actor_attestation(payload: Mapping[str, Any], signing_key: str) -> str:
     """Create the canonical compact assertion used by server-side consumers."""
 
-    if not 16 <= len(signing_key) <= 4096:
+    if not 16 <= len(signing_key) <= 4096 or not signing_key.isascii():
         raise ValueError("signing_key must contain between 16 and 4096 characters")
     attestation = _validate_attestation(payload, now=None)
     if attestation.audience != SHADOW_ATTESTATION_AUDIENCE:
@@ -211,6 +213,44 @@ def sign_actor_attestation(payload: Mapping[str, Any], signing_key: str) -> str:
     return f"{encoded}.{_b64encode(signature.digest())}"
 
 
+def canonical_shadow_request_digest(payload: Mapping[str, Any]) -> str:
+    """Hash one JSON-compatible request under the frozen versioned envelope."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("shadow request payload must be a mapping")
+    envelope = {
+        "schema_version": REQUEST_DIGEST_SCHEMA_VERSION,
+        "payload": _normalize_canonical_json(dict(payload)),
+    }
+    try:
+        canonical = json.dumps(
+            envelope,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("shadow request payload must be canonical JSON") from exc
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _normalize_canonical_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("shadow request object keys must be strings")
+        return {key: _normalize_canonical_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_canonical_json(item) for item in value]
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("shadow request payload must contain finite numbers")
+        return int(value) if value.is_integer() else value
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    raise ValueError("shadow request payload must be canonical JSON")
+
+
 def shadow_auth_configuration_status() -> str:
     """Return configured/not-configured/invalid without exposing secret metadata."""
 
@@ -221,11 +261,25 @@ def shadow_auth_configuration_status() -> str:
         keys = _load_secret_map(_ATTESTATION_KEYS_ENV)
     except ShadowAuthenticationConfigurationError:
         return "invalid"
-    if set(credentials) != set(keys):
-        return "invalid"
-    if len(set(credentials.values())) != len(credentials) or len(set(keys.values())) != len(keys):
+    try:
+        _validate_secret_configuration(credentials, keys)
+    except ShadowAuthenticationConfigurationError:
         return "invalid"
     return "configured"
+
+
+def _validate_secret_configuration(credentials: Mapping[str, str], keys: Mapping[str, str]) -> None:
+    credential_values = set(credentials.values())
+    key_values = set(keys.values())
+    if (
+        set(credentials) != set(keys)
+        or len(credential_values) != len(credentials)
+        or len(key_values) != len(keys)
+        or not credential_values.isdisjoint(key_values)
+    ):
+        raise ShadowAuthenticationConfigurationError(
+            "shadow authentication configuration is invalid"
+        )
 
 
 def _load_secret_map(name: str) -> dict[str, str]:
@@ -250,7 +304,7 @@ def _load_secret_map(name: str) -> dict[str, str]:
             raise ShadowAuthenticationConfigurationError(
                 "shadow authentication configuration is invalid"
             ) from exc
-        if not isinstance(secret, str) or not 16 <= len(secret) <= 4096:
+        if not isinstance(secret, str) or not 16 <= len(secret) <= 4096 or not secret.isascii():
             raise ShadowAuthenticationConfigurationError(
                 "shadow authentication configuration is invalid"
             )
@@ -263,7 +317,7 @@ def _bearer_token(value: str | None) -> str:
     if not text.startswith("Bearer "):
         raise ShadowAuthenticationError("valid scoped service credential required")
     token = text[7:]
-    if not 16 <= len(token) <= 4096:
+    if not 16 <= len(token) <= 4096 or not token.isascii():
         raise ShadowAuthenticationError("valid scoped service credential required")
     return token
 
@@ -308,6 +362,7 @@ def _validate_attestation(
         consumer = validate_namespaced_identity(payload.get("consumer_id"), "consumer_id")
         actor = validate_namespaced_identity(payload.get("actor_id"), "actor_id")
         revision = validate_namespaced_identity(payload.get("subject_revision"), "subject_revision")
+        request_digest = _validate_digest(payload.get("request_digest"))
     except ValueError as exc:
         raise ShadowAuthenticationError("valid actor attestation required") from exc
     roles = payload.get("roles")
@@ -319,9 +374,12 @@ def _validate_attestation(
     ):
         raise ShadowAuthenticationError("valid actor attestation required")
     action = payload.get("action")
+    request_digest_schema = payload.get("request_digest_schema_version")
     audience = payload.get("audience")
     nonce = payload.get("nonce")
     if not isinstance(action, str) or action not in _ROLE_ACTIONS:
+        raise ShadowAuthenticationError("valid actor attestation required")
+    if request_digest_schema != REQUEST_DIGEST_SCHEMA_VERSION:
         raise ShadowAuthenticationError("valid actor attestation required")
     if not isinstance(audience, str) or not 1 <= len(audience) <= 128:
         raise ShadowAuthenticationError("valid actor attestation required")
@@ -349,6 +407,8 @@ def _validate_attestation(
         roles=tuple(roles),
         action=action,
         subject_revision=revision,
+        request_digest_schema_version=request_digest_schema,
+        request_digest=request_digest,
         audience=audience,
         nonce=nonce,
         issued_at=issued_at,
@@ -358,6 +418,13 @@ def _validate_attestation(
 
 def _namespace(value: str) -> str:
     return value.split(":", 1)[0]
+
+
+def _validate_digest(value: Any) -> str:
+    text = str(value or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise ValueError("request_digest must be a lowercase SHA-256 digest")
+    return text
 
 
 def _b64encode(value: bytes) -> str:
@@ -374,12 +441,15 @@ def _b64decode(value: str) -> bytes:
 __all__ = [
     "ACTOR_ATTESTATION_SCHEMA_VERSION",
     "MAX_ATTESTATION_LIFETIME_SECONDS",
+    "REQUEST_DIGEST_SCHEMA_VERSION",
+    "SHADOW_ACTION_ROLES",
     "SHADOW_ATTESTATION_AUDIENCE",
     "ShadowAttestationReplayError",
     "ShadowAuthenticationConfigurationError",
     "ShadowAuthenticationError",
     "ShadowAuthorizationError",
     "VerifiedActorAttestation",
+    "canonical_shadow_request_digest",
     "shadow_auth_configuration_status",
     "preauthenticate_shadow_service",
     "sign_actor_attestation",

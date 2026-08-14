@@ -7,13 +7,20 @@ configuration is deliberately removed or poisoned; no network adapter is used.
 from __future__ import annotations
 
 import sqlite3
+import time
+import tracemalloc
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from strathmark.ledger import LedgerConflictError, PredictionLedger
+from strathmark.ledger import (
+    LedgerConflictError,
+    LedgerQueryTimeoutError,
+    PredictionLedger,
+    SQLiteQueryDeadline,
+)
 from strathmark.predictor import (
     CompetitorRecord,
     PredictionBundle,
@@ -25,6 +32,7 @@ from strathmark.shadow import (
     SHADOW_TARGET_SINGLE_ELAPSED,
     ShadowFieldRequest,
     ShadowPredictionService,
+    derive_current_receipt_status,
 )
 from strathmark.store import (
     EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
@@ -323,9 +331,37 @@ def test_shadow_calculation_uses_only_active_local_snapshot_and_freezes_attestat
         return real_status(*args, **kwargs)
 
     monkeypatch.setattr(store, "get_evidence_snapshot_status", counted_status)
+    refreshed_payload = _payload(
+        [
+            _row(),
+            _row(
+                "missoula:competitor:bob",
+                result_date="2026-09-15",
+                time_seconds=44.0,
+            ),
+            _row(
+                "missoula:competitor:alice",
+                result_date="2026-10-15",
+                time_seconds=41.0,
+                competition_id="missoula:tournament:2026-refresh",
+            ),
+        ],
+        source_id="missoula:history-export:concurrent-refresh",
+    )
+
+    class RefreshAfterPersistLedger(PredictionLedger):
+        def record_field(self, *args, **kwargs):
+            recorded = super().record_field(*args, **kwargs)
+            store.refresh_evidence_snapshot(
+                _Source(refreshed_payload),
+                cutoff=CUTOFF,
+                expected_active_snapshot_digest=status.snapshot_digest,
+            )
+            return recorded
+
     provider = _OfflineProvider()
     service = ShadowPredictionService(
-        PredictionLedger(path),
+        RefreshAfterPersistLedger(path),
         prediction_provider=provider,
         result_store=store,
     )
@@ -351,8 +387,12 @@ def test_shadow_calculation_uses_only_active_local_snapshot_and_freezes_attestat
     )
     assert source.calls == 1
     assert provider.calls == 1
-    assert verification_calls == 1
+    # Selection and the post-persist recheck are calculation-owned. The explicit
+    # concurrent operator refresh performs its own independent verification.
+    assert verification_calls == 3
     assert calculated.receipt is not None
+    assert calculated.status.freshness == "stale"
+    assert calculated.status.ready_for_review is False
     frozen = calculated.receipt.core["evidence_snapshot"]
     assert frozen["snapshot_digest"] == status.snapshot_digest
     assert frozen["source_id"] == "missoula:history-export:2026-11-01"
@@ -363,7 +403,6 @@ def test_shadow_calculation_uses_only_active_local_snapshot_and_freezes_attestat
         == status.snapshot_digest
     )
     assert calculated.receipt.core["calculation_input"]["competitors"][0]["history"]
-
     replay = ShadowPredictionService(
         PredictionLedger(path),
         prediction_provider=_OfflineProvider(),
@@ -374,6 +413,84 @@ def test_shadow_calculation_uses_only_active_local_snapshot_and_freezes_attestat
         WOOD,
     )
     assert replay.receipt.core_json == calculated.receipt.core_json
+
+
+def test_verified_selection_cas_rejects_refresh_before_hydration(tmp_path):
+    path = tmp_path / "selection-cas.db"
+    store = ResultStore(path)
+    first = store.refresh_evidence_snapshot(_Source(_payload([_row()])), cutoff=CUTOFF)
+    selection = store.load_evidence_for_competitors(["missoula:competitor:alice"])
+    assert selection is not None
+    store.refresh_evidence_snapshot(
+        _Source(
+            _payload(
+                [_row(time_seconds=41.0)],
+                source_id="missoula:history-export:selection-cas-refresh",
+            )
+        ),
+        cutoff=CUTOFF,
+        expected_active_snapshot_digest=first.snapshot_digest,
+    )
+    service = ShadowPredictionService(
+        PredictionLedger(path),
+        prediction_provider=_OfflineProvider(),
+        result_store=store,
+    )
+
+    with pytest.raises(EvidenceSnapshotConflictError, match="changed after verification"):
+        service.calculate(
+            _request("missoula:request:selection-cas", "missoula:run-revision:selection-cas"),
+            [
+                CompetitorRecord(
+                    name="ignored",
+                    competitor_id="missoula:competitor:alice",
+                    history=[],
+                )
+            ],
+            WOOD,
+            evidence_selection=selection,
+        )
+
+
+def test_verified_selection_uses_tip_cas_without_second_pre_hydration_full_scan(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "selection-single-verification.db"
+    store = ResultStore(path)
+    store.refresh_evidence_snapshot(_Source(_payload([_row()])), cutoff=CUTOFF)
+    selection = store.load_evidence_for_competitors(["missoula:competitor:alice"])
+    assert selection is not None
+    full_status_calls = 0
+    real_status = store.get_evidence_snapshot_status
+
+    def counted_status(*args, **kwargs):
+        nonlocal full_status_calls
+        full_status_calls += 1
+        return real_status(*args, **kwargs)
+
+    monkeypatch.setattr(store, "get_evidence_snapshot_status", counted_status)
+    result = ShadowPredictionService(
+        PredictionLedger(path),
+        prediction_provider=_OfflineProvider(),
+        result_store=store,
+    ).calculate(
+        _request(
+            "missoula:request:selection-single-verification",
+            "missoula:run-revision:selection-single-verification",
+        ),
+        [
+            CompetitorRecord(
+                name="ignored",
+                competitor_id="missoula:competitor:alice",
+                history=[],
+            )
+        ],
+        WOOD,
+        evidence_selection=selection,
+    )
+
+    assert result.receipt is not None
+    assert full_status_calls == 1
 
 
 def test_explicit_refresh_changes_active_fingerprint_and_requires_superseding_request(tmp_path):
@@ -528,6 +645,14 @@ def test_existing_receipt_recovers_before_missing_tampered_or_refreshed_snapshot
     assert replay.receipt.status == replay.status
     assert replay.status.ready_for_review is False
 
+    corrupt_claimed_mismatch = derive_current_receipt_status(
+        original.receipt,
+        ResultStore(path),
+        claimed_active_fingerprint="f" * 64,
+    )
+    assert corrupt_claimed_mismatch.status.freshness == "invalid"
+    assert corrupt_claimed_mismatch.status.ready_for_review is False
+
     missing_provider = _OfflineProvider()
     missing = ShadowPredictionService(
         PredictionLedger(path),
@@ -543,6 +668,14 @@ def test_existing_receipt_recovers_before_missing_tampered_or_refreshed_snapshot
     assert missing.status.freshness == "invalid"
     assert missing.status.ready_for_review is False
 
+    claimed_mismatch = derive_current_receipt_status(
+        original.receipt,
+        ResultStore(tmp_path / "missing-claimed-current.db"),
+        claimed_active_fingerprint="f" * 64,
+    )
+    assert claimed_mismatch.status.freshness == "invalid"
+    assert claimed_mismatch.status.ready_for_review is False
+
     with pytest.raises(LedgerConflictError, match="request_id"):
         ShadowPredictionService(
             PredictionLedger(path),
@@ -553,6 +686,68 @@ def test_existing_receipt_recovers_before_missing_tampered_or_refreshed_snapshot
             [CompetitorRecord(name="local", competitor_id="missoula:competitor:alice")],
             replace(WOOD, diameter_mm=325),
         )
+
+
+def test_snapshot_status_deadline_interrupts_high_cardinality_verification_and_recovers(
+    tmp_path, monkeypatch
+):
+    import strathmark.store as store_module
+
+    rows = [_row(competitor_id=f"missoula:competitor:deadline-{index}") for index in range(500)]
+    store = ResultStore(tmp_path / "deadline-snapshot.db")
+    store.refresh_evidence_snapshot(_Source(_payload(rows)), cutoff=CUTOFF)
+
+    real_sha256 = store_module._sha256
+    hash_calls = 0
+
+    def slow_sha256(value):
+        nonlocal hash_calls
+        hash_calls += 1
+        time.sleep(0.001)
+        return real_sha256(value)
+
+    monkeypatch.setattr(store_module, "_sha256", slow_sha256)
+    with pytest.raises(LedgerQueryTimeoutError):
+        store.get_evidence_snapshot_status(
+            query_deadline=SQLiteQueryDeadline(timeout_seconds=0.025)
+        )
+    assert 0 < hash_calls < len(rows)
+
+    monkeypatch.setattr(store_module, "_sha256", real_sha256)
+    recovered = store.get_evidence_snapshot_status()
+    assert recovered is not None
+    assert recovered.accepted_row_count == len(rows)
+
+
+def test_snapshot_status_streams_high_cardinality_rows_with_bounded_extra_memory(tmp_path):
+    row_count = 5_000
+    rows = [
+        _row(
+            competitor_id=f"missoula:competitor:memory-{index}",
+            competition_id=f"missoula:tournament:memory-{index}",
+        )
+        for index in range(row_count)
+    ]
+    store = ResultStore(tmp_path / "streaming-memory.db")
+    status = store.refresh_evidence_snapshot(_Source(_payload(rows)), cutoff=CUTOFF)
+    with store._connect() as conn:
+        canonical_bytes = len(
+            str(
+                conn.execute(
+                    "SELECT canonical_json FROM evidence_snapshots WHERE snapshot_digest = ?",
+                    (status.snapshot_digest,),
+                ).fetchone()[0]
+            ).encode("utf-8")
+        )
+
+    tracemalloc.start()
+    verified = store.get_evidence_snapshot_status()
+    _, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert verified is not None
+    assert verified.accepted_row_count == row_count
+    assert peak_bytes < canonical_bytes * 6
 
 
 def _historical_result(time_seconds: float):

@@ -46,9 +46,11 @@ import math
 import os
 import re
 import sqlite3
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, List, Mapping, Optional, Protocol, Sequence
 
 import pandas as pd
@@ -78,6 +80,22 @@ MAX_EVIDENCE_SOURCE_NODES = 1_000_000
 
 _NAMESPACED_ID = re.compile(r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
 _CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+class QueryDeadline(Protocol):
+    """Cancellation contract shared with bounded SQLite callers.
+
+    This structural protocol keeps the store independent of the ledger module,
+    whose concrete ``SQLiteQueryDeadline`` implementation satisfies it.
+    """
+
+    def remaining_milliseconds(self) -> int: ...
+
+    def progress_handler(self) -> int: ...
+
+    def raise_if_expired(self) -> None: ...
+
+
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _EVIDENCE_ROW_FIELDS = frozenset(
     {
@@ -300,6 +318,24 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _deadline_sqlite_rows(
+    cursor: sqlite3.Cursor,
+    query_deadline: Optional[QueryDeadline],
+):
+    """Translate a progress-handler interruption through the shared deadline contract."""
+
+    while True:
+        try:
+            row = cursor.fetchone()
+        except sqlite3.OperationalError:
+            if query_deadline is not None:
+                query_deadline.raise_if_expired()
+            raise
+        if row is None:
+            return
+        yield row
+
+
 def _aware_utc_datetime(value: Any, label: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError(f"{label} must be a timezone-aware datetime")
@@ -498,6 +534,9 @@ class ResultStore:
         else:
             self._path = _DEFAULT_DB_DIR / _DEFAULT_DB_NAME
 
+        self._evidence_health_lock = threading.Lock()
+        self._cached_evidence_health_status: Optional[EvidenceSnapshotStatus] = None
+        self._cached_evidence_health_signature: Optional[tuple[Any, ...]] = None
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -505,10 +544,23 @@ class ResultStore:
     # Schema management
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._path), check_same_thread=False)
+    def _connect(self, *, query_deadline: Optional[QueryDeadline] = None) -> sqlite3.Connection:
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
+            timeout_ms = query_deadline.remaining_milliseconds()
+        else:
+            timeout_ms = 5_000
+        conn = sqlite3.connect(
+            str(self._path),
+            check_same_thread=False,
+            timeout=timeout_ms / 1000.0,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(f"PRAGMA busy_timeout = {timeout_ms}")
+        if query_deadline is not None:
+            conn.set_progress_handler(query_deadline.progress_handler, 100)
+            query_deadline.raise_if_expired()
         return conn
 
     @property
@@ -853,9 +905,14 @@ class ResultStore:
         }
 
     @staticmethod
-    def _verify_activation_chain(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
+    def _verify_activation_chain(
+        conn: sqlite3.Connection,
+        query_deadline: Optional[QueryDeadline] = None,
+    ) -> Optional[dict[str, Any]]:
         """Verify the complete append-only activation hash chain and return its tip."""
 
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         rows = conn.execute(
             """
             SELECT activation_id, schema_version, revision, snapshot_digest,
@@ -868,6 +925,8 @@ class ResultStore:
         previous_snapshot_digest = None
         tip = None
         for expected_revision, row in enumerate(rows, start=1):
+            if query_deadline is not None:
+                query_deadline.raise_if_expired()
             activation_id = str(row["activation_id"])
             canonical_json = str(row["canonical_json"])
             try:
@@ -917,13 +976,120 @@ class ResultStore:
             previous_activation_id = activation_id
             previous_snapshot_digest = projected["snapshot_digest"]
             tip = {**projected, "activation_id": activation_id}
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         return tip
+
+    def _evidence_file_signature(self) -> tuple[Any, ...]:
+        """Return bounded filesystem metadata for fail-closed cache invalidation."""
+
+        signatures: list[Any] = []
+        for candidate in (
+            self._path,
+            Path(f"{self._path}-wal"),
+            Path(f"{self._path}-shm"),
+            Path(f"{self._path}-journal"),
+        ):
+            try:
+                stat = candidate.stat()
+            except OSError:
+                signatures.append(None)
+            else:
+                signatures.append(
+                    (
+                        stat.st_dev,
+                        stat.st_ino,
+                        stat.st_mode,
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                        stat.st_ctime_ns,
+                    )
+                )
+        return tuple(signatures)
+
+    def _invalidate_cached_evidence_health(self) -> None:
+        with self._evidence_health_lock:
+            self._cached_evidence_health_status = None
+            self._cached_evidence_health_signature = None
+
+    def cached_evidence_snapshot_status(
+        self,
+        *,
+        as_of: Optional[datetime] = None,
+        max_age_days: int = DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+    ) -> Optional[EvidenceSnapshotStatus]:
+        """Return a verified in-process attestation without opening SQLite.
+
+        The cache is intentionally empty after process restart.  Bounded,
+        authenticated workflows call :meth:`get_evidence_snapshot_status` and
+        populate it only after a complete integrity verification.  Public health
+        can then derive current-time freshness using this immutable projection
+        and bounded filesystem metadata only.
+        """
+
+        if (
+            not isinstance(max_age_days, int)
+            or isinstance(max_age_days, bool)
+            or not (0 <= max_age_days <= 3650)
+        ):
+            raise ValueError("max_age_days must be an integer between 0 and 3650")
+        observed_at = _utc_now() if as_of is None else _aware_utc_datetime(as_of, "as_of")
+        with self._evidence_health_lock:
+            cached = self._cached_evidence_health_status
+            expected_signature = self._cached_evidence_health_signature
+        if cached is None or expected_signature is None:
+            return None
+        if self._evidence_file_signature() != expected_signature:
+            self._invalidate_cached_evidence_health()
+            return None
+        if cached.captured_at > observed_at + timedelta(seconds=MAX_CAPTURE_CLOCK_SKEW_SECONDS):
+            self._invalidate_cached_evidence_health()
+            return None
+        age_days = max(0, (observed_at.date() - cached.captured_at.date()).days)
+        freshness = "current" if age_days <= max_age_days else "stale"
+        return replace(
+            cached,
+            age_days=age_days,
+            freshness=freshness,
+            ready_for_offline=cached.integrity == "verified" and freshness == "current",
+        )
 
     def get_evidence_snapshot_status(
         self,
         *,
         as_of: Optional[datetime] = None,
         max_age_days: int = DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+        query_deadline: Optional[QueryDeadline] = None,
+    ) -> Optional[EvidenceSnapshotStatus]:
+        """Fully verify the active snapshot and update the health attestation."""
+
+        signature_before = self._evidence_file_signature()
+        try:
+            status = self._verify_evidence_snapshot_status(
+                as_of=as_of,
+                max_age_days=max_age_days,
+                query_deadline=query_deadline,
+            )
+        except Exception:
+            self._invalidate_cached_evidence_health()
+            raise
+        signature_after = self._evidence_file_signature()
+        if signature_before != signature_after:
+            self._invalidate_cached_evidence_health()
+            raise EvidenceSnapshotConflictError(
+                "evidence database changed while its snapshot was being verified"
+            )
+        with self._evidence_health_lock:
+            self._cached_evidence_health_status = status
+            self._cached_evidence_health_signature = signature_after if status is not None else None
+        return status
+
+    def _verify_evidence_snapshot_status(
+        self,
+        *,
+        as_of: Optional[datetime] = None,
+        max_age_days: int = DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+        query_deadline: Optional[QueryDeadline] = None,
     ) -> Optional[EvidenceSnapshotStatus]:
         """Verify and describe the active snapshot using local SQLite only."""
 
@@ -934,10 +1100,14 @@ class ResultStore:
         ):
             raise ValueError("max_age_days must be an integer between 0 and 3650")
         observed_at = _utc_now() if as_of is None else _aware_utc_datetime(as_of, "as_of")
-        with self._connect() as conn:
-            activation = self._verify_activation_chain(conn)
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
+        with self._connect(query_deadline=query_deadline) as conn:
+            activation = self._verify_activation_chain(conn, query_deadline)
             if activation is None:
                 return None
+            if query_deadline is not None:
+                query_deadline.raise_if_expired()
             record = conn.execute(
                 "SELECT * FROM evidence_snapshots WHERE snapshot_digest = ?",
                 (activation["snapshot_digest"],),
@@ -946,7 +1116,28 @@ class ResultStore:
                 raise EvidenceSnapshotIntegrityError(
                     "active activation references a missing snapshot"
                 )
-            rows = conn.execute(
+            if query_deadline is not None:
+                query_deadline.raise_if_expired()
+            canonical_json = str(record["canonical_json"])
+            try:
+                core = json.loads(canonical_json)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise EvidenceSnapshotIntegrityError(
+                    "persisted snapshot JSON is malformed"
+                ) from exc
+            if not isinstance(core, Mapping) or _canonical_json(core) != canonical_json:
+                raise EvidenceSnapshotIntegrityError("persisted snapshot JSON is not canonical")
+            if query_deadline is not None:
+                query_deadline.raise_if_expired()
+            snapshot_digest = str(record["snapshot_digest"])
+            if _sha256(canonical_json) != snapshot_digest:
+                raise EvidenceSnapshotIntegrityError(
+                    "persisted snapshot digest verification failed"
+                )
+            expected_rows = core.get("rows")
+            if not isinstance(expected_rows, list):
+                raise EvidenceSnapshotIntegrityError("persisted snapshot rows are malformed")
+            row_cursor = conn.execute(
                 """
                 SELECT ordinal, row_digest, competitor_id, event_code, time_seconds,
                        species, diameter_mm, quality, competition_id, heat_id, result_date
@@ -954,41 +1145,47 @@ class ResultStore:
                 WHERE snapshot_digest = ? ORDER BY ordinal
                 """,
                 (record["snapshot_digest"],),
-            ).fetchall()
+            )
+            row_count = 0
+            for row in _deadline_sqlite_rows(row_cursor, query_deadline):
+                if query_deadline is not None:
+                    query_deadline.raise_if_expired()
+                if int(row["ordinal"]) != row_count:
+                    raise EvidenceSnapshotIntegrityError("persisted snapshot row order is invalid")
+                if row_count >= len(expected_rows):
+                    raise EvidenceSnapshotIntegrityError(
+                        "persisted snapshot rows do not match digest core"
+                    )
+                projected = {
+                    "schema_version": EVIDENCE_HISTORY_ROW_SCHEMA_VERSION,
+                    "competitor_id": str(row["competitor_id"]),
+                    "event_code": str(row["event_code"]),
+                    "time_seconds": float(row["time_seconds"]),
+                    "species": str(row["species"]),
+                    "diameter_mm": float(row["diameter_mm"]),
+                    "quality": int(row["quality"]),
+                    "competition_id": str(row["competition_id"]),
+                    "heat_id": str(row["heat_id"]),
+                    "result_date": str(row["result_date"]),
+                }
+                if _sha256(_canonical_json(projected)) != str(row["row_digest"]):
+                    raise EvidenceSnapshotIntegrityError("persisted snapshot row digest is invalid")
+                if projected != expected_rows[row_count]:
+                    raise EvidenceSnapshotIntegrityError(
+                        "persisted snapshot rows do not match digest core"
+                    )
+                row_count += 1
+            if row_count != len(expected_rows):
+                raise EvidenceSnapshotIntegrityError(
+                    "persisted snapshot rows do not match digest core"
+                )
 
-        canonical_json = str(record["canonical_json"])
-        try:
-            core = json.loads(canonical_json)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise EvidenceSnapshotIntegrityError("persisted snapshot JSON is malformed") from exc
-        if not isinstance(core, Mapping) or _canonical_json(core) != canonical_json:
-            raise EvidenceSnapshotIntegrityError("persisted snapshot JSON is not canonical")
-        snapshot_digest = str(record["snapshot_digest"])
-        if _sha256(canonical_json) != snapshot_digest:
-            raise EvidenceSnapshotIntegrityError("persisted snapshot digest verification failed")
-        projected_rows = []
-        for ordinal, row in enumerate(rows):
-            if int(row["ordinal"]) != ordinal:
-                raise EvidenceSnapshotIntegrityError("persisted snapshot row order is invalid")
-            projected = {
-                "schema_version": EVIDENCE_HISTORY_ROW_SCHEMA_VERSION,
-                "competitor_id": str(row["competitor_id"]),
-                "event_code": str(row["event_code"]),
-                "time_seconds": float(row["time_seconds"]),
-                "species": str(row["species"]),
-                "diameter_mm": float(row["diameter_mm"]),
-                "quality": int(row["quality"]),
-                "competition_id": str(row["competition_id"]),
-                "heat_id": str(row["heat_id"]),
-                "result_date": str(row["result_date"]),
-            }
-            if _sha256(_canonical_json(projected)) != str(row["row_digest"]):
-                raise EvidenceSnapshotIntegrityError("persisted snapshot row digest is invalid")
-            projected_rows.append(projected)
-        if core.get("rows") != projected_rows:
-            raise EvidenceSnapshotIntegrityError("persisted snapshot rows do not match digest core")
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
 
         diagnostics = core.get("diagnostics")
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         if not isinstance(diagnostics, Mapping) or _canonical_json(diagnostics) != str(
             record["diagnostics_json"]
         ):
@@ -1007,9 +1204,11 @@ class ResultStore:
         }
         if any(core.get(key) != value for key, value in scalar_pairs.items()):
             raise EvidenceSnapshotIntegrityError("persisted snapshot metadata is inconsistent")
-        if scalar_pairs["accepted_row_count"] != len(projected_rows):
+        if scalar_pairs["accepted_row_count"] != row_count:
             raise EvidenceSnapshotIntegrityError("persisted snapshot row count is inconsistent")
 
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         try:
             captured_at = _aware_utc_datetime(
                 datetime.fromisoformat(str(record["captured_at"])), "persisted captured_at"
@@ -1025,6 +1224,8 @@ class ResultStore:
             raise EvidenceSnapshotIntegrityError("persisted captured_at is too far in the future")
         age_days = max(0, (observed_at.date() - captured_at.date()).days)
         freshness = "current" if age_days <= max_age_days else "stale"
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         return EvidenceSnapshotStatus(
             schema_version=EVIDENCE_SNAPSHOT_SCHEMA_VERSION,
             snapshot_digest=snapshot_digest,
@@ -1067,6 +1268,7 @@ class ResultStore:
         competitor_ids: Sequence[str],
         *,
         event_code: Optional[str] = None,
+        query_deadline: Optional[QueryDeadline] = None,
     ) -> Optional[EvidenceSnapshotSelection]:
         """Verify once, then bulk-load a field from that exact immutable digest."""
 
@@ -1084,7 +1286,7 @@ class ResultStore:
             event = str(event_code).strip().upper()
             if not is_valid_event(event):
                 raise ValueError(f"event_code must be one of {events.VALID_EVENTS}")
-        status = self.get_evidence_snapshot_status()
+        status = self.get_evidence_snapshot_status(query_deadline=query_deadline)
         if status is None:
             return None
         placeholders = ",".join("?" for _ in identities)
@@ -1098,25 +1300,70 @@ class ResultStore:
             sql += "AND event_code = ? "
             params.append(event)
         sql += "ORDER BY competitor_id, result_date, ordinal"
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
         histories: dict[str, list[HistoricalResult]] = {identity: [] for identity in identities}
-        for row in rows:
-            histories[str(row["competitor_id"])].append(
-                HistoricalResult(
-                    event_code=str(row["event_code"]),
-                    time_seconds=float(row["time_seconds"]),
-                    species=str(row["species"]),
-                    diameter_mm=float(row["diameter_mm"]),
-                    quality=int(row["quality"]),
-                    result_date=date.fromisoformat(str(row["result_date"])),
-                    heat_id=str(row["heat_id"]) or None,
+        with self._connect(query_deadline=query_deadline) as conn:
+            for row in conn.execute(sql, params):
+                if query_deadline is not None:
+                    query_deadline.raise_if_expired()
+                histories[str(row["competitor_id"])].append(
+                    HistoricalResult(
+                        event_code=str(row["event_code"]),
+                        time_seconds=float(row["time_seconds"]),
+                        species=str(row["species"]),
+                        diameter_mm=float(row["diameter_mm"]),
+                        quality=int(row["quality"]),
+                        result_date=date.fromisoformat(str(row["result_date"])),
+                        heat_id=str(row["heat_id"]) or None,
+                    )
                 )
-            )
         return EvidenceSnapshotSelection(
             status=status,
-            histories={identity: tuple(histories[identity]) for identity in identities},
+            histories=MappingProxyType(
+                {identity: tuple(histories[identity]) for identity in identities}
+            ),
         )
+
+    def require_evidence_selection_active(
+        self,
+        selection: EvidenceSnapshotSelection,
+        *,
+        query_deadline: Optional[QueryDeadline] = None,
+    ) -> None:
+        """Cheaply reject a verified selection if the append-only activation tip changed."""
+
+        status = selection.status
+        with self._connect(query_deadline=query_deadline) as conn:
+            row = conn.execute(
+                """
+                SELECT activation_id, revision, snapshot_digest, canonical_json
+                FROM evidence_snapshot_activations
+                ORDER BY revision DESC LIMIT 1
+                """
+            ).fetchone()
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
+        if row is None:
+            raise EvidenceSnapshotConflictError(
+                "active evidence snapshot changed after verification"
+            )
+        canonical_json = str(row["canonical_json"])
+        try:
+            core = json.loads(canonical_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise EvidenceSnapshotIntegrityError(
+                "active evidence activation tip is malformed"
+            ) from exc
+        if (
+            not isinstance(core, Mapping)
+            or _canonical_json(core) != canonical_json
+            or _sha256(canonical_json) != str(row["activation_id"])
+            or int(row["revision"]) != status.activation_revision
+            or str(row["activation_id"]) != status.activation_id
+            or str(row["snapshot_digest"]) != status.snapshot_digest
+        ):
+            raise EvidenceSnapshotConflictError(
+                "active evidence snapshot changed after verification"
+            )
 
     # ------------------------------------------------------------------
     # Write API

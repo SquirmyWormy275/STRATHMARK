@@ -69,8 +69,10 @@ Migration 005 creates four additive append-only mirror tables and the
 `append_prediction_ledger_v2(JSONB)` transactional RPC. It forces RLS, revokes `anon`
 and `authenticated`, grants the RPC only to `service_role`, and installs UPDATE/DELETE
 rejection triggers. The RPC must be owned by the dedicated
-`strathmark_prediction_rpc_owner NOLOGIN NOBYPASSRLS` role, has an empty search path,
-and uses fully qualified objects. The service role cannot mutate the tables directly.
+`strathmark_prediction_rpc_owner` role with `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`,
+`NOCREATEROLE`, `NOREPLICATION`, `NOLOGIN`, `NOBYPASSRLS`, and no role memberships,
+has an empty search path, and uses fully qualified `public` relations and indexes. The
+service role cannot mutate the tables directly.
 Local SQLite remains the race-day authority.
 
 Migration 006 adds the request `hash_algorithm` column and replaces the RPC so old
@@ -78,6 +80,23 @@ Migration 006 adds the request `hash_algorithm` column and replaces the RPC so o
 recorded explicitly. It does not rewrite existing evidence.
 Its guarded `20260813_006_prediction_hash_algorithm.down.sql` rollback restores the
 pre-006 RPC and refuses to drop the version column after any `active-v2` row exists.
+It takes an `ACCESS EXCLUSIVE` lock before inspecting or changing the request table and
+sets `row_security=off`, so concurrent appends cannot cross the guard and an executor
+whose RLS policy could hide evidence fails closed.
+Across migration 005, migration 006, and the guarded 006 rollback, idempotency means
+an exact typed projection retry: the complete request row and exact prediction and
+feature sets (including counts) must match. Changed, missing, extra, or cross-request
+child IDs conflict and the whole RPC call rolls back. Settlement retries likewise
+compare every stored typed field. New corrections must increment the latest revision,
+supersede that exact settlement, carry a non-empty reason, and keep residual within
+`1e-9` seconds of `actual_time - median_seconds` to allow only float serialization noise.
+Before any JSON-to-record conversion, all three RPC versions require closed request,
+prediction, feature, and settlement key sets plus the JSON type expected by every typed
+column. The seven original request fields are mandatory; `hash_algorithm` is the sole
+optional version field so queued legacy `raw-v1` payloads remain replayable. Migration
+005 and the 006 rollback accept only an omitted or explicit `raw-v1` algorithm, while
+migration 006 additionally accepts `active-v2`. No other missing, extra, Boolean-as-
+integer, fractional-integer, string-as-number, or nested replacement value is accepted.
 
 Migration 007 adds four separate shadow-evidence tables and the
 `append_shadow_mirror_v1(JSONB)` RPC. A versioned delivery envelope contains either an
@@ -85,9 +104,23 @@ immutable receipt core plus its 005/006 ledger projection, or one field-atomic n
 settle/void revision. It retains the exact caller/request/competitor linkage,
 observation schema and fingerprint, and delivery schema/hash metadata. It does not
 store Missoula's operational outcome/context history, display names, narrative notes,
-or secrets. Existing 005/006 rows are neither updated nor rewritten. Its guarded down
-file succeeds only before any shadow delivery is recorded; after activation use a
-forward repair or restore from the durable local ledger.
+email addresses, or secrets. The delivery hash covers an explicit JSON body string;
+the RPC recomputes SHA-256 with PostgreSQL core functions and requires that string's
+parsed JSON to equal the submitted envelope without delivery metadata. Exact semantic
+retries therefore tolerate harmless JSON whitespace without allowing a false digest to
+reserve an outbox ID. The RPC also enforces the frozen receipt-core fields, nested
+identity linkages, and a unique receipt prediction-ID set equal to the embedded ledger.
+Snapshot `diagnostics` and every competitor's `excluded_by_reason` are bounded to 128
+lowercase machine-code keys matching `[a-z][a-z0-9_]{0,63}`, with exact nonnegative
+integer counts no larger than `2147483647`. Booleans, floats, numeric strings, negative
+counts, and nested values fail before any write or duplicate decision.
+Existing 005/006 rows are neither updated nor rewritten. Its guarded down file succeeds
+only before any shadow delivery is recorded; after activation use a forward repair or
+restore from the durable local ledger. Numeric envelopes acquire advisory locks for all
+prediction IDs in sorted order before reading legacy or numeric history. A database
+constraint trigger takes the same lock and rejects later legacy settlement inserts once
+numeric authority exists. The down file locks all four mirror tables in a stable order,
+audits with `row_security=off`, removes that trigger, and only then drops mirror objects.
 
 ## What lives here
 
@@ -123,6 +156,14 @@ connection. It creates a uniquely named database, bootstraps the minimum Supabas
 roles, executes the checked-in RPC-owner prerequisite, creates the minimal `competitors`
 table, exercises migrations 005/006/007 and both guarded rollback boundaries, and
 destroys the database even after a failed check.
+The 005/006 portion sends direct-RPC adversaries for partial field retries,
+prediction/feature ID collisions, same-hash settlement mutations, stale or skipped
+settlement revisions, wrong supersession, missing correction reasons, and inconsistent
+residuals. These checks run against the 005 RPC, the 006 RPC, and the restored 006-down
+RPC.
+The gate also runs bounded two-session races proving that 006/007 rollbacks wait for a
+concurrent append, that legacy-first settlement authority becomes the prior numeric
+revision, and that numeric-first authority rejects a concurrent legacy append.
 
 CI runs this gate against a PostgreSQL service container. For a local run, provide a
 loopback PostgreSQL superuser/controller account that is authorized to create/drop a

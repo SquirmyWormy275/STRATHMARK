@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import date
 
 import pytest
@@ -19,8 +22,10 @@ from strathmark.ledger import (
     MAX_NUMERIC_RAW_TIME_SECONDS,
     NUMERIC_OUTCOME_REASON_CODES,
     LedgerPrediction,
+    LedgerQueryTimeoutError,
     NumericSettlementRevision,
     SettlementConflictError,
+    SQLiteQueryDeadline,
     canonical_hash,
 )
 from strathmark.ledger import (
@@ -176,6 +181,30 @@ def _field_with_receipt(ledger: PredictionLedger, competitor_id: str) -> tuple[s
         ),
     ).prediction_ids
     return prediction_ids[0], request_id, fingerprint
+
+
+def test_direct_receipt_lookup_without_current_fingerprint_is_never_review_ready(tmp_path):
+    ledger = PredictionLedger(tmp_path / "receipt-freshness.db")
+    _, request_id, fingerprint = _field_with_receipt(ledger, "missoula:competitor:freshness")
+
+    unavailable = ledger.get_shadow_receipt(
+        "missoula:service:shadow",
+        request_id,
+        expected_run_revision="missoula:run-revision:receipt-field",
+    )
+    current = ledger.get_shadow_receipt(
+        "missoula:service:shadow",
+        request_id,
+        current_active_fingerprint=fingerprint,
+        expected_run_revision="missoula:run-revision:receipt-field",
+    )
+
+    assert unavailable is not None
+    assert unavailable.status.freshness == "unavailable"
+    assert unavailable.status.ready_for_review is False
+    assert current is not None
+    assert current.status.freshness == "current"
+    assert current.status.ready_for_review is True
 
 
 def _settle(
@@ -1185,3 +1214,127 @@ def test_numeric_revision_tables_are_append_only(tmp_path):
                 "DELETE FROM numeric_settlement_revisions WHERE revision_id = ?",
                 (result.revisions[0].revision_id,),
             )
+
+
+def test_numeric_outcome_deadline_rolls_back_a_sqlite_lock_then_exact_retry_recovers(tmp_path):
+    path = tmp_path / "numeric-lock-timeout.db"
+    ledger = PredictionLedger(path)
+    prediction_id = _field(ledger, "missoula:competitor:lock")[0]
+    blocker = sqlite3.connect(path, timeout=1.0, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    def apply_with_deadline():
+        return ledger.apply_numeric_outcome_revision(
+            "missoula:outcome-revision:lock-timeout",
+            [_settle(prediction_id, "missoula:competitor:lock", 43.0, expected_revision=0)],
+            actor="missoula:operator:judge-1",
+            query_deadline=SQLiteQueryDeadline(timeout_seconds=0.05),
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(apply_with_deadline)
+            with pytest.raises(LedgerQueryTimeoutError, match="numeric outcome write"):
+                future.result(timeout=2)
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    assert ledger.get_numeric_outcome_revision("missoula:outcome-revision:lock-timeout") is None
+    recovered = ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:lock-timeout",
+        [_settle(prediction_id, "missoula:competitor:lock", 43.0, expected_revision=0)],
+        actor="missoula:operator:judge-1",
+    )
+    assert recovered.status == "recorded"
+
+
+def test_numeric_outcome_post_commit_timeout_is_recoverable_by_exact_revision_id(tmp_path):
+    committed = threading.Event()
+    release = threading.Event()
+
+    class PostCommitLedger(PredictionLedger):
+        def _schedule_delivery(self, kind, entity_id):
+            if kind == "settlement":
+                committed.set()
+                release.wait(timeout=5)
+            return super()._schedule_delivery(kind, entity_id)
+
+    ledger = PostCommitLedger(tmp_path / "numeric-post-commit.db")
+    prediction_id = _field(ledger, "missoula:competitor:post-commit")[0]
+
+    def apply():
+        return ledger.apply_numeric_outcome_revision(
+            "missoula:outcome-revision:post-commit",
+            [
+                _settle(
+                    prediction_id,
+                    "missoula:competitor:post-commit",
+                    43.0,
+                    expected_revision=0,
+                )
+            ],
+            actor="missoula:operator:judge-1",
+            query_deadline=SQLiteQueryDeadline(timeout_seconds=0.025),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(apply)
+        assert committed.wait(timeout=2)
+        with pytest.raises(FutureTimeoutError):
+            future.result(timeout=0.025)
+        persisted = ledger.get_numeric_outcome_revision("missoula:outcome-revision:post-commit")
+        assert persisted is not None
+        release.set()
+        assert future.result(timeout=2).status == "recorded"
+
+    duplicate = ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:post-commit",
+        [
+            _settle(
+                prediction_id,
+                "missoula:competitor:post-commit",
+                43.0,
+                expected_revision=0,
+            )
+        ],
+        actor="missoula:operator:judge-1",
+    )
+    assert duplicate.status == "duplicate"
+
+
+def test_numeric_outcome_batches_latest_revision_lookup_for_the_whole_field(tmp_path):
+    class TracingLedger(PredictionLedger):
+        def __init__(self, path):
+            self.traces = []
+            super().__init__(path)
+
+        def _connect(self, *args, **kwargs):
+            conn = super()._connect(*args, **kwargs)
+            conn.set_trace_callback(self.traces.append)
+            return conn
+
+    ledger = TracingLedger(tmp_path / "batched-latest-revisions.db")
+    competitors = tuple(f"missoula:competitor:batch-{index}" for index in range(8))
+    prediction_ids = _field(ledger, *competitors)
+    ledger.traces.clear()
+
+    ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:batched-latest",
+        [
+            _settle(prediction_id, competitor_id, 43.0 + index / 10, expected_revision=0)
+            for index, (prediction_id, competitor_id) in enumerate(
+                zip(prediction_ids, competitors, strict=True)
+            )
+        ],
+        actor="missoula:operator:judge-1",
+    )
+
+    latest_queries = [
+        query
+        for query in ledger.traces
+        if "FROM prediction_settlements" in query
+        and "FROM numeric_settlement_revisions" in query
+        and "authority_rank" in query
+    ]
+    assert len(latest_queries) == 1

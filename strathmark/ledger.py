@@ -36,9 +36,11 @@ _LEDGER_NAMESPACE = uuid.UUID("2f08f564-cae9-54bf-b488-7d5a19831f80")
 _RAW_HASH_ALGORITHM = "raw-v1"
 _ACTIVE_HASH_ALGORITHM = "active-v2"
 MAX_MIRROR_QUEUE = 1024
+MAX_MIRROR_PENDING_SCAN = 128
 MAX_NUMERIC_SETTLEMENTS_PER_REVISION = 512
 MAX_NUMERIC_RAW_TIME_SECONDS = 300.0
 MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER = 4096
+_RECEIPT_NOT_PROVIDED = object()
 NUMERIC_OUTCOME_REASON_CODES = frozenset(
     {
         "corrected_time",
@@ -246,6 +248,10 @@ CREATE INDEX IF NOT EXISTS idx_prediction_settlements_prediction
     ON prediction_settlements(prediction_id, revision DESC);
 CREATE INDEX IF NOT EXISTS idx_numeric_settlement_revisions_prediction
     ON numeric_settlement_revisions(prediction_id, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_prediction_mirror_outbox_pending_scan
+    ON prediction_mirror_outbox(created_at, outbox_id, kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_prediction_mirror_delivery_status
+    ON prediction_mirror_delivery(status, outbox_id);
 CREATE INDEX IF NOT EXISTS idx_actor_attestation_nonce_expiry
     ON actor_attestation_nonce_claims(expires_at);
 """
@@ -589,7 +595,9 @@ class PredictionLedger:
         self._delivery_queue: deque[tuple[str, str]] = deque()
         self._delivery_in_flight: set[tuple[str, str]] = set()
         self._mirror_worker: Optional[threading.Thread] = None
+        self._initialized_path_identity: Optional[tuple[int, int]] = None
         self._init_schema()
+        self._initialized_path_identity = self._path_identity()
         if self._mirror is not None and self._has_pending_delivery():
             with self._worker_lock:
                 self._start_mirror_worker_locked()
@@ -625,6 +633,39 @@ class PredictionLedger:
                 )
             conn.execute("DROP TRIGGER IF EXISTS actor_attestation_nonce_claims_no_delete")
             conn.executescript(_IMMUTABILITY_TRIGGERS)
+
+    def _path_identity(self) -> Optional[tuple[int, int]]:
+        try:
+            stat = Path(self.path).stat()
+        except OSError:
+            return None
+        return stat.st_dev, stat.st_ino
+
+    def cached_persistence_health(self) -> dict[str, Any]:
+        """Describe the SQLite target without opening it or reserving a writer lock."""
+
+        path = Path(self.path)
+        memory = str(self.path) == ":memory:"
+        exists = False if memory else path.is_file()
+        initialized = bool(
+            exists
+            and self._initialized_path_identity is not None
+            and self._path_identity() == self._initialized_path_identity
+        )
+        readable = bool(initialized and os.access(path, os.R_OK))
+        writable = bool(initialized and os.access(path, os.W_OK))
+        observed = bool(initialized and readable and writable)
+        return {
+            "configured_as_memory": memory,
+            "path_exists": exists,
+            "readable": readable,
+            "writable": writable,
+            "read_write_open_observed": observed,
+            "persistence_observed": observed,
+            "assurance": (
+                "sqlite-initialization-observed-not-durability-proof" if observed else "unverified"
+            ),
+        }
 
     def record_field(
         self,
@@ -1172,10 +1213,9 @@ class PredictionLedger:
             )
 
         freshness = (
-            "current"
+            "unavailable"
             if current_active_fingerprint is None
-            or str(current_active_fingerprint) == recorded_fingerprint
-            else "stale"
+            else ("current" if str(current_active_fingerprint) == recorded_fingerprint else "stale")
         )
         delivery_status = row["delivery_status"]
         if self._mirror is None:
@@ -1208,6 +1248,7 @@ class PredictionLedger:
         run_revision: str,
         actor: str,
         reason_code: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
     ) -> NumericOutcomeRevisionResult:
         """Atomically append eligible numeric settlements or retraction voids.
 
@@ -1254,9 +1295,9 @@ class PredictionLedger:
         field_revision_id = str(uuid.uuid5(_LEDGER_NAMESPACE, f"numeric-outcome:{outcome_key}"))
         timestamp = _now()
 
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with self._connect(query_deadline=query_deadline) as conn:
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 placeholders = ",".join("?" for _ in validated)
                 prediction_rows = conn.execute(
                     f"""
@@ -1376,30 +1417,41 @@ class PredictionLedger:
 
                 prepared: list[dict[str, Any]] = []
                 any_correction = False
+                requested_values = ",".join("(?)" for _ in validated)
+                latest_rows = conn.execute(
+                    f"""
+                    WITH requested(prediction_id) AS (VALUES {requested_values}),
+                    settlement_history AS (
+                        SELECT s.prediction_id, s.revision,
+                               s.settlement_id AS revision_id,
+                               'settle' AS action, 0 AS source_priority,
+                               s.settled_at AS authority_timestamp
+                        FROM prediction_settlements s
+                        JOIN requested q ON q.prediction_id = s.prediction_id
+                        UNION ALL
+                        SELECT s.prediction_id, s.revision, s.revision_id,
+                               s.action, 1 AS source_priority,
+                               s.created_at AS authority_timestamp
+                        FROM numeric_settlement_revisions s
+                        JOIN requested q ON q.prediction_id = s.prediction_id
+                    ),
+                    ranked AS (
+                        SELECT *, ROW_NUMBER() OVER (
+                            PARTITION BY prediction_id
+                            ORDER BY revision DESC, source_priority DESC,
+                                     authority_timestamp DESC, revision_id DESC
+                        ) AS authority_rank
+                        FROM settlement_history
+                    )
+                    SELECT prediction_id, revision, revision_id, action
+                    FROM ranked WHERE authority_rank = 1
+                    """,
+                    [item["prediction_id"] for item in validated],
+                ).fetchall()
+                latest_by_prediction = {str(row["prediction_id"]): row for row in latest_rows}
                 for item in validated:
                     prediction = predictions_by_id[item["prediction_id"]]
-
-                    latest = conn.execute(
-                        """
-                        SELECT revision, revision_id, action
-                        FROM (
-                            SELECT revision, settlement_id AS revision_id,
-                                   'settle' AS action, 0 AS source_priority,
-                                   settled_at AS authority_timestamp
-                            FROM prediction_settlements
-                            WHERE prediction_id = ?
-                            UNION ALL
-                            SELECT revision, revision_id, action, 1 AS source_priority,
-                                   created_at AS authority_timestamp
-                            FROM numeric_settlement_revisions
-                            WHERE prediction_id = ?
-                        )
-                        ORDER BY revision DESC, source_priority DESC,
-                                 authority_timestamp DESC, revision_id DESC
-                        LIMIT 1
-                        """,
-                        (item["prediction_id"], item["prediction_id"]),
-                    ).fetchone()
+                    latest = latest_by_prediction.get(item["prediction_id"])
                     latest_revision = 0 if latest is None else int(latest["revision"])
                     if item["expected_revision"] != latest_revision:
                         raise SettlementConflictError(
@@ -1540,6 +1592,13 @@ class PredictionLedger:
                 ).fetchone()
                 result = self._numeric_outcome_result(conn, outcome_row)
                 conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if query_deadline is not None and query_deadline.cancelled:
+                    raise LedgerQueryTimeoutError(
+                        "bounded numeric outcome write exceeded its deadline"
+                    ) from exc
+                raise
             except Exception:
                 conn.rollback()
                 raise
@@ -1590,6 +1649,7 @@ class PredictionLedger:
         current_active_fingerprint: Optional[str] = None,
         expected_run_revision: Optional[str] = None,
         query_deadline: Optional[SQLiteQueryDeadline] = None,
+        validated_receipt: Any = _RECEIPT_NOT_PROVIDED,
     ) -> LedgerMonitoringStatus:
         """Derive payload-free mirror and numeric evidence monitoring facts."""
 
@@ -1597,6 +1657,7 @@ class PredictionLedger:
             (caller_id is None) != (request_id is None)
             or (current_active_fingerprint is not None and caller_id is None)
             or (expected_run_revision is not None and caller_id is None)
+            or (validated_receipt is not _RECEIPT_NOT_PROVIDED and caller_id is None)
         ):
             raise ValueError(
                 "caller_id and request_id are required together for receipt monitoring"
@@ -1638,33 +1699,31 @@ class PredictionLedger:
                 """,
                 (scoped_caller, scoped_caller),
             ).fetchone()
-            revision_count = int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*)
+            numeric_action_row = conn.execute(
+                """
+                WITH scoped_revisions AS (
+                    SELECT s.prediction_id, s.revision, s.action,
+                           s.created_at, s.revision_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.prediction_id
+                               ORDER BY s.revision DESC, s.created_at DESC, s.revision_id DESC
+                           ) AS authority_rank
                     FROM numeric_settlement_revisions s
                     JOIN numeric_outcome_revisions r
                       ON r.field_revision_id = s.field_revision_id
                     WHERE ? IS NULL OR r.caller_id = ?
-                    """,
-                    (scoped_caller, scoped_caller),
-                ).fetchone()[0]
-            )
-            latest_rows = conn.execute(
-                """
-                SELECT current.action
-                FROM numeric_settlement_revisions current
-                JOIN numeric_outcome_revisions r
-                  ON r.field_revision_id = current.field_revision_id
-                WHERE current.revision = (
-                    SELECT MAX(candidate.revision)
-                    FROM numeric_settlement_revisions candidate
-                    WHERE candidate.prediction_id = current.prediction_id
                 )
-                  AND (? IS NULL OR r.caller_id = ?)
+                SELECT COUNT(*) AS revision_count,
+                       COALESCE(SUM(
+                           CASE WHEN authority_rank = 1 AND action = 'settle' THEN 1 ELSE 0 END
+                       ), 0) AS active_count,
+                       COALESCE(SUM(
+                           CASE WHEN authority_rank = 1 AND action = 'void' THEN 1 ELSE 0 END
+                       ), 0) AS voided_count
+                FROM scoped_revisions
                 """,
                 (scoped_caller, scoped_caller),
-            ).fetchall()
+            ).fetchone()
 
         pending_count = int(mirror_row["pending_count"] or 0)
         if self._mirror is None:
@@ -1692,13 +1751,15 @@ class PredictionLedger:
             from strathmark.shadow import ShadowReceiptCorruptionError
 
             try:
-                receipt = self.get_shadow_receipt(
-                    caller_id,
-                    request_id,
-                    current_active_fingerprint=current_active_fingerprint,
-                    expected_run_revision=expected_run_revision,
-                    query_deadline=query_deadline,
-                )
+                receipt = validated_receipt
+                if receipt is _RECEIPT_NOT_PROVIDED:
+                    receipt = self.get_shadow_receipt(
+                        caller_id,
+                        request_id,
+                        current_active_fingerprint=current_active_fingerprint,
+                        expected_run_revision=expected_run_revision,
+                        query_deadline=query_deadline,
+                    )
             except LedgerConflictError:
                 if expected_run_revision is not None:
                     raise
@@ -1744,9 +1805,9 @@ class PredictionLedger:
             numeric_mirror_backlog_count=numeric_pending_count,
             numeric_mirror_oldest_pending_at=numeric_mirror_row["oldest_pending_at"],
             numeric_mirror_last_attempt_at=numeric_mirror_row["last_attempt_at"],
-            numeric_revision_count=revision_count,
-            active_numeric_settlement_count=sum(row["action"] == "settle" for row in latest_rows),
-            voided_prediction_count=sum(row["action"] == "void" for row in latest_rows),
+            numeric_revision_count=int(numeric_action_row["revision_count"] or 0),
+            active_numeric_settlement_count=int(numeric_action_row["active_count"] or 0),
+            voided_prediction_count=int(numeric_action_row["voided_count"] or 0),
             evidence_sample_count=evidence_count,
             evidence_status=evidence_status,
             drift_calibration_advisory=drift_calibration_advisory,
@@ -2484,12 +2545,20 @@ class PredictionLedger:
             normalized_payload = dict(normalized_payload)
             if "delivery" in normalized_payload:
                 raise ValueError("mirror delivery metadata is ledger-owned")
-            payload_hash = canonical_hash(normalized_payload)
+            canonical_payload = json.dumps(
+                normalized_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            payload_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
             normalized_payload["delivery"] = {
                 "schema_version": MIRROR_DELIVERY_SCHEMA_VERSION,
                 "outbox_id": outbox_id,
                 "entity_id": entity_id,
                 "created_at": timestamp,
+                "canonical_payload": canonical_payload,
                 "payload_hash": payload_hash,
             }
         conn.execute(
@@ -2616,45 +2685,85 @@ class PredictionLedger:
         except sqlite3.Error:
             return False
 
-    def _claim_pending_delivery(self, attempted: set[tuple[str, str]]) -> Optional[tuple[str, str]]:
-        """Claim one durable row not already attempted by this worker run."""
+    def _claim_pending_delivery(
+        self,
+        excluded: set[tuple[str, str]] | frozenset[tuple[str, str]],
+        *,
+        after: Optional[tuple[str, str]],
+        attempted_since: Optional[str] = None,
+    ) -> tuple[Optional[tuple[str, str]], Optional[tuple[str, str]], bool]:
+        """Claim one row from a bounded keyset page without starving later work."""
 
         try:
             with self._connect() as conn:
-                rows = conn.execute("""
+                rows = conn.execute(
+                    """
                     SELECT o.kind, o.entity_id
+                         , o.created_at, o.outbox_id
                     FROM prediction_mirror_outbox o
                     LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
-                    WHERE d.status IS NULL OR d.status != 'recorded'
+                    WHERE (d.status IS NULL OR d.status != 'recorded')
+                      AND (
+                        ? IS NULL OR d.last_attempt_at IS NULL OR d.last_attempt_at < ?
+                      )
+                      AND (
+                        ? IS NULL OR o.created_at > ?
+                        OR (o.created_at = ? AND o.outbox_id > ?)
+                      )
                     ORDER BY o.created_at, o.outbox_id
-                    """).fetchall()
+                    LIMIT ?
+                    """,
+                    (
+                        attempted_since,
+                        attempted_since,
+                        None if after is None else after[0],
+                        None if after is None else after[0],
+                        None if after is None else after[0],
+                        None if after is None else after[1],
+                        MAX_MIRROR_PENDING_SCAN,
+                    ),
+                ).fetchall()
         except sqlite3.Error:
-            return None
+            return None, after, True
+        if not rows:
+            return None, after, True
         with self._worker_lock:
             for row in rows:
+                cursor = (str(row["created_at"]), str(row["outbox_id"]))
                 key = (str(row["kind"]), str(row["entity_id"]))
-                if key in attempted or key in self._delivery_in_flight:
+                if key in excluded or key in self._delivery_in_flight:
                     continue
                 self._delivery_in_flight.add(key)
-                return key
-        return None
+                return key, cursor, False
+        last = rows[-1]
+        cursor = (str(last["created_at"]), str(last["outbox_id"]))
+        return None, cursor, len(rows) < MAX_MIRROR_PENDING_SCAN
 
     def _mirror_worker_loop(self) -> None:
         """Drain scheduled entities serially while durable outbox rows remain authority."""
 
-        attempted: set[tuple[str, str]] = set()
+        # The durable attempt timestamp and keyset cursor prevent repeat work in
+        # this pass without retaining an O(backlog) in-memory key set.
+        attempted_since = _now()
+        scan_cursor: Optional[tuple[str, str]] = None
         while True:
             with self._worker_lock:
                 key = self._delivery_queue.popleft() if self._delivery_queue else None
             if key is None:
-                key = self._claim_pending_delivery(attempted)
+                while key is None:
+                    key, scan_cursor, exhausted = self._claim_pending_delivery(
+                        frozenset(),
+                        after=scan_cursor,
+                        attempted_since=attempted_since,
+                    )
+                    if exhausted:
+                        break
             if key is None:
                 with self._worker_lock:
                     if self._delivery_queue:
                         continue
                     self._mirror_worker = None
                     return
-            attempted.add(key)
             try:
                 self._deliver_pending(*key)
             finally:
@@ -2692,7 +2801,12 @@ class PredictionLedger:
                       )
                     )
                   )
-                ORDER BY o.created_at, o.outbox_id
+                ORDER BY
+                    CASE WHEN d.last_attempt_at IS NULL THEN 0 ELSE 1 END,
+                    CASE WHEN d.last_attempt_at IS NULL THEN o.created_at END,
+                    CASE WHEN d.last_attempt_at IS NOT NULL THEN d.last_attempt_at END,
+                    o.created_at,
+                    o.outbox_id
                 LIMIT ?
                 """,
                 (scoped_caller, scoped_caller, scoped_caller, bounded),
