@@ -480,6 +480,15 @@ def test_auth_uses_the_stdlib_only_identity_module():
     assert auth_module.validate_namespaced_identity.__module__ == "strathmark.identity"
 
 
+def test_trusted_shadow_gate_accepts_starlette_app_keyword():
+    async def downstream(scope, receive, send):
+        del scope, receive, send
+
+    gate = TrustedShadowRequestGate(app=downstream)
+
+    assert gate.application is downstream
+
+
 def test_early_asgi_gate_rejects_non_ascii_bearer_without_an_exception(shadow_client):
     del shadow_client
     sent = []

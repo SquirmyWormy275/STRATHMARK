@@ -938,8 +938,10 @@ def _require_trusted_shadow_ledger_write_ready(*, ledger: PredictionLedger) -> N
 class TrustedShadowRequestGate:
     """Pre-body gate for bearer validation and declared/actual byte bounds."""
 
-    def __init__(self, application: Any) -> None:
-        self.application = application
+    def __init__(self, app: Any) -> None:
+        # Starlette constructs middleware with the wrapped application as the
+        # keyword argument ``app`` on every supported release line.
+        self.application = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http" or not str(scope.get("path", "")).startswith("/v1/shadow/"):

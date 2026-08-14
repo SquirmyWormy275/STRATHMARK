@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS public.shadow_numeric_settlement_revisions (
         REFERENCES public.shadow_numeric_outcome_revisions(field_revision_id),
     prediction_id pg_catalog.text NOT NULL
         REFERENCES public.prediction_ledger_predictions(prediction_id),
-    revision pg_catalog.integer NOT NULL CHECK (revision >= 1),
+    revision pg_catalog.int4 NOT NULL CHECK (revision >= 1),
     competitor_id pg_catalog.text NOT NULL
         REFERENCES public.competitors(competitor_id),
     event_code pg_catalog.text NOT NULL CHECK (event_code IN ('SB', 'UH')),
@@ -251,8 +251,8 @@ DECLARE
     canonical_payload_text pg_catalog.text;
     mirror_kind pg_catalog.text;
     caller_namespace pg_catalog.text;
-    delivery_exists pg_catalog.boolean := FALSE;
-    prior_revision pg_catalog.integer;
+    delivery_exists pg_catalog.bool := FALSE;
+    prior_revision pg_catalog.int4;
     prior_revision_id pg_catalog.text;
     prior_action pg_catalog.text;
     prediction_median pg_catalog.numeric;
@@ -1314,8 +1314,8 @@ BEGIN
                        ledger_request_id pg_catalog.text,
                        competitor_id pg_catalog.text, event_code pg_catalog.text,
                        median_seconds pg_catalog.numeric,
-                       assigned_mark pg_catalog.integer, source pg_catalog.text,
-                       training_eligible pg_catalog.boolean,
+                       assigned_mark pg_catalog.int4, source pg_catalog.text,
+                       training_eligible pg_catalog.bool,
                        engine_version pg_catalog.text, model_version pg_catalog.text,
                        calibration_version pg_catalog.text,
                        evidence_cutoff pg_catalog.date,
@@ -1355,7 +1355,7 @@ BEGIN
                        feature_snapshot_id pg_catalog.text,
                        prediction_id pg_catalog.text,
                        feature_name pg_catalog.text,
-                       numeric_value pg_catalog.double precision,
+                       numeric_value pg_catalog.float8,
                        created_at pg_catalog.timestamptz
                    )
                ) THEN
@@ -1562,7 +1562,7 @@ BEGIN
                FROM pg_catalog.jsonb_to_recordset(outcome_row->'revisions')
                AS incoming_revision(
                    revision_id pg_catalog.text, prediction_id pg_catalog.text,
-                   revision pg_catalog.integer, competitor_id pg_catalog.text,
+                   revision pg_catalog.int4, competitor_id pg_catalog.text,
                    event_code pg_catalog.text, action pg_catalog.text,
                    actual_time pg_catalog.numeric, residual pg_catalog.numeric,
                    supersedes_revision_id pg_catalog.text
@@ -1605,7 +1605,7 @@ BEGIN
                  candidate.authority_timestamp DESC, candidate.authority_id DESC
         LIMIT 1;
         prior_revision := COALESCE(prior_revision, 0);
-        IF (revision_row->>'revision')::pg_catalog.integer <> prior_revision + 1 THEN
+        IF (revision_row->>'revision')::pg_catalog.int4 <> prior_revision + 1 THEN
             RAISE EXCEPTION 'numeric settlement revision sequence conflict';
         END IF;
         IF revision_row->>'action' = 'void'
@@ -1665,7 +1665,7 @@ BEGIN
         (outcome_row->>'created_at')::pg_catalog.timestamptz
     FROM pg_catalog.jsonb_to_recordset(outcome_row->'revisions') AS row(
         revision_id pg_catalog.text, prediction_id pg_catalog.text,
-        revision pg_catalog.integer, competitor_id pg_catalog.text,
+        revision pg_catalog.int4, competitor_id pg_catalog.text,
         event_code pg_catalog.text, action pg_catalog.text,
         actual_time pg_catalog.numeric, residual pg_catalog.numeric,
         supersedes_revision_id pg_catalog.text

@@ -7,6 +7,7 @@ configuration is deliberately removed or poisoned; no network adapter is used.
 from __future__ import annotations
 
 import gc
+import json
 import sqlite3
 import time
 import tracemalloc
@@ -721,6 +722,8 @@ def test_snapshot_status_deadline_interrupts_high_cardinality_verification_and_r
 
 
 def test_snapshot_status_streams_high_cardinality_rows_with_bounded_extra_memory(tmp_path):
+    import strathmark.store as store_module
+
     row_count = 5_000
     rows = [
         _row(
@@ -732,14 +735,13 @@ def test_snapshot_status_streams_high_cardinality_rows_with_bounded_extra_memory
     store = ResultStore(tmp_path / "streaming-memory.db")
     status = store.refresh_evidence_snapshot(_Source(_payload(rows)), cutoff=CUTOFF)
     with store._connect() as conn:
-        canonical_bytes = len(
-            str(
-                conn.execute(
-                    "SELECT canonical_json FROM evidence_snapshots WHERE snapshot_digest = ?",
-                    (status.snapshot_digest,),
-                ).fetchone()[0]
-            ).encode("utf-8")
+        raw_canonical_json = str(
+            conn.execute(
+                "SELECT canonical_json FROM evidence_snapshots WHERE snapshot_digest = ?",
+                (status.snapshot_digest,),
+            ).fetchone()[0]
         )
+        canonical_bytes = len(raw_canonical_json.encode("utf-8"))
 
     # Measure the steady-state verifier rather than one-time interpreter,
     # coverage, and SQLite statement-cache setup. The warmed path still walks
@@ -749,13 +751,24 @@ def test_snapshot_status_streams_high_cardinality_rows_with_bounded_extra_memory
     assert warmed is not None
     gc.collect()
     tracemalloc.start()
+    parsed = json.loads(raw_canonical_json)
+    rendered = store_module._canonical_json(parsed)
+    _, canonical_roundtrip_peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    del parsed, rendered
+    gc.collect()
+    tracemalloc.start()
     verified = store.get_evidence_snapshot_status()
     _, peak_bytes = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
     assert verified is not None
     assert verified.accepted_row_count == row_count
-    assert peak_bytes < canonical_bytes * 6
+    # Normalize for the substantial JSON-object overhead differences between
+    # supported Python releases. The verifier must stay within two canonical
+    # payloads of the unavoidable parse-and-canonicalize baseline, which still
+    # rejects retaining another complete row projection.
+    assert peak_bytes < canonical_roundtrip_peak + canonical_bytes * 2
 
 
 def _historical_result(time_seconds: float):

@@ -34,7 +34,7 @@ DECLARE
     existing_settlement public.prediction_ledger_settlements%ROWTYPE;
     latest_settlement public.prediction_ledger_settlements%ROWTYPE;
     prediction_median pg_catalog.numeric;
-    inserted_request_count pg_catalog.integer := 0;
+    inserted_request_count pg_catalog.int4 := 0;
     existing_request_id pg_catalog.text;
 BEGIN
     IF ledger_payload IS NULL
