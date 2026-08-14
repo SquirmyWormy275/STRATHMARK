@@ -43,6 +43,7 @@ class ShadowFieldRequest:
     field_run_id: str
     operator_id: str
     request_id: str
+    run_revision: str
     event_code: str
     target_contract: str
     prediction_as_of: date | str
@@ -138,6 +139,7 @@ class ShadowPredictionService:
             "tournament_id": request.tournament_id,
             "event_occurrence_id": request.event_occurrence_id,
             "field_run_id": request.field_run_id,
+            "run_revision": request.run_revision,
             "target_contract": request.target_contract,
             "schedule_fingerprint": request.schedule_fingerprint,
             "caller_input": caller_input,
@@ -148,6 +150,7 @@ class ShadowPredictionService:
             request.consumer_id,
             request.request_id,
             current_active_fingerprint=active_fingerprint,
+            expected_run_revision=request.run_revision,
         )
         if existing is not None:
             recorded = str(existing.core["active_input"]["fingerprint"])
@@ -190,6 +193,7 @@ class ShadowPredictionService:
             "field_run_id": request.field_run_id,
             "operator_id": request.operator_id,
             "request_id": request.request_id,
+            "run_revision": request.run_revision,
             "event_code": request.event_code.strip().upper(),
             "target_contract": request.target_contract,
             "prediction_as_of": cutoff.isoformat(),
@@ -222,6 +226,7 @@ class ShadowPredictionService:
             request.consumer_id,
             request.request_id,
             current_active_fingerprint=active_fingerprint,
+            expected_run_revision=request.run_revision,
         )
         if receipt is not None:
             return ShadowCalculationResult(receipt=receipt, status=receipt.status)
@@ -265,10 +270,11 @@ def _validate_request(
         "field_run_id",
         "operator_id",
         "request_id",
+        "run_revision",
     ):
-        _validate_namespaced_identity(getattr(request, field_name), field_name)
+        validate_namespaced_identity(getattr(request, field_name), field_name)
     for competitor in competitors:
-        _validate_namespaced_identity(competitor.competitor_id, "competitor_id")
+        validate_namespaced_identity(competitor.competitor_id, "competitor_id")
         if competitor.manual_time_override is not None or competitor.tournament_time is not None:
             raise ValueError(
                 "manual comparison input is not permitted in a trusted shadow calculation"
@@ -292,7 +298,7 @@ def _validate_request(
     return {"cutoff": cutoff}
 
 
-def _validate_namespaced_identity(value: Any, label: str) -> str:
+def validate_namespaced_identity(value: Any, label: str) -> str:
     text = str(value or "").strip()
     if len(text) > 128:
         raise ValueError(f"{label} must be at most 128 characters")
@@ -320,4 +326,5 @@ __all__ = [
     "ShadowPredictionService",
     "ShadowReceipt",
     "ShadowReceiptCorruptionError",
+    "validate_namespaced_identity",
 ]

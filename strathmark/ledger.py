@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
@@ -31,6 +32,7 @@ _ACTIVE_HASH_ALGORITHM = "active-v2"
 MAX_MIRROR_QUEUE = 1024
 MAX_NUMERIC_SETTLEMENTS_PER_REVISION = 512
 MAX_NUMERIC_RAW_TIME_SECONDS = 300.0
+MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER = 4096
 NUMERIC_OUTCOME_REASON_CODES = frozenset(
     {
         "corrected_time",
@@ -221,12 +223,25 @@ CREATE TABLE IF NOT EXISTS numeric_settlement_revisions (
     UNIQUE(field_revision_id, prediction_id)
 );
 
+CREATE TABLE IF NOT EXISTS actor_attestation_nonce_claims (
+    consumer_id TEXT NOT NULL,
+    nonce_hash TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    subject_revision TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL,
+    PRIMARY KEY(consumer_id, nonce_hash)
+);
+
 CREATE INDEX IF NOT EXISTS idx_ledger_predictions_competitor
     ON ledger_predictions(competitor_id, event_code);
 CREATE INDEX IF NOT EXISTS idx_prediction_settlements_prediction
     ON prediction_settlements(prediction_id, revision DESC);
 CREATE INDEX IF NOT EXISTS idx_numeric_settlement_revisions_prediction
     ON numeric_settlement_revisions(prediction_id, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_actor_attestation_nonce_expiry
+    ON actor_attestation_nonce_claims(expires_at);
 """
 
 _IMMUTABILITY_TRIGGERS = """
@@ -258,6 +273,8 @@ CREATE TRIGGER IF NOT EXISTS numeric_settlement_revisions_no_update
 BEFORE UPDATE ON numeric_settlement_revisions BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
 CREATE TRIGGER IF NOT EXISTS numeric_settlement_revisions_no_delete
 BEFORE DELETE ON numeric_settlement_revisions BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS actor_attestation_nonce_claims_no_update
+BEFORE UPDATE ON actor_attestation_nonce_claims BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
 """
 
 
@@ -267,6 +284,40 @@ class LedgerConflictError(ValueError):
 
 class SettlementConflictError(ValueError):
     """A settlement does not match its prediction or lacks correction data."""
+
+
+class LedgerQueryTimeoutError(TimeoutError):
+    """A bounded SQLite read was cooperatively interrupted at its deadline."""
+
+
+class SQLiteQueryDeadline:
+    """Thread-safe cancellation/deadline state for SQLite progress handlers."""
+
+    def __init__(self, *, timeout_seconds: float) -> None:
+        timeout = float(timeout_seconds)
+        if not math.isfinite(timeout) or timeout <= 0 or timeout > 60:
+            raise ValueError("timeout_seconds must be finite, positive, and at most 60")
+        self._deadline = time.monotonic() + timeout
+        self._cancelled = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        if time.monotonic() >= self._deadline:
+            self._cancelled.set()
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def remaining_milliseconds(self) -> int:
+        return max(1, min(30_000, int((self._deadline - time.monotonic()) * 1000)))
+
+    def progress_handler(self) -> int:
+        return 1 if self.cancelled else 0
+
+    def raise_if_expired(self) -> None:
+        if self.cancelled:
+            raise LedgerQueryTimeoutError("bounded SQLite read exceeded its deadline")
 
 
 @dataclass(frozen=True)
@@ -537,11 +588,18 @@ class PredictionLedger:
             with self._worker_lock:
                 self._start_mirror_worker_locked()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(
+        self, *, query_deadline: Optional[SQLiteQueryDeadline] = None
+    ) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=30.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
+            conn.execute(f"PRAGMA busy_timeout = {query_deadline.remaining_milliseconds()}")
+            conn.set_progress_handler(query_deadline.progress_handler, 100)
+        else:
+            conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
     def _init_schema(self) -> None:
@@ -559,6 +617,7 @@ class PredictionLedger:
                     "TEXT NOT NULL DEFAULT 'raw-v1' "
                     "CHECK(hash_algorithm IN ('raw-v1', 'active-v2'))"
                 )
+            conn.execute("DROP TRIGGER IF EXISTS actor_attestation_nonce_claims_no_delete")
             conn.executescript(_IMMUTABILITY_TRIGGERS)
 
     def record_field(
@@ -816,18 +875,103 @@ class PredictionLedger:
             cloud_status=cloud_status,
         )
 
+    def claim_actor_attestation_nonce(
+        self,
+        *,
+        consumer_id: str,
+        nonce: str,
+        actor_id: str,
+        action: str,
+        subject_revision: str,
+        expires_at: int,
+    ) -> bool:
+        """Atomically claim a signed actor nonce in the durable local authority.
+
+        Only a SHA-256 digest of the nonce is retained.  Active claims survive
+        service restarts and block replay until their signed expiry; expired
+        claims are transactionally purged so security state remains bounded.
+        """
+
+        consumer = _namespaced_identifier(consumer_id, "consumer_id")
+        actor = _namespaced_identifier(actor_id, "actor_id")
+        revision = _namespaced_identifier(subject_revision, "subject_revision")
+        action_value = _identifier(action, "action")
+        nonce_value = str(nonce or "")
+        if not 16 <= len(nonce_value) <= 128:
+            raise ValueError("nonce must contain between 16 and 128 characters")
+        now_epoch = int(time.time())
+        if (
+            not isinstance(expires_at, int)
+            or isinstance(expires_at, bool)
+            or expires_at <= now_epoch
+        ):
+            raise ValueError("expires_at must be a future integer timestamp")
+        nonce_hash = hashlib.sha256(nonce_value.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "DELETE FROM actor_attestation_nonce_claims WHERE expires_at <= ?",
+                    (now_epoch,),
+                )
+                existing = conn.execute(
+                    """
+                    SELECT 1 FROM actor_attestation_nonce_claims
+                    WHERE consumer_id = ? AND nonce_hash = ?
+                    """,
+                    (consumer, nonce_hash),
+                ).fetchone()
+                if existing is not None:
+                    conn.commit()
+                    return False
+                active_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM actor_attestation_nonce_claims WHERE consumer_id = ?",
+                        (consumer,),
+                    ).fetchone()[0]
+                )
+                if active_count >= MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER:
+                    raise RuntimeError("active actor attestation nonce capacity is exhausted")
+                conn.execute(
+                    """
+                    INSERT INTO actor_attestation_nonce_claims (
+                        consumer_id, nonce_hash, actor_id, action,
+                        subject_revision, expires_at, claimed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        consumer,
+                        nonce_hash,
+                        actor,
+                        action_value,
+                        revision,
+                        expires_at,
+                        _now(),
+                    ),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return False
+            except RuntimeError:
+                conn.rollback()
+                raise
+
     def get_shadow_receipt(
         self,
         caller_id: str,
         request_id: str,
         *,
         current_active_fingerprint: Optional[str] = None,
+        expected_run_revision: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
     ) -> Optional[Any]:
         """Return the exact immutable core plus a freshly derived status view."""
 
         caller = _identifier(caller_id, "caller_id")
         idempotency_key = _identifier(request_id, "request_id")
-        with self._connect() as conn:
+        with self._connect(query_deadline=query_deadline) as conn:
             row = conn.execute(
                 """
                 SELECT q.ledger_request_id, q.request_hash, q.hash_algorithm,
@@ -893,6 +1037,22 @@ class PredictionLedger:
             raise ShadowReceiptCorruptionError("persisted shadow receipt schema is unsupported")
         if core.get("consumer_id") != caller or core.get("request_id") != idempotency_key:
             raise ShadowReceiptCorruptionError("persisted shadow receipt identity is inconsistent")
+        try:
+            recorded_run_revision = _namespaced_identifier(
+                core.get("run_revision"), "persisted run_revision"
+            )
+        except ValueError as exc:
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt run revision is invalid"
+            ) from exc
+        if expected_run_revision is not None:
+            requested_run_revision = _namespaced_identifier(
+                expected_run_revision, "expected_run_revision"
+            )
+            if recorded_run_revision != requested_run_revision:
+                raise LedgerConflictError(
+                    "run_revision does not match the immutable shadow receipt"
+                )
         ledger_core = core.get("ledger")
         if not isinstance(ledger_core, Mapping) or (
             ledger_core.get("request_hash") != row["request_hash"]
@@ -994,6 +1154,9 @@ class PredictionLedger:
         outcome_revision_id: str,
         revisions: Sequence[NumericSettlementRevision | Mapping[str, Any]],
         *,
+        caller_id: str,
+        request_id: str,
+        run_revision: str,
         actor: str,
         reason_code: Optional[str] = None,
     ) -> NumericOutcomeRevisionResult:
@@ -1008,6 +1171,9 @@ class PredictionLedger:
         """
 
         outcome_key = _namespaced_identifier(outcome_revision_id, "outcome_revision_id")
+        requested_caller = _namespaced_identifier(caller_id, "caller_id")
+        requested_request = _namespaced_identifier(request_id, "request_id")
+        requested_run = _namespaced_identifier(run_revision, "run_revision")
         actor_value = _namespaced_identifier(actor, "actor")
         reason_code_value = str(reason_code or "").strip() or None
         if reason_code_value is not None and reason_code_value not in NUMERIC_OUTCOME_REASON_CODES:
@@ -1028,6 +1194,9 @@ class PredictionLedger:
         payload_digest = canonical_hash(
             {
                 "outcome_revision_id": outcome_key,
+                "caller_id": requested_caller,
+                "request_id": requested_request,
+                "run_revision": requested_run,
                 "actor": actor_value,
                 "reason_code": reason_code_value,
                 "revisions": validated,
@@ -1039,11 +1208,112 @@ class PredictionLedger:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                placeholders = ",".join("?" for _ in validated)
+                prediction_rows = conn.execute(
+                    f"""
+                    SELECT p.prediction_id, p.competitor_id, p.event_code,
+                           p.median_seconds, p.ledger_request_id,
+                           r.caller_id, r.request_id,
+                           sr.caller_id AS receipt_caller_id,
+                           sr.request_id AS receipt_request_id,
+                           sr.core_json AS receipt_core_json
+                    FROM ledger_predictions p
+                    JOIN prediction_requests r
+                      ON r.ledger_request_id = p.ledger_request_id
+                    LEFT JOIN shadow_receipts sr
+                      ON sr.ledger_request_id = p.ledger_request_id
+                    WHERE p.prediction_id IN ({placeholders})
+                    """,
+                    [item["prediction_id"] for item in validated],
+                ).fetchall()
+                predictions_by_id = {str(row["prediction_id"]): row for row in prediction_rows}
+                if len(predictions_by_id) != len(validated):
+                    raise SettlementConflictError("prediction_id was not found")
+                for item in validated:
+                    prediction = predictions_by_id[item["prediction_id"]]
+                    if prediction["competitor_id"] != item["competitor_id"]:
+                        raise SettlementConflictError("competitor_id does not match prediction")
+                    if prediction["event_code"] != item["event_code"]:
+                        raise SettlementConflictError("event_code does not match prediction")
+
+                bound_callers = {str(row["caller_id"]) for row in prediction_rows}
+                if len(bound_callers) != 1:
+                    raise SettlementConflictError(
+                        "one numeric outcome revision must contain predictions from one caller_id"
+                    )
+                if bound_callers != {requested_caller}:
+                    raise SettlementConflictError(
+                        "numeric outcome predictions do not belong to the authenticated caller"
+                    )
+                ledger_request_ids = {str(row["ledger_request_id"]) for row in prediction_rows}
+                if len(ledger_request_ids) != 1:
+                    raise SettlementConflictError(
+                        "one numeric outcome revision must contain predictions from one "
+                        "ledger_request_id"
+                    )
+                ledger_request_id = next(iter(ledger_request_ids))
+                if {str(row["request_id"]) for row in prediction_rows} != {requested_request}:
+                    raise SettlementConflictError(
+                        "numeric outcome predictions do not belong to request_id"
+                    )
+                receipt_json_values = {row["receipt_core_json"] for row in prediction_rows}
+                if None in receipt_json_values or len(receipt_json_values) != 1:
+                    raise SettlementConflictError(
+                        "numeric outcome requires one immutable shadow receipt"
+                    )
+                receipt_json = str(next(iter(receipt_json_values)))
+                try:
+                    receipt_core = json.loads(receipt_json)
+                except (TypeError, ValueError) as exc:
+                    raise SettlementConflictError("immutable shadow receipt is malformed") from exc
+                if (
+                    not isinstance(receipt_core, Mapping)
+                    or self._canonical_json(receipt_core) != receipt_json
+                    or receipt_core.get("consumer_id") != requested_caller
+                    or receipt_core.get("request_id") != requested_request
+                    or {str(row["receipt_caller_id"]) for row in prediction_rows}
+                    != {requested_caller}
+                    or {str(row["receipt_request_id"]) for row in prediction_rows}
+                    != {requested_request}
+                ):
+                    raise SettlementConflictError(
+                        "immutable shadow receipt does not match caller/request_id"
+                    )
+                try:
+                    recorded_run = _namespaced_identifier(
+                        receipt_core.get("run_revision"),
+                        "persisted run_revision",
+                    )
+                except ValueError as exc:
+                    raise SettlementConflictError(
+                        "immutable shadow receipt run_revision is invalid"
+                    ) from exc
+                if recorded_run != requested_run:
+                    raise SettlementConflictError(
+                        "run_revision does not match the immutable shadow receipt"
+                    )
+                if _identifier_namespace(outcome_key) != _identifier_namespace(requested_caller):
+                    raise SettlementConflictError(
+                        "outcome_revision_id namespace must match the caller_id namespace"
+                    )
+                if _identifier_namespace(actor_value) != _identifier_namespace(requested_caller):
+                    raise SettlementConflictError(
+                        "actor namespace must match the caller_id namespace"
+                    )
+
                 existing = conn.execute(
                     "SELECT * FROM numeric_outcome_revisions WHERE outcome_revision_id = ?",
                     (outcome_key,),
                 ).fetchone()
                 if existing is not None:
+                    if existing["caller_id"] != requested_caller:
+                        raise SettlementConflictError(
+                            "outcome_revision_id does not belong to the authenticated caller"
+                        )
+                    if existing["ledger_request_id"] != ledger_request_id:
+                        raise SettlementConflictError(
+                            "outcome_revision_id does not belong to request_id"
+                        )
                     if existing["payload_hash"] != payload_digest:
                         raise SettlementConflictError(
                             "outcome_revision_id was already used for a different payload"
@@ -1058,23 +1328,7 @@ class PredictionLedger:
                 prepared: list[dict[str, Any]] = []
                 any_correction = False
                 for item in validated:
-                    prediction = conn.execute(
-                        """
-                        SELECT p.competitor_id, p.event_code, p.median_seconds,
-                               p.ledger_request_id, r.caller_id
-                        FROM ledger_predictions p
-                        JOIN prediction_requests r
-                          ON r.ledger_request_id = p.ledger_request_id
-                        WHERE p.prediction_id = ?
-                        """,
-                        (item["prediction_id"],),
-                    ).fetchone()
-                    if prediction is None:
-                        raise SettlementConflictError("prediction_id was not found")
-                    if prediction["competitor_id"] != item["competitor_id"]:
-                        raise SettlementConflictError("competitor_id does not match prediction")
-                    if prediction["event_code"] != item["event_code"]:
-                        raise SettlementConflictError("event_code does not match prediction")
+                    prediction = predictions_by_id[item["prediction_id"]]
 
                     latest = conn.execute(
                         """
@@ -1142,23 +1396,11 @@ class PredictionLedger:
                     raise SettlementConflictError(
                         "one numeric outcome revision must contain predictions from one caller_id"
                     )
-                ledger_request_ids = {item["ledger_request_id"] for item in prepared}
-                if len(ledger_request_ids) != 1:
-                    raise SettlementConflictError(
-                        "one numeric outcome revision must contain predictions from one "
-                        "ledger_request_id"
-                    )
                 caller_id = next(iter(caller_ids))
-                ledger_request_id = next(iter(ledger_request_ids))
-                if _identifier_namespace(outcome_key) != _identifier_namespace(caller_id):
+                if caller_id != requested_caller:
                     raise SettlementConflictError(
-                        "outcome_revision_id namespace must match the caller_id namespace"
+                        "numeric outcome predictions do not belong to the authenticated caller"
                     )
-                if _identifier_namespace(actor_value) != _identifier_namespace(caller_id):
-                    raise SettlementConflictError(
-                        "actor namespace must match the caller_id namespace"
-                    )
-
                 if (any_correction or any(item["action"] == "void" for item in prepared)) and (
                     reason_code_value is None
                 ):
@@ -1293,17 +1535,24 @@ class PredictionLedger:
         caller_id: Optional[str] = None,
         request_id: Optional[str] = None,
         current_active_fingerprint: Optional[str] = None,
+        expected_run_revision: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
     ) -> LedgerMonitoringStatus:
         """Derive payload-free mirror and numeric evidence monitoring facts."""
 
-        if (caller_id is None) != (request_id is None) or (
-            current_active_fingerprint is not None and caller_id is None
+        if (
+            (caller_id is None) != (request_id is None)
+            or (current_active_fingerprint is not None and caller_id is None)
+            or (expected_run_revision is not None and caller_id is None)
         ):
             raise ValueError(
                 "caller_id and request_id are required together for receipt monitoring"
             )
 
-        with self._connect() as conn:
+        scoped_caller = (
+            None if caller_id is None else _namespaced_identifier(caller_id, "caller_id")
+        )
+        with self._connect(query_deadline=query_deadline) as conn:
             mirror_row = conn.execute(
                 """
                 SELECT
@@ -1312,9 +1561,13 @@ class PredictionLedger:
                     MAX(d.last_attempt_at) AS last_attempt_at,
                     SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
                 FROM prediction_mirror_outbox o
+                JOIN prediction_requests q
+                  ON o.kind = 'field' AND q.ledger_request_id = o.entity_id
                 LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
-                WHERE d.status IS NULL OR d.status != 'recorded'
-                """
+                WHERE (d.status IS NULL OR d.status != 'recorded')
+                  AND (? IS NULL OR q.caller_id = ?)
+                """,
+                (scoped_caller, scoped_caller),
             ).fetchone()
             numeric_mirror_row = conn.execute(
                 """
@@ -1327,22 +1580,37 @@ class PredictionLedger:
                 JOIN prediction_mirror_outbox o
                   ON o.kind = 'settlement' AND o.entity_id = r.field_revision_id
                 LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
-                WHERE d.status IS NULL OR d.status != 'recorded'
-                """
+                WHERE (d.status IS NULL OR d.status != 'recorded')
+                  AND (? IS NULL OR r.caller_id = ?)
+                """,
+                (scoped_caller, scoped_caller),
             ).fetchone()
             revision_count = int(
-                conn.execute("SELECT COUNT(*) FROM numeric_settlement_revisions").fetchone()[0]
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM numeric_settlement_revisions s
+                    JOIN numeric_outcome_revisions r
+                      ON r.field_revision_id = s.field_revision_id
+                    WHERE ? IS NULL OR r.caller_id = ?
+                    """,
+                    (scoped_caller, scoped_caller),
+                ).fetchone()[0]
             )
             latest_rows = conn.execute(
                 """
-                SELECT action
+                SELECT current.action
                 FROM numeric_settlement_revisions current
+                JOIN numeric_outcome_revisions r
+                  ON r.field_revision_id = current.field_revision_id
                 WHERE current.revision = (
                     SELECT MAX(candidate.revision)
                     FROM numeric_settlement_revisions candidate
                     WHERE candidate.prediction_id = current.prediction_id
                 )
-                """
+                  AND (? IS NULL OR r.caller_id = ?)
+                """,
+                (scoped_caller, scoped_caller),
             ).fetchall()
 
         pending_count = int(mirror_row["pending_count"] or 0)
@@ -1375,8 +1643,15 @@ class PredictionLedger:
                     caller_id,
                     request_id,
                     current_active_fingerprint=current_active_fingerprint,
+                    expected_run_revision=expected_run_revision,
+                    query_deadline=query_deadline,
                 )
-            except (LedgerConflictError, ShadowReceiptCorruptionError):
+            except LedgerConflictError:
+                if expected_run_revision is not None:
+                    raise
+                local_trust = "invalid"
+                receipt_readiness = "not-ready"
+            except ShadowReceiptCorruptionError:
                 local_trust = "invalid"
                 receipt_readiness = "not-ready"
             else:
@@ -1389,7 +1664,11 @@ class PredictionLedger:
                     receipt_freshness = str(receipt.status.freshness)
                     receipt_readiness = "ready" if receipt.status.ready_for_review else "not-ready"
 
-        evidence_count = len(self.get_training_rows(model_version=model_version))
+        evidence_count = self.count_training_rows(
+            model_version=model_version,
+            caller_id=scoped_caller,
+            query_deadline=query_deadline,
+        )
         from strathmark.drift import MIN_RECENT_SAMPLES
 
         evidence_floor_met = evidence_count >= MIN_RECENT_SAMPLES
@@ -1641,57 +1920,102 @@ class PredictionLedger:
         nominal_coverage: Optional[float] = None,
         interval_state: Optional[str] = None,
         interval_scope: Optional[str] = None,
+        caller_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
     ) -> list[dict[str, Any]]:
         """Return current settled, explicitly eligible model predictions."""
 
-        conditions = ["p.training_eligible = 1"]
-        parameters: list[Any] = []
-        if since is not None:
-            since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
-            conditions.append("s.settled_at >= ?")
-            parameters.append(since_value)
+        prediction_conditions = ["p.training_eligible = 1"]
+        prediction_parameters: list[Any] = []
+        if caller_id is not None:
+            prediction_conditions.append("r.caller_id = ?")
+            prediction_parameters.append(_namespaced_identifier(caller_id, "caller_id"))
         if model_version is not None:
-            conditions.append("p.model_version = ?")
-            parameters.append(str(model_version))
+            prediction_conditions.append("p.model_version = ?")
+            prediction_parameters.append(str(model_version))
         if calibration_version is not None:
-            conditions.append("p.calibration_version = ?")
-            parameters.append(str(calibration_version))
+            prediction_conditions.append("p.calibration_version = ?")
+            prediction_parameters.append(str(calibration_version))
         if event_code is not None:
-            conditions.append("p.event_code = ?")
-            parameters.append(_event(event_code))
+            prediction_conditions.append("p.event_code = ?")
+            prediction_parameters.append(_event(event_code))
         if nominal_coverage is not None:
-            conditions.append("p.interval_coverage = ?")
-            parameters.append(_finite(nominal_coverage, "nominal_coverage", positive=True))
+            prediction_conditions.append("p.interval_coverage = ?")
+            prediction_parameters.append(
+                _finite(nominal_coverage, "nominal_coverage", positive=True)
+            )
         if interval_state is not None:
-            conditions.append("p.interval_state = ?")
-            parameters.append(_identifier(interval_state, "interval_state"))
+            prediction_conditions.append("p.interval_state = ?")
+            prediction_parameters.append(_identifier(interval_state, "interval_state"))
         if interval_scope is not None:
-            conditions.append("p.interval_scope = ?")
-            parameters.append(_identifier(interval_scope, "interval_scope"))
+            prediction_conditions.append("p.interval_scope = ?")
+            prediction_parameters.append(_identifier(interval_scope, "interval_scope"))
+        post_conditions = ["s.action = 'settle'"]
+        post_parameters: list[Any] = []
         if history_band is not None:
             band = str(history_band).strip()
             if band not in {"0", "1-3", "4+", "unavailable"}:
                 raise ValueError("history_band must be '0', '1-3', '4+', or 'unavailable'")
-            conditions.append(
+            post_conditions.append(
                 "CASE WHEN h.numeric_value IS NULL THEN 'unavailable' "
                 "WHEN h.numeric_value < 1 THEN '0' "
                 "WHEN h.numeric_value < 4 THEN '1-3' ELSE '4+' END = ?"
             )
-            parameters.append(band)
-        where = " AND ".join(conditions)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                WITH settlement_history AS (
-                    SELECT settlement_id AS revision_id, prediction_id, revision,
-                           'settle' AS action, actual_time, residual, settled_at,
+            post_parameters.append(band)
+        prediction_where = " AND ".join(prediction_conditions)
+        post_where = " AND ".join(post_conditions)
+        since_clause = ""
+        since_parameters: list[Any] = []
+        if since is not None:
+            since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
+            since_clause = "WHERE source_settlement.settled_at >= ?"
+            since_parameters = [since_value, since_value]
+        limit_clause = ""
+        limit_parameters: list[Any] = []
+        if limit is not None:
+            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10_000:
+                raise ValueError("limit must be an integer between 1 and 10000")
+            limit_clause = "LIMIT ?"
+            limit_parameters.append(limit)
+        parameters = prediction_parameters + since_parameters + post_parameters + limit_parameters
+        try:
+            with self._connect(query_deadline=query_deadline) as conn:
+                rows = conn.execute(
+                    f"""
+                WITH filtered_predictions AS (
+                    SELECT p.*, r.prediction_as_of
+                    FROM ledger_predictions p
+                    JOIN prediction_requests r
+                      ON r.ledger_request_id = p.ledger_request_id
+                    WHERE {prediction_where}
+                ),
+                settlement_history AS (
+                    SELECT source_settlement.settlement_id AS revision_id,
+                           source_settlement.prediction_id,
+                           source_settlement.revision,
+                           'settle' AS action,
+                           source_settlement.actual_time,
+                           source_settlement.residual,
+                           source_settlement.settled_at,
                            0 AS source_priority
-                    FROM prediction_settlements
+                    FROM prediction_settlements source_settlement
+                    JOIN filtered_predictions filtered
+                      ON filtered.prediction_id = source_settlement.prediction_id
+                    {since_clause}
                     UNION ALL
-                    SELECT revision_id, prediction_id, revision, action,
-                           actual_time, residual, created_at AS settled_at,
+                    SELECT source_settlement.revision_id,
+                           source_settlement.prediction_id,
+                           source_settlement.revision,
+                           source_settlement.action,
+                           source_settlement.actual_time,
+                           source_settlement.residual,
+                           source_settlement.created_at AS settled_at,
                            1 AS source_priority
-                    FROM numeric_settlement_revisions
+                    FROM numeric_settlement_revisions source_settlement
+                    JOIN filtered_predictions filtered
+                      ON filtered.prediction_id = source_settlement.prediction_id
+                    {since_clause}
                 ),
                 ranked_settlements AS (
                     SELECT candidate.*,
@@ -1711,7 +2035,7 @@ class PredictionLedger:
                     p.prediction_id, p.competitor_id, p.event_code,
                     p.median_seconds AS predicted_time, p.source,
                     p.engine_version, p.model_version, p.calibration_version,
-                    p.evidence_cutoff, r.prediction_as_of,
+                    p.evidence_cutoff, p.prediction_as_of,
                     p.interval_lower, p.interval_upper,
                     p.interval_coverage, p.interval_coverage AS nominal_coverage,
                     p.interval_state, p.interval_scope,
@@ -1721,23 +2045,117 @@ class PredictionLedger:
                          WHEN h.numeric_value < 4 THEN '1-3'
                          ELSE '4+' END AS history_band,
                     s.actual_time, s.residual, s.settled_at, s.revision
-                FROM ledger_predictions p
-                JOIN prediction_requests r ON r.ledger_request_id = p.ledger_request_id
+                FROM filtered_predictions p
                 JOIN latest_settlements s ON s.prediction_id = p.prediction_id
                 LEFT JOIN prediction_features h
                   ON h.prediction_id = p.prediction_id
                  AND h.feature_name = 'history_count'
-                WHERE {where}
-                  AND s.action = 'settle'
+                WHERE {post_where}
                 ORDER BY s.settled_at, p.prediction_id
+                {limit_clause}
                 """,
-                parameters,
-            ).fetchall()
+                    parameters,
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if query_deadline is not None and query_deadline.cancelled:
+                raise LedgerQueryTimeoutError(
+                    "bounded training-row query exceeded its deadline"
+                ) from exc
+            raise
         result = [dict(row) for row in rows]
         for row in result:
             if row["history_count"] is not None:
                 row["history_count"] = int(float(row["history_count"]))
         return result
+
+    def count_training_rows(
+        self,
+        *,
+        since: Optional[date | datetime | str] = None,
+        model_version: Optional[str] = None,
+        caller_id: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
+    ) -> int:
+        """Count current eligible evidence with one bounded SQL aggregate."""
+
+        conditions = ["p.training_eligible = 1"]
+        prediction_parameters: list[Any] = []
+        if model_version is not None:
+            conditions.append("p.model_version = ?")
+            prediction_parameters.append(str(model_version))
+        if caller_id is not None:
+            conditions.append("r.caller_id = ?")
+            prediction_parameters.append(_namespaced_identifier(caller_id, "caller_id"))
+        where = " AND ".join(conditions)
+        since_clause = ""
+        since_parameters: list[Any] = []
+        if since is not None:
+            since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
+            since_clause = "WHERE source_settlement.settled_at >= ?"
+            since_parameters = [since_value, since_value]
+        try:
+            with self._connect(query_deadline=query_deadline) as conn:
+                return int(
+                    conn.execute(
+                        f"""
+                    WITH filtered_predictions AS (
+                        SELECT p.prediction_id
+                        FROM ledger_predictions p
+                        JOIN prediction_requests r
+                          ON r.ledger_request_id = p.ledger_request_id
+                        WHERE {where}
+                    ),
+                    settlement_history AS (
+                        SELECT source_settlement.settlement_id AS revision_id,
+                               source_settlement.prediction_id,
+                               source_settlement.revision,
+                               'settle' AS action,
+                               source_settlement.settled_at,
+                               0 AS source_priority
+                        FROM prediction_settlements source_settlement
+                        JOIN filtered_predictions filtered
+                          ON filtered.prediction_id = source_settlement.prediction_id
+                        {since_clause}
+                        UNION ALL
+                        SELECT source_settlement.revision_id,
+                               source_settlement.prediction_id,
+                               source_settlement.revision,
+                               source_settlement.action,
+                               source_settlement.created_at AS settled_at,
+                               1 AS source_priority
+                        FROM numeric_settlement_revisions source_settlement
+                        JOIN filtered_predictions filtered
+                          ON filtered.prediction_id = source_settlement.prediction_id
+                        {since_clause}
+                    ),
+                    ranked_settlements AS (
+                        SELECT candidate.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY candidate.prediction_id
+                                   ORDER BY candidate.revision DESC,
+                                            candidate.source_priority DESC,
+                                            candidate.settled_at DESC,
+                                            candidate.revision_id DESC
+                               ) AS authority_rank
+                        FROM settlement_history candidate
+                    ),
+                    latest_settlements AS (
+                        SELECT * FROM ranked_settlements WHERE authority_rank = 1
+                    )
+                    SELECT COUNT(*)
+                    FROM filtered_predictions p
+                    JOIN latest_settlements s ON s.prediction_id = p.prediction_id
+                    WHERE s.action = 'settle'
+                    """,
+                        prediction_parameters + since_parameters,
+                    ).fetchone()[0]
+                )
+        except sqlite3.OperationalError as exc:
+            if query_deadline is not None and query_deadline.cancelled:
+                raise LedgerQueryTimeoutError(
+                    "bounded training-count query exceeded its deadline"
+                ) from exc
+            raise
 
     @staticmethod
     def _canonical_json(value: Mapping[str, Any]) -> str:
@@ -2144,21 +2562,41 @@ class PredictionLedger:
                 with self._worker_lock:
                     self._delivery_in_flight.discard(key)
 
-    def flush_mirror_outbox(self, *, limit: int = 100) -> dict[str, int]:
+    def flush_mirror_outbox(
+        self, *, limit: int = 100, caller_id: Optional[str] = None
+    ) -> dict[str, int]:
         """Synchronously retry a bounded number of pending mirror payloads off-path."""
 
         bounded = max(1, min(int(limit), 1000))
+        scoped_caller = (
+            None if caller_id is None else _namespaced_identifier(caller_id, "caller_id")
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT o.kind, o.entity_id
                 FROM prediction_mirror_outbox o
                 LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
-                WHERE d.status IS NULL OR d.status != 'recorded'
+                WHERE (d.status IS NULL OR d.status != 'recorded')
+                  AND (
+                    ? IS NULL
+                    OR (
+                      o.kind = 'field' AND EXISTS (
+                        SELECT 1 FROM prediction_requests q
+                        WHERE q.ledger_request_id = o.entity_id AND q.caller_id = ?
+                      )
+                    )
+                    OR (
+                      o.kind = 'settlement' AND EXISTS (
+                        SELECT 1 FROM numeric_outcome_revisions r
+                        WHERE r.field_revision_id = o.entity_id AND r.caller_id = ?
+                      )
+                    )
+                  )
                 ORDER BY o.created_at, o.outbox_id
                 LIMIT ?
                 """,
-                (bounded,),
+                (scoped_caller, scoped_caller, scoped_caller, bounded),
             ).fetchall()
         summary = {"recorded": 0, "failed": 0, "not_configured": 0}
         for row in rows:

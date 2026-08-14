@@ -20,12 +20,24 @@ from strathmark.ledger import (
     NUMERIC_OUTCOME_REASON_CODES,
     LedgerPrediction,
     NumericSettlementRevision,
-    PredictionLedger,
     SettlementConflictError,
     canonical_hash,
 )
+from strathmark.ledger import (
+    PredictionLedger as _PredictionLedger,
+)
 from strathmark.shadow import RECEIPT_CORE_SCHEMA_VERSION
 from strathmark.store import ResultStore
+
+
+class PredictionLedger(_PredictionLedger):
+    """Supply the authenticated Missoula caller for direct ledger unit tests."""
+
+    def apply_numeric_outcome_revision(self, outcome_revision_id, revisions, **kwargs):
+        kwargs.setdefault("caller_id", "missoula:service:shadow")
+        kwargs.setdefault("request_id", "missoula:request:field-1")
+        kwargs.setdefault("run_revision", "missoula:run-revision:field-1")
+        return super().apply_numeric_outcome_revision(outcome_revision_id, revisions, **kwargs)
 
 
 def _prediction(competitor_id: str) -> LedgerPrediction:
@@ -54,7 +66,11 @@ def _field(
     *competitor_ids: str,
     caller_id: str = "missoula:service:shadow",
     request_id: str = "missoula:request:field-1",
+    run_revision: str = "missoula:run-revision:field-1",
 ) -> tuple[str, ...]:
+    active_input = {
+        "caller_input": {"competitors": [{"competitor_id": item} for item in competitor_ids]}
+    }
     return ledger.record_field(
         caller_id,
         request_id,
@@ -64,6 +80,16 @@ def _field(
             "competitors": [{"competitor_id": item} for item in competitor_ids],
         },
         [_prediction(item) for item in competitor_ids],
+        receipt_metadata={
+            "schema_version": RECEIPT_CORE_SCHEMA_VERSION,
+            "consumer_id": caller_id,
+            "request_id": request_id,
+            "run_revision": run_revision,
+            "active_input": {
+                **active_input,
+                "fingerprint": canonical_hash(active_input),
+            },
+        },
     ).prediction_ids
 
 
@@ -86,6 +112,7 @@ def _field_with_receipt(ledger: PredictionLedger, competitor_id: str) -> tuple[s
             "schema_version": RECEIPT_CORE_SCHEMA_VERSION,
             "consumer_id": caller_id,
             "request_id": request_id,
+            "run_revision": "missoula:run-revision:receipt-field",
             "active_input": {**active_input, "fingerprint": fingerprint},
         },
     ).prediction_ids
@@ -123,6 +150,154 @@ def _void(
         actual_time=None,
         expected_revision=expected_revision,
     )
+
+
+def test_exact_consumer_scopes_numeric_outcomes_monitoring_training_and_replay(tmp_path):
+    ledger = _PredictionLedger(tmp_path / "consumer-scope.db")
+    missoula_prediction = _field(
+        ledger,
+        "missoula:competitor:1",
+        caller_id="missoula:service:shadow",
+        request_id="missoula:request:field-1",
+    )[0]
+    other_prediction = _field(
+        ledger,
+        "other:competitor:1",
+        caller_id="other:service:shadow",
+        request_id="other:request:field-1",
+        run_revision="other:run-revision:field-1",
+    )[0]
+
+    with pytest.raises(SettlementConflictError, match="authenticated caller"):
+        ledger.apply_numeric_outcome_revision(
+            "other:outcome-revision:spoof",
+            [_settle(missoula_prediction, "missoula:competitor:1", 43.0, expected_revision=0)],
+            caller_id="other:service:shadow",
+            request_id="other:request:field-1",
+            run_revision="other:run-revision:field-1",
+            actor="other:operator:judge-1",
+        )
+
+    ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:1",
+        [_settle(missoula_prediction, "missoula:competitor:1", 43.0, expected_revision=0)],
+        caller_id="missoula:service:shadow",
+        request_id="missoula:request:field-1",
+        run_revision="missoula:run-revision:field-1",
+        actor="missoula:operator:judge-1",
+    )
+    ledger.apply_numeric_outcome_revision(
+        "other:outcome-revision:1",
+        [_settle(other_prediction, "other:competitor:1", 44.0, expected_revision=0)],
+        caller_id="other:service:shadow",
+        request_id="other:request:field-1",
+        run_revision="other:run-revision:field-1",
+        actor="other:operator:judge-1",
+    )
+
+    missoula_status = ledger.get_monitoring_status(
+        caller_id="missoula:service:shadow",
+        request_id="missoula:request:field-1",
+        model_version="core-test",
+    )
+    other_status = ledger.get_monitoring_status(
+        caller_id="other:service:shadow",
+        request_id="other:request:field-1",
+        model_version="core-test",
+    )
+    assert missoula_status.mirror_pending_count == 1
+    assert missoula_status.numeric_mirror_backlog_count == 1
+    assert missoula_status.evidence_sample_count == 1
+    assert other_status.mirror_pending_count == 1
+    assert other_status.numeric_mirror_backlog_count == 1
+    assert other_status.evidence_sample_count == 1
+    assert len(ledger.get_training_rows(caller_id="missoula:service:shadow")) == 1
+    assert len(ledger.get_training_rows(caller_id="other:service:shadow")) == 1
+    assert (
+        ledger.flush_mirror_outbox(caller_id="missoula:service:shadow", limit=100)["not_configured"]
+        == 2
+    )
+
+
+def test_numeric_outcome_binds_exact_shadow_request_and_field_run_before_retry(tmp_path):
+    ledger = _PredictionLedger(tmp_path / "numeric-shadow-binding.db")
+    prediction_id = _field(ledger, "missoula:competitor:1")[0]
+    revision = _settle(
+        prediction_id,
+        "missoula:competitor:1",
+        43.0,
+        expected_revision=0,
+    )
+    common = {
+        "caller_id": "missoula:service:shadow",
+        "request_id": "missoula:request:field-1",
+        "run_revision": "missoula:run-revision:field-1",
+        "actor": "missoula:operator:judge-1",
+    }
+
+    valid = ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:distinct-1",
+        [revision],
+        **common,
+    )
+    retry = ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:distinct-1",
+        [revision],
+        **common,
+    )
+    assert valid.outcome_revision_id == "missoula:outcome-revision:distinct-1"
+    assert retry.status == "duplicate"
+
+    with pytest.raises(SettlementConflictError, match="request_id"):
+        ledger.apply_numeric_outcome_revision(
+            "missoula:outcome-revision:wrong-request",
+            [revision],
+            **{**common, "request_id": "missoula:request:other"},
+        )
+    with pytest.raises(SettlementConflictError, match="run_revision"):
+        ledger.apply_numeric_outcome_revision(
+            "missoula:outcome-revision:wrong-run",
+            [revision],
+            **{**common, "run_revision": "missoula:run-revision:other"},
+        )
+
+
+def test_training_queries_prefilter_caller_and_model_before_settlement_ranking(tmp_path):
+    class TracingLedger(PredictionLedger):
+        def __init__(self, path):
+            self.traces = []
+            super().__init__(path)
+
+        def _connect(self, *args, **kwargs):
+            conn = super()._connect(*args, **kwargs)
+            conn.set_trace_callback(self.traces.append)
+            return conn
+
+    ledger = TracingLedger(tmp_path / "training-query-shape.db")
+    prediction_id = _field(ledger, "missoula:competitor:1")[0]
+    ledger.apply_numeric_outcome_revision(
+        "missoula:outcome-revision:1",
+        [_settle(prediction_id, "missoula:competitor:1", 43.0, expected_revision=0)],
+        actor="missoula:operator:judge-1",
+    )
+    ledger.traces.clear()
+
+    ledger.count_training_rows(
+        caller_id="missoula:service:shadow",
+        model_version="core-test",
+    )
+    ledger.get_training_rows(
+        caller_id="missoula:service:shadow",
+        model_version="core-test",
+        limit=10,
+    )
+
+    ranking_queries = [query for query in ledger.traces if "settlement_history AS" in query]
+    assert len(ranking_queries) == 2
+    for query in ranking_queries:
+        assert "filtered_predictions AS" in query
+        assert query.index("filtered_predictions AS") < query.index("settlement_history AS")
+        assert query.count("JOIN filtered_predictions") >= 2
 
 
 def test_numeric_outcome_revision_is_field_atomic_on_one_bad_prediction(tmp_path):
@@ -441,6 +616,8 @@ def test_monitoring_receipt_readiness_ignores_nonblocking_cloud_backlog(tmp_path
     ledger.apply_numeric_outcome_revision(
         "missoula:outcome-revision:1",
         [_settle(prediction_id, "missoula:competitor:1", 43.0, expected_revision=0)],
+        request_id=request_id,
+        run_revision="missoula:run-revision:receipt-field",
         actor="missoula:operator:judge-1",
     )
     ledger.flush_mirror_outbox()
@@ -766,11 +943,15 @@ def test_monitoring_uses_latest_numeric_mirror_attempt_and_does_not_infer_drift(
     ledger.apply_numeric_outcome_revision(
         "missoula:outcome-revision:attempt-1",
         [_settle(first, "missoula:competitor:1", 43.0, expected_revision=0)],
+        request_id="missoula:request:attempt-1",
+        run_revision="missoula:run-revision:field-1",
         actor="missoula:operator:judge-1",
     )
     ledger.apply_numeric_outcome_revision(
         "missoula:outcome-revision:attempt-2",
         [_settle(second, "missoula:competitor:2", 44.0, expected_revision=0)],
+        request_id="missoula:request:attempt-2",
+        run_revision="missoula:run-revision:field-1",
         actor="missoula:operator:judge-1",
     )
     ledger.flush_mirror_outbox()
@@ -906,6 +1087,9 @@ def test_result_store_reopens_numeric_revision_without_losing_authority(tmp_path
     first = ledger.apply_numeric_outcome_revision(
         "missoula:outcome-revision:1",
         [_settle(prediction_id, "missoula:competitor:1", 43.0, expected_revision=0)],
+        caller_id="missoula:service:shadow",
+        request_id="missoula:request:field-1",
+        run_revision="missoula:run-revision:field-1",
         actor="missoula:operator:judge-1",
     )
 

@@ -47,6 +47,13 @@ Live integration (editable install):
     No rebuild or reinstall required.
 """
 
+from strathmark.auth import (
+    ACTOR_ATTESTATION_SCHEMA_VERSION,
+    SHADOW_ATTESTATION_AUDIENCE,
+    VerifiedActorAttestation,
+    shadow_auth_configuration_status,
+    sign_actor_attestation,
+)
 from strathmark.calculator import HandicapCalculator, process_competition_day
 from strathmark.db import (
     format_proam_results,
@@ -222,6 +229,11 @@ __all__ = [
     "IDENTITY_SCHEMA_VERSION",
     "OBSERVATION_SCHEMA_VERSION",
     "SHADOW_TARGET_SINGLE_ELAPSED",
+    "ACTOR_ATTESTATION_SCHEMA_VERSION",
+    "SHADOW_ATTESTATION_AUDIENCE",
+    "VerifiedActorAttestation",
+    "shadow_auth_configuration_status",
+    "sign_actor_attestation",
     # Simulation
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",

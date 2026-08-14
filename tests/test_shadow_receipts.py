@@ -108,6 +108,7 @@ def _request(
         field_run_id="missoula:field-run-1",
         operator_id="missoula:operator-7",
         request_id=request_id,
+        run_revision="missoula:run-revision-1",
         event_code="SB",
         target_contract=target_contract,
         prediction_as_of="2026-11-01T23:30:00-08:00",
@@ -115,6 +116,33 @@ def _request(
         observation_schema_version=OBSERVATION_SCHEMA_VERSION,
         observation_fingerprint=observation_fingerprint,
     )
+
+
+def test_receipt_recovery_binds_immutable_run_revision_before_provider(tmp_path):
+    path = tmp_path / "run-revision.db"
+    first_provider = _Provider()
+    first_service = ShadowPredictionService(
+        PredictionLedger(path), prediction_provider=first_provider
+    )
+    original = _request()
+    first_service.calculate(original, _competitors(), WOOD)
+    assert first_provider.calls == 1
+
+    restarted_provider = _Provider(version="core-b")
+    restarted_ledger = PredictionLedger(path)
+    with pytest.raises(LedgerConflictError, match="run_revision"):
+        restarted_ledger.get_shadow_receipt(
+            original.consumer_id,
+            original.request_id,
+            expected_run_revision="missoula:run-revision-2",
+        )
+    with pytest.raises(LedgerConflictError, match="run_revision"):
+        ShadowPredictionService(restarted_ledger, prediction_provider=restarted_provider).calculate(
+            replace(original, run_revision="missoula:run-revision-2"),
+            _competitors(),
+            WOOD,
+        )
+    assert restarted_provider.calls == 0
 
 
 def _competitors(*, same_name: bool = False):
