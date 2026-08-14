@@ -429,6 +429,35 @@ def _bind_shadow_delivery(
     )
 
 
+def _sync_shadow_active_evidence(payload: dict[str, object]) -> None:
+    """Keep a receipt fixture's active evidence projection and hash coherent."""
+
+    core = payload["receipt"]["core"]
+    evidence_snapshot = core["evidence_snapshot"]
+    active_input = core["active_input"]
+    calculation_only_fields = {
+        "activated_at",
+        "age_days_at_calculation",
+        "freshness_at_calculation",
+        "integrity",
+        "ready_for_offline_at_calculation",
+    }
+    active_input["evidence_snapshot"] = {
+        key: value for key, value in evidence_snapshot.items() if key not in calculation_only_fields
+    }
+    fingerprint_input = dict(active_input)
+    fingerprint_input.pop("fingerprint", None)
+    active_input["fingerprint"] = hashlib.sha256(
+        json.dumps(
+            fingerprint_input,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _shadow_receipt_payload(
     suffix: str,
     *,
@@ -1741,6 +1770,7 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
         "future_result": 0,
         "same_day_result": 0,
     }
+    _sync_shadow_active_evidence(receipt)
     _bind_shadow_delivery(receipt)
     _assert_scalar(
         target,
@@ -1927,6 +1957,7 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
         invalid_counts = json.loads(json.dumps(receipt))
         if target_map == "snapshot":
             invalid_counts["receipt"]["core"]["evidence_snapshot"]["diagnostics"] = invalid_map
+            _sync_shadow_active_evidence(invalid_counts)
             expected_error = (
                 "shadow receipt evidence snapshot diagnostics must be a bounded count map"
             )
@@ -2357,8 +2388,9 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
         "CREATE TEMP TABLE shadow_mirror_deliveries (sentinel pg_catalog.text); "
         f"SELECT public.append_shadow_mirror_v1("
         f"'{_json_literal(shadowed_receipt)}'::pg_catalog.jsonb); "
+        "RESET ROLE; "
         "SELECT pg_catalog.count(*) FROM public.shadow_receipt_cores "
-        "WHERE ledger_request_id='ledger-shadow-object-shadow'; RESET ROLE;"
+        "WHERE ledger_request_id='ledger-shadow-object-shadow';"
     )
     _assert_scalar(target, dsn, shadowed_sql, "1", "007 object shadowing is harmless")
     checks += 1
@@ -2380,7 +2412,9 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
     _assert_scalar(
         target,
         dsn,
-        "SELECT (pg_catalog.count(*) = 5)::text FROM public.shadow_receipt_cores;",
+        # rollback-race, generated-ledger, receipt, digest-guard,
+        # authority-race, and object-shadow are the six accepted receipts.
+        "SELECT (pg_catalog.count(*) = 6)::text FROM public.shadow_receipt_cores;",
         "true",
         "007 rerun preserves active immutable receipt rows",
     )

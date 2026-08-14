@@ -281,7 +281,7 @@ BEGIN
         )
     ) OR (
         SELECT pg_catalog.count(*) FROM pg_catalog.jsonb_object_keys(mirror_payload)
-    ) <> CASE WHEN mirror_kind = 'shadow_receipt' THEN 5 ELSE 4 END THEN
+    ) <> (CASE WHEN mirror_kind = 'shadow_receipt' THEN 5 ELSE 4 END) THEN
         RAISE EXCEPTION 'shadow mirror envelope has unknown or missing properties';
     END IF;
     IF EXISTS (
@@ -761,7 +761,7 @@ BEGIN
             )
         ) <> 17
            OR receipt_row#>'{core,active_input,evidence_snapshot}' IS DISTINCT FROM (
-               receipt_row#>'{core,evidence_snapshot}' - ARRAY[
+               (receipt_row#>'{core,evidence_snapshot}') - ARRAY[
                    'activated_at', 'age_days_at_calculation',
                    'freshness_at_calculation', 'integrity',
                    'ready_for_offline_at_calculation'

@@ -187,3 +187,25 @@ def test_temp_shadowing_probe_resets_service_role_before_direct_table_read() -> 
     )
 
     assert reset_at < direct_read_at
+
+
+def test_shadow_mirror_key_count_case_expression_is_parenthesized() -> None:
+    migration = (
+        Path(__file__).parents[1]
+        / "strathmark"
+        / "migrations"
+        / "20260813_007_shadow_mirror_contract.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "<> (CASE WHEN mirror_kind = 'shadow_receipt' THEN 5 ELSE 4 END) THEN" in migration
+
+
+def test_shadow_mirror_object_probe_resets_service_role_before_direct_table_read() -> None:
+    source = Path(rehearsal.__file__).read_text(encoding="utf-8")
+    probe = source.split("shadowed_sql = (", 1)[1].split(
+        "_assert_scalar(target, dsn, shadowed_sql", 1
+    )[0]
+
+    assert probe.index('"RESET ROLE; "') < probe.index(
+        '"SELECT pg_catalog.count(*) FROM public.shadow_receipt_cores "'
+    )
