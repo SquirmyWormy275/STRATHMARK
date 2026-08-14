@@ -722,7 +722,8 @@ def _run_bounded_shadow_read(
             pass
         raise HTTPException(status_code=504, detail=timeout_detail) from exc
     except sqlite3.OperationalError as exc:
-        if query_deadline.cancelled:
+        if query_deadline.cancelled or query_deadline.is_sqlite_contention(exc):
+            query_deadline.cancel()
             raise HTTPException(status_code=504, detail=timeout_detail) from exc
         raise
 

@@ -103,9 +103,9 @@ CREATE TABLE IF NOT EXISTS public.prediction_ledger_settlements (
     UNIQUE (prediction_id, payload_hash)
 );
 
-CREATE INDEX IF NOT EXISTS public.idx_prediction_ledger_competitor
+CREATE INDEX IF NOT EXISTS idx_prediction_ledger_competitor
     ON public.prediction_ledger_predictions (competitor_id, event_code);
-CREATE INDEX IF NOT EXISTS public.idx_prediction_ledger_settlement_current
+CREATE INDEX IF NOT EXISTS idx_prediction_ledger_settlement_current
     ON public.prediction_ledger_settlements (prediction_id, revision DESC);
 
 CREATE OR REPLACE FUNCTION public.reject_prediction_ledger_mutation()

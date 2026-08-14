@@ -6,6 +6,7 @@ configuration is deliberately removed or poisoned; no network adapter is used.
 
 from __future__ import annotations
 
+import gc
 import sqlite3
 import time
 import tracemalloc
@@ -740,6 +741,13 @@ def test_snapshot_status_streams_high_cardinality_rows_with_bounded_extra_memory
             ).encode("utf-8")
         )
 
+    # Measure the steady-state verifier rather than one-time interpreter,
+    # coverage, and SQLite statement-cache setup. The warmed path still walks
+    # and hashes every row, so retaining a second O(n) projection remains
+    # visible in the measured peak.
+    warmed = store.get_evidence_snapshot_status()
+    assert warmed is not None
+    gc.collect()
     tracemalloc.start()
     verified = store.get_evidence_snapshot_status()
     _, peak_bytes = tracemalloc.get_traced_memory()

@@ -33,6 +33,16 @@ from strathmark.predictor import (
 )
 
 
+def test_ledger_connection_context_closes_the_sqlite_handle(tmp_path):
+    ledger = PredictionLedger(tmp_path / "closing-ledger.db")
+
+    with ledger._connect() as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
 def _pred(
     competitor_id: str = "competitor-1",
     *,

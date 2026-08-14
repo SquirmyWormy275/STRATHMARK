@@ -204,6 +204,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
+      STRATHMARK_RUN_POSTGRES_REHEARSAL: "1"
       STRATHMARK_REHEARSAL_DSN: postgresql://rehearsal:rehearsal-ci-only@127.0.0.1:5432/strathmark_rehearsal_controller
     steps:
       - uses: actions/checkout@v4

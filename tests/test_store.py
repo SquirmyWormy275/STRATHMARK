@@ -9,6 +9,16 @@ import pytest
 from strathmark.store import ResultStore
 
 
+def test_store_connection_context_closes_the_sqlite_handle(tmp_path):
+    store = ResultStore(tmp_path / "closing-store.db")
+
+    with store._connect() as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")
+
+
 def test_cloud_mirror_accepts_active_v2_hash_algorithm(monkeypatch, tmp_path):
     from strathmark import db
     from strathmark.ledger import PredictionLedger

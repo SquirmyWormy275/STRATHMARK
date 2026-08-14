@@ -29,6 +29,7 @@ from strathmark.mirror_contract import (
     SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION,
 )
 from strathmark.provenance import ENGINE_VERSION, is_v2_training_source
+from strathmark.sqlite_utils import ClosingConnection
 
 _ENV_VAR = "STRATHMARK_DB_PATH"
 _DEFAULT_PATH = Path.home() / ".strathmark" / "results.db"
@@ -331,6 +332,16 @@ class SQLiteQueryDeadline:
         if self.cancelled:
             raise LedgerQueryTimeoutError("bounded SQLite read exceeded its deadline")
 
+    @staticmethod
+    def is_sqlite_contention(exc: sqlite3.OperationalError) -> bool:
+        """Recognize busy/locked results after SQLite exhausts its busy timeout."""
+
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(error_code, int) and error_code & 0xFF in {5, 6}:
+            return True
+        message = str(exc).strip().lower()
+        return message in {"database is busy", "database is locked"}
+
 
 @dataclass(frozen=True)
 class LedgerPrediction:
@@ -605,7 +616,12 @@ class PredictionLedger:
     def _connect(
         self, *, query_deadline: Optional[SQLiteQueryDeadline] = None
     ) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=30.0, isolation_level=None)
+        conn = sqlite3.connect(
+            str(self.path),
+            timeout=30.0,
+            isolation_level=None,
+            factory=ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         if query_deadline is not None:
@@ -1594,7 +1610,10 @@ class PredictionLedger:
                 conn.commit()
             except sqlite3.OperationalError as exc:
                 conn.rollback()
-                if query_deadline is not None and query_deadline.cancelled:
+                if query_deadline is not None and (
+                    query_deadline.cancelled or query_deadline.is_sqlite_contention(exc)
+                ):
+                    query_deadline.cancel()
                     raise LedgerQueryTimeoutError(
                         "bounded numeric outcome write exceeded its deadline"
                     ) from exc

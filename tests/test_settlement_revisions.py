@@ -1249,6 +1249,13 @@ def test_numeric_outcome_deadline_rolls_back_a_sqlite_lock_then_exact_retry_reco
     assert recovered.status == "recorded"
 
 
+def test_sqlite_deadline_recognizes_busy_timeout_contention_before_clock_expiry():
+    deadline = SQLiteQueryDeadline(timeout_seconds=1.0)
+
+    assert deadline.is_sqlite_contention(sqlite3.OperationalError("database is locked"))
+    assert not deadline.is_sqlite_contention(sqlite3.OperationalError("no such table: missing"))
+
+
 def test_numeric_outcome_post_commit_timeout_is_recoverable_by_exact_revision_id(tmp_path):
     committed = threading.Event()
     release = threading.Event()

@@ -57,6 +57,7 @@ import pandas as pd
 
 from strathmark.config import data_req, events, is_valid_event, rules
 from strathmark.predictor import HistoricalResult
+from strathmark.sqlite_utils import ClosingConnection
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -554,6 +555,7 @@ class ResultStore:
             str(self._path),
             check_same_thread=False,
             timeout=timeout_ms / 1000.0,
+            factory=ClosingConnection,
         )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")

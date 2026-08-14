@@ -118,11 +118,11 @@ CREATE TABLE IF NOT EXISTS public.shadow_numeric_settlement_revisions (
     UNIQUE (field_revision_id, prediction_id)
 );
 
-CREATE INDEX IF NOT EXISTS public.idx_shadow_receipt_caller_request
+CREATE INDEX IF NOT EXISTS idx_shadow_receipt_caller_request
     ON public.shadow_receipt_cores(caller_id, request_id);
-CREATE INDEX IF NOT EXISTS public.idx_shadow_numeric_outcome_request
+CREATE INDEX IF NOT EXISTS idx_shadow_numeric_outcome_request
     ON public.shadow_numeric_outcome_revisions(ledger_request_id, created_at);
-CREATE INDEX IF NOT EXISTS public.idx_shadow_numeric_settlement_current
+CREATE INDEX IF NOT EXISTS idx_shadow_numeric_settlement_current
     ON public.shadow_numeric_settlement_revisions(prediction_id, revision DESC);
 
 CREATE OR REPLACE FUNCTION public.reject_legacy_settlement_after_shadow_authority()

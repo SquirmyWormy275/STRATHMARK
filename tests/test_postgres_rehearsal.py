@@ -135,6 +135,8 @@ def test_cleanup_failure_is_reported_with_primary_failure_as_cause(monkeypatch) 
 
 def test_prediction_v2_migrations_execute_against_disposable_postgres() -> None:
     """Run the full 005/006 matrix only with an explicit safe controller DSN."""
+    if os.environ.get("STRATHMARK_RUN_POSTGRES_REHEARSAL") != "1":
+        pytest.skip("reserved for the dedicated disposable PostgreSQL CI job")
     dsn = required_rehearsal_dsn(os.environ)
     if not dsn:
         pytest.skip("set STRATHMARK_REHEARSAL_DSN to a loopback disposable controller")
@@ -144,6 +146,17 @@ def test_prediction_v2_migrations_execute_against_disposable_postgres() -> None:
     assert report.database.startswith("strathmark_rehearsal_")
     assert report.checks_run >= 20
     assert report.database_dropped is True
+
+
+def test_ci_assigns_the_runtime_rehearsal_only_to_its_disposable_postgres_job() -> None:
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert workflow.count('STRATHMARK_RUN_POSTGRES_REHEARSAL: "1"') == 1
+    dedicated_job = workflow.split("postgres-migration-rehearsal:", 1)[1].split("\n  build:", 1)[0]
+    assert 'STRATHMARK_RUN_POSTGRES_REHEARSAL: "1"' in dedicated_job
+    assert "STRATHMARK_REHEARSAL_DSN:" in dedicated_job
 
 
 def test_rehearsal_contains_bounded_concurrency_process_helpers() -> None:

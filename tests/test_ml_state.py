@@ -305,6 +305,16 @@ class TestPredictionLedgerMirror:
                     if relation in normalized:
                         assert f"public.{relation}" in normalized, (path.name, normalized)
 
+    def test_postgres_index_names_are_not_schema_qualified(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        for filename in (
+            "20260811_005_prediction_v2.sql",
+            "20260813_007_shadow_mirror_contract.sql",
+        ):
+            sql = (migration_dir / filename).read_text(encoding="utf-8")
+            assert "CREATE INDEX IF NOT EXISTS public." not in sql
+            assert " ON public." in " ".join(sql.split())
+
     def test_guarded_down_migrations_lock_then_disable_rls_before_inspection(self):
         migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
         down_006 = (migration_dir / "20260813_006_prediction_hash_algorithm.down.sql").read_text(
