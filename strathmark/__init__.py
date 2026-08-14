@@ -55,6 +55,14 @@ from strathmark.auth import (
     sign_actor_attestation,
 )
 from strathmark.calculator import HandicapCalculator, process_competition_day
+from strathmark.consumer_contract import (
+    EXPECTED_SHADOW_CONSUMER_PATHS,
+    SHADOW_CONSUMER_CONTRACT_VERSION,
+    ShadowConsumerContractIntegrityError,
+    load_shadow_consumer_contract,
+    shadow_consumer_contract_bytes,
+    shadow_consumer_contract_digest,
+)
 from strathmark.db import (
     format_proam_results,
     get_active_model_version,
@@ -217,6 +225,12 @@ __all__ = [
     "PredictiveDistribution",
     "ForecastInterval",
     "ChronologicalCalibrator",
+    "SHADOW_CONSUMER_CONTRACT_VERSION",
+    "EXPECTED_SHADOW_CONSUMER_PATHS",
+    "ShadowConsumerContractIntegrityError",
+    "load_shadow_consumer_contract",
+    "shadow_consumer_contract_bytes",
+    "shadow_consumer_contract_digest",
     "MarkOptimizationResult",
     "legacy_rounded_gap_marks",
     "optimize_joint_marks",

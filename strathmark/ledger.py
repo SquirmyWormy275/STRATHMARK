@@ -2006,11 +2006,13 @@ class PredictionLedger:
             post_parameters.append(band)
         prediction_where = " AND ".join(prediction_conditions)
         post_where = " AND ".join(post_conditions)
-        since_clause = ""
+        legacy_since_clause = ""
+        numeric_since_clause = ""
         since_parameters: list[Any] = []
         if since is not None:
             since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
-            since_clause = "WHERE source_settlement.settled_at >= ?"
+            legacy_since_clause = "WHERE source_settlement.settled_at >= ?"
+            numeric_since_clause = "WHERE source_settlement.created_at >= ?"
             since_parameters = [since_value, since_value]
         limit_clause = ""
         limit_parameters: list[Any] = []
@@ -2043,7 +2045,7 @@ class PredictionLedger:
                     FROM prediction_settlements source_settlement
                     JOIN filtered_predictions filtered
                       ON filtered.prediction_id = source_settlement.prediction_id
-                    {since_clause}
+                    {legacy_since_clause}
                     UNION ALL
                     SELECT source_settlement.revision_id,
                            source_settlement.prediction_id,
@@ -2056,7 +2058,7 @@ class PredictionLedger:
                     FROM numeric_settlement_revisions source_settlement
                     JOIN filtered_predictions filtered
                       ON filtered.prediction_id = source_settlement.prediction_id
-                    {since_clause}
+                    {numeric_since_clause}
                 ),
                 ranked_settlements AS (
                     SELECT candidate.*,
@@ -2128,11 +2130,13 @@ class PredictionLedger:
             conditions.append("r.caller_id = ?")
             prediction_parameters.append(_namespaced_identifier(caller_id, "caller_id"))
         where = " AND ".join(conditions)
-        since_clause = ""
+        legacy_since_clause = ""
+        numeric_since_clause = ""
         since_parameters: list[Any] = []
         if since is not None:
             since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
-            since_clause = "WHERE source_settlement.settled_at >= ?"
+            legacy_since_clause = "WHERE source_settlement.settled_at >= ?"
+            numeric_since_clause = "WHERE source_settlement.created_at >= ?"
             since_parameters = [since_value, since_value]
         try:
             with self._connect(query_deadline=query_deadline) as conn:
@@ -2156,7 +2160,7 @@ class PredictionLedger:
                         FROM prediction_settlements source_settlement
                         JOIN filtered_predictions filtered
                           ON filtered.prediction_id = source_settlement.prediction_id
-                        {since_clause}
+                        {legacy_since_clause}
                         UNION ALL
                         SELECT source_settlement.revision_id,
                                source_settlement.prediction_id,
@@ -2167,7 +2171,7 @@ class PredictionLedger:
                         FROM numeric_settlement_revisions source_settlement
                         JOIN filtered_predictions filtered
                           ON filtered.prediction_id = source_settlement.prediction_id
-                        {since_clause}
+                        {numeric_since_clause}
                     ),
                     ranked_settlements AS (
                         SELECT candidate.*,

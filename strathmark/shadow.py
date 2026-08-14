@@ -191,7 +191,6 @@ class ShadowPredictionService:
             "tournament_id": request.tournament_id,
             "event_occurrence_id": request.event_occurrence_id,
             "field_run_id": request.field_run_id,
-            "run_revision": request.run_revision,
             "target_contract": request.target_contract,
             "schedule_fingerprint": request.schedule_fingerprint,
             "caller_input": caller_input,

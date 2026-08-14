@@ -64,6 +64,7 @@ db = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "jsonschema>=4.18",
     "ruff>=0.4",
     "openpyxl>=3.1",
 ]
@@ -80,6 +81,8 @@ packages = ["strathmark"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "strathmark/models/prediction_v2_core.json" = "strathmark/models/prediction_v2_core.json"
+"strathmark/contracts/shadow_consumer_v1.openapi.json" = "strathmark/contracts/shadow_consumer_v1.openapi.json"
+"strathmark/contracts/shadow_consumer_v1.openapi.sha256" = "strathmark/contracts/shadow_consumer_v1.openapi.sha256"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
