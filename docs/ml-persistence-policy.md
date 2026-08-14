@@ -85,6 +85,14 @@ prediction, feature, and settlement tables. Migration
 RLS, revoke browser roles, add immutable-row triggers, and grant a single transactional
 append function only to `service_role`.
 
+Migration `20260813_007_shadow_mirror_contract.sql` adds a separate, versioned shadow
+append RPC. Receipt envelopes include the immutable receipt core, its namespaced stable
+identity linkage, observation fingerprint metadata, and the minimum 005/006 ledger rows
+needed for foreign keys. Numeric envelopes contain only eligible settle/void revisions.
+They never copy Missoula operational outcome/context history, names, free-text notes,
+medical data, or credentials. All four additive tables force RLS and reject mutation;
+the cloud remains a non-authoritative copy.
+
 The service key stays on a trusted server. Public `/calculate` and `/predict` are
 stateless. `/ledger/calculate` and settlement routes require the existing Bearer-token
 guard. Do not mirror entries without stable competitor IDs.

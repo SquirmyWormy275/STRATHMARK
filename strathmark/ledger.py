@@ -33,6 +33,10 @@ MAX_MIRROR_QUEUE = 1024
 MAX_NUMERIC_SETTLEMENTS_PER_REVISION = 512
 MAX_NUMERIC_RAW_TIME_SECONDS = 300.0
 MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER = 4096
+SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION = "strathmark.shadow-mirror-envelope.v1"
+MIRROR_DELIVERY_SCHEMA_VERSION = "strathmark.mirror-delivery.v1"
+SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION = "strathmark.shadow-receipt-mirror.v1"
+NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION = "strathmark.shadow-numeric-outcome-mirror.v1"
 NUMERIC_OUTCOME_REASON_CODES = frozenset(
     {
         "corrected_time",
@@ -803,6 +807,7 @@ class PredictionLedger:
                                 timestamp,
                             ),
                         )
+                receipt_core: Optional[dict[str, Any]] = None
                 if receipt_metadata is not None:
                     receipt_core = self._shadow_receipt_core(
                         receipt_metadata,
@@ -851,6 +856,7 @@ class PredictionLedger:
                     prediction_ids,
                     validated,
                     timestamp,
+                    receipt_core=receipt_core,
                 )
                 self._append_outbox(
                     conn,
@@ -1492,7 +1498,11 @@ class PredictionLedger:
                     )
 
                 cloud_payload = {
+                    "schema_version": SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+                    "kind": "numeric_outcome_revision",
                     "numeric_outcome_revision": {
+                        "schema_version": NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION,
+                        "field_revision_id": field_revision_id,
                         "outcome_revision_id": outcome_key,
                         "ledger_request_id": ledger_request_id,
                         "caller_id": caller_id,
@@ -1513,7 +1523,7 @@ class PredictionLedger:
                             }
                             for item in prepared
                         ],
-                    }
+                    },
                 }
                 self._append_outbox(
                     conn,
@@ -2230,6 +2240,7 @@ class PredictionLedger:
         if len(predictions) != len(prediction_ids):
             raise ValueError("receipt prediction identities are incomplete")
         core = dict(_json_value(metadata))
+        core.setdefault("identity_schema_version", "strathmark.namespaced-identity.v1")
         core["ledger"] = {
             "request_hash": request_hash,
             "hash_algorithm": hash_algorithm,
@@ -2369,6 +2380,8 @@ class PredictionLedger:
         prediction_ids: Sequence[str],
         predictions: Sequence[Mapping[str, Any]],
         timestamp: str,
+        *,
+        receipt_core: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         prediction_rows = []
         feature_rows = []
@@ -2414,7 +2427,7 @@ class PredictionLedger:
                         "created_at": timestamp,
                     }
                 )
-        return {
+        ledger_payload = {
             "request": {
                 "ledger_request_id": request_row_id,
                 "caller_id": caller_id,
@@ -2428,6 +2441,28 @@ class PredictionLedger:
             "predictions": prediction_rows,
             "features": feature_rows,
         }
+        if receipt_core is None:
+            return ledger_payload
+
+        observation = receipt_core.get("observation")
+        if not isinstance(observation, Mapping):
+            raise ValueError("receipt observation fingerprint metadata must be an object")
+        return {
+            "schema_version": SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+            "kind": "shadow_receipt",
+            "ledger": ledger_payload,
+            "receipt": {
+                "schema_version": SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION,
+                "ledger_request_id": request_row_id,
+                "caller_id": caller_id,
+                "request_id": request_id,
+                "core_schema_version": receipt_core.get("schema_version"),
+                "identity_schema_version": receipt_core.get("identity_schema_version"),
+                "observation_schema_version": observation.get("schema_version"),
+                "observation_fingerprint": observation.get("fingerprint"),
+                "core": dict(receipt_core),
+            },
+        }
 
     @staticmethod
     def _append_outbox(
@@ -2438,6 +2473,23 @@ class PredictionLedger:
         payload: Mapping[str, Any],
         timestamp: str,
     ) -> None:
+        outbox_id = str(uuid.uuid4())
+        normalized_payload = _json_value(payload)
+        if (
+            isinstance(normalized_payload, Mapping)
+            and normalized_payload.get("schema_version") == SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION
+        ):
+            normalized_payload = dict(normalized_payload)
+            if "delivery" in normalized_payload:
+                raise ValueError("mirror delivery metadata is ledger-owned")
+            payload_hash = canonical_hash(normalized_payload)
+            normalized_payload["delivery"] = {
+                "schema_version": MIRROR_DELIVERY_SCHEMA_VERSION,
+                "outbox_id": outbox_id,
+                "entity_id": entity_id,
+                "created_at": timestamp,
+                "payload_hash": payload_hash,
+            }
         conn.execute(
             """
             INSERT INTO prediction_mirror_outbox (
@@ -2445,10 +2497,10 @@ class PredictionLedger:
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()),
+                outbox_id,
                 kind,
                 entity_id,
-                json.dumps(_json_value(payload), sort_keys=True, separators=(",", ":")),
+                json.dumps(normalized_payload, sort_keys=True, separators=(",", ":")),
                 timestamp,
             ),
         )

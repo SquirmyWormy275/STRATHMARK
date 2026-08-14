@@ -21,6 +21,9 @@ All notable changes to STRATHMARK will be documented in this file.
   plus rollback.
 - Preserved the public fairness-simulation admission limit at 4,000,000 cells and
   limited it to one concurrent request per process pending a bounded-batch simulator.
+- Added migration 007's versioned, append-only shadow mirror for immutable receipt
+  cores and eligible numeric settle/void revisions. The cloud copy remains optional,
+  non-authoritative, stable-ID-only, and excludes operational context and free text.
 
 ## [2.0.0] - 2026-08-11
 

@@ -7,6 +7,7 @@ database target.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -276,6 +277,141 @@ def _rpc_sql(payload: object, role: str = "service_role") -> str:
     )
 
 
+def _shadow_rpc_sql(payload: object, role: str = "service_role") -> str:
+    return (
+        f"SET ROLE {role}; SELECT public.append_shadow_mirror_v1"
+        f"('{_json_literal(payload)}'::pg_catalog.jsonb); RESET ROLE;"
+    )
+
+
+def _shadow_payload_hash(payload: Mapping[str, object]) -> str:
+    semantic = dict(payload)
+    semantic.pop("delivery", None)
+    encoded = json.dumps(
+        semantic,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _shadow_receipt_payload(
+    suffix: str,
+    *,
+    competitor_id: str = "missoula:competitor:1",
+    outbox_id: str | None = None,
+    payload_hash: str | None = None,
+) -> dict[str, object]:
+    field = _field_payload(
+        f"shadow-{suffix}",
+        request_hash="3" * 64,
+        hash_algorithm="active-v2",
+        competitor_id=competitor_id,
+    )
+    request = field["request"]
+    prediction = field["predictions"][0]
+    request.update(
+        caller_id="missoula:service:shadow",
+        request_id=f"missoula:request:{suffix}",
+    )
+    core = {
+        "schema_version": "strathmark.shadow-receipt-core.v1",
+        "identity_schema_version": "strathmark.namespaced-identity.v1",
+        "consumer_id": request["caller_id"],
+        "request_id": request["request_id"],
+        "run_revision": f"missoula:run-revision:{suffix}",
+        "observation": {
+            "schema_version": "strathmark.shadow-observation-fingerprint.v1",
+            "fingerprint": "2" * 64,
+        },
+        "created_at": "2026-08-03T00:00:00+00:00",
+        "predictions": [
+            {
+                "prediction_id": prediction["prediction_id"],
+                "competitor_id": competitor_id,
+                "event_code": "SB",
+            }
+        ],
+    }
+    payload = {
+        "schema_version": "strathmark.shadow-mirror-envelope.v1",
+        "kind": "shadow_receipt",
+        "delivery": {
+            "schema_version": "strathmark.mirror-delivery.v1",
+            "outbox_id": outbox_id or f"outbox-receipt-{suffix}",
+            "entity_id": request["ledger_request_id"],
+            "created_at": "2026-08-03T00:00:00+00:00",
+            "payload_hash": payload_hash or "0" * 64,
+        },
+        "ledger": field,
+        "receipt": {
+            "schema_version": "strathmark.shadow-receipt-mirror.v1",
+            "ledger_request_id": request["ledger_request_id"],
+            "caller_id": request["caller_id"],
+            "request_id": request["request_id"],
+            "core_schema_version": "strathmark.shadow-receipt-core.v1",
+            "identity_schema_version": "strathmark.namespaced-identity.v1",
+            "observation_schema_version": "strathmark.shadow-observation-fingerprint.v1",
+            "observation_fingerprint": "2" * 64,
+            "core": core,
+        },
+    }
+    if payload_hash is None:
+        payload["delivery"]["payload_hash"] = _shadow_payload_hash(payload)
+    return payload
+
+
+def _numeric_shadow_payload(
+    *,
+    action: str,
+    revision: int,
+    suffix: str,
+    supersedes_revision_id: str | None,
+    payload_hash: str | None = None,
+) -> dict[str, object]:
+    settle = action == "settle"
+    field_revision_id = f"field-revision-{suffix}"
+    payload = {
+        "schema_version": "strathmark.shadow-mirror-envelope.v1",
+        "kind": "numeric_outcome_revision",
+        "delivery": {
+            "schema_version": "strathmark.mirror-delivery.v1",
+            "outbox_id": f"outbox-numeric-{suffix}",
+            "entity_id": field_revision_id,
+            "created_at": f"2026-08-0{3 + revision}T00:00:00+00:00",
+            "payload_hash": payload_hash or "0" * 64,
+        },
+        "numeric_outcome_revision": {
+            "schema_version": "strathmark.shadow-numeric-outcome-mirror.v1",
+            "field_revision_id": field_revision_id,
+            "outcome_revision_id": f"missoula:outcome-revision:{suffix}",
+            "ledger_request_id": "ledger-shadow-receipt",
+            "caller_id": "missoula:service:shadow",
+            "actor": "missoula:operator:judge-1",
+            "reason_code": (None if revision == 1 else "retract_invalid_numeric_evidence"),
+            "created_at": f"2026-08-0{3 + revision}T00:00:00+00:00",
+            "revisions": [
+                {
+                    "revision_id": f"numeric-revision-{suffix}",
+                    "prediction_id": "prediction-shadow-receipt",
+                    "revision": revision,
+                    "competitor_id": "missoula:competitor:1",
+                    "event_code": "SB",
+                    "action": action,
+                    "actual_time": 43.0 if settle else None,
+                    "residual": 0.5 if settle else None,
+                    "supersedes_revision_id": supersedes_revision_id,
+                }
+            ],
+        },
+    }
+    if payload_hash is None:
+        payload["delivery"]["payload_hash"] = _shadow_payload_hash(payload)
+    return payload
+
+
 def _assert_invalid_payloads(target: RehearsalTarget, dsn: str, suffix: str) -> int:
     """Exercise explicit shape/linkage rejection against the installed RPC version."""
     field = _field_payload(f"invalid-{suffix}", request_hash="9" * 64, hash_algorithm="raw-v1")
@@ -383,12 +519,15 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
     migration_005 = migration_dir / "20260811_005_prediction_v2.sql"
     migration_006 = migration_dir / "20260813_006_prediction_hash_algorithm.sql"
     rollback_006 = migration_dir / "20260813_006_prediction_hash_algorithm.down.sql"
+    migration_007 = migration_dir / "20260813_007_shadow_mirror_contract.sql"
+    rollback_007 = migration_dir / "20260813_007_shadow_mirror_contract.down.sql"
 
     _psql(
         target,
         dsn,
         sql="CREATE TABLE public.competitors (competitor_id pg_catalog.text PRIMARY KEY); "
-        "INSERT INTO public.competitors VALUES ('C001'), ('C002');",
+        "INSERT INTO public.competitors VALUES "
+        "('C001'), ('C002'), ('missoula:competitor:1'), ('missoula:competitor:2');",
     )
     checks += 1
 
@@ -663,6 +802,391 @@ def _run_matrix(repo_root: Path, target: RehearsalTarget, dsn: str) -> int:
     )
     _assert_scalar(target, dsn, shadow_sql, "1", "temporary object shadowing is harmless")
     checks += 1
+
+    legacy_requests_before_007 = _psql(
+        target,
+        dsn,
+        sql="SELECT pg_catalog.count(*) FROM public.prediction_ledger_requests;",
+    ).strip()
+    _psql(target, dsn, sql_file=migration_007)
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 0)::text FROM public.shadow_mirror_deliveries;",
+        "true",
+        "007 upgrade starts additive without rewriting legacy rows",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = " + legacy_requests_before_007 + ")::text "
+        "FROM public.prediction_ledger_requests;",
+        "true",
+        "007 preserves 005/006 requests",
+    )
+    checks += 3
+
+    _psql(target, dsn, sql_file=rollback_007)
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.to_regclass('public.shadow_receipt_cores') IS NULL)::text;",
+        "true",
+        "007 pre-activation rollback",
+    )
+    _psql(target, dsn, sql_file=migration_007)
+    checks += 3
+
+    receipt = _shadow_receipt_payload("receipt")
+    _assert_scalar(
+        target,
+        dsn,
+        _shadow_rpc_sql(receipt),
+        '{"kind": "shadow_receipt", "accepted": true}',
+        "007 complete shadow receipt",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        _shadow_rpc_sql(receipt),
+        '{"kind": "shadow_receipt", "accepted": true, "duplicate": true}',
+        "007 exact receipt retry",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 1)::text FROM public.shadow_receipt_cores;",
+        "true",
+        "007 receipt retry remains single-copy",
+    )
+    checks += 3
+
+    receipt_conflict = json.loads(json.dumps(receipt))
+    receipt_conflict["delivery"]["payload_hash"] = "5" * 64
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(receipt_conflict),
+        expect_error="shadow mirror outbox conflict",
+    )
+    checks += 1
+
+    receipt_semantic_conflict = json.loads(json.dumps(receipt))
+    receipt_semantic_conflict["receipt"]["core"]["run_revision"] = "missoula:run-revision:changed"
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(receipt_semantic_conflict),
+        expect_error="shadow mirror duplicate semantic conflict",
+    )
+    checks += 1  # same claimed hash with changed receipt semantics conflicts
+
+    nested_ledger_conflict = json.loads(json.dumps(receipt))
+    nested_ledger_conflict["ledger"]["predictions"][0]["source"] = "changed-source"
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(nested_ledger_conflict),
+        expect_error="shadow mirror duplicate semantic conflict",
+    )
+    nested_ledger_extra = json.loads(json.dumps(receipt))
+    nested_ledger_extra["ledger"]["features"][0]["unknown"] = "not-allowed"
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(nested_ledger_extra),
+        expect_error="shadow receipt ledger feature contract is invalid",
+    )
+    checks += 2  # same claimed hash with changed nested ledger semantics conflicts
+
+    forbidden_shadow_keys = (
+        "name",
+        "display_name",
+        "fatigue",
+        "fatigue_notes",
+        "medical",
+        "medical_notes",
+        "weather",
+        "equipment",
+        "outcome_history",
+        "context_history",
+        "penalty",
+        "dnf",
+        "dq",
+        "notes",
+        "secret",
+    )
+    for forbidden_key in forbidden_shadow_keys:
+        privacy_probe = json.loads(json.dumps(receipt))
+        privacy_probe["receipt"]["core"]["privacy_probe"] = {
+            "nested": [{forbidden_key.upper(): "must-not-cross"}]
+        }
+        _psql(
+            target,
+            dsn,
+            sql=_shadow_rpc_sql(privacy_probe),
+            expect_error="shadow mirror contains prohibited operational or free-text data",
+        )
+    checks += len(
+        forbidden_shadow_keys
+    )  # direct RPC rejects every recursively prohibited privacy key
+
+    invalid_receipt = _shadow_receipt_payload(
+        "invalid-fk",
+        competitor_id="missoula:competitor:999",
+        payload_hash="6" * 64,
+    )
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(invalid_receipt),
+        expect_error="foreign key constraint",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 0)::text FROM public.prediction_ledger_requests "
+        "WHERE ledger_request_id='ledger-shadow-invalid-fk';",
+        "true",
+        "007 receipt FK failure rolls back embedded ledger",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 1)::text FROM public.shadow_mirror_deliveries;",
+        "true",
+        "007 receipt FK failure rolls back delivery metadata",
+    )
+    checks += 3
+
+    for role in ("anon", "authenticated"):
+        _psql(
+            target,
+            dsn,
+            sql=_shadow_rpc_sql(receipt, role=role),
+            expect_error="permission denied",
+        )
+        checks += 1
+    _psql(
+        target,
+        dsn,
+        sql="SET ROLE service_role; DELETE FROM public.shadow_receipt_cores; RESET ROLE;",
+        expect_error="permission denied",
+    )
+    checks += 1
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT pg_catalog.count(*) FROM pg_catalog.pg_class WHERE relnamespace = "
+        "'public'::pg_catalog.regnamespace AND relname IN "
+        "('shadow_mirror_deliveries','shadow_receipt_cores',"
+        "'shadow_numeric_outcome_revisions','shadow_numeric_settlement_revisions') "
+        "AND relrowsecurity AND relforcerowsecurity;",
+        "4",
+        "all 007 mirror tables force RLS",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT pg_catalog.count(*) FROM pg_catalog.pg_trigger WHERE tgrelid IN "
+        "('public.shadow_mirror_deliveries'::pg_catalog.regclass,"
+        "'public.shadow_receipt_cores'::pg_catalog.regclass,"
+        "'public.shadow_numeric_outcome_revisions'::pg_catalog.regclass,"
+        "'public.shadow_numeric_settlement_revisions'::pg_catalog.regclass) "
+        "AND NOT tgisinternal;",
+        "4",
+        "all 007 mirror tables are append-only",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (NOT r.rolcanlogin AND NOT r.rolbypassrls AND p.proowner=r.oid "
+        "AND p.prosecdef AND p.proconfig @> ARRAY['search_path='] AND "
+        "pg_catalog.has_function_privilege('service_role', "
+        "'public.append_shadow_mirror_v1(pg_catalog.jsonb)', 'EXECUTE') AND "
+        "NOT pg_catalog.has_function_privilege('anon', "
+        "'public.append_shadow_mirror_v1(pg_catalog.jsonb)', 'EXECUTE') AND "
+        "NOT pg_catalog.has_function_privilege('authenticated', "
+        "'public.append_shadow_mirror_v1(pg_catalog.jsonb)', 'EXECUTE'))::text "
+        "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles r ON r.oid=p.proowner "
+        "WHERE p.oid='public.append_shadow_mirror_v1(pg_catalog.jsonb)'"
+        "::pg_catalog.regprocedure;",
+        "true",
+        "007 RPC owner, empty search path, and minimum grants",
+    )
+    checks += 3
+
+    settle = _numeric_shadow_payload(
+        action="settle",
+        revision=1,
+        suffix="settle",
+        supersedes_revision_id=None,
+    )
+    void = _numeric_shadow_payload(
+        action="void",
+        revision=2,
+        suffix="void",
+        supersedes_revision_id="numeric-revision-settle",
+    )
+    fractional_revision = _numeric_shadow_payload(
+        action="settle",
+        revision=1,
+        suffix="fractional",
+        supersedes_revision_id=None,
+    )
+    fractional_revision["numeric_outcome_revision"]["revisions"][0]["revision"] = 1.5
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(fractional_revision),
+        expect_error="numeric revision must be an exact bounded integer",
+    )
+    checks += 1  # fractional numeric revision is rejected before integer cast
+    _assert_scalar(
+        target,
+        dsn,
+        _shadow_rpc_sql(settle),
+        '{"kind": "numeric_outcome_revision", "accepted": true}',
+        "007 numeric settlement",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        _shadow_rpc_sql(settle),
+        '{"kind": "numeric_outcome_revision", "accepted": true, "duplicate": true}',
+        "007 exact numeric retry",
+    )
+    numeric_semantic_conflict = json.loads(json.dumps(settle))
+    numeric_semantic_conflict["numeric_outcome_revision"]["actor"] = "missoula:operator:judge-2"
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(numeric_semantic_conflict),
+        expect_error="shadow mirror duplicate semantic conflict",
+    )
+    checks += 2  # same claimed hash with changed numeric semantics conflicts
+
+    missing_reason = _numeric_shadow_payload(
+        action="settle",
+        revision=2,
+        suffix="missing-reason",
+        supersedes_revision_id="numeric-revision-settle",
+    )
+    missing_reason["numeric_outcome_revision"]["reason_code"] = None
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(missing_reason),
+        expect_error="numeric correction or void requires a reason_code",
+    )
+    checks += 1  # noninitial numeric revision requires a reason
+
+    wrong_supersedes = _numeric_shadow_payload(
+        action="settle",
+        revision=2,
+        suffix="wrong-supersedes",
+        supersedes_revision_id="numeric-revision-not-latest",
+    )
+    wrong_supersedes["numeric_outcome_revision"]["reason_code"] = "corrected_time"
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(wrong_supersedes),
+        expect_error="numeric settlement must supersede the exact latest authoritative revision",
+    )
+    checks += 1  # numeric supersession must target exact latest revision
+
+    bad_residual = _numeric_shadow_payload(
+        action="settle",
+        revision=2,
+        suffix="bad-residual",
+        supersedes_revision_id="numeric-revision-settle",
+    )
+    bad_residual["numeric_outcome_revision"]["reason_code"] = "corrected_time"
+    bad_residual["numeric_outcome_revision"]["revisions"][0]["actual_time"] = 44.0
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(bad_residual),
+        expect_error="numeric residual does not match mirrored prediction",
+    )
+    checks += 1  # numeric residual must match mirrored median
+
+    _assert_scalar(
+        target,
+        dsn,
+        _shadow_rpc_sql(void),
+        '{"kind": "numeric_outcome_revision", "accepted": true}',
+        "007 numeric void",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 2)::text FROM public.shadow_numeric_settlement_revisions;",
+        "true",
+        "007 settle and void remain append-only",
+    )
+    checks += 3
+
+    invalid_numeric = _numeric_shadow_payload(
+        action="settle",
+        revision=1,
+        suffix="invalid-fk",
+        supersedes_revision_id=None,
+    )
+    invalid_numeric["numeric_outcome_revision"]["revisions"][0]["prediction_id"] = (
+        "prediction-does-not-exist"
+    )
+    _psql(
+        target,
+        dsn,
+        sql=_shadow_rpc_sql(invalid_numeric),
+        expect_error="numeric settlement revision linkage or value is invalid",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 3)::text FROM public.shadow_mirror_deliveries;",
+        "true",
+        "007 invalid numeric revision rolls back delivery and header",
+    )
+    checks += 2
+
+    shadowed_receipt = _shadow_receipt_payload("object-shadow", payload_hash="a" * 64)
+    shadowed_sql = (
+        "SET ROLE service_role; "
+        "CREATE TEMP TABLE shadow_receipt_cores (sentinel pg_catalog.text); "
+        "CREATE TEMP TABLE shadow_mirror_deliveries (sentinel pg_catalog.text); "
+        f"SELECT public.append_shadow_mirror_v1("
+        f"'{_json_literal(shadowed_receipt)}'::pg_catalog.jsonb); "
+        "SELECT pg_catalog.count(*) FROM public.shadow_receipt_cores "
+        "WHERE ledger_request_id='ledger-shadow-object-shadow'; RESET ROLE;"
+    )
+    _assert_scalar(target, dsn, shadowed_sql, "1", "007 object shadowing is harmless")
+    checks += 1
+
+    _psql(
+        target,
+        dsn,
+        sql_file=rollback_007,
+        expect_error="cannot roll back migration 007 while active shadow evidence exists",
+    )
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.to_regclass('public.shadow_receipt_cores') IS NOT NULL)::text;",
+        "true",
+        "007 post-activation rollback refusal preserves schema",
+    )
+    _psql(target, dsn, sql_file=migration_007)
+    _assert_scalar(
+        target,
+        dsn,
+        "SELECT (pg_catalog.count(*) = 2)::text FROM public.shadow_receipt_cores;",
+        "true",
+        "007 rerun preserves active immutable receipt rows",
+    )
+    checks += 4
 
     return checks
 

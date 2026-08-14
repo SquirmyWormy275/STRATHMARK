@@ -54,8 +54,9 @@ exists, this process will be tightened (likely Supabase CLI based, or a
 dedicated migration runner). Until then, the dashboard editor is the
 mechanism.
 
-Prediction Engine V2 migrations `20260811_005_prediction_v2.sql` and
-`20260813_006_prediction_hash_algorithm.sql` are also operator-applied, not automatic.
+Prediction Engine V2 migrations `20260811_005_prediction_v2.sql`,
+`20260813_006_prediction_hash_algorithm.sql`, and
+`20260813_007_shadow_mirror_contract.sql` are also operator-applied, not automatic.
 Before applying them in order, use a superuser or an account that is a member of
 PostgreSQL's `pg_create_role` role to execute and verify
 `prerequisites/prediction_rpc_owner.sql`. Do not substitute an application or browser
@@ -78,6 +79,16 @@ recorded explicitly. It does not rewrite existing evidence.
 Its guarded `20260813_006_prediction_hash_algorithm.down.sql` rollback restores the
 pre-006 RPC and refuses to drop the version column after any `active-v2` row exists.
 
+Migration 007 adds four separate shadow-evidence tables and the
+`append_shadow_mirror_v1(JSONB)` RPC. A versioned delivery envelope contains either an
+immutable receipt core plus its 005/006 ledger projection, or one field-atomic numeric
+settle/void revision. It retains the exact caller/request/competitor linkage,
+observation schema and fingerprint, and delivery schema/hash metadata. It does not
+store Missoula's operational outcome/context history, display names, narrative notes,
+or secrets. Existing 005/006 rows are neither updated nor rewritten. Its guarded down
+file succeeds only before any shadow delivery is recorded; after activation use a
+forward repair or restore from the durable local ledger.
+
 ## What lives here
 
 Schema changes only. Data migrations (backfills, re-keying, data cleanup)
@@ -92,6 +103,7 @@ Current ordered migrations:
 4. `20260508_004_atomic_model_swap_and_residual_dedup.sql`
 5. `20260811_005_prediction_v2.sql`
 6. `20260813_006_prediction_hash_algorithm.sql`
+7. `20260813_007_shadow_mirror_contract.sql`
 
 Migration 005 rejects explicit `active-v2` payloads, so a deploy window with only 005
 cannot silently store an active digest as `raw-v1`; the durable local outbox retries it
@@ -109,8 +121,8 @@ ambient Supabase/Railway/libpq connection variables from child processes, and re
 the known production project and common production database names before opening a
 connection. It creates a uniquely named database, bootstraps the minimum Supabase-shaped
 roles, executes the checked-in RPC-owner prerequisite, creates the minimal `competitors`
-table, exercises migrations 005/006 and the guarded 006 rollback, and destroys the
-database even after a failed check.
+table, exercises migrations 005/006/007 and both guarded rollback boundaries, and
+destroys the database even after a failed check.
 
 CI runs this gate against a PostgreSQL service container. For a local run, provide a
 loopback PostgreSQL superuser/controller account that is authorized to create/drop a
@@ -130,6 +142,6 @@ application.
 ## Test coverage
 
 Every migration MUST be accompanied by tests in `tests/` that exercise the new schema.
-The 005/006 gate uses disposable loopback PostgreSQL. Legacy integration tests against a
+The 005/006/007 gate uses disposable loopback PostgreSQL. Legacy integration tests against a
 real Supabase remain separately gated by `STRATHMARK_TEST_DB=1` and a non-production
 project; they are not part of the migration rehearsal.

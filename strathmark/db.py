@@ -140,6 +140,8 @@ Environment variables required:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import os
@@ -1616,6 +1618,67 @@ _LEDGER_SETTLEMENT_FIELDS = {
     "supersedes_settlement_id",
     "settled_at",
 }
+_SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION = "strathmark.shadow-mirror-envelope.v1"
+_MIRROR_DELIVERY_SCHEMA_VERSION = "strathmark.mirror-delivery.v1"
+_SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION = "strathmark.shadow-receipt-mirror.v1"
+_NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION = "strathmark.shadow-numeric-outcome-mirror.v1"
+_SHADOW_RECEIPT_FIELDS = {
+    "schema_version",
+    "ledger_request_id",
+    "caller_id",
+    "request_id",
+    "core_schema_version",
+    "identity_schema_version",
+    "observation_schema_version",
+    "observation_fingerprint",
+    "core",
+}
+_MIRROR_DELIVERY_FIELDS = {
+    "schema_version",
+    "outbox_id",
+    "entity_id",
+    "created_at",
+    "payload_hash",
+}
+_NUMERIC_OUTCOME_MIRROR_FIELDS = {
+    "schema_version",
+    "field_revision_id",
+    "outcome_revision_id",
+    "ledger_request_id",
+    "caller_id",
+    "actor",
+    "reason_code",
+    "created_at",
+    "revisions",
+}
+_NUMERIC_REVISION_MIRROR_FIELDS = {
+    "revision_id",
+    "prediction_id",
+    "revision",
+    "competitor_id",
+    "event_code",
+    "action",
+    "actual_time",
+    "residual",
+    "supersedes_revision_id",
+}
+_FORBIDDEN_SHADOW_KEYS = {
+    "name",
+    "display_name",
+    "fatigue",
+    "fatigue_notes",
+    "medical",
+    "medical_notes",
+    "weather",
+    "equipment",
+    "outcome_history",
+    "context_history",
+    "penalty",
+    "dnf",
+    "dq",
+    "notes",
+    "secret",
+}
 
 
 def _reject_extra_fields(record: Mapping[str, Any], allowed: set[str], label: str) -> None:
@@ -1624,18 +1687,114 @@ def _reject_extra_fields(record: Mapping[str, Any], allowed: set[str], label: st
         raise ValueError(f"unsanitized {label} fields: {sorted(extras)}")
 
 
-def mirror_prediction_ledger(payload: Mapping[str, Any]) -> bool:
-    """Mirror one sanitized ledger transaction through a service-role RPC.
+def _require_exact_fields(record: Mapping[str, Any], expected: set[str], label: str) -> None:
+    actual = set(record)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extras = sorted(actual - expected)
+        raise ValueError(f"invalid {label} fields: missing={missing}, extra={extras}")
 
-    The Postgres function performs its own transaction and is granted only to
-    ``service_role``.  Validation occurs before client creation so accidental
-    names, notes, histories, or secrets cannot cross the network boundary.
-    Exceptions intentionally propagate to :class:`PredictionLedger`, which
-    converts them into a sanitized non-fatal cloud status.
-    """
 
-    if not isinstance(payload, Mapping):
-        raise ValueError("ledger mirror payload must be an object")
+def _is_json_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def _validate_shadow_ledger_projection(ledger: Mapping[str, Any]) -> None:
+    """Validate the exact 006 field projection embedded by shadow receipts."""
+
+    _require_exact_fields(ledger, {"request", "predictions", "features"}, "ledger")
+    request = ledger.get("request")
+    predictions = ledger.get("predictions")
+    features = ledger.get("features")
+    if not isinstance(request, Mapping):
+        raise ValueError("invalid shadow ledger request")
+    _require_exact_fields(request, _LEDGER_REQUEST_FIELDS, "request")
+    if not all(isinstance(request.get(key), str) for key in _LEDGER_REQUEST_FIELDS):
+        raise ValueError("invalid shadow ledger request JSON types")
+    if request.get("hash_algorithm") not in {"raw-v1", "active-v2"}:
+        raise ValueError("invalid shadow ledger request hash_algorithm")
+    if request.get("event_code") not in {"SB", "UH"}:
+        raise ValueError("invalid shadow ledger request event_code")
+
+    if not isinstance(predictions, list) or not 1 <= len(predictions) <= 512:
+        raise ValueError("invalid shadow ledger prediction cardinality")
+    if not isinstance(features, list) or len(features) > 16_384:
+        raise ValueError("invalid shadow ledger feature cardinality")
+
+    required_prediction_strings = {
+        "prediction_id",
+        "ledger_request_id",
+        "competitor_id",
+        "event_code",
+        "source",
+        "created_at",
+    }
+    optional_prediction_strings = {
+        "engine_version",
+        "model_version",
+        "calibration_version",
+        "evidence_cutoff",
+        "interval_state",
+        "interval_scope",
+        "optimizer",
+    }
+    optional_prediction_numbers = {
+        "interval_lower",
+        "interval_upper",
+        "interval_coverage",
+    }
+    for prediction in predictions:
+        if not isinstance(prediction, Mapping):
+            raise ValueError("invalid shadow ledger prediction row")
+        _require_exact_fields(prediction, _LEDGER_PREDICTION_FIELDS, "prediction")
+        if not all(isinstance(prediction.get(key), str) for key in required_prediction_strings):
+            raise ValueError("invalid shadow ledger prediction JSON types")
+        if prediction.get("event_code") not in {"SB", "UH"}:
+            raise ValueError("invalid shadow ledger prediction event_code")
+        if not _is_json_number(prediction.get("median_seconds")):
+            raise ValueError("invalid shadow ledger prediction median_seconds")
+        assigned_mark = prediction.get("assigned_mark")
+        if (
+            isinstance(assigned_mark, bool)
+            or not isinstance(assigned_mark, int)
+            or not 3 <= assigned_mark <= 2_147_483_647
+        ):
+            raise ValueError("invalid shadow ledger prediction assigned_mark")
+        if not isinstance(prediction.get("training_eligible"), bool):
+            raise ValueError("invalid shadow ledger prediction training_eligible")
+        if any(
+            prediction.get(key) is not None and not isinstance(prediction.get(key), str)
+            for key in optional_prediction_strings
+        ):
+            raise ValueError("invalid shadow ledger optional prediction JSON types")
+        if any(
+            prediction.get(key) is not None and not _is_json_number(prediction.get(key))
+            for key in optional_prediction_numbers
+        ):
+            raise ValueError("invalid shadow ledger interval JSON types")
+        for key in ("ignored_factors", "warnings"):
+            values = prediction.get(key)
+            if (
+                not isinstance(values, list)
+                or len(values) > 128
+                or any(not isinstance(value, str) for value in values)
+            ):
+                raise ValueError(f"invalid shadow ledger prediction {key}")
+        if not isinstance(prediction.get("optimizer_metadata"), Mapping):
+            raise ValueError("invalid shadow ledger prediction optimizer_metadata")
+
+    for feature in features:
+        if not isinstance(feature, Mapping):
+            raise ValueError("invalid shadow ledger feature row")
+        _require_exact_fields(feature, _LEDGER_FEATURE_FIELDS, "feature")
+        if not all(
+            isinstance(feature.get(key), str)
+            for key in ("feature_snapshot_id", "prediction_id", "feature_name", "created_at")
+        ) or not _is_json_number(feature.get("numeric_value")):
+            raise ValueError("invalid shadow ledger feature JSON types")
+
+
+def _validate_legacy_mirror_payload(payload: Mapping[str, Any]) -> None:
     keys = set(payload)
     if keys == {"request", "predictions", "features"}:
         request = payload["request"]
@@ -1658,16 +1817,188 @@ def mirror_prediction_ledger(payload: Mapping[str, Any]) -> bool:
             if not isinstance(feature, Mapping):
                 raise ValueError("ledger feature row must be an object")
             _reject_extra_fields(feature, _LEDGER_FEATURE_FIELDS, "feature")
-    elif keys == {"settlement"}:
+        return
+    if keys == {"settlement"}:
         settlement = payload["settlement"]
         if not isinstance(settlement, Mapping):
             raise ValueError("ledger settlement mirror row must be an object")
         _reject_extra_fields(settlement, _LEDGER_SETTLEMENT_FIELDS, "settlement")
         if not str(settlement.get("competitor_id") or "").strip():
             raise ValueError("cloud ledger settlements require stable competitor_id")
+        return
+    raise ValueError("ledger mirror payload has an invalid or unsanitized shape")
+
+
+def _reject_forbidden_shadow_keys(value: Any) -> None:
+    if isinstance(value, Mapping):
+        forbidden = {str(key).casefold() for key in value}.intersection(_FORBIDDEN_SHADOW_KEYS)
+        if forbidden:
+            raise ValueError(f"unsanitized shadow fields: {sorted(forbidden)}")
+        for child in value.values():
+            _reject_forbidden_shadow_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_forbidden_shadow_keys(child)
+
+
+def _validate_shadow_mirror_payload(payload: Mapping[str, Any]) -> None:
+    try:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("shadow mirror payload must be finite JSON") from exc
+    if len(encoded.encode("utf-8")) > 1_048_576:
+        raise ValueError("shadow mirror payload exceeds the 1 MiB limit")
+    _reject_forbidden_shadow_keys(payload)
+
+    if payload.get("schema_version") != _SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION:
+        raise ValueError("shadow mirror envelope schema_version is invalid")
+    kind = payload.get("kind")
+    expected = (
+        {"schema_version", "kind", "delivery", "ledger", "receipt"}
+        if kind == "shadow_receipt"
+        else {"schema_version", "kind", "delivery", "numeric_outcome_revision"}
+        if kind == "numeric_outcome_revision"
+        else set()
+    )
+    if not expected:
+        raise ValueError("shadow mirror kind is invalid")
+    _reject_extra_fields(payload, expected, "shadow envelope")
+
+    delivery = payload.get("delivery")
+    if not isinstance(delivery, Mapping):
+        raise ValueError("shadow mirror delivery must be an object")
+    _reject_extra_fields(delivery, _MIRROR_DELIVERY_FIELDS, "shadow delivery")
+    if delivery.get("schema_version") != _MIRROR_DELIVERY_SCHEMA_VERSION:
+        raise ValueError("shadow mirror delivery schema_version is invalid")
+    for key in ("outbox_id", "entity_id", "created_at"):
+        value = str(delivery.get(key) or "").strip()
+        if not value or len(value) > 128:
+            raise ValueError(f"shadow mirror delivery {key} is invalid")
+    payload_hash = str(delivery.get("payload_hash") or "")
+    if len(payload_hash) != 64 or any(char not in "0123456789abcdef" for char in payload_hash):
+        raise ValueError("shadow mirror delivery payload_hash is invalid")
+    semantic_payload = dict(payload)
+    semantic_payload.pop("delivery", None)
+    expected_payload_hash = hashlib.sha256(
+        json.dumps(
+            semantic_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if payload_hash != expected_payload_hash:
+        raise ValueError("shadow mirror delivery payload_hash does not match the envelope")
+
+    if kind == "shadow_receipt":
+        ledger = payload.get("ledger")
+        receipt = payload.get("receipt")
+        if not isinstance(ledger, Mapping) or not isinstance(receipt, Mapping):
+            raise ValueError("shadow receipt mirror rows must be objects")
+        _validate_shadow_ledger_projection(ledger)
+        _reject_extra_fields(receipt, _SHADOW_RECEIPT_FIELDS, "shadow receipt")
+        if receipt.get("schema_version") != _SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION:
+            raise ValueError("shadow receipt mirror schema_version is invalid")
+        core = receipt.get("core")
+        request = ledger.get("request")
+        if not isinstance(core, Mapping) or not isinstance(request, Mapping):
+            raise ValueError("shadow receipt core and request must be objects")
+        observation = core.get("observation")
+        if not isinstance(observation, Mapping):
+            raise ValueError("shadow receipt observation metadata must be an object")
+        bindings = (
+            receipt.get("ledger_request_id") == request.get("ledger_request_id"),
+            receipt.get("caller_id") == request.get("caller_id") == core.get("consumer_id"),
+            receipt.get("request_id") == request.get("request_id") == core.get("request_id"),
+            receipt.get("core_schema_version") == core.get("schema_version"),
+            receipt.get("identity_schema_version") == core.get("identity_schema_version"),
+            receipt.get("observation_schema_version") == observation.get("schema_version"),
+            receipt.get("observation_fingerprint") == observation.get("fingerprint"),
+            delivery.get("entity_id") == receipt.get("ledger_request_id"),
+        )
+        if not all(bindings):
+            raise ValueError("shadow receipt mirror linkage is invalid")
+        return
+
+    outcome = payload.get("numeric_outcome_revision")
+    if not isinstance(outcome, Mapping):
+        raise ValueError("numeric outcome mirror row must be an object")
+    _reject_extra_fields(outcome, _NUMERIC_OUTCOME_MIRROR_FIELDS, "numeric outcome")
+    if outcome.get("schema_version") != _NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION:
+        raise ValueError("numeric outcome mirror schema_version is invalid")
+    if delivery.get("entity_id") != outcome.get("field_revision_id"):
+        raise ValueError("numeric outcome mirror delivery linkage is invalid")
+    reason_code = outcome.get("reason_code")
+    if reason_code is not None and reason_code not in {
+        "corrected_time",
+        "retract_invalid_numeric_evidence",
+        "valid_replacement",
+    }:
+        raise ValueError("numeric outcome reason_code is invalid")
+    revisions = outcome.get("revisions")
+    if not isinstance(revisions, list) or not 1 <= len(revisions) <= 512:
+        raise ValueError("numeric outcome revisions must contain 1 to 512 rows")
+    for revision in revisions:
+        if not isinstance(revision, Mapping):
+            raise ValueError("numeric settlement revision must be an object")
+        _reject_extra_fields(revision, _NUMERIC_REVISION_MIRROR_FIELDS, "numeric revision")
+        action = revision.get("action")
+        if action not in {"settle", "void"}:
+            raise ValueError("numeric settlement action is invalid")
+        revision_number = revision.get("revision")
+        if (
+            isinstance(revision_number, bool)
+            or not isinstance(revision_number, int)
+            or not 1 <= revision_number <= 2_147_483_647
+        ):
+            raise ValueError("numeric settlement revision is invalid")
+        supersedes = revision.get("supersedes_revision_id")
+        if revision_number == 1 and supersedes is not None:
+            raise ValueError("initial numeric settlement supersedes_revision_id must be null")
+        if revision_number > 1 and not str(supersedes or "").strip():
+            raise ValueError("noninitial numeric settlement requires supersedes_revision_id")
+        if (revision_number > 1 or action == "void") and reason_code is None:
+            raise ValueError("numeric correction or void requires a reason_code")
+        actual_time = revision.get("actual_time")
+        residual = revision.get("residual")
+        if action == "void":
+            if actual_time is not None or residual is not None:
+                raise ValueError("numeric void actual_time and residual must be null")
+            continue
+        if (
+            isinstance(actual_time, bool)
+            or not isinstance(actual_time, (int, float))
+            or not math.isfinite(actual_time)
+            or not 0 < actual_time <= 300
+            or isinstance(residual, bool)
+            or not isinstance(residual, (int, float))
+            or not math.isfinite(residual)
+        ):
+            raise ValueError("numeric settlement values must be finite and in range")
+
+
+def mirror_prediction_ledger(payload: Mapping[str, Any]) -> bool:
+    """Mirror one sanitized ledger transaction through a service-role RPC.
+
+    The Postgres function performs its own transaction and is granted only to
+    ``service_role``.  Validation occurs before client creation so accidental
+    names, notes, histories, or secrets cannot cross the network boundary.
+    Exceptions intentionally propagate to :class:`PredictionLedger`, which
+    converts them into a sanitized non-fatal cloud status.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("ledger mirror payload must be an object")
+    if payload.get("schema_version") == _SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION:
+        _validate_shadow_mirror_payload(payload)
+        rpc_name = "append_shadow_mirror_v1"
+        rpc_parameters = {"mirror_payload": payload}
     else:
-        raise ValueError("ledger mirror payload has an invalid or unsanitized shape")
+        _validate_legacy_mirror_payload(payload)
+        rpc_name = "append_prediction_ledger_v2"
+        rpc_parameters = {"ledger_payload": payload}
 
     client = _get_client()
-    client.rpc("append_prediction_ledger_v2", {"ledger_payload": payload}).execute()
+    client.rpc(rpc_name, rpc_parameters).execute()
     return True

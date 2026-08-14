@@ -1,6 +1,6 @@
 # Prediction V2 Migration Rehearsal
 
-This is a development and CI proof for migrations 005 and 006. It never applies a
+This is a development and CI proof for migrations 005, 006, and 007. It never applies a
 hosted migration and does not authorize production changes.
 
 ## Safety boundary
@@ -51,6 +51,15 @@ The matrix executes the real SQL and verifies:
 - ordered reapplication is idempotent;
 - rollback succeeds before active evidence and refuses after active evidence;
 - a temporary object with the same unqualified table name cannot shadow RPC objects.
+- migration 007 preserves all 005/006 rows and adds only the versioned receipt,
+  numeric settle/void, and delivery evidence tables;
+- a complete receipt envelope, exact retry, changed-payload conflict, settle-to-void
+  sequence, and migration rerun retain exactly one immutable copy;
+- receipt and numeric foreign-key failures roll back the entire envelope transaction;
+- browser roles and direct service-role mutation remain denied across all four 007
+  tables, which have forced RLS and immutable-row triggers;
+- the 007 down file works before activation and refuses after any shadow evidence is
+  recorded; active recovery is forward repair or local-ledger restore.
 
 Passing this gate proves PostgreSQL semantics only. A separately authorized, isolated
 hosted smoke test is still required before any production migration window.
