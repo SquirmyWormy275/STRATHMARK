@@ -16,9 +16,17 @@ passes prospectively frozen temporal validation.
 ## Active follow-up: operational evidence
 
 - Apply `strathmark/migrations/20260811_005_prediction_v2.sql` followed by
-  `strathmark/migrations/20260813_006_prediction_hash_algorithm.sql` to production
-  only through a separately authorized deployment. Local and CI validation never
-  apply them to a live database.
+  `strathmark/migrations/20260813_006_prediction_hash_algorithm.sql`, then
+  `strathmark/migrations/20260813_007_shadow_mirror_contract.sql` to production only
+  through a separately authorized deployment. First rehearse the exact sequence and
+  guarded rollback/refusal behavior against disposable PostgreSQL. Local and CI
+  validation never apply them to a live database.
+- Design and approve a durable mirror-outbox lifecycle before claiming finite storage:
+  archive/compaction rules, a capacity policy that cannot discard undelivered evidence,
+  and explicit terminal/permanent-failure classification plus operator recovery. The
+  current append-only queue has bounded scans, replay batches, and request concurrency,
+  but intentionally has no destructive hard cap and reports unavailable delivery as
+  retryable failure.
 - Accumulate trusted, settled V2 predictions before considering a residual learner,
   new drift thresholds, or changes to the mark objective. Manual, degraded,
   broad-prior, and provenance-incomplete rows are not training evidence.

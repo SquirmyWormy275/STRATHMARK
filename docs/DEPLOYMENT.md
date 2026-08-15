@@ -98,6 +98,11 @@ Cloud mirroring is best-effort and off the calculation response path.
 `ledger_status=recorded_cloud_pending` means local trust evidence and a replayable mirror
 outbox entry exist. The ledger's single bounded background worker reclaims overflowed
 and restart-surviving rows; `flush_mirror_outbox()` remains an explicit bounded replay.
+Shadow receipts and numeric outcome revisions use a versioned delivery envelope. The
+cloud copy contains the immutable receipt core, identity namespace, observation
+fingerprint, eligible numeric settle/void rows, and delivery metadata only. Operational
+DNF/DQ/penalty/context history, names, narrative notes, and secrets remain outside the
+STRATHMARK mirror. A mirror outage never weakens a committed local receipt.
 `ledger_recorded=false`
 means marks are still valid but no trusted local record was made; preserve the request
 and investigate disk/path/permission state before settlement.
@@ -146,7 +151,7 @@ mixed field, but operational changes belong between fields and must be logged.
 6. Train only on rows explicitly marked eligible; manual, broad-prior, legacy-rollback,
    and degraded rows are excluded.
 
-Supabase migrations 005 and 006 must be reviewed and applied in order, separately from
+Supabase migrations 005, 006, and 007 must be reviewed and applied in order, separately from
 the application release, before cloud mirroring. Migration 006 preserves old request
 rows as `raw-v1` while recording new active-evidence hashes as `active-v2`. The ledger
 schema forces RLS and grants its append RPC only to `service_role`; never expose the
@@ -154,3 +159,8 @@ service key to browser or mobile clients.
 Migration 005 rejects explicit active-v2 payloads until 006 is installed, leaving them
 in the durable local outbox. The guarded 006 down migration restores the old RPC but
 aborts once any active-v2 cloud row exists; do not use it after active mirroring begins.
+Migration 007 adds the separate shadow evidence RPC/tables without rewriting 005/006
+rows. Its down file refuses once any shadow delivery exists. After that point, repair
+forward or restore from the durable local ledger. A disposable PostgreSQL rehearsal is
+required before a separately authorized production window; this repository change does
+not apply or authorize a production migration.

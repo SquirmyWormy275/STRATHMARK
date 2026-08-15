@@ -41,6 +41,11 @@ VARIANCE_RATIO_THRESHOLD: float = 0.30  # |new/baseline - 1| > this -> alert
 COVERAGE_LOW_THRESHOLD: float = 0.85
 COVERAGE_HIGH_THRESHOLD: float = 0.95
 MIN_RECENT_SAMPLES: int = 20  # below this, drift signal is too noisy to act on
+MAX_DRIFT_ROWS: int = 5000
+
+
+class DriftRowLimitError(ValueError):
+    """The requested advisory would exceed its bounded evidence read."""
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,9 @@ def evaluate_drift(
     *,
     ledger: Any = None,
     baseline_residuals: Optional[Iterable[float]] = None,
+    caller_id: Optional[str] = None,
+    max_rows: int = MAX_DRIFT_ROWS,
+    query_deadline: Any = None,
 ) -> DriftReport:
     """Evaluate drift for the given model version against its baseline calibration.
 
@@ -154,11 +162,30 @@ def evaluate_drift(
             raise ValueError("model_version_id is required for V2 ledger drift")
         if baseline_residuals is None:
             raise ValueError("baseline_residuals are required for V2 ledger drift")
+        if not isinstance(max_rows, int) or isinstance(max_rows, bool) or not 1 <= max_rows <= 5000:
+            raise ValueError("max_rows must be an integer between 1 and 5000")
         cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        evidence_count = ledger.count_training_rows(
+            since=cutoff,
+            model_version=model_version_id,
+            caller_id=caller_id,
+            query_deadline=query_deadline,
+        )
+        if evidence_count > max_rows:
+            raise DriftRowLimitError(
+                f"drift evidence exceeds the {max_rows}-row limit; narrow the lookback window"
+            )
         rows = ledger.get_training_rows(
             since=cutoff,
             model_version=model_version_id,
+            caller_id=caller_id,
+            limit=max_rows + 1,
+            query_deadline=query_deadline,
         )
+        if len(rows) > max_rows:
+            raise DriftRowLimitError(
+                f"drift evidence exceeds the {max_rows}-row limit; narrow the lookback window"
+            )
         return evaluate_settled_drift(
             rows,
             baseline_residuals=baseline_residuals,

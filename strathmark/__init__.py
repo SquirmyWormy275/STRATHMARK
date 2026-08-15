@@ -47,7 +47,22 @@ Live integration (editable install):
     No rebuild or reinstall required.
 """
 
+from strathmark.auth import (
+    ACTOR_ATTESTATION_SCHEMA_VERSION,
+    SHADOW_ATTESTATION_AUDIENCE,
+    VerifiedActorAttestation,
+    shadow_auth_configuration_status,
+    sign_actor_attestation,
+)
 from strathmark.calculator import HandicapCalculator, process_competition_day
+from strathmark.consumer_contract import (
+    EXPECTED_SHADOW_CONSUMER_PATHS,
+    SHADOW_CONSUMER_CONTRACT_VERSION,
+    ShadowConsumerContractIntegrityError,
+    load_shadow_consumer_contract,
+    shadow_consumer_contract_bytes,
+    shadow_consumer_contract_digest,
+)
 from strathmark.db import (
     format_proam_results,
     get_active_model_version,
@@ -81,9 +96,16 @@ from strathmark.features import (
     resolve_species_properties,
 )
 from strathmark.ledger import (
+    LEGACY_SETTLEMENT_REASON_CODES,
+    MAX_NUMERIC_RAW_TIME_SECONDS,
+    NUMERIC_OUTCOME_REASON_CODES,
     LedgerConflictError,
+    LedgerMonitoringStatus,
     LedgerPrediction,
     LedgerWriteResult,
+    NumericOutcomeRevisionResult,
+    NumericSettlementRevision,
+    NumericSettlementRevisionResult,
     PredictionLedger,
     SettlementConflictError,
     SettlementResult,
@@ -125,7 +147,35 @@ from strathmark.predictor import (
     predict_baseline,
     select_best_prediction,
 )
-from strathmark.store import ResultStore
+from strathmark.shadow import (
+    ACTIVE_INPUT_SCHEMA_VERSION,
+    IDENTITY_SCHEMA_VERSION,
+    OBSERVATION_SCHEMA_VERSION,
+    RECEIPT_CORE_SCHEMA_VERSION,
+    REQUEST_PROJECTION_SCHEMA_VERSION,
+    SHADOW_TARGET_SINGLE_ELAPSED,
+    ShadowCalculationResult,
+    ShadowFieldRequest,
+    ShadowLiveStatus,
+    ShadowPredictionService,
+    ShadowReceipt,
+)
+from strathmark.store import (
+    DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+    EVIDENCE_ACTIVATION_SCHEMA_VERSION,
+    EVIDENCE_HISTORY_ROW_SCHEMA_VERSION,
+    EVIDENCE_SNAPSHOT_SCHEMA_VERSION,
+    EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
+    MAX_CAPTURE_CLOCK_SKEW_SECONDS,
+    EvidenceSnapshotConflictError,
+    EvidenceSnapshotIntegrityError,
+    EvidenceSnapshotPayload,
+    EvidenceSnapshotSelection,
+    EvidenceSnapshotSource,
+    EvidenceSnapshotStatus,
+    ResultStore,
+    canonical_evidence_source_digest,
+)
 from strathmark.sync import (
     SyncResult,
     manual_force_sync,
@@ -139,7 +189,10 @@ from strathmark.variance import (
     quick_fairness_check,
     run_monte_carlo_simulation,
 )
-from strathmark.visualization import generate_simulation_summary, visualize_simulation_results
+from strathmark.visualization import (
+    generate_simulation_summary,
+    visualize_simulation_results,
+)
 
 __all__ = [
     # Core calculation
@@ -172,17 +225,59 @@ __all__ = [
     "PredictiveDistribution",
     "ForecastInterval",
     "ChronologicalCalibrator",
+    "SHADOW_CONSUMER_CONTRACT_VERSION",
+    "EXPECTED_SHADOW_CONSUMER_PATHS",
+    "ShadowConsumerContractIntegrityError",
+    "load_shadow_consumer_contract",
+    "shadow_consumer_contract_bytes",
+    "shadow_consumer_contract_digest",
     "MarkOptimizationResult",
     "legacy_rounded_gap_marks",
     "optimize_joint_marks",
     # Persistence
     "ResultStore",
+    "EvidenceSnapshotPayload",
+    "EvidenceSnapshotSelection",
+    "EvidenceSnapshotSource",
+    "EvidenceSnapshotStatus",
+    "EvidenceSnapshotConflictError",
+    "EvidenceSnapshotIntegrityError",
+    "canonical_evidence_source_digest",
+    "EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION",
+    "EVIDENCE_SNAPSHOT_SCHEMA_VERSION",
+    "EVIDENCE_HISTORY_ROW_SCHEMA_VERSION",
+    "EVIDENCE_ACTIVATION_SCHEMA_VERSION",
+    "DEFAULT_MAX_SNAPSHOT_AGE_DAYS",
+    "MAX_CAPTURE_CLOCK_SKEW_SECONDS",
     "PredictionLedger",
     "LedgerPrediction",
     "LedgerWriteResult",
     "LedgerConflictError",
+    "LEGACY_SETTLEMENT_REASON_CODES",
+    "MAX_NUMERIC_RAW_TIME_SECONDS",
+    "NUMERIC_OUTCOME_REASON_CODES",
+    "LedgerMonitoringStatus",
+    "NumericSettlementRevision",
+    "NumericSettlementRevisionResult",
+    "NumericOutcomeRevisionResult",
     "SettlementResult",
     "SettlementConflictError",
+    "ShadowFieldRequest",
+    "ShadowLiveStatus",
+    "ShadowReceipt",
+    "ShadowCalculationResult",
+    "ShadowPredictionService",
+    "RECEIPT_CORE_SCHEMA_VERSION",
+    "REQUEST_PROJECTION_SCHEMA_VERSION",
+    "ACTIVE_INPUT_SCHEMA_VERSION",
+    "IDENTITY_SCHEMA_VERSION",
+    "OBSERVATION_SCHEMA_VERSION",
+    "SHADOW_TARGET_SINGLE_ELAPSED",
+    "ACTOR_ATTESTATION_SCHEMA_VERSION",
+    "SHADOW_ATTESTATION_AUDIENCE",
+    "VerifiedActorAttestation",
+    "shadow_auth_configuration_status",
+    "sign_actor_attestation",
     # Simulation
     "run_monte_carlo_simulation",
     "estimate_competitor_std_dev",

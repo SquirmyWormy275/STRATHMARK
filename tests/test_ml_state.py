@@ -11,6 +11,9 @@ Two layers:
 The live-DB guard lives in tests/conftest.py.
 """
 
+import json
+import sqlite3
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -128,6 +131,223 @@ class TestBestEffortContract:
 
 
 class TestPredictionLedgerMirror:
+    @staticmethod
+    def _server_generated_legacy_payload(tmp_path):
+        from strathmark.ledger import PredictionLedger
+        from tests.test_ledger import _pred, _request_payload
+
+        path = tmp_path / "server-generated-legacy-mirror.db"
+        ledger = PredictionLedger(path)
+        ledger.record_field(
+            caller_id="api",
+            request_id="server-generated-field",
+            request_payload=_request_payload(),
+            predictions=[_pred()],
+        )
+        with sqlite3.connect(path) as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM prediction_mirror_outbox WHERE kind = 'field'"
+            ).fetchone()
+        assert row is not None
+        return json.loads(row[0])
+
+    def test_prediction_rpc_migrations_validate_payload_shape_before_mutation(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        migrations = [
+            migration_dir / "20260811_005_prediction_v2.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.down.sql",
+        ]
+
+        for path in migrations:
+            sql = path.read_text(encoding="utf-8")
+            assert "ledger payload must be an object" in sql
+            assert "ledger payload must contain exactly one operation kind" in sql
+            assert "ledger field payload has unknown or missing properties" in sql
+            assert "pg_catalog.jsonb_object_keys(ledger_payload)" in sql
+            assert "settlement payload must be a non-null object" in sql
+            assert "field request must be a non-null object" in sql
+            assert "field predictions must be a non-empty array" in sql
+            assert "field features must be an array" in sql
+            assert "prediction request linkage mismatch" in sql
+            assert "feature prediction linkage mismatch" in sql
+            assert "settlement prediction linkage mismatch" in sql
+
+    def test_prediction_rpc_migrations_require_exact_idempotent_retries(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        migrations = [
+            migration_dir / "20260811_005_prediction_v2.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.down.sql",
+        ]
+
+        for path in migrations:
+            sql = path.read_text(encoding="utf-8")
+            assert "GET DIAGNOSTICS inserted_request_count = ROW_COUNT" in sql
+            assert "ledger request projection conflict" in sql
+            assert "ledger prediction projection conflict" in sql
+            assert "ledger feature projection conflict" in sql
+            assert "ledger settlement payload conflict" in sql
+            assert "ledger settlement revision conflict" in sql
+            assert "ledger settlement residual conflict" in sql
+            assert "pg_catalog.pg_advisory_xact_lock" in sql
+            assert sql.count("EXCEPT") >= 4
+            assert "ON CONFLICT (prediction_id, payload_hash) DO NOTHING" not in sql
+
+    def test_prediction_rpc_migrations_reject_nonexact_or_mistyped_rows_before_casting(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        migrations = [
+            migration_dir / "20260811_005_prediction_v2.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.down.sql",
+        ]
+
+        for path in migrations:
+            sql = path.read_text(encoding="utf-8")
+            settlement_record_cast = sql.index("pg_catalog.jsonb_to_record(settlement_row)")
+            first_recordset_cast = sql.index("pg_catalog.jsonb_to_recordset")
+            for label in ("request", "prediction", "feature", "settlement"):
+                shape_error = f"ledger {label} has unknown or missing properties"
+                type_error = f"ledger {label} JSON types are invalid"
+                assert shape_error in sql
+                assert type_error in sql
+                boundary = settlement_record_cast if label == "settlement" else first_recordset_cast
+                assert sql.index(shape_error) < boundary
+                assert sql.index(type_error) < boundary
+            assert "pg_catalog.jsonb_object_keys" in sql[:settlement_record_cast]
+            assert "pg_catalog.jsonb_each" in sql[:settlement_record_cast]
+            assert "pg_catalog.floor" in sql[:settlement_record_cast]
+
+    def test_rpc_owner_prerequisite_is_checked_in_and_requires_role_capability(self):
+        prerequisite = (
+            Path(__file__).parents[1]
+            / "strathmark"
+            / "migrations"
+            / "prerequisites"
+            / "prediction_rpc_owner.sql"
+        ).read_text(encoding="utf-8")
+
+        assert (
+            "CREATE ROLE strathmark_prediction_rpc_owner NOINHERIT NOSUPERUSER "
+            "NOCREATEDB NOCREATEROLE NOREPLICATION NOLOGIN NOBYPASSRLS"
+            in " ".join(prerequisite.split())
+        )
+        for attribute in (
+            "rolinherit",
+            "rolsuper",
+            "rolcreatedb",
+            "rolcreaterole",
+            "rolreplication",
+            "rolcanlogin",
+            "rolbypassrls",
+        ):
+            assert attribute in prerequisite
+        assert "pg_catalog.pg_auth_members" in prerequisite
+        assert "pg_has_role(current_user, 'pg_create_role', 'MEMBER')" in prerequisite
+
+    def test_prediction_migrations_repeat_the_dedicated_owner_assertions(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        for filename in (
+            "20260811_005_prediction_v2.sql",
+            "20260813_007_shadow_mirror_contract.sql",
+        ):
+            sql = (migration_dir / filename).read_text(encoding="utf-8")
+            for attribute in (
+                "rolinherit",
+                "rolsuper",
+                "rolcreatedb",
+                "rolcreaterole",
+                "rolreplication",
+                "rolcanlogin",
+                "rolbypassrls",
+            ):
+                assert attribute in sql
+            assert "pg_catalog.pg_auth_members" in sql
+
+    def test_prediction_migration_ddl_uses_explicit_public_relation_names(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        migrations = [
+            migration_dir / "20260811_005_prediction_v2.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.sql",
+            migration_dir / "20260813_006_prediction_hash_algorithm.down.sql",
+            migration_dir / "20260813_007_shadow_mirror_contract.sql",
+            migration_dir / "20260813_007_shadow_mirror_contract.down.sql",
+        ]
+        ddl_prefixes = (
+            "CREATE TABLE",
+            "CREATE INDEX",
+            "DROP INDEX",
+            "ALTER TABLE",
+            "DROP TABLE",
+            "DROP TRIGGER",
+            "CREATE TRIGGER",
+            "DROP POLICY",
+            "CREATE POLICY",
+            "REVOKE ALL ON",
+            "GRANT SELECT",
+        )
+        for path in migrations:
+            statements = path.read_text(encoding="utf-8").split(";")
+            for statement in statements:
+                normalized = " ".join(statement.split())
+                if not any(prefix in normalized for prefix in ddl_prefixes):
+                    continue
+                for relation in (
+                    "prediction_ledger_requests",
+                    "prediction_ledger_predictions",
+                    "prediction_ledger_features",
+                    "prediction_ledger_settlements",
+                    "shadow_mirror_deliveries",
+                    "shadow_receipt_cores",
+                    "shadow_numeric_outcome_revisions",
+                    "shadow_numeric_settlement_revisions",
+                ):
+                    if relation in normalized:
+                        assert f"public.{relation}" in normalized, (path.name, normalized)
+
+    def test_postgres_index_names_are_not_schema_qualified(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        for filename in (
+            "20260811_005_prediction_v2.sql",
+            "20260813_007_shadow_mirror_contract.sql",
+        ):
+            sql = (migration_dir / filename).read_text(encoding="utf-8")
+            assert "CREATE INDEX IF NOT EXISTS public." not in sql
+            assert " ON public." in " ".join(sql.split())
+
+    def test_postgres_migrations_use_valid_catalog_type_names(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        for filename in (
+            "20260811_005_prediction_v2.sql",
+            "20260813_006_prediction_hash_algorithm.sql",
+            "20260813_006_prediction_hash_algorithm.down.sql",
+            "20260813_007_shadow_mirror_contract.sql",
+        ):
+            sql = (migration_dir / filename).read_text(encoding="utf-8")
+            assert "pg_catalog.integer" not in sql
+            assert "pg_catalog.boolean" not in sql
+            assert "pg_catalog.double precision" not in sql
+
+    def test_guarded_down_migrations_lock_then_disable_rls_before_inspection(self):
+        migration_dir = Path(__file__).parents[1] / "strathmark" / "migrations"
+        down_006 = (migration_dir / "20260813_006_prediction_hash_algorithm.down.sql").read_text(
+            encoding="utf-8"
+        )
+        down_007 = (migration_dir / "20260813_007_shadow_mirror_contract.down.sql").read_text(
+            encoding="utf-8"
+        )
+
+        assert "LOCK TABLE public.prediction_ledger_requests IN ACCESS EXCLUSIVE MODE" in down_006
+        assert "SET LOCAL row_security = off" in down_006
+        for relation in (
+            "shadow_mirror_deliveries",
+            "shadow_receipt_cores",
+            "shadow_numeric_outcome_revisions",
+            "shadow_numeric_settlement_revisions",
+        ):
+            assert f"LOCK TABLE public.{relation} IN ACCESS EXCLUSIVE MODE" in down_007
+        assert "SET LOCAL row_security = off" in down_007
+
     def test_migration_forces_rls_and_revokes_public_writes(self):
         migration = (
             Path(__file__).parents[1]
@@ -154,11 +374,14 @@ class TestPredictionLedgerMirror:
         assert "DEFAULT 'raw-v1'" in migration
         assert "CHECK (hash_algorithm IN ('raw-v1', 'active-v2'))" in migration
         assert "request_row->>'hash_algorithm'" in migration
-        assert "existing_algorithm" in migration
+        assert "existing.hash_algorithm IS DISTINCT FROM incoming_algorithm" in migration
         assert "ledger request hash algorithm conflict" in migration
-        assert "REVOKE ALL ON FUNCTION append_prediction_ledger_v2(JSONB)" in migration
         assert (
-            "GRANT EXECUTE ON FUNCTION append_prediction_ledger_v2(JSONB) TO service_role"
+            "REVOKE ALL ON FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)"
+            in migration
+        )
+        assert (
+            "GRANT EXECUTE ON FUNCTION public.append_prediction_ledger_v2(pg_catalog.jsonb)"
             in migration
         )
 
@@ -178,10 +401,12 @@ class TestPredictionLedgerMirror:
             / "20260813_006_prediction_hash_algorithm.down.sql"
         ).read_text(encoding="utf-8")
         assert "cannot roll back migration 006 while active-v2 request rows exist" in rollback
-        assert "CREATE OR REPLACE FUNCTION append_prediction_ledger_v2" in rollback
-        assert "ALTER TABLE prediction_ledger_requests DROP COLUMN hash_algorithm" in rollback
+        assert "CREATE OR REPLACE FUNCTION public.append_prediction_ledger_v2" in rollback
+        assert (
+            "ALTER TABLE public.prediction_ledger_requests DROP COLUMN hash_algorithm" in rollback
+        )
 
-    def test_mirror_uses_one_sanitized_service_rpc(self, monkeypatch):
+    def test_mirror_uses_one_sanitized_service_rpc(self, monkeypatch, tmp_path):
         import strathmark.db as db
 
         calls = []
@@ -198,36 +423,35 @@ class TestPredictionLedgerMirror:
                 return Response()
 
         monkeypatch.setattr(db, "_get_client", lambda: Client())
-        payload = {
-            "request": {
-                "ledger_request_id": "request-1",
-                "caller_id": "api",
-                "request_id": "field-1",
-                "request_hash": "a" * 64,
-                "hash_algorithm": "active-v2",
-                "event_code": "SB",
-                "prediction_as_of": "2026-08-11",
-                "created_at": "2026-08-11T00:00:00+00:00",
-            },
-            "predictions": [
-                {
-                    "prediction_id": "prediction-1",
-                    "ledger_request_id": "request-1",
-                    "competitor_id": "competitor-1",
-                    "event_code": "SB",
-                    "median_seconds": 42.0,
-                    "assigned_mark": 3,
-                    "source": "baseline",
-                    "training_eligible": True,
-                    "created_at": "2026-08-11T00:00:00+00:00",
-                }
-            ],
-            "features": [],
-        }
+        payload = self._server_generated_legacy_payload(tmp_path)
 
         assert db.mirror_prediction_ledger(payload) is True
         assert calls == [("append_prediction_ledger_v2", {"ledger_payload": payload})]
-        assert "name" not in repr(calls)
+        assert "'name':" not in repr(calls)
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            lambda payload: payload["request"].pop("created_at"),
+            lambda payload: payload["predictions"][0].__setitem__("assigned_mark", "3"),
+            lambda payload: payload["features"][0].__setitem__("numeric_value", "300"),
+        ],
+    )
+    def test_legacy_mirror_rejects_missing_or_mistyped_server_fields_before_client_creation(
+        self, monkeypatch, tmp_path, mutation
+    ):
+        import strathmark.db as db
+
+        payload = deepcopy(self._server_generated_legacy_payload(tmp_path))
+        mutation(payload)
+        monkeypatch.setattr(
+            db,
+            "_get_client",
+            lambda: pytest.fail("network client must not be created"),
+        )
+
+        with pytest.raises(ValueError):
+            db.mirror_prediction_ledger(payload)
 
     @pytest.mark.parametrize(
         "payload",

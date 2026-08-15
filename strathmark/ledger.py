@@ -11,8 +11,10 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
@@ -20,7 +22,14 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from strathmark.mirror_contract import (
+    MIRROR_DELIVERY_SCHEMA_VERSION,
+    NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION,
+    SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+    SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION,
+)
 from strathmark.provenance import ENGINE_VERSION, is_v2_training_source
+from strathmark.sqlite_utils import ClosingConnection
 
 _ENV_VAR = "STRATHMARK_DB_PATH"
 _DEFAULT_PATH = Path.home() / ".strathmark" / "results.db"
@@ -28,6 +37,42 @@ _LEDGER_NAMESPACE = uuid.UUID("2f08f564-cae9-54bf-b488-7d5a19831f80")
 _RAW_HASH_ALGORITHM = "raw-v1"
 _ACTIVE_HASH_ALGORITHM = "active-v2"
 MAX_MIRROR_QUEUE = 1024
+MAX_MIRROR_PENDING_SCAN = 128
+MAX_NUMERIC_SETTLEMENTS_PER_REVISION = 512
+MAX_NUMERIC_RAW_TIME_SECONDS = 300.0
+MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER = 4096
+_RECEIPT_NOT_PROVIDED = object()
+NUMERIC_OUTCOME_REASON_CODES = frozenset(
+    {
+        "corrected_time",
+        "retract_invalid_numeric_evidence",
+        "valid_replacement",
+    }
+)
+LEGACY_SETTLEMENT_REASON_CODES = frozenset(
+    {
+        "corrected_time",
+        "corrected_transcription",
+        "timing_review",
+    }
+)
+_LEGACY_SETTLEMENT_REASON_ALIASES = {
+    "corrected transcription": "corrected_transcription",
+    "timing review": "timing_review",
+}
+_LEGACY_REDACTED_ACTOR = "legacy:redacted"
+_LEGACY_REDACTED_REASON = "legacy_redacted"
+_SAFE_LEGACY_SETTLEMENT_ACTOR_IDS = frozenset(
+    {
+        "api",
+        "api-official",
+        "chief-handicapper",
+        "legacy-official",
+        "official",
+    }
+)
+
+_NAMESPACED_ID = re.compile(r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
 
 _NUMERIC_FEATURES = frozenset(
     {
@@ -139,10 +184,77 @@ CREATE TABLE IF NOT EXISTS prediction_mirror_delivery (
     last_attempt_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS shadow_receipts (
+    ledger_request_id TEXT PRIMARY KEY REFERENCES prediction_requests(ledger_request_id),
+    caller_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    active_input_fingerprint TEXT NOT NULL,
+    core_schema_version TEXT NOT NULL,
+    core_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(caller_id, request_id)
+);
+
+CREATE TABLE IF NOT EXISTS numeric_outcome_revisions (
+    field_revision_id TEXT PRIMARY KEY,
+    outcome_revision_id TEXT NOT NULL UNIQUE,
+    ledger_request_id TEXT NOT NULL REFERENCES prediction_requests(ledger_request_id),
+    caller_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason_code TEXT CHECK(reason_code IN (
+        'corrected_time',
+        'retract_invalid_numeric_evidence',
+        'valid_replacement'
+    )),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS numeric_settlement_revisions (
+    revision_id TEXT PRIMARY KEY,
+    field_revision_id TEXT NOT NULL
+        REFERENCES numeric_outcome_revisions(field_revision_id),
+    prediction_id TEXT NOT NULL REFERENCES ledger_predictions(prediction_id),
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    competitor_id TEXT NOT NULL,
+    event_code TEXT NOT NULL CHECK(event_code IN ('SB', 'UH')),
+    action TEXT NOT NULL CHECK(action IN ('settle', 'void')),
+    actual_time REAL,
+    residual REAL,
+    supersedes_revision_id TEXT,
+    created_at TEXT NOT NULL,
+    CHECK(
+        (action = 'settle' AND actual_time > 0 AND actual_time <= 300.0
+            AND residual IS NOT NULL)
+        OR (action = 'void' AND actual_time IS NULL AND residual IS NULL)
+    ),
+    UNIQUE(prediction_id, revision),
+    UNIQUE(field_revision_id, prediction_id)
+);
+
+CREATE TABLE IF NOT EXISTS actor_attestation_nonce_claims (
+    consumer_id TEXT NOT NULL,
+    nonce_hash TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    subject_revision TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL,
+    PRIMARY KEY(consumer_id, nonce_hash)
+);
+
 CREATE INDEX IF NOT EXISTS idx_ledger_predictions_competitor
     ON ledger_predictions(competitor_id, event_code);
 CREATE INDEX IF NOT EXISTS idx_prediction_settlements_prediction
     ON prediction_settlements(prediction_id, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_numeric_settlement_revisions_prediction
+    ON numeric_settlement_revisions(prediction_id, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_prediction_mirror_outbox_pending_scan
+    ON prediction_mirror_outbox(created_at, outbox_id, kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_prediction_mirror_delivery_status
+    ON prediction_mirror_delivery(status, outbox_id);
+CREATE INDEX IF NOT EXISTS idx_actor_attestation_nonce_expiry
+    ON actor_attestation_nonce_claims(expires_at);
 """
 
 _IMMUTABILITY_TRIGGERS = """
@@ -162,6 +274,20 @@ CREATE TRIGGER IF NOT EXISTS prediction_settlements_no_update
 BEFORE UPDATE ON prediction_settlements BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
 CREATE TRIGGER IF NOT EXISTS prediction_settlements_no_delete
 BEFORE DELETE ON prediction_settlements BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS shadow_receipts_no_update
+BEFORE UPDATE ON shadow_receipts BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS shadow_receipts_no_delete
+BEFORE DELETE ON shadow_receipts BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS numeric_outcome_revisions_no_update
+BEFORE UPDATE ON numeric_outcome_revisions BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS numeric_outcome_revisions_no_delete
+BEFORE DELETE ON numeric_outcome_revisions BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS numeric_settlement_revisions_no_update
+BEFORE UPDATE ON numeric_settlement_revisions BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS numeric_settlement_revisions_no_delete
+BEFORE DELETE ON numeric_settlement_revisions BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
+CREATE TRIGGER IF NOT EXISTS actor_attestation_nonce_claims_no_update
+BEFORE UPDATE ON actor_attestation_nonce_claims BEGIN SELECT RAISE(ABORT, 'append-only table'); END;
 """
 
 
@@ -171,6 +297,50 @@ class LedgerConflictError(ValueError):
 
 class SettlementConflictError(ValueError):
     """A settlement does not match its prediction or lacks correction data."""
+
+
+class LedgerQueryTimeoutError(TimeoutError):
+    """A bounded SQLite read was cooperatively interrupted at its deadline."""
+
+
+class SQLiteQueryDeadline:
+    """Thread-safe cancellation/deadline state for SQLite progress handlers."""
+
+    def __init__(self, *, timeout_seconds: float) -> None:
+        timeout = float(timeout_seconds)
+        if not math.isfinite(timeout) or timeout <= 0 or timeout > 60:
+            raise ValueError("timeout_seconds must be finite, positive, and at most 60")
+        self._deadline = time.monotonic() + timeout
+        self._cancelled = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        if time.monotonic() >= self._deadline:
+            self._cancelled.set()
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def remaining_milliseconds(self) -> int:
+        return max(1, min(30_000, int((self._deadline - time.monotonic()) * 1000)))
+
+    def progress_handler(self) -> int:
+        return 1 if self.cancelled else 0
+
+    def raise_if_expired(self) -> None:
+        if self.cancelled:
+            raise LedgerQueryTimeoutError("bounded SQLite read exceeded its deadline")
+
+    @staticmethod
+    def is_sqlite_contention(exc: sqlite3.OperationalError) -> bool:
+        """Recognize busy/locked results after SQLite exhausts its busy timeout."""
+
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(error_code, int) and error_code & 0xFF in {5, 6}:
+            return True
+        message = str(exc).strip().lower()
+        return message in {"database is busy", "database is locked"}
 
 
 @dataclass(frozen=True)
@@ -225,6 +395,72 @@ class SettlementResult:
     cloud_status: str = "not_configured"
 
 
+@dataclass(frozen=True)
+class NumericSettlementRevision:
+    """One strictly numeric Missoula outcome projection for a prediction."""
+
+    prediction_id: str
+    competitor_id: str
+    event_code: str
+    action: str
+    actual_time: Optional[float]
+    expected_revision: int
+
+
+@dataclass(frozen=True)
+class NumericSettlementRevisionResult:
+    """One append-only numeric settlement or void revision."""
+
+    revision_id: str
+    prediction_id: str
+    revision: int
+    competitor_id: str
+    event_code: str
+    action: str
+    actual_time: Optional[float]
+    residual: Optional[float]
+    supersedes_revision_id: Optional[str]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class NumericOutcomeRevisionResult:
+    """Field-atomic result linked to one authoritative Missoula revision ID."""
+
+    outcome_revision_id: str
+    ledger_request_id: str
+    caller_id: str
+    revisions: tuple[NumericSettlementRevisionResult, ...]
+    actor: str
+    reason_code: Optional[str]
+    created_at: str
+    status: str = "recorded"
+    cloud_status: str = "not_configured"
+
+
+@dataclass(frozen=True)
+class LedgerMonitoringStatus:
+    """Payload-free operational facts derived from ledger and outbox rows."""
+
+    mirror: str
+    mirror_pending_count: int
+    mirror_oldest_pending_at: Optional[str]
+    mirror_last_attempt_at: Optional[str]
+    local_trust: str
+    receipt_freshness: str
+    receipt_readiness: str
+    numeric_mirror: str
+    numeric_mirror_backlog_count: int
+    numeric_mirror_oldest_pending_at: Optional[str]
+    numeric_mirror_last_attempt_at: Optional[str]
+    numeric_revision_count: int
+    active_numeric_settlement_count: int
+    voided_prediction_count: int
+    evidence_sample_count: int
+    evidence_status: str
+    drift_calibration_advisory: str
+
+
 Mirror = Callable[[Mapping[str, Any]], Any]
 
 
@@ -239,6 +475,75 @@ def _identifier(value: Any, label: str) -> str:
     if len(text) > 128:
         raise ValueError(f"{label} must be at most 128 characters")
     return text
+
+
+def _legacy_settlement_reason_code(value: Any) -> Optional[str]:
+    """Return a bounded code while accepting two fixed historical aliases."""
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidate = _LEGACY_SETTLEMENT_REASON_ALIASES.get(text.casefold(), text.casefold())
+    if candidate not in LEGACY_SETTLEMENT_REASON_CODES:
+        allowed = ", ".join(sorted(LEGACY_SETTLEMENT_REASON_CODES))
+        raise ValueError(f"reason must be one of: {allowed}")
+    return candidate
+
+
+def _legacy_settlement_actor_id(value: Any) -> str:
+    """Preserve fixed safe IDs and pseudonymize every legacy free-form value."""
+
+    text = _identifier(value, "actor")
+    if _NAMESPACED_ID.fullmatch(text) or text in _SAFE_LEGACY_SETTLEMENT_ACTOR_IDS:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"legacy:actor-{digest}"
+
+
+def _legacy_egress_actor(value: Any) -> str:
+    try:
+        return _legacy_settlement_actor_id(value)
+    except ValueError:
+        return _LEGACY_REDACTED_ACTOR
+
+
+def _legacy_egress_reason(value: Any) -> Optional[str]:
+    try:
+        return _legacy_settlement_reason_code(value)
+    except ValueError:
+        return _LEGACY_REDACTED_REASON
+
+
+def _sanitize_settlement_mirror_payload(payload: Any) -> Mapping[str, Any]:
+    """Redact historical legacy narrative at egress without mutating evidence."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("settlement mirror payload must be an object")
+    if "settlement" not in payload:
+        # Numeric outcome payloads are already validated at their write boundary.
+        return payload
+    settlement = payload.get("settlement")
+    if not isinstance(settlement, Mapping):
+        raise ValueError("legacy settlement mirror payload must contain an object")
+    sanitized = dict(payload)
+    sanitized_settlement = dict(settlement)
+    sanitized_settlement["actor"] = _legacy_egress_actor(settlement.get("actor"))
+    sanitized_settlement["reason"] = _legacy_egress_reason(settlement.get("reason"))
+    sanitized["settlement"] = sanitized_settlement
+    return sanitized
+
+
+def _namespaced_identifier(value: Any, label: str) -> str:
+    text = _identifier(value, label)
+    if not _NAMESPACED_ID.fullmatch(text):
+        raise ValueError(f"{label} must be namespaced as 'namespace:value'")
+    return text
+
+
+def _identifier_namespace(value: str) -> str:
+    """Return the authority prefix from a validated namespaced identifier."""
+
+    return value.split(":", 1)[0]
 
 
 def _event(value: Any) -> str:
@@ -301,16 +606,30 @@ class PredictionLedger:
         self._delivery_queue: deque[tuple[str, str]] = deque()
         self._delivery_in_flight: set[tuple[str, str]] = set()
         self._mirror_worker: Optional[threading.Thread] = None
+        self._initialized_path_identity: Optional[tuple[int, int]] = None
         self._init_schema()
+        self._initialized_path_identity = self._path_identity()
         if self._mirror is not None and self._has_pending_delivery():
             with self._worker_lock:
                 self._start_mirror_worker_locked()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=30.0, isolation_level=None)
+    def _connect(
+        self, *, query_deadline: Optional[SQLiteQueryDeadline] = None
+    ) -> sqlite3.Connection:
+        conn = sqlite3.connect(
+            str(self.path),
+            timeout=30.0,
+            isolation_level=None,
+            factory=ClosingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
+            conn.execute(f"PRAGMA busy_timeout = {query_deadline.remaining_milliseconds()}")
+            conn.set_progress_handler(query_deadline.progress_handler, 100)
+        else:
+            conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
     def _init_schema(self) -> None:
@@ -328,7 +647,41 @@ class PredictionLedger:
                     "TEXT NOT NULL DEFAULT 'raw-v1' "
                     "CHECK(hash_algorithm IN ('raw-v1', 'active-v2'))"
                 )
+            conn.execute("DROP TRIGGER IF EXISTS actor_attestation_nonce_claims_no_delete")
             conn.executescript(_IMMUTABILITY_TRIGGERS)
+
+    def _path_identity(self) -> Optional[tuple[int, int]]:
+        try:
+            stat = Path(self.path).stat()
+        except OSError:
+            return None
+        return stat.st_dev, stat.st_ino
+
+    def cached_persistence_health(self) -> dict[str, Any]:
+        """Describe the SQLite target without opening it or reserving a writer lock."""
+
+        path = Path(self.path)
+        memory = str(self.path) == ":memory:"
+        exists = False if memory else path.is_file()
+        initialized = bool(
+            exists
+            and self._initialized_path_identity is not None
+            and self._path_identity() == self._initialized_path_identity
+        )
+        readable = bool(initialized and os.access(path, os.R_OK))
+        writable = bool(initialized and os.access(path, os.W_OK))
+        observed = bool(initialized and readable and writable)
+        return {
+            "configured_as_memory": memory,
+            "path_exists": exists,
+            "readable": readable,
+            "writable": writable,
+            "read_write_open_observed": observed,
+            "persistence_observed": observed,
+            "assurance": (
+                "sqlite-initialization-observed-not-durability-proof" if observed else "unverified"
+            ),
+        }
 
     def record_field(
         self,
@@ -338,6 +691,7 @@ class PredictionLedger:
         predictions: Sequence[LedgerPrediction],
         *,
         legacy_request_payload: Optional[Mapping[str, Any]] = None,
+        receipt_metadata: Optional[Mapping[str, Any]] = None,
     ) -> LedgerWriteResult:
         """Atomically append one complete field or return its original IDs."""
 
@@ -512,6 +866,44 @@ class PredictionLedger:
                                 timestamp,
                             ),
                         )
+                receipt_core: Optional[dict[str, Any]] = None
+                if receipt_metadata is not None:
+                    receipt_core = self._shadow_receipt_core(
+                        receipt_metadata,
+                        request_hash=digest,
+                        hash_algorithm=algorithm,
+                        predictions=validated,
+                        prediction_ids=prediction_ids,
+                        timestamp=timestamp,
+                    )
+                    active_input = receipt_core.get("active_input")
+                    if not isinstance(active_input, Mapping):
+                        raise ValueError("receipt active_input must be an object")
+                    active_fingerprint = str(active_input.get("fingerprint") or "").strip()
+                    if len(active_fingerprint) != 64:
+                        raise ValueError("receipt active input fingerprint must be SHA-256")
+                    core_schema_version = str(receipt_core.get("schema_version") or "").strip()
+                    if not core_schema_version:
+                        raise ValueError("receipt schema_version must not be empty")
+                    core_json = self._canonical_json(receipt_core)
+                    conn.execute(
+                        """
+                        INSERT INTO shadow_receipts (
+                            ledger_request_id, caller_id, request_id,
+                            active_input_fingerprint, core_schema_version,
+                            core_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            request_row_id,
+                            caller,
+                            idempotency_key,
+                            active_fingerprint,
+                            core_schema_version,
+                            core_json,
+                            timestamp,
+                        ),
+                    )
                 cloud_payload = self._cloud_field_payload(
                     request_row_id,
                     caller,
@@ -523,6 +915,7 @@ class PredictionLedger:
                     prediction_ids,
                     validated,
                     timestamp,
+                    receipt_core=receipt_core,
                 )
                 self._append_outbox(
                     conn,
@@ -547,6 +940,898 @@ class PredictionLedger:
             cloud_status=cloud_status,
         )
 
+    def claim_actor_attestation_nonce(
+        self,
+        *,
+        consumer_id: str,
+        nonce: str,
+        actor_id: str,
+        action: str,
+        subject_revision: str,
+        expires_at: int,
+    ) -> bool:
+        """Atomically claim a signed actor nonce in the durable local authority.
+
+        Only a SHA-256 digest of the nonce is retained.  Active claims survive
+        service restarts and block replay until their signed expiry; expired
+        claims are transactionally purged so security state remains bounded.
+        """
+
+        consumer = _namespaced_identifier(consumer_id, "consumer_id")
+        actor = _namespaced_identifier(actor_id, "actor_id")
+        revision = _namespaced_identifier(subject_revision, "subject_revision")
+        action_value = _identifier(action, "action")
+        nonce_value = str(nonce or "")
+        if not 16 <= len(nonce_value) <= 128:
+            raise ValueError("nonce must contain between 16 and 128 characters")
+        now_epoch = int(time.time())
+        if (
+            not isinstance(expires_at, int)
+            or isinstance(expires_at, bool)
+            or expires_at <= now_epoch
+        ):
+            raise ValueError("expires_at must be a future integer timestamp")
+        nonce_hash = hashlib.sha256(nonce_value.encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "DELETE FROM actor_attestation_nonce_claims WHERE expires_at <= ?",
+                    (now_epoch,),
+                )
+                existing = conn.execute(
+                    """
+                    SELECT 1 FROM actor_attestation_nonce_claims
+                    WHERE consumer_id = ? AND nonce_hash = ?
+                    """,
+                    (consumer, nonce_hash),
+                ).fetchone()
+                if existing is not None:
+                    conn.commit()
+                    return False
+                active_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM actor_attestation_nonce_claims WHERE consumer_id = ?",
+                        (consumer,),
+                    ).fetchone()[0]
+                )
+                if active_count >= MAX_ACTIVE_ATTESTATION_NONCES_PER_CONSUMER:
+                    raise RuntimeError("active actor attestation nonce capacity is exhausted")
+                conn.execute(
+                    """
+                    INSERT INTO actor_attestation_nonce_claims (
+                        consumer_id, nonce_hash, actor_id, action,
+                        subject_revision, expires_at, claimed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        consumer,
+                        nonce_hash,
+                        actor,
+                        action_value,
+                        revision,
+                        expires_at,
+                        _now(),
+                    ),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return False
+            except RuntimeError:
+                conn.rollback()
+                raise
+
+    def get_shadow_receipt(
+        self,
+        caller_id: str,
+        request_id: str,
+        *,
+        current_active_fingerprint: Optional[str] = None,
+        expected_run_revision: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
+    ) -> Optional[Any]:
+        """Return the exact immutable core plus a freshly derived status view."""
+
+        caller = _identifier(caller_id, "caller_id")
+        idempotency_key = _identifier(request_id, "request_id")
+        with self._connect(query_deadline=query_deadline) as conn:
+            row = conn.execute(
+                """
+                SELECT q.ledger_request_id, q.request_hash, q.hash_algorithm,
+                       r.core_json, r.active_input_fingerprint, r.core_schema_version,
+                       d.status AS delivery_status
+                FROM prediction_requests q
+                LEFT JOIN shadow_receipts r
+                  ON r.ledger_request_id = q.ledger_request_id
+                LEFT JOIN prediction_mirror_outbox o
+                  ON o.kind = 'field' AND o.entity_id = q.ledger_request_id
+                LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                WHERE q.caller_id = ? AND q.request_id = ?
+                """,
+                (caller, idempotency_key),
+            ).fetchone()
+            child_rows = (
+                []
+                if row is None
+                else conn.execute(
+                    """
+                    SELECT prediction_id, competitor_id, ordinal, event_code,
+                           median_seconds, assigned_mark, source, training_eligible,
+                           engine_version, model_version, calibration_version,
+                           evidence_cutoff, interval_lower, interval_upper,
+                           interval_coverage, interval_state, interval_scope,
+                           ignored_factors_json, warnings_json, optimizer,
+                           optimizer_metadata_json
+                    FROM ledger_predictions
+                    WHERE ledger_request_id = ? ORDER BY ordinal
+                    """,
+                    (row["ledger_request_id"],),
+                ).fetchall()
+            )
+        if row is None:
+            return None
+        if row["core_json"] is None:
+            raise LedgerConflictError(
+                "request_id already has an incomplete legacy ledger field without a receipt"
+            )
+
+        from strathmark.shadow import (
+            RECEIPT_CORE_SCHEMA_VERSION,
+            REQUEST_PROJECTION_SCHEMA_VERSION,
+            ShadowLiveStatus,
+            ShadowReceipt,
+            ShadowReceiptCorruptionError,
+        )
+
+        core_json = str(row["core_json"])
+        try:
+            core = json.loads(core_json)
+        except (TypeError, ValueError) as exc:
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt contains malformed JSON"
+            ) from exc
+        if not isinstance(core, Mapping):
+            raise ShadowReceiptCorruptionError("persisted shadow receipt core is not an object")
+        if self._canonical_json(core) != core_json:
+            raise ShadowReceiptCorruptionError("persisted shadow receipt JSON is not canonical")
+        if (
+            core.get("schema_version") != RECEIPT_CORE_SCHEMA_VERSION
+            or row["core_schema_version"] != RECEIPT_CORE_SCHEMA_VERSION
+        ):
+            raise ShadowReceiptCorruptionError("persisted shadow receipt schema is unsupported")
+        if core.get("consumer_id") != caller or core.get("request_id") != idempotency_key:
+            raise ShadowReceiptCorruptionError("persisted shadow receipt identity is inconsistent")
+        request_projection = core.get("request_projection")
+        if not isinstance(request_projection, Mapping):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt request projection is missing"
+            )
+        projection_without_fingerprint = dict(request_projection)
+        projection_fingerprint = str(projection_without_fingerprint.pop("fingerprint", ""))
+        observation = core.get("observation")
+        if (
+            projection_without_fingerprint.get("schema_version")
+            != REQUEST_PROJECTION_SCHEMA_VERSION
+            or canonical_hash(projection_without_fingerprint) != projection_fingerprint
+            or projection_without_fingerprint.get("consumer_id") != caller
+            or projection_without_fingerprint.get("request_id") != idempotency_key
+            or projection_without_fingerprint.get("run_revision") != core.get("run_revision")
+            or projection_without_fingerprint.get("tournament_id") != core.get("tournament_id")
+            or projection_without_fingerprint.get("event_occurrence_id")
+            != core.get("event_occurrence_id")
+            or projection_without_fingerprint.get("field_run_id") != core.get("field_run_id")
+            or projection_without_fingerprint.get("operator_id") != core.get("operator_id")
+            or projection_without_fingerprint.get("event_code") != core.get("event_code")
+            or projection_without_fingerprint.get("target_contract") != core.get("target_contract")
+            or projection_without_fingerprint.get("prediction_as_of")
+            != core.get("prediction_as_of")
+            or not isinstance(observation, Mapping)
+            or projection_without_fingerprint.get("observation_schema_version")
+            != observation.get("schema_version")
+            or projection_without_fingerprint.get("observation_fingerprint")
+            != observation.get("fingerprint")
+        ):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt request projection is inconsistent"
+            )
+        try:
+            recorded_run_revision = _namespaced_identifier(
+                core.get("run_revision"), "persisted run_revision"
+            )
+        except ValueError as exc:
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt run revision is invalid"
+            ) from exc
+        if expected_run_revision is not None:
+            requested_run_revision = _namespaced_identifier(
+                expected_run_revision, "expected_run_revision"
+            )
+            if recorded_run_revision != requested_run_revision:
+                raise LedgerConflictError(
+                    "run_revision does not match the immutable shadow receipt"
+                )
+        ledger_core = core.get("ledger")
+        if not isinstance(ledger_core, Mapping) or (
+            ledger_core.get("request_hash") != row["request_hash"]
+            or ledger_core.get("hash_algorithm") != row["hash_algorithm"]
+        ):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt ledger identity is inconsistent"
+            )
+        active_input = core.get("active_input")
+        if not isinstance(active_input, Mapping):
+            raise ShadowReceiptCorruptionError("persisted shadow receipt active input is missing")
+        active_without_fingerprint = dict(active_input)
+        embedded_fingerprint = str(active_without_fingerprint.pop("fingerprint", ""))
+        recorded_fingerprint = str(row["active_input_fingerprint"])
+        if (
+            embedded_fingerprint != recorded_fingerprint
+            or canonical_hash(active_without_fingerprint) != recorded_fingerprint
+        ):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt active fingerprint is inconsistent"
+            )
+        predictions = core.get("predictions")
+        if not isinstance(predictions, list) or len(predictions) != len(child_rows):
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt prediction set is incomplete"
+            )
+        for ordinal, (item, child) in enumerate(zip(predictions, child_rows, strict=True)):
+            if not isinstance(item, Mapping) or (
+                item.get("ordinal") != ordinal
+                or item.get("prediction_id") != child["prediction_id"]
+                or item.get("competitor_id") != child["competitor_id"]
+                or item.get("event_code") != child["event_code"]
+                or child["ordinal"] != ordinal
+            ):
+                raise ShadowReceiptCorruptionError(
+                    "persisted shadow receipt prediction identity is inconsistent"
+                )
+            try:
+                ignored_factors = json.loads(str(child["ignored_factors_json"]))
+                warnings = json.loads(str(child["warnings_json"]))
+                optimizer_metadata = json.loads(str(child["optimizer_metadata_json"]))
+                persisted_projection = self._shadow_prediction_projection(
+                    {
+                        **dict(child),
+                        "training_eligible": bool(child["training_eligible"]),
+                        "ignored_factors": ignored_factors,
+                        "warnings": warnings,
+                        "optimizer_metadata": optimizer_metadata,
+                    },
+                    prediction_id=str(child["prediction_id"]),
+                    ordinal=ordinal,
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ShadowReceiptCorruptionError(
+                    "persisted ledger prediction projection is malformed"
+                ) from exc
+            if self._canonical_json(dict(item)) != self._canonical_json(persisted_projection):
+                raise ShadowReceiptCorruptionError(
+                    "persisted shadow receipt prediction payload is inconsistent"
+                )
+        caller_input = active_input.get("caller_input")
+        entrants = caller_input.get("competitors") if isinstance(caller_input, Mapping) else None
+        request_entrants = request_projection.get("competitors")
+        if not isinstance(entrants, list) or {
+            item.get("competitor_id") for item in entrants if isinstance(item, Mapping)
+        } != {child["competitor_id"] for child in child_rows}:
+            raise ShadowReceiptCorruptionError(
+                "persisted shadow receipt entrant set is inconsistent"
+            )
+        if not isinstance(request_entrants, list) or [
+            item.get("competitor_id") for item in request_entrants if isinstance(item, Mapping)
+        ] != [item.get("competitor_id") for item in entrants if isinstance(item, Mapping)]:
+            raise ShadowReceiptCorruptionError(
+                "persisted request projection entrant order is inconsistent"
+            )
+
+        freshness = (
+            "unavailable"
+            if current_active_fingerprint is None
+            else ("current" if str(current_active_fingerprint) == recorded_fingerprint else "stale")
+        )
+        delivery_status = row["delivery_status"]
+        if self._mirror is None:
+            mirror = "not-configured"
+        elif delivery_status == "recorded":
+            mirror = "recorded"
+        elif delivery_status == "failed":
+            mirror = "retryable-failed"
+        else:
+            mirror = "pending"
+        status = ShadowLiveStatus(
+            trust="recorded",
+            mirror=mirror,
+            freshness=freshness,
+            ready_for_review=freshness == "current",
+        )
+        return ShadowReceipt(
+            core_json=core_json,
+            core=core,
+            status=status,
+        )
+
+    def apply_numeric_outcome_revision(
+        self,
+        outcome_revision_id: str,
+        revisions: Sequence[NumericSettlementRevision | Mapping[str, Any]],
+        *,
+        caller_id: str,
+        request_id: str,
+        run_revision: str,
+        actor: str,
+        reason_code: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
+    ) -> NumericOutcomeRevisionResult:
+        """Atomically append eligible numeric settlements or retraction voids.
+
+        Missoula remains authoritative for finish/nonfinish classification and
+        operational outcome history.  This boundary deliberately accepts only
+        positive raw elapsed times or voids linked to a stable outcome revision.
+        The actor is namespace-bound here, but is not authenticated here; the U4
+        transport must verify its signed actor/action attestation before calling
+        this storage method.
+        """
+
+        outcome_key = _namespaced_identifier(outcome_revision_id, "outcome_revision_id")
+        requested_caller = _namespaced_identifier(caller_id, "caller_id")
+        requested_request = _namespaced_identifier(request_id, "request_id")
+        requested_run = _namespaced_identifier(run_revision, "run_revision")
+        actor_value = _namespaced_identifier(actor, "actor")
+        reason_code_value = str(reason_code or "").strip() or None
+        if reason_code_value is not None and reason_code_value not in NUMERIC_OUTCOME_REASON_CODES:
+            allowed = ", ".join(sorted(NUMERIC_OUTCOME_REASON_CODES))
+            raise ValueError(f"reason_code must be one of: {allowed}")
+        if not revisions:
+            raise ValueError("revisions must not be empty")
+        if len(revisions) > MAX_NUMERIC_SETTLEMENTS_PER_REVISION:
+            raise ValueError(
+                "revisions must contain at most "
+                f"{MAX_NUMERIC_SETTLEMENTS_PER_REVISION} numeric projections"
+            )
+
+        validated = [self._validate_numeric_revision(item) for item in revisions]
+        if len({item["prediction_id"] for item in validated}) != len(validated):
+            raise ValueError("prediction_id values must be unique within an outcome revision")
+        validated.sort(key=lambda item: item["prediction_id"])
+        payload_digest = canonical_hash(
+            {
+                "outcome_revision_id": outcome_key,
+                "caller_id": requested_caller,
+                "request_id": requested_request,
+                "run_revision": requested_run,
+                "actor": actor_value,
+                "reason_code": reason_code_value,
+                "revisions": validated,
+            }
+        )
+        field_revision_id = str(uuid.uuid5(_LEDGER_NAMESPACE, f"numeric-outcome:{outcome_key}"))
+        timestamp = _now()
+
+        with self._connect(query_deadline=query_deadline) as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                placeholders = ",".join("?" for _ in validated)
+                prediction_rows = conn.execute(
+                    f"""
+                    SELECT p.prediction_id, p.competitor_id, p.event_code,
+                           p.median_seconds, p.ledger_request_id,
+                           r.caller_id, r.request_id,
+                           sr.caller_id AS receipt_caller_id,
+                           sr.request_id AS receipt_request_id,
+                           sr.core_json AS receipt_core_json
+                    FROM ledger_predictions p
+                    JOIN prediction_requests r
+                      ON r.ledger_request_id = p.ledger_request_id
+                    LEFT JOIN shadow_receipts sr
+                      ON sr.ledger_request_id = p.ledger_request_id
+                    WHERE p.prediction_id IN ({placeholders})
+                    """,
+                    [item["prediction_id"] for item in validated],
+                ).fetchall()
+                predictions_by_id = {str(row["prediction_id"]): row for row in prediction_rows}
+                if len(predictions_by_id) != len(validated):
+                    raise SettlementConflictError("prediction_id was not found")
+                for item in validated:
+                    prediction = predictions_by_id[item["prediction_id"]]
+                    if prediction["competitor_id"] != item["competitor_id"]:
+                        raise SettlementConflictError("competitor_id does not match prediction")
+                    if prediction["event_code"] != item["event_code"]:
+                        raise SettlementConflictError("event_code does not match prediction")
+
+                bound_callers = {str(row["caller_id"]) for row in prediction_rows}
+                if len(bound_callers) != 1:
+                    raise SettlementConflictError(
+                        "one numeric outcome revision must contain predictions from one caller_id"
+                    )
+                if bound_callers != {requested_caller}:
+                    raise SettlementConflictError(
+                        "numeric outcome predictions do not belong to the authenticated caller"
+                    )
+                ledger_request_ids = {str(row["ledger_request_id"]) for row in prediction_rows}
+                if len(ledger_request_ids) != 1:
+                    raise SettlementConflictError(
+                        "one numeric outcome revision must contain predictions from one "
+                        "ledger_request_id"
+                    )
+                ledger_request_id = next(iter(ledger_request_ids))
+                if {str(row["request_id"]) for row in prediction_rows} != {requested_request}:
+                    raise SettlementConflictError(
+                        "numeric outcome predictions do not belong to request_id"
+                    )
+                receipt_json_values = {row["receipt_core_json"] for row in prediction_rows}
+                if None in receipt_json_values or len(receipt_json_values) != 1:
+                    raise SettlementConflictError(
+                        "numeric outcome requires one immutable shadow receipt"
+                    )
+                receipt_json = str(next(iter(receipt_json_values)))
+                try:
+                    receipt_core = json.loads(receipt_json)
+                except (TypeError, ValueError) as exc:
+                    raise SettlementConflictError("immutable shadow receipt is malformed") from exc
+                if (
+                    not isinstance(receipt_core, Mapping)
+                    or self._canonical_json(receipt_core) != receipt_json
+                    or receipt_core.get("consumer_id") != requested_caller
+                    or receipt_core.get("request_id") != requested_request
+                    or {str(row["receipt_caller_id"]) for row in prediction_rows}
+                    != {requested_caller}
+                    or {str(row["receipt_request_id"]) for row in prediction_rows}
+                    != {requested_request}
+                ):
+                    raise SettlementConflictError(
+                        "immutable shadow receipt does not match caller/request_id"
+                    )
+                try:
+                    recorded_run = _namespaced_identifier(
+                        receipt_core.get("run_revision"),
+                        "persisted run_revision",
+                    )
+                except ValueError as exc:
+                    raise SettlementConflictError(
+                        "immutable shadow receipt run_revision is invalid"
+                    ) from exc
+                if recorded_run != requested_run:
+                    raise SettlementConflictError(
+                        "run_revision does not match the immutable shadow receipt"
+                    )
+                if _identifier_namespace(outcome_key) != _identifier_namespace(requested_caller):
+                    raise SettlementConflictError(
+                        "outcome_revision_id namespace must match the caller_id namespace"
+                    )
+                if _identifier_namespace(actor_value) != _identifier_namespace(requested_caller):
+                    raise SettlementConflictError(
+                        "actor namespace must match the caller_id namespace"
+                    )
+
+                existing = conn.execute(
+                    "SELECT * FROM numeric_outcome_revisions WHERE outcome_revision_id = ?",
+                    (outcome_key,),
+                ).fetchone()
+                if existing is not None:
+                    if existing["caller_id"] != requested_caller:
+                        raise SettlementConflictError(
+                            "outcome_revision_id does not belong to the authenticated caller"
+                        )
+                    if existing["ledger_request_id"] != ledger_request_id:
+                        raise SettlementConflictError(
+                            "outcome_revision_id does not belong to request_id"
+                        )
+                    if existing["payload_hash"] != payload_digest:
+                        raise SettlementConflictError(
+                            "outcome_revision_id was already used for a different payload"
+                        )
+                    result = self._numeric_outcome_result(conn, existing, status="duplicate")
+                    conn.commit()
+                    cloud_status = self._schedule_delivery(
+                        "settlement", str(existing["field_revision_id"])
+                    )
+                    return replace(result, cloud_status=cloud_status)
+
+                prepared: list[dict[str, Any]] = []
+                any_correction = False
+                requested_values = ",".join("(?)" for _ in validated)
+                latest_rows = conn.execute(
+                    f"""
+                    WITH requested(prediction_id) AS (VALUES {requested_values}),
+                    settlement_history AS (
+                        SELECT s.prediction_id, s.revision,
+                               s.settlement_id AS revision_id,
+                               'settle' AS action, 0 AS source_priority,
+                               s.settled_at AS authority_timestamp
+                        FROM prediction_settlements s
+                        JOIN requested q ON q.prediction_id = s.prediction_id
+                        UNION ALL
+                        SELECT s.prediction_id, s.revision, s.revision_id,
+                               s.action, 1 AS source_priority,
+                               s.created_at AS authority_timestamp
+                        FROM numeric_settlement_revisions s
+                        JOIN requested q ON q.prediction_id = s.prediction_id
+                    ),
+                    ranked AS (
+                        SELECT *, ROW_NUMBER() OVER (
+                            PARTITION BY prediction_id
+                            ORDER BY revision DESC, source_priority DESC,
+                                     authority_timestamp DESC, revision_id DESC
+                        ) AS authority_rank
+                        FROM settlement_history
+                    )
+                    SELECT prediction_id, revision, revision_id, action
+                    FROM ranked WHERE authority_rank = 1
+                    """,
+                    [item["prediction_id"] for item in validated],
+                ).fetchall()
+                latest_by_prediction = {str(row["prediction_id"]): row for row in latest_rows}
+                for item in validated:
+                    prediction = predictions_by_id[item["prediction_id"]]
+                    latest = latest_by_prediction.get(item["prediction_id"])
+                    latest_revision = 0 if latest is None else int(latest["revision"])
+                    if item["expected_revision"] != latest_revision:
+                        raise SettlementConflictError(
+                            f"expected revision {item['expected_revision']} but latest is "
+                            f"{latest_revision} for prediction_id {item['prediction_id']}"
+                        )
+                    if item["action"] == "void" and (latest is None or latest["action"] == "void"):
+                        raise SettlementConflictError(
+                            "void requires a currently active numeric settlement"
+                        )
+                    if latest is not None:
+                        any_correction = True
+
+                    revision_number = latest_revision + 1
+                    revision_id = str(
+                        uuid.uuid5(
+                            _LEDGER_NAMESPACE,
+                            f"numeric-settlement:{outcome_key}:{item['prediction_id']}",
+                        )
+                    )
+                    actual_time = item["actual_time"]
+                    residual = (
+                        None
+                        if item["action"] == "void"
+                        else float(actual_time) - float(prediction["median_seconds"])
+                    )
+                    prepared.append(
+                        {
+                            **item,
+                            "revision_id": revision_id,
+                            "revision": revision_number,
+                            "residual": residual,
+                            "supersedes_revision_id": (
+                                None if latest is None else str(latest["revision_id"])
+                            ),
+                            "ledger_request_id": str(prediction["ledger_request_id"]),
+                            "caller_id": str(prediction["caller_id"]),
+                        }
+                    )
+
+                caller_ids = {item["caller_id"] for item in prepared}
+                if len(caller_ids) != 1:
+                    raise SettlementConflictError(
+                        "one numeric outcome revision must contain predictions from one caller_id"
+                    )
+                caller_id = next(iter(caller_ids))
+                if caller_id != requested_caller:
+                    raise SettlementConflictError(
+                        "numeric outcome predictions do not belong to the authenticated caller"
+                    )
+                if (any_correction or any(item["action"] == "void" for item in prepared)) and (
+                    reason_code_value is None
+                ):
+                    raise SettlementConflictError(
+                        "a numeric correction or void requires a reason_code"
+                    )
+
+                conn.execute(
+                    """
+                    INSERT INTO numeric_outcome_revisions (
+                        field_revision_id, outcome_revision_id, ledger_request_id,
+                        caller_id, payload_hash, actor, reason_code, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        field_revision_id,
+                        outcome_key,
+                        ledger_request_id,
+                        caller_id,
+                        payload_digest,
+                        actor_value,
+                        reason_code_value,
+                        timestamp,
+                    ),
+                )
+                for item in prepared:
+                    conn.execute(
+                        """
+                        INSERT INTO numeric_settlement_revisions (
+                            revision_id, field_revision_id, prediction_id, revision,
+                            competitor_id, event_code, action, actual_time, residual,
+                            supersedes_revision_id, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item["revision_id"],
+                            field_revision_id,
+                            item["prediction_id"],
+                            item["revision"],
+                            item["competitor_id"],
+                            item["event_code"],
+                            item["action"],
+                            item["actual_time"],
+                            item["residual"],
+                            item["supersedes_revision_id"],
+                            timestamp,
+                        ),
+                    )
+
+                cloud_payload = {
+                    "schema_version": SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+                    "kind": "numeric_outcome_revision",
+                    "numeric_outcome_revision": {
+                        "schema_version": NUMERIC_OUTCOME_MIRROR_SCHEMA_VERSION,
+                        "field_revision_id": field_revision_id,
+                        "outcome_revision_id": outcome_key,
+                        "ledger_request_id": ledger_request_id,
+                        "caller_id": caller_id,
+                        "actor": actor_value,
+                        "reason_code": reason_code_value,
+                        "created_at": timestamp,
+                        "revisions": [
+                            {
+                                "revision_id": item["revision_id"],
+                                "prediction_id": item["prediction_id"],
+                                "revision": item["revision"],
+                                "competitor_id": item["competitor_id"],
+                                "event_code": item["event_code"],
+                                "action": item["action"],
+                                "actual_time": item["actual_time"],
+                                "residual": item["residual"],
+                                "supersedes_revision_id": item["supersedes_revision_id"],
+                            }
+                            for item in prepared
+                        ],
+                    },
+                }
+                self._append_outbox(
+                    conn,
+                    kind="settlement",
+                    entity_id=field_revision_id,
+                    payload=cloud_payload,
+                    timestamp=timestamp,
+                )
+                outcome_row = conn.execute(
+                    "SELECT * FROM numeric_outcome_revisions WHERE field_revision_id = ?",
+                    (field_revision_id,),
+                ).fetchone()
+                result = self._numeric_outcome_result(conn, outcome_row)
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if query_deadline is not None and (
+                    query_deadline.cancelled or query_deadline.is_sqlite_contention(exc)
+                ):
+                    query_deadline.cancel()
+                    raise LedgerQueryTimeoutError(
+                        "bounded numeric outcome write exceeded its deadline"
+                    ) from exc
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+
+        cloud_status = self._schedule_delivery("settlement", field_revision_id)
+        return replace(result, cloud_status=cloud_status)
+
+    def get_numeric_outcome_revision(
+        self, outcome_revision_id: str
+    ) -> Optional[NumericOutcomeRevisionResult]:
+        """Return a numeric revision and its current derived mirror state."""
+
+        outcome_key = _namespaced_identifier(outcome_revision_id, "outcome_revision_id")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.*, d.status AS delivery_status
+                FROM numeric_outcome_revisions r
+                LEFT JOIN prediction_mirror_outbox o
+                  ON o.kind = 'settlement' AND o.entity_id = r.field_revision_id
+                LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                WHERE r.outcome_revision_id = ?
+                """,
+                (outcome_key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if self._mirror is None:
+                cloud_status = "not_configured"
+            elif row["delivery_status"] == "recorded":
+                cloud_status = "recorded"
+            elif row["delivery_status"] == "failed":
+                cloud_status = "retryable-failed"
+            else:
+                cloud_status = "pending"
+            return self._numeric_outcome_result(
+                conn,
+                row,
+                cloud_status=cloud_status,
+            )
+
+    def get_monitoring_status(
+        self,
+        *,
+        model_version: Optional[str] = None,
+        caller_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        current_active_fingerprint: Optional[str] = None,
+        expected_run_revision: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
+        validated_receipt: Any = _RECEIPT_NOT_PROVIDED,
+    ) -> LedgerMonitoringStatus:
+        """Derive payload-free mirror and numeric evidence monitoring facts."""
+
+        if (
+            (caller_id is None) != (request_id is None)
+            or (current_active_fingerprint is not None and caller_id is None)
+            or (expected_run_revision is not None and caller_id is None)
+            or (validated_receipt is not _RECEIPT_NOT_PROVIDED and caller_id is None)
+        ):
+            raise ValueError(
+                "caller_id and request_id are required together for receipt monitoring"
+            )
+
+        scoped_caller = (
+            None if caller_id is None else _namespaced_identifier(caller_id, "caller_id")
+        )
+        with self._connect(query_deadline=query_deadline) as conn:
+            mirror_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS pending_count,
+                    MIN(o.created_at) AS oldest_pending_at,
+                    MAX(d.last_attempt_at) AS last_attempt_at,
+                    SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+                FROM prediction_mirror_outbox o
+                JOIN prediction_requests q
+                  ON o.kind = 'field' AND q.ledger_request_id = o.entity_id
+                LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                WHERE (d.status IS NULL OR d.status != 'recorded')
+                  AND (? IS NULL OR q.caller_id = ?)
+                """,
+                (scoped_caller, scoped_caller),
+            ).fetchone()
+            numeric_mirror_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS pending_count,
+                    MIN(o.created_at) AS oldest_pending_at,
+                    MAX(d.last_attempt_at) AS last_attempt_at,
+                    SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+                FROM numeric_outcome_revisions r
+                JOIN prediction_mirror_outbox o
+                  ON o.kind = 'settlement' AND o.entity_id = r.field_revision_id
+                LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
+                WHERE (d.status IS NULL OR d.status != 'recorded')
+                  AND (? IS NULL OR r.caller_id = ?)
+                """,
+                (scoped_caller, scoped_caller),
+            ).fetchone()
+            numeric_action_row = conn.execute(
+                """
+                WITH scoped_revisions AS (
+                    SELECT s.prediction_id, s.revision, s.action,
+                           s.created_at, s.revision_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.prediction_id
+                               ORDER BY s.revision DESC, s.created_at DESC, s.revision_id DESC
+                           ) AS authority_rank
+                    FROM numeric_settlement_revisions s
+                    JOIN numeric_outcome_revisions r
+                      ON r.field_revision_id = s.field_revision_id
+                    WHERE ? IS NULL OR r.caller_id = ?
+                )
+                SELECT COUNT(*) AS revision_count,
+                       COALESCE(SUM(
+                           CASE WHEN authority_rank = 1 AND action = 'settle' THEN 1 ELSE 0 END
+                       ), 0) AS active_count,
+                       COALESCE(SUM(
+                           CASE WHEN authority_rank = 1 AND action = 'void' THEN 1 ELSE 0 END
+                       ), 0) AS voided_count
+                FROM scoped_revisions
+                """,
+                (scoped_caller, scoped_caller),
+            ).fetchone()
+
+        pending_count = int(mirror_row["pending_count"] or 0)
+        if self._mirror is None:
+            mirror = "not-configured"
+        elif int(mirror_row["failed_count"] or 0) > 0:
+            mirror = "retryable-failed"
+        elif pending_count > 0:
+            mirror = "pending"
+        else:
+            mirror = "recorded"
+        numeric_pending_count = int(numeric_mirror_row["pending_count"] or 0)
+        if self._mirror is None:
+            numeric_mirror = "not-configured"
+        elif int(numeric_mirror_row["failed_count"] or 0) > 0:
+            numeric_mirror = "retryable-failed"
+        elif numeric_pending_count > 0:
+            numeric_mirror = "pending"
+        else:
+            numeric_mirror = "recorded"
+
+        local_trust = "unavailable"
+        receipt_freshness = "unavailable"
+        receipt_readiness = "unavailable"
+        if caller_id is not None and request_id is not None:
+            from strathmark.shadow import ShadowReceiptCorruptionError
+
+            try:
+                receipt = validated_receipt
+                if receipt is _RECEIPT_NOT_PROVIDED:
+                    receipt = self.get_shadow_receipt(
+                        caller_id,
+                        request_id,
+                        current_active_fingerprint=current_active_fingerprint,
+                        expected_run_revision=expected_run_revision,
+                        query_deadline=query_deadline,
+                    )
+            except LedgerConflictError:
+                if expected_run_revision is not None:
+                    raise
+                local_trust = "invalid"
+                receipt_readiness = "not-ready"
+            except ShadowReceiptCorruptionError:
+                local_trust = "invalid"
+                receipt_readiness = "not-ready"
+            else:
+                if receipt is None:
+                    local_trust = "missing"
+                    receipt_freshness = "missing"
+                    receipt_readiness = "not-ready"
+                else:
+                    local_trust = str(receipt.status.trust)
+                    receipt_freshness = str(receipt.status.freshness)
+                    receipt_readiness = "ready" if receipt.status.ready_for_review else "not-ready"
+
+        evidence_count = self.count_training_rows(
+            model_version=model_version,
+            caller_id=scoped_caller,
+            query_deadline=query_deadline,
+        )
+        from strathmark.drift import MIN_RECENT_SAMPLES
+
+        evidence_floor_met = evidence_count >= MIN_RECENT_SAMPLES
+        evidence_status = (
+            "minimum-sample-available" if evidence_floor_met else "insufficient-evidence"
+        )
+        drift_calibration_advisory = (
+            "not-evaluated" if evidence_floor_met else "insufficient-evidence"
+        )
+
+        return LedgerMonitoringStatus(
+            mirror=mirror,
+            mirror_pending_count=pending_count,
+            mirror_oldest_pending_at=mirror_row["oldest_pending_at"],
+            mirror_last_attempt_at=mirror_row["last_attempt_at"],
+            local_trust=local_trust,
+            receipt_freshness=receipt_freshness,
+            receipt_readiness=receipt_readiness,
+            numeric_mirror=numeric_mirror,
+            numeric_mirror_backlog_count=numeric_pending_count,
+            numeric_mirror_oldest_pending_at=numeric_mirror_row["oldest_pending_at"],
+            numeric_mirror_last_attempt_at=numeric_mirror_row["last_attempt_at"],
+            numeric_revision_count=int(numeric_action_row["revision_count"] or 0),
+            active_numeric_settlement_count=int(numeric_action_row["active_count"] or 0),
+            voided_prediction_count=int(numeric_action_row["voided_count"] or 0),
+            evidence_sample_count=evidence_count,
+            evidence_status=evidence_status,
+            drift_calibration_advisory=drift_calibration_advisory,
+        )
+
     def settle(
         self,
         prediction_id: str,
@@ -562,20 +1847,49 @@ class PredictionLedger:
         competitor_key = _identifier(competitor_id, "competitor_id")
         event = _event(event_code)
         actual = _finite(actual_time, "actual_time", positive=True)
-        actor_value = _identifier(actor, "actor")
-        reason_value = str(reason or "").strip() or None
-        if reason_value is not None and len(reason_value) > 500:
-            raise ValueError("reason must be at most 500 characters")
+        submitted_actor = _identifier(actor, "actor")
+        actor_value = _legacy_settlement_actor_id(submitted_actor)
+        submitted_reason = str(reason or "").strip() or None
+        reason_error: Optional[ValueError] = None
+        try:
+            reason_value = _legacy_settlement_reason_code(submitted_reason)
+        except ValueError as exc:
+            reason_error = exc
+            reason_value = submitted_reason
 
-        payload_digest = canonical_hash(
-            {
-                "prediction_id": prediction_key,
-                "competitor_id": competitor_key,
-                "event_code": event,
-                "actual_time": actual,
-                "actor": actor_value,
-                "reason": reason_value,
-            }
+        actor_candidates = (submitted_actor, actor_value)
+        reason_candidates = [submitted_reason]
+        if reason_error is None and reason_value != submitted_reason:
+            reason_candidates.append(reason_value)
+        candidate_digests = list(
+            dict.fromkeys(
+                canonical_hash(
+                    {
+                        "prediction_id": prediction_key,
+                        "competitor_id": competitor_key,
+                        "event_code": event,
+                        "actual_time": actual,
+                        "actor": candidate_actor,
+                        "reason": candidate_reason,
+                    }
+                )
+                for candidate_actor in actor_candidates
+                for candidate_reason in reason_candidates
+            )
+        )
+        normalized_payload_digest = (
+            None
+            if reason_error is not None
+            else canonical_hash(
+                {
+                    "prediction_id": prediction_key,
+                    "competitor_id": competitor_key,
+                    "event_code": event,
+                    "actual_time": actual,
+                    "actor": actor_value,
+                    "reason": reason_value,
+                }
+            )
         )
         timestamp = _now()
         with self._connect() as conn:
@@ -595,13 +1909,17 @@ class PredictionLedger:
                 if prediction["event_code"] != event:
                     raise SettlementConflictError("event_code does not match prediction")
 
-                duplicate = conn.execute(
-                    """
-                    SELECT * FROM prediction_settlements
-                    WHERE prediction_id = ? AND payload_hash = ?
-                    """,
-                    (prediction_key, payload_digest),
-                ).fetchone()
+                duplicate = None
+                for candidate_digest in candidate_digests:
+                    duplicate = conn.execute(
+                        """
+                        SELECT * FROM prediction_settlements
+                        WHERE prediction_id = ? AND payload_hash = ?
+                        """,
+                        (prediction_key, candidate_digest),
+                    ).fetchone()
+                    if duplicate is not None:
+                        break
                 if duplicate is not None:
                     conn.commit()
                     result = self._settlement_from_row(duplicate, status="duplicate")
@@ -609,6 +1927,23 @@ class PredictionLedger:
                         "settlement", str(duplicate["settlement_id"])
                     )
                     return replace(result, cloud_status=cloud_status)
+
+                numeric_authority = conn.execute(
+                    """
+                    SELECT 1 FROM numeric_settlement_revisions
+                    WHERE prediction_id = ? LIMIT 1
+                    """,
+                    (prediction_key,),
+                ).fetchone()
+                if numeric_authority is not None:
+                    raise SettlementConflictError(
+                        "numeric settlement revisions are authoritative for this prediction; "
+                        "legacy settle() is closed"
+                    )
+                if reason_error is not None:
+                    raise reason_error
+                assert normalized_payload_digest is not None
+                payload_digest = normalized_payload_digest
 
                 latest = conn.execute(
                     """
@@ -718,52 +2053,124 @@ class PredictionLedger:
         nominal_coverage: Optional[float] = None,
         interval_state: Optional[str] = None,
         interval_scope: Optional[str] = None,
+        caller_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
     ) -> list[dict[str, Any]]:
         """Return current settled, explicitly eligible model predictions."""
 
-        conditions = ["p.training_eligible = 1"]
-        parameters: list[Any] = []
-        if since is not None:
-            since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
-            conditions.append("s.settled_at >= ?")
-            parameters.append(since_value)
+        prediction_conditions = ["p.training_eligible = 1"]
+        prediction_parameters: list[Any] = []
+        if caller_id is not None:
+            prediction_conditions.append("r.caller_id = ?")
+            prediction_parameters.append(_namespaced_identifier(caller_id, "caller_id"))
         if model_version is not None:
-            conditions.append("p.model_version = ?")
-            parameters.append(str(model_version))
+            prediction_conditions.append("p.model_version = ?")
+            prediction_parameters.append(str(model_version))
         if calibration_version is not None:
-            conditions.append("p.calibration_version = ?")
-            parameters.append(str(calibration_version))
+            prediction_conditions.append("p.calibration_version = ?")
+            prediction_parameters.append(str(calibration_version))
         if event_code is not None:
-            conditions.append("p.event_code = ?")
-            parameters.append(_event(event_code))
+            prediction_conditions.append("p.event_code = ?")
+            prediction_parameters.append(_event(event_code))
         if nominal_coverage is not None:
-            conditions.append("p.interval_coverage = ?")
-            parameters.append(_finite(nominal_coverage, "nominal_coverage", positive=True))
+            prediction_conditions.append("p.interval_coverage = ?")
+            prediction_parameters.append(
+                _finite(nominal_coverage, "nominal_coverage", positive=True)
+            )
         if interval_state is not None:
-            conditions.append("p.interval_state = ?")
-            parameters.append(_identifier(interval_state, "interval_state"))
+            prediction_conditions.append("p.interval_state = ?")
+            prediction_parameters.append(_identifier(interval_state, "interval_state"))
         if interval_scope is not None:
-            conditions.append("p.interval_scope = ?")
-            parameters.append(_identifier(interval_scope, "interval_scope"))
+            prediction_conditions.append("p.interval_scope = ?")
+            prediction_parameters.append(_identifier(interval_scope, "interval_scope"))
+        post_conditions = ["s.action = 'settle'"]
+        post_parameters: list[Any] = []
         if history_band is not None:
             band = str(history_band).strip()
             if band not in {"0", "1-3", "4+", "unavailable"}:
                 raise ValueError("history_band must be '0', '1-3', '4+', or 'unavailable'")
-            conditions.append(
+            post_conditions.append(
                 "CASE WHEN h.numeric_value IS NULL THEN 'unavailable' "
                 "WHEN h.numeric_value < 1 THEN '0' "
                 "WHEN h.numeric_value < 4 THEN '1-3' ELSE '4+' END = ?"
             )
-            parameters.append(band)
-        where = " AND ".join(conditions)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
+            post_parameters.append(band)
+        prediction_where = " AND ".join(prediction_conditions)
+        post_where = " AND ".join(post_conditions)
+        legacy_since_clause = ""
+        numeric_since_clause = ""
+        since_parameters: list[Any] = []
+        if since is not None:
+            since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
+            legacy_since_clause = "WHERE source_settlement.settled_at >= ?"
+            numeric_since_clause = "WHERE source_settlement.created_at >= ?"
+            since_parameters = [since_value, since_value]
+        limit_clause = ""
+        limit_parameters: list[Any] = []
+        if limit is not None:
+            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10_000:
+                raise ValueError("limit must be an integer between 1 and 10000")
+            limit_clause = "LIMIT ?"
+            limit_parameters.append(limit)
+        parameters = prediction_parameters + since_parameters + post_parameters + limit_parameters
+        try:
+            with self._connect(query_deadline=query_deadline) as conn:
+                rows = conn.execute(
+                    f"""
+                WITH filtered_predictions AS (
+                    SELECT p.*, r.prediction_as_of
+                    FROM ledger_predictions p
+                    JOIN prediction_requests r
+                      ON r.ledger_request_id = p.ledger_request_id
+                    WHERE {prediction_where}
+                ),
+                settlement_history AS (
+                    SELECT source_settlement.settlement_id AS revision_id,
+                           source_settlement.prediction_id,
+                           source_settlement.revision,
+                           'settle' AS action,
+                           source_settlement.actual_time,
+                           source_settlement.residual,
+                           source_settlement.settled_at,
+                           0 AS source_priority
+                    FROM prediction_settlements source_settlement
+                    JOIN filtered_predictions filtered
+                      ON filtered.prediction_id = source_settlement.prediction_id
+                    {legacy_since_clause}
+                    UNION ALL
+                    SELECT source_settlement.revision_id,
+                           source_settlement.prediction_id,
+                           source_settlement.revision,
+                           source_settlement.action,
+                           source_settlement.actual_time,
+                           source_settlement.residual,
+                           source_settlement.created_at AS settled_at,
+                           1 AS source_priority
+                    FROM numeric_settlement_revisions source_settlement
+                    JOIN filtered_predictions filtered
+                      ON filtered.prediction_id = source_settlement.prediction_id
+                    {numeric_since_clause}
+                ),
+                ranked_settlements AS (
+                    SELECT candidate.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY candidate.prediction_id
+                               ORDER BY candidate.revision DESC,
+                                        candidate.source_priority DESC,
+                                        candidate.settled_at DESC,
+                                        candidate.revision_id DESC
+                           ) AS authority_rank
+                    FROM settlement_history candidate
+                ),
+                latest_settlements AS (
+                    SELECT * FROM ranked_settlements WHERE authority_rank = 1
+                )
                 SELECT
                     p.prediction_id, p.competitor_id, p.event_code,
                     p.median_seconds AS predicted_time, p.source,
                     p.engine_version, p.model_version, p.calibration_version,
-                    p.evidence_cutoff, r.prediction_as_of,
+                    p.evidence_cutoff, p.prediction_as_of,
                     p.interval_lower, p.interval_upper,
                     p.interval_coverage, p.interval_coverage AS nominal_coverage,
                     p.interval_state, p.interval_scope,
@@ -773,27 +2180,202 @@ class PredictionLedger:
                          WHEN h.numeric_value < 4 THEN '1-3'
                          ELSE '4+' END AS history_band,
                     s.actual_time, s.residual, s.settled_at, s.revision
-                FROM ledger_predictions p
-                JOIN prediction_requests r ON r.ledger_request_id = p.ledger_request_id
-                JOIN prediction_settlements s ON s.prediction_id = p.prediction_id
+                FROM filtered_predictions p
+                JOIN latest_settlements s ON s.prediction_id = p.prediction_id
                 LEFT JOIN prediction_features h
                   ON h.prediction_id = p.prediction_id
                  AND h.feature_name = 'history_count'
-                WHERE {where}
-                  AND s.revision = (
-                    SELECT MAX(current.revision)
-                    FROM prediction_settlements current
-                    WHERE current.prediction_id = p.prediction_id
-                  )
+                WHERE {post_where}
                 ORDER BY s.settled_at, p.prediction_id
+                {limit_clause}
                 """,
-                parameters,
-            ).fetchall()
+                    parameters,
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if query_deadline is not None and query_deadline.cancelled:
+                raise LedgerQueryTimeoutError(
+                    "bounded training-row query exceeded its deadline"
+                ) from exc
+            raise
         result = [dict(row) for row in rows]
         for row in result:
             if row["history_count"] is not None:
                 row["history_count"] = int(float(row["history_count"]))
         return result
+
+    def count_training_rows(
+        self,
+        *,
+        since: Optional[date | datetime | str] = None,
+        model_version: Optional[str] = None,
+        caller_id: Optional[str] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
+    ) -> int:
+        """Count current eligible evidence with one bounded SQL aggregate."""
+
+        conditions = ["p.training_eligible = 1"]
+        prediction_parameters: list[Any] = []
+        if model_version is not None:
+            conditions.append("p.model_version = ?")
+            prediction_parameters.append(str(model_version))
+        if caller_id is not None:
+            conditions.append("r.caller_id = ?")
+            prediction_parameters.append(_namespaced_identifier(caller_id, "caller_id"))
+        where = " AND ".join(conditions)
+        legacy_since_clause = ""
+        numeric_since_clause = ""
+        since_parameters: list[Any] = []
+        if since is not None:
+            since_value = since.isoformat() if hasattr(since, "isoformat") else str(since)
+            legacy_since_clause = "WHERE source_settlement.settled_at >= ?"
+            numeric_since_clause = "WHERE source_settlement.created_at >= ?"
+            since_parameters = [since_value, since_value]
+        try:
+            with self._connect(query_deadline=query_deadline) as conn:
+                return int(
+                    conn.execute(
+                        f"""
+                    WITH filtered_predictions AS (
+                        SELECT p.prediction_id
+                        FROM ledger_predictions p
+                        JOIN prediction_requests r
+                          ON r.ledger_request_id = p.ledger_request_id
+                        WHERE {where}
+                    ),
+                    settlement_history AS (
+                        SELECT source_settlement.settlement_id AS revision_id,
+                               source_settlement.prediction_id,
+                               source_settlement.revision,
+                               'settle' AS action,
+                               source_settlement.settled_at,
+                               0 AS source_priority
+                        FROM prediction_settlements source_settlement
+                        JOIN filtered_predictions filtered
+                          ON filtered.prediction_id = source_settlement.prediction_id
+                        {legacy_since_clause}
+                        UNION ALL
+                        SELECT source_settlement.revision_id,
+                               source_settlement.prediction_id,
+                               source_settlement.revision,
+                               source_settlement.action,
+                               source_settlement.created_at AS settled_at,
+                               1 AS source_priority
+                        FROM numeric_settlement_revisions source_settlement
+                        JOIN filtered_predictions filtered
+                          ON filtered.prediction_id = source_settlement.prediction_id
+                        {numeric_since_clause}
+                    ),
+                    ranked_settlements AS (
+                        SELECT candidate.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY candidate.prediction_id
+                                   ORDER BY candidate.revision DESC,
+                                            candidate.source_priority DESC,
+                                            candidate.settled_at DESC,
+                                            candidate.revision_id DESC
+                               ) AS authority_rank
+                        FROM settlement_history candidate
+                    ),
+                    latest_settlements AS (
+                        SELECT * FROM ranked_settlements WHERE authority_rank = 1
+                    )
+                    SELECT COUNT(*)
+                    FROM filtered_predictions p
+                    JOIN latest_settlements s ON s.prediction_id = p.prediction_id
+                    WHERE s.action = 'settle'
+                    """,
+                        prediction_parameters + since_parameters,
+                    ).fetchone()[0]
+                )
+        except sqlite3.OperationalError as exc:
+            if query_deadline is not None and query_deadline.cancelled:
+                raise LedgerQueryTimeoutError(
+                    "bounded training-count query exceeded its deadline"
+                ) from exc
+            raise
+
+    @staticmethod
+    def _canonical_json(value: Mapping[str, Any]) -> str:
+        """Serialize an immutable receipt with one stable byte representation."""
+
+        return json.dumps(
+            _json_value(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+
+    @classmethod
+    def _shadow_receipt_core(
+        cls,
+        metadata: Mapping[str, Any],
+        *,
+        request_hash: str,
+        hash_algorithm: str,
+        predictions: Sequence[Mapping[str, Any]],
+        prediction_ids: Sequence[str],
+        timestamp: str,
+    ) -> dict[str, Any]:
+        """Complete caller metadata with ledger-owned prediction identities."""
+
+        if len(predictions) != len(prediction_ids):
+            raise ValueError("receipt prediction identities are incomplete")
+        core = dict(_json_value(metadata))
+        core.setdefault("identity_schema_version", "strathmark.namespaced-identity.v1")
+        core["ledger"] = {
+            "request_hash": request_hash,
+            "hash_algorithm": hash_algorithm,
+        }
+        core["created_at"] = timestamp
+        core["predictions"] = [
+            cls._shadow_prediction_projection(
+                item,
+                prediction_id=prediction_id,
+                ordinal=ordinal,
+            )
+            for ordinal, (prediction_id, item) in enumerate(
+                zip(prediction_ids, predictions, strict=True)
+            )
+        ]
+        return core
+
+    @staticmethod
+    def _shadow_prediction_projection(
+        item: Mapping[str, Any],
+        *,
+        prediction_id: str,
+        ordinal: int,
+    ) -> dict[str, Any]:
+        """Project persisted prediction evidence into the immutable receipt shape."""
+
+        return {
+            "ordinal": ordinal,
+            "prediction_id": prediction_id,
+            "competitor_id": item["competitor_id"],
+            "event_code": item["event_code"],
+            "median_seconds": item["median_seconds"],
+            "assigned_mark": item["assigned_mark"],
+            "source": item["source"],
+            "training_eligible": item["training_eligible"],
+            "versions": {
+                "engine": item["engine_version"],
+                "model": item["model_version"],
+                "calibration": item["calibration_version"],
+            },
+            "evidence_cutoff": item["evidence_cutoff"],
+            "interval": {
+                "lower": item["interval_lower"],
+                "upper": item["interval_upper"],
+                "nominal_coverage": item["interval_coverage"],
+                "calibration_state": item["interval_state"],
+                "scope": item["interval_scope"],
+            },
+            "optimizer": item["optimizer"],
+            "optimizer_metadata": _json_value(item["optimizer_metadata"]),
+            "warnings": list(item["warnings"]),
+            "ignored_factors": list(item["ignored_factors"]),
+        }
 
     @staticmethod
     def _validate_prediction(prediction: LedgerPrediction) -> dict[str, Any]:
@@ -880,6 +2462,8 @@ class PredictionLedger:
         prediction_ids: Sequence[str],
         predictions: Sequence[Mapping[str, Any]],
         timestamp: str,
+        *,
+        receipt_core: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         prediction_rows = []
         feature_rows = []
@@ -925,7 +2509,7 @@ class PredictionLedger:
                         "created_at": timestamp,
                     }
                 )
-        return {
+        ledger_payload = {
             "request": {
                 "ledger_request_id": request_row_id,
                 "caller_id": caller_id,
@@ -939,6 +2523,28 @@ class PredictionLedger:
             "predictions": prediction_rows,
             "features": feature_rows,
         }
+        if receipt_core is None:
+            return ledger_payload
+
+        observation = receipt_core.get("observation")
+        if not isinstance(observation, Mapping):
+            raise ValueError("receipt observation fingerprint metadata must be an object")
+        return {
+            "schema_version": SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION,
+            "kind": "shadow_receipt",
+            "ledger": ledger_payload,
+            "receipt": {
+                "schema_version": SHADOW_RECEIPT_MIRROR_SCHEMA_VERSION,
+                "ledger_request_id": request_row_id,
+                "caller_id": caller_id,
+                "request_id": request_id,
+                "core_schema_version": receipt_core.get("schema_version"),
+                "identity_schema_version": receipt_core.get("identity_schema_version"),
+                "observation_schema_version": observation.get("schema_version"),
+                "observation_fingerprint": observation.get("fingerprint"),
+                "core": dict(receipt_core),
+            },
+        }
 
     @staticmethod
     def _append_outbox(
@@ -949,6 +2555,31 @@ class PredictionLedger:
         payload: Mapping[str, Any],
         timestamp: str,
     ) -> None:
+        outbox_id = str(uuid.uuid4())
+        normalized_payload = _json_value(payload)
+        if (
+            isinstance(normalized_payload, Mapping)
+            and normalized_payload.get("schema_version") == SHADOW_MIRROR_ENVELOPE_SCHEMA_VERSION
+        ):
+            normalized_payload = dict(normalized_payload)
+            if "delivery" in normalized_payload:
+                raise ValueError("mirror delivery metadata is ledger-owned")
+            canonical_payload = json.dumps(
+                normalized_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            payload_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+            normalized_payload["delivery"] = {
+                "schema_version": MIRROR_DELIVERY_SCHEMA_VERSION,
+                "outbox_id": outbox_id,
+                "entity_id": entity_id,
+                "created_at": timestamp,
+                "canonical_payload": canonical_payload,
+                "payload_hash": payload_hash,
+            }
         conn.execute(
             """
             INSERT INTO prediction_mirror_outbox (
@@ -956,10 +2587,10 @@ class PredictionLedger:
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()),
+                outbox_id,
                 kind,
                 entity_id,
-                json.dumps(_json_value(payload), sort_keys=True, separators=(",", ":")),
+                json.dumps(normalized_payload, sort_keys=True, separators=(",", ":")),
                 timestamp,
             ),
         )
@@ -989,7 +2620,10 @@ class PredictionLedger:
         if row["status"] == "recorded":
             return "recorded"
         try:
-            self._mirror(json.loads(row["payload_json"]))
+            payload = json.loads(row["payload_json"])
+            if kind == "settlement":
+                payload = _sanitize_settlement_mirror_payload(payload)
+            self._mirror(payload)
         except Exception:
             status = "failed"
         else:
@@ -1058,88 +2692,247 @@ class PredictionLedger:
         try:
             with self._connect() as conn:
                 return (
-                    conn.execute(
-                        """
+                    conn.execute("""
                         SELECT 1
                         FROM prediction_mirror_outbox o
                         LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
                         WHERE d.status IS NULL OR d.status != 'recorded'
                         LIMIT 1
-                        """
-                    ).fetchone()
+                        """).fetchone()
                     is not None
                 )
         except sqlite3.Error:
             return False
 
-    def _claim_pending_delivery(self, attempted: set[tuple[str, str]]) -> Optional[tuple[str, str]]:
-        """Claim one durable row not already attempted by this worker run."""
+    def _claim_pending_delivery(
+        self,
+        excluded: set[tuple[str, str]] | frozenset[tuple[str, str]],
+        *,
+        after: Optional[tuple[str, str]],
+        attempted_since: Optional[str] = None,
+    ) -> tuple[Optional[tuple[str, str]], Optional[tuple[str, str]], bool]:
+        """Claim one row from a bounded keyset page without starving later work."""
 
         try:
             with self._connect() as conn:
                 rows = conn.execute(
                     """
                     SELECT o.kind, o.entity_id
+                         , o.created_at, o.outbox_id
                     FROM prediction_mirror_outbox o
                     LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
-                    WHERE d.status IS NULL OR d.status != 'recorded'
+                    WHERE (d.status IS NULL OR d.status != 'recorded')
+                      AND (
+                        ? IS NULL OR d.last_attempt_at IS NULL OR d.last_attempt_at < ?
+                      )
+                      AND (
+                        ? IS NULL OR o.created_at > ?
+                        OR (o.created_at = ? AND o.outbox_id > ?)
+                      )
                     ORDER BY o.created_at, o.outbox_id
-                    """
+                    LIMIT ?
+                    """,
+                    (
+                        attempted_since,
+                        attempted_since,
+                        None if after is None else after[0],
+                        None if after is None else after[0],
+                        None if after is None else after[0],
+                        None if after is None else after[1],
+                        MAX_MIRROR_PENDING_SCAN,
+                    ),
                 ).fetchall()
         except sqlite3.Error:
-            return None
+            return None, after, True
+        if not rows:
+            return None, after, True
         with self._worker_lock:
             for row in rows:
+                cursor = (str(row["created_at"]), str(row["outbox_id"]))
                 key = (str(row["kind"]), str(row["entity_id"]))
-                if key in attempted or key in self._delivery_in_flight:
+                if key in excluded or key in self._delivery_in_flight:
                     continue
                 self._delivery_in_flight.add(key)
-                return key
-        return None
+                return key, cursor, False
+        last = rows[-1]
+        cursor = (str(last["created_at"]), str(last["outbox_id"]))
+        return None, cursor, len(rows) < MAX_MIRROR_PENDING_SCAN
 
     def _mirror_worker_loop(self) -> None:
         """Drain scheduled entities serially while durable outbox rows remain authority."""
 
-        attempted: set[tuple[str, str]] = set()
+        # The durable attempt timestamp and keyset cursor prevent repeat work in
+        # this pass without retaining an O(backlog) in-memory key set.
+        attempted_since = _now()
+        scan_cursor: Optional[tuple[str, str]] = None
         while True:
             with self._worker_lock:
                 key = self._delivery_queue.popleft() if self._delivery_queue else None
             if key is None:
-                key = self._claim_pending_delivery(attempted)
+                while key is None:
+                    key, scan_cursor, exhausted = self._claim_pending_delivery(
+                        frozenset(),
+                        after=scan_cursor,
+                        attempted_since=attempted_since,
+                    )
+                    if exhausted:
+                        break
             if key is None:
                 with self._worker_lock:
                     if self._delivery_queue:
                         continue
                     self._mirror_worker = None
                     return
-            attempted.add(key)
             try:
                 self._deliver_pending(*key)
             finally:
                 with self._worker_lock:
                     self._delivery_in_flight.discard(key)
 
-    def flush_mirror_outbox(self, *, limit: int = 100) -> dict[str, int]:
+    def flush_mirror_outbox(
+        self, *, limit: int = 100, caller_id: Optional[str] = None
+    ) -> dict[str, int]:
         """Synchronously retry a bounded number of pending mirror payloads off-path."""
 
         bounded = max(1, min(int(limit), 1000))
+        scoped_caller = (
+            None if caller_id is None else _namespaced_identifier(caller_id, "caller_id")
+        )
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT o.kind, o.entity_id
                 FROM prediction_mirror_outbox o
                 LEFT JOIN prediction_mirror_delivery d ON d.outbox_id = o.outbox_id
-                WHERE d.status IS NULL OR d.status != 'recorded'
-                ORDER BY o.created_at, o.outbox_id
+                WHERE (d.status IS NULL OR d.status != 'recorded')
+                  AND (
+                    ? IS NULL
+                    OR (
+                      o.kind = 'field' AND EXISTS (
+                        SELECT 1 FROM prediction_requests q
+                        WHERE q.ledger_request_id = o.entity_id AND q.caller_id = ?
+                      )
+                    )
+                    OR (
+                      o.kind = 'settlement' AND EXISTS (
+                        SELECT 1 FROM numeric_outcome_revisions r
+                        WHERE r.field_revision_id = o.entity_id AND r.caller_id = ?
+                      )
+                    )
+                  )
+                ORDER BY
+                    CASE WHEN d.last_attempt_at IS NULL THEN 0 ELSE 1 END,
+                    CASE WHEN d.last_attempt_at IS NULL THEN o.created_at END,
+                    CASE WHEN d.last_attempt_at IS NOT NULL THEN d.last_attempt_at END,
+                    o.created_at,
+                    o.outbox_id
                 LIMIT ?
                 """,
-                (bounded,),
+                (scoped_caller, scoped_caller, scoped_caller, bounded),
             ).fetchall()
         summary = {"recorded": 0, "failed": 0, "not_configured": 0}
         for row in rows:
             status = self._deliver_pending(str(row["kind"]), str(row["entity_id"]))
             summary[status] = summary.get(status, 0) + 1
         return summary
+
+    @staticmethod
+    def _validate_numeric_revision(
+        value: NumericSettlementRevision | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        allowed = {
+            "prediction_id",
+            "competitor_id",
+            "event_code",
+            "action",
+            "actual_time",
+            "expected_revision",
+        }
+        if isinstance(value, NumericSettlementRevision):
+            raw = asdict(value)
+        elif isinstance(value, Mapping):
+            raw = dict(value)
+            unknown = sorted(str(key) for key in raw if key not in allowed)
+            if unknown:
+                raise ValueError(f"unknown properties: {', '.join(unknown)}")
+        else:
+            raise ValueError("each revision must be a NumericSettlementRevision or object")
+
+        prediction_id = _identifier(raw.get("prediction_id"), "prediction_id")
+        competitor_id = _namespaced_identifier(raw.get("competitor_id"), "competitor_id")
+        event_code = _event(raw.get("event_code"))
+        action = str(raw.get("action") or "").strip().lower()
+        if action not in {"settle", "void"}:
+            raise ValueError("action must be 'settle' or 'void'")
+        expected_revision = raw.get("expected_revision")
+        if (
+            not isinstance(expected_revision, int)
+            or isinstance(expected_revision, bool)
+            or expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer")
+        if action == "settle":
+            actual_time: Optional[float] = _finite(
+                raw.get("actual_time"), "actual_time", positive=True
+            )
+            if actual_time > MAX_NUMERIC_RAW_TIME_SECONDS:
+                raise ValueError(
+                    f"actual_time must be at most {MAX_NUMERIC_RAW_TIME_SECONDS:g} seconds"
+                )
+        else:
+            if raw.get("actual_time") is not None:
+                raise ValueError("actual_time must be omitted or null for a void")
+            actual_time = None
+        return {
+            "prediction_id": prediction_id,
+            "competitor_id": competitor_id,
+            "event_code": event_code,
+            "action": action,
+            "actual_time": actual_time,
+            "expected_revision": expected_revision,
+        }
+
+    @staticmethod
+    def _numeric_outcome_result(
+        conn: sqlite3.Connection,
+        outcome_row: sqlite3.Row,
+        *,
+        status: str = "recorded",
+        cloud_status: str = "not_configured",
+    ) -> NumericOutcomeRevisionResult:
+        rows = conn.execute(
+            """
+            SELECT * FROM numeric_settlement_revisions
+            WHERE field_revision_id = ?
+            ORDER BY prediction_id
+            """,
+            (outcome_row["field_revision_id"],),
+        ).fetchall()
+        return NumericOutcomeRevisionResult(
+            outcome_revision_id=str(outcome_row["outcome_revision_id"]),
+            ledger_request_id=str(outcome_row["ledger_request_id"]),
+            caller_id=str(outcome_row["caller_id"]),
+            revisions=tuple(
+                NumericSettlementRevisionResult(
+                    revision_id=str(row["revision_id"]),
+                    prediction_id=str(row["prediction_id"]),
+                    revision=int(row["revision"]),
+                    competitor_id=str(row["competitor_id"]),
+                    event_code=str(row["event_code"]),
+                    action=str(row["action"]),
+                    actual_time=(None if row["actual_time"] is None else float(row["actual_time"])),
+                    residual=None if row["residual"] is None else float(row["residual"]),
+                    supersedes_revision_id=row["supersedes_revision_id"],
+                    created_at=str(row["created_at"]),
+                )
+                for row in rows
+            ),
+            actor=str(outcome_row["actor"]),
+            reason_code=outcome_row["reason_code"],
+            created_at=str(outcome_row["created_at"]),
+            status=status,
+            cloud_status=cloud_status,
+        )
 
     @staticmethod
     def _settlement_from_row(row: sqlite3.Row, *, status: str = "recorded") -> SettlementResult:
@@ -1149,8 +2942,8 @@ class PredictionLedger:
             revision=int(row["revision"]),
             actual_time=float(row["actual_time"]),
             residual=float(row["residual"]),
-            actor=str(row["actor"]),
-            reason=row["reason"],
+            actor=_legacy_egress_actor(row["actor"]),
+            reason=_legacy_egress_reason(row["reason"]),
             supersedes_settlement_id=row["supersedes_settlement_id"],
             settled_at=str(row["settled_at"]),
             status=status,

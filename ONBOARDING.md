@@ -21,6 +21,9 @@ Read in this order:
    model, uncertainty, optimizer, ledger, and migration contract.
 3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module and request data flow.
 4. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — race-day runbook and rollback.
+5. [`docs/SHADOW_CONSUMER_CONTRACT.md`](docs/SHADOW_CONSUMER_CONTRACT.md) — the
+   frozen six-route trusted-shadow boundary, dual authentication, readiness, and
+   recovery contract.
 
 ## Mental model
 
@@ -44,6 +47,13 @@ LLM modules are narrative-only.
 - Trusted prediction writes require stable competitor IDs and an idempotency key.
 - Public `/calculate` and `/predict` remain stateless.
 - Database or mirror failure must not block a valid race-day calculation.
+- Trusted `/v1/shadow/calculate` requires a durable single-writer topology and a
+  current verified local evidence snapshot; never claim either from an ephemeral
+  deployment.
+- Every `/v1/shadow/*` request uses both a scoped service bearer credential and a
+  short-lived v2 actor attestation bound to the exact canonical request digest.
+- Receipt-bound settlement and void remain available when current evidence becomes
+  stale or unavailable, so incorrect numeric evidence can still be retracted.
 - Tests must use temporary, isolated databases and never production.
 
 ## Code map
@@ -58,6 +68,7 @@ LLM modules are narrative-only.
 | Joint mark optimizer | `strathmark/mark_optimizer.py` | `tests/test_mark_optimizer.py` |
 | Trusted append-only ledger | `strathmark/ledger.py` | `tests/test_ledger.py` |
 | REST routes and auth | `strathmark/api.py` | `tests/test_api.py` |
+| Trusted shadow receipts and status | `strathmark/shadow.py`, `strathmark/auth.py` | `tests/test_shadow_api.py`, `tests/test_shadow_consumer_contract.py` |
 | Release validation | `scripts/validate_v2.py` | `tests/test_validate_v2.py` |
 | Packaged artifact | `strathmark/models/prediction_v2_core.json` | artifact and wheel tests |
 
@@ -110,6 +121,7 @@ prevents a rerun.
 
 - Deployment and recovery: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - API examples: [`docs/wiki/REST-API.md`](docs/wiki/REST-API.md)
+- Frozen shadow boundary: [`docs/SHADOW_CONSUMER_CONTRACT.md`](docs/SHADOW_CONSUMER_CONTRACT.md)
 - Persistence and privacy: [`docs/wiki/Persistence-and-Database.md`](docs/wiki/Persistence-and-Database.md)
 - Historical decisions: [`docs/solutions/`](docs/solutions/) — check each page's status;
   the old numeric cascade and same-tournament weighting are superseded.

@@ -75,13 +75,16 @@ Public prediction routes are stateless. Authenticated `/ledger/calculate` requir
 request ID and stable competitor IDs, writes one local append-only SQLite transaction,
 and mirrors to Supabase only best-effort through a replayable local outbox. Each ledger
 process uses one bounded worker, which reclaims overflowed and restart-surviving rows
-from that durable outbox. `GET /health?prediction_as_of=YYYY-MM-DD` evaluates artifact
+from that durable outbox. Scans, replay batches, and concurrent work are bounded; the
+append-only queue has no destructive hard cap pending an archive/compaction and
+finite-capacity policy. `GET /health?prediction_as_of=YYYY-MM-DD` evaluates artifact
 compatibility for a historical exclusive cutoff.
 Settlements are immutable revisions. The ledger stores hashes, stable IDs, versions,
 numeric allowlisted features, predictions,
-marks, and settlement provenance—not names, notes, or raw bodies. Migrations 005-006
-force RLS, restrict the append RPC to `service_role`, and preserve versioned request
-hash compatibility without rewriting old evidence.
+marks, and settlement provenance—not names, notes, or raw bodies. Migrations 005-007
+force RLS, restrict append RPCs to `service_role`, preserve versioned request-hash
+compatibility, and add the closed shadow receipt/numeric-revision mirror without
+rewriting old evidence.
 
 For the complete source-controlled contract, see
 [`docs/PREDICTION_ENGINE_V2.md`](../PREDICTION_ENGINE_V2.md).

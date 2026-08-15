@@ -7,6 +7,8 @@ is covered by an integration test gated behind STRATHMARK_TEST_DB.
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from strathmark.drift import (
@@ -384,6 +386,11 @@ def test_evaluate_drift_uses_injected_settled_ledger_only():
     class Ledger:
         def __init__(self):
             self.kwargs = None
+            self.count_kwargs = None
+
+        def count_training_rows(self, **kwargs):
+            self.count_kwargs = kwargs
+            return 2
 
         def get_training_rows(self, **kwargs):
             self.kwargs = kwargs
@@ -411,6 +418,8 @@ def test_evaluate_drift_uses_injected_settled_ledger_only():
 
     assert report.recent_count == 1
     assert ledger.kwargs["model_version"] == "v2"
+    assert ledger.kwargs["limit"] == 5001
+    assert ledger.count_kwargs["model_version"] == "v2"
 
 
 def test_ledger_correction_projects_only_latest_settlement_into_drift(tmp_path):
@@ -474,3 +483,26 @@ def test_ledger_correction_projects_only_latest_settlement_into_drift(tmp_path):
 def test_evaluate_drift_requires_model_version_for_ledger():
     with pytest.raises(ValueError, match="model_version_id"):
         evaluate_drift(ledger=object(), baseline_residuals=[0.0] * 100)
+
+
+def test_sqlite_query_deadline_progress_handler_interrupts_long_read(tmp_path):
+    from strathmark.ledger import PredictionLedger, SQLiteQueryDeadline
+
+    ledger = PredictionLedger(tmp_path / "query-deadline.db")
+    deadline = SQLiteQueryDeadline(timeout_seconds=0.005)
+    conn = ledger._connect(query_deadline=deadline)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+            conn.execute(
+                """
+                WITH RECURSIVE values_to_sum(value) AS (
+                    SELECT 1
+                    UNION ALL
+                    SELECT value + 1 FROM values_to_sum WHERE value < 10000000
+                )
+                SELECT SUM(value) FROM values_to_sum
+                """
+            ).fetchone()
+    finally:
+        conn.close()
+    assert deadline.cancelled is True

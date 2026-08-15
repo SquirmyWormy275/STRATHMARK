@@ -84,7 +84,7 @@ jobs:
         run: pip check
 
       - name: Run API contract tests
-        run: pytest tests/test_api.py -v --tb=short
+        run: pytest tests/test_api.py tests/test_shadow_api.py tests/test_shadow_consumer_contract.py -v --tb=short
 
   optional-ml:
     name: Optional ML artifact and promotion gates (Ubuntu / Python 3.12)
@@ -186,10 +186,47 @@ jobs:
           name: optimizer-capacity-ubuntu-python312
           path: optimizer-capacity-ci.json
 
+  postgres-migration-rehearsal:
+    name: Disposable PostgreSQL migration rehearsal
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: rehearsal
+          POSTGRES_PASSWORD: rehearsal-ci-only
+          POSTGRES_DB: strathmark_rehearsal_controller
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rehearsal -d strathmark_rehearsal_controller"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      STRATHMARK_RUN_POSTGRES_REHEARSAL: "1"
+      STRATHMARK_REHEARSAL_DSN: postgresql://rehearsal:rehearsal-ci-only@127.0.0.1:5432/strathmark_rehearsal_controller
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies and PostgreSQL client
+        run: |
+          pip install -e ".[dev]"
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Exercise migrations 005 and 006 against disposable PostgreSQL
+        run: pytest tests/test_postgres_rehearsal.py -v --tb=short
+
   build:
     name: Installed ${{ matrix.kind }} (${{ matrix.os }} / Python 3.12)
     runs-on: ${{ matrix.os }}
-    needs: [lint, test, api, optional-ml, validation-artifact, golden, optimizer-capacity]
+    needs: [lint, test, api, optional-ml, validation-artifact, golden, optimizer-capacity, postgres-migration-rehearsal]
     strategy:
       fail-fast: false
       matrix:

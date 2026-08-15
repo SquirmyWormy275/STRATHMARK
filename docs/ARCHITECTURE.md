@@ -118,8 +118,12 @@ Public `/predict` and `/calculate` do not write the ledger. Authenticated
 `/ledger/calculate` requires stable IDs and a request key. SQLite is authoritative for
 the race-day write. The canonical request is hashed; names, notes, and the full raw
 payload are not retained. Optional cloud mirroring uses a replayable local outbox plus
-migrations 005-006's service-role RPC, versioned request hashes, and forced RLS. Delivery is off the calculation
-response path; pending or failed delivery is visible in status and non-blocking.
+migrations 005-006's service-role RPC, versioned request hashes, and forced RLS. Migration
+007 adds a distinct versioned shadow RPC for immutable receipt cores and numeric
+settle/void revisions. It mirrors only namespaced identity linkage, observation
+fingerprints, numeric evidence, and delivery metadata; Missoula outcome/context history
+and free text remain outside STRATHMARK. Delivery is off the calculation response path;
+pending or failed delivery is visible in status and non-blocking.
 
 ## Artifact architecture
 

@@ -29,7 +29,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from statistics import NormalDist
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -64,6 +64,22 @@ _NUMERIC_EVIDENCE_FIELDS = frozenset(
     }
 )
 
+ACTIVE_V2_REQUEST_SCHEMA_VERSION = "strathmark.shadow-active-input.v1"
+
+
+def effective_mark_ceiling(event_ceiling: Optional[int]) -> int:
+    """Validate and resolve the mark ceiling without opening a model snapshot."""
+
+    if event_ceiling is None:
+        return 183
+    if isinstance(event_ceiling, bool) or not isinstance(event_ceiling, int):
+        raise ValueError("event_ceiling must be an integer")
+    if event_ceiling <= 3:
+        raise ValueError(f"event_ceiling ({event_ceiling}) must be greater than MARK_FLOOR (3)")
+    if event_ceiling > 183:
+        raise ValueError(f"event_ceiling ({event_ceiling}) must be <= system ceiling (183)")
+    return event_ceiling
+
 
 def _serialize_evidence_value(name: str, value: Any) -> str | float | bool:
     """Serialize one canonical evidence value without changing its domain type."""
@@ -83,6 +99,87 @@ def _is_positive_finite(value: object) -> bool:
     except (TypeError, ValueError, OverflowError):
         return False
     return math.isfinite(number) and number > 0
+
+
+def canonical_active_v2_request(
+    competitors: Sequence[CompetitorRecord],
+    wood: WoodProfile,
+    event_code: str,
+    context: PredictionContext,
+    *,
+    wood_df: Optional[pd.DataFrame] = None,
+    effective_ceiling: int = 183,
+    prediction_bundle: Any = None,
+) -> Dict[str, Any]:
+    """Build the sole canonical projection of active V2 calculation inputs."""
+
+    from strathmark.features import (
+        MISSING_CATEGORY,
+        MODEL_EVIDENCE_FIELDS,
+        build_prior_evidence,
+        resolve_species_properties,
+    )
+
+    core = getattr(prediction_bundle, "core", None)
+    property_frame = wood_df
+    if property_frame is None and callable(getattr(core, "species_property_frame", None)):
+        property_frame = core.species_property_frame()
+    if wood_df is None and callable(getattr(core, "resolve_species_properties", None)):
+        target_properties, target_species_missing = core.resolve_species_properties(wood.species)
+    else:
+        target_properties, target_species_missing = resolve_species_properties(
+            wood.species, wood_df
+        )
+    competitor_payloads = []
+    for record in competitors:
+        gender = str(record.gender or "").strip().upper()
+        gender = gender if gender in {"M", "F"} else MISSING_CATEGORY
+        raw_history = pd.DataFrame(
+            [
+                {
+                    "competitor_id": str(record.competitor_id).strip(),
+                    "event": item.event_code,
+                    "time_seconds": item.time_seconds,
+                    "result_date": item.result_date,
+                    "diameter_mm": item.diameter_mm,
+                    "species": item.species,
+                    "gender": record.gender,
+                }
+                for item in record.history
+            ]
+        )
+        evidence = build_prior_evidence(
+            raw_history,
+            context.prediction_as_of,
+            wood_df=property_frame,
+        ).rows
+        history = [
+            {name: _serialize_evidence_value(name, value) for name, value in row.items()}
+            for row in evidence.loc[:, MODEL_EVIDENCE_FIELDS].to_dict("records")
+        ]
+        history.sort(key=lambda item: tuple(str(item[name]) for name in MODEL_EVIDENCE_FIELDS))
+        competitor_payloads.append(
+            {
+                "competitor_id": str(record.competitor_id).strip(),
+                "gender": gender,
+                "manual_time_override": record.manual_time_override,
+                "history": history,
+            }
+        )
+    return {
+        "event_code": str(event_code).strip().upper(),
+        "prediction_as_of": context.prediction_as_of.isoformat(),
+        "diameter_mm": float(wood.diameter_mm),
+        "species": str(wood.species).strip().upper(),
+        "wood_properties": {
+            **{name: float(value) for name, value in sorted(target_properties.items())},
+            "species_missing": bool(target_species_missing),
+        },
+        "seed": int(context.seed),
+        "engine": str(context.engine or "v2").strip().lower(),
+        "effective_mark_ceiling": int(effective_ceiling),
+        "competitors": competitor_payloads,
+    }
 
 
 def _optimizer_distribution(
@@ -356,20 +453,7 @@ class HandicapCalculator:
             results_df: Legacy compatibility data. V2 never trains on the request path;
                         prediction state comes from the provider's immutable bundle.
         """
-        if event_ceiling is not None:
-            if event_ceiling <= self.MARK_FLOOR:
-                raise ValueError(
-                    f"event_ceiling ({event_ceiling}) must be greater than "
-                    f"MARK_FLOOR ({self.MARK_FLOOR})"
-                )
-            if event_ceiling > self.MARK_CEILING:
-                raise ValueError(
-                    f"event_ceiling ({event_ceiling}) must be <= system ceiling "
-                    f"({self.MARK_CEILING})"
-                )
-            self.effective_ceiling: int = event_ceiling
-        else:
-            self.effective_ceiling = self.MARK_CEILING
+        self.effective_ceiling = effective_mark_ceiling(event_ceiling)
 
         del ollama_url
         self.wood_df: Optional[pd.DataFrame] = wood_df
@@ -456,6 +540,9 @@ class HandicapCalculator:
         tournament_results: Optional[Dict[str, float]] = None,
         manual_overrides: Optional[Dict[str, float]] = None,
         context: Optional[PredictionContext] = None,
+        *,
+        receipt_metadata: Optional[Mapping[str, Any]] = None,
+        prediction_bundle: Any = None,
     ) -> List[MarkResult]:
         """
         Compute handicap marks for all competitors in a heat/round.
@@ -501,7 +588,10 @@ class HandicapCalculator:
 
         # Resolve the exclusive UTC cutoff and atomically snapshot all model,
         # residual, calibration, and provenance state exactly once per field.
-        from strathmark.features import normalize_prediction_as_of, parse_result_date_utc
+        from strathmark.features import (
+            normalize_prediction_as_of,
+            parse_result_date_utc,
+        )
 
         supplied_context = context or PredictionContext()
         cutoff = normalize_prediction_as_of(supplied_context.prediction_as_of)
@@ -511,7 +601,11 @@ class HandicapCalculator:
             seed=supplied_context.seed,
             engine=supplied_context.engine,
         )
-        bundle = self._prediction_provider.snapshot(cutoff)
+        bundle = (
+            prediction_bundle
+            if prediction_bundle is not None
+            else self._prediction_provider.snapshot(cutoff)
+        )
 
         results: List[MarkResult] = []
         posterior_by_result_id: Dict[int, PredictiveDistribution] = {}
@@ -630,6 +724,7 @@ class HandicapCalculator:
             event_code=event_code,
             context=resolved_context,
             prediction_bundle=bundle,
+            receipt_metadata=receipt_metadata,
         )
 
         return results
@@ -644,6 +739,7 @@ class HandicapCalculator:
         event_code: str,
         context: PredictionContext,
         prediction_bundle: Any,
+        receipt_metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """Attempt one non-blocking trusted field write after marks are final."""
 
@@ -721,7 +817,7 @@ class HandicapCalculator:
                         evidence_cutoff=result.evidence_cutoff,
                         interval_lower=interval.lower if interval else None,
                         interval_upper=interval.upper if interval else None,
-                        interval_coverage=interval.nominal_coverage if interval else None,
+                        interval_coverage=(interval.nominal_coverage if interval else None),
                         interval_state=interval.calibration_state if interval else None,
                         interval_scope=interval.scope if interval else None,
                         ignored_factors=tuple(prediction.ignored_factors),
@@ -733,21 +829,35 @@ class HandicapCalculator:
                     )
                 )
 
-            write = self._ledger_sink.record_field(
-                caller_id=self._ledger_caller_id,
-                request_id=str(context.request_id).strip(),
-                request_payload=self._canonical_ledger_request(
-                    competitors,
-                    wood,
-                    event_code,
-                    context,
-                    prediction_bundle=prediction_bundle,
-                ),
-                predictions=ledger_predictions,
-                legacy_request_payload=self._raw_v1_ledger_request(
+            request_payload = self._canonical_ledger_request(
+                competitors,
+                wood,
+                event_code,
+                context,
+                prediction_bundle=prediction_bundle,
+            )
+            if receipt_metadata is not None:
+                calculation_input = receipt_metadata.get("calculation_input")
+                if not isinstance(calculation_input, Mapping):
+                    raise ValueError("receipt calculation_input must be an object")
+                request_payload = dict(calculation_input)
+            record_kwargs: Dict[str, Any] = {
+                "caller_id": self._ledger_caller_id,
+                "request_id": str(context.request_id).strip(),
+                "request_payload": request_payload,
+                "predictions": ledger_predictions,
+                "legacy_request_payload": self._raw_v1_ledger_request(
                     competitors, wood, event_code, context
                 ),
-            )
+            }
+            if receipt_metadata is not None:
+                record_kwargs["receipt_metadata"] = self._complete_receipt_metadata(
+                    receipt_metadata,
+                    competitors=competitors,
+                    context=context,
+                    prediction_bundle=prediction_bundle,
+                )
+            write = self._ledger_sink.record_field(**record_kwargs)
             if len(write.prediction_ids) != len(results):
                 raise RuntimeError("ledger returned an incomplete prediction ID set")
             for result, prediction_id in zip(results, write.prediction_ids, strict=True):
@@ -766,41 +876,32 @@ class HandicapCalculator:
             result.ledger_recorded = recorded
             result.ledger_status = status
 
-    def _canonical_ledger_request(
+    def _complete_receipt_metadata(
         self,
-        competitors: Sequence[CompetitorRecord],
-        wood: WoodProfile,
-        event_code: str,
-        context: PredictionContext,
+        metadata: Mapping[str, Any],
         *,
-        prediction_bundle: Any = None,
+        competitors: Sequence[CompetitorRecord],
+        context: PredictionContext,
+        prediction_bundle: Any,
     ) -> Dict[str, Any]:
-        """Return the active-v2 request projection used by prediction itself."""
+        """Project artifact and causal evidence facts into an immutable core."""
 
-        from strathmark.features import (
-            MISSING_CATEGORY,
-            MODEL_EVIDENCE_FIELDS,
-            build_prior_evidence,
-            resolve_species_properties,
-        )
+        from strathmark.features import build_prior_evidence
 
         core = getattr(prediction_bundle, "core", None)
+        artifact_fingerprint = getattr(core, "artifact_fingerprint", None)
+        try:
+            artifact_digest = (
+                str(artifact_fingerprint()) if callable(artifact_fingerprint) else None
+            )
+        except Exception:
+            artifact_digest = None
+
         property_frame = self.wood_df
         if property_frame is None and callable(getattr(core, "species_property_frame", None)):
             property_frame = core.species_property_frame()
-        if self.wood_df is None and callable(getattr(core, "resolve_species_properties", None)):
-            target_properties, target_species_missing = core.resolve_species_properties(
-                wood.species
-            )
-        else:
-            target_properties, target_species_missing = resolve_species_properties(
-                wood.species, self.wood_df
-            )
-
-        competitor_payloads = []
-        for record in competitors:
-            gender = str(record.gender or "").strip().upper()
-            gender = gender if gender in {"M", "F"} else MISSING_CATEGORY
+        diagnostics = []
+        for ordinal, record in enumerate(competitors):
             raw_history = pd.DataFrame(
                 [
                     {
@@ -819,35 +920,52 @@ class HandicapCalculator:
                 raw_history,
                 context.prediction_as_of,
                 wood_df=property_frame,
-            ).rows
-            history = []
-            for row in evidence.loc[:, MODEL_EVIDENCE_FIELDS].to_dict("records"):
-                history.append(
-                    {name: _serialize_evidence_value(name, value) for name, value in row.items()}
-                )
-            history.sort(key=lambda item: tuple(str(item[name]) for name in MODEL_EVIDENCE_FIELDS))
-            competitor_payloads.append(
+            )
+            diagnostics.append(
                 {
+                    "ordinal": ordinal,
                     "competitor_id": str(record.competitor_id).strip(),
-                    "gender": gender,
-                    "manual_time_override": record.manual_time_override,
-                    "history": history,
+                    "total_rows": evidence.diagnostics.total_rows,
+                    "included_rows": evidence.diagnostics.included_rows,
+                    "excluded_rows": evidence.diagnostics.excluded_rows,
+                    "excluded_by_reason": dict(
+                        sorted(evidence.diagnostics.excluded_by_reason.items())
+                    ),
+                    "canonicalization_version": evidence.canonicalization_version,
                 }
             )
         return {
-            "event_code": event_code,
-            "prediction_as_of": context.prediction_as_of.isoformat(),
-            "diameter_mm": float(wood.diameter_mm),
-            "species": str(wood.species).strip().upper(),
-            "wood_properties": {
-                **{name: float(value) for name, value in sorted(target_properties.items())},
-                "species_missing": bool(target_species_missing),
+            **dict(metadata),
+            "artifact": {
+                "provider_source": str(getattr(prediction_bundle, "source", "")),
+                "source_digest": getattr(core, "source_checksum", None),
+                "artifact_digest": artifact_digest,
+                "model_version": getattr(prediction_bundle, "core_version", None),
+                "calibration_version": getattr(prediction_bundle, "calibration_version", None),
+                "residual_version": getattr(prediction_bundle, "residual_version", None),
             },
-            "seed": int(context.seed),
-            "engine": str(context.engine or "v2").strip().lower(),
-            "effective_mark_ceiling": int(self.effective_ceiling),
-            "competitors": competitor_payloads,
+            "evidence_diagnostics": diagnostics,
         }
+
+    def _canonical_ledger_request(
+        self,
+        competitors: Sequence[CompetitorRecord],
+        wood: WoodProfile,
+        event_code: str,
+        context: PredictionContext,
+        *,
+        prediction_bundle: Any = None,
+    ) -> Dict[str, Any]:
+        """Return the active-v2 request projection used by prediction itself."""
+        return canonical_active_v2_request(
+            competitors,
+            wood,
+            event_code,
+            context,
+            wood_df=self.wood_df,
+            effective_ceiling=self.effective_ceiling,
+            prediction_bundle=prediction_bundle,
+        )
 
     def _raw_v1_ledger_request(
         self,
