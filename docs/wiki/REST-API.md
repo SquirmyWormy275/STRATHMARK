@@ -67,6 +67,7 @@ competitor-by-simulation cell limit and one concurrent simulation per process. I
 post-mark audit, separate from the optimizer's fixed 2,048 samples.
 
 The canonical [Shadow Consumer Contract](../SHADOW_CONSUMER_CONTRACT.md) freezes the
-route schemas, non-200 response matrix, roles, limits, examples, and checksum. See the
-repository's `STRATHMARK API.txt` for legacy request/response details and [Prediction
-Engine V2](Prediction-Engine-V2) for numeric semantics.
+route schemas, non-200 response matrix, roles, limits, examples, and checksum. The
+repository's `STRATHMARK API.txt` is the concise base-route 2.0 reference. Live
+OpenAPI and the frozen consumer contract are authoritative for the six shadow routes.
+See [Prediction Engine V2](Prediction-Engine-V2) for numeric semantics.

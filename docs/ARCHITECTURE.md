@@ -149,7 +149,8 @@ availability.
 ## Downstream boundary
 
 STRATHMARK is the reusable engine; STRATHEX and tournament applications are consumers.
-Consumers should pin `strathmark==2.0.*`, pass stable competitor IDs and an explicit
-cutoff, inspect warnings/degraded state, and treat legacy context fields as inactive.
+Until a 2.0 release exists, consumers should pin exact commit
+`da5c44d07311b226c1e9842104477efaf61253fa`, pass stable competitor IDs and an
+explicit cutoff, inspect warnings/degraded state, and treat legacy context fields as inactive.
 Tournament software is expected eventually to capture the deferred factors; capture
 alone does not activate them until a future model version validates them.

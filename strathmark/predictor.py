@@ -1,27 +1,22 @@
 """
-Prediction Types and Cascade Orchestration
-==========================================
+Prediction Engine Types and Compatibility Helpers
+=================================================
 
-This module defines the data types used across the prediction cascade and the
-CompetitorRecord / WoodProfile value objects that callers provide to
-HandicapCalculator.
+This module defines the CompetitorRecord, WoodProfile, PredictionContext, and
+PredictionResult values used by HandicapCalculator. The default 2.0 provider uses the
+validated prior-only core with an explicit exclusive cutoff. Manual overrides remain
+operator authority; the residual model is inactive unless separately promoted.
 
-It also exposes the top-level function get_best_prediction() which implements
-the full cascade:
+Legacy baseline, ML, expected-error, and numeric-LLM helpers remain available only for
+rollback and compatibility. They do not describe or own the default V2 field path.
 
-    Priority 1 -- Manual override (operator-supplied time)
-    Priority 2 -- LLM quality-adjusted baseline (requires Ollama)
-    Priority 3 -- ML model (XGBoost trained on historical data)
-    Priority 4 -- Weighted baseline (time-decay weighted historical average)
-    Priority 5 -- Panel mark fallback (division-based default)
-
-All predictions return a PredictionResult with:
+Predictions return a PredictionResult with:
     value       -- predicted time in seconds (float)
     confidence  -- 'VERY HIGH' | 'HIGH' | 'MEDIUM' | 'LOW' | 'VERY LOW'
     method      -- which cascade level produced the result
     explanation -- plain-text description of the reasoning
 
-Source references (STRATHEX):
+Legacy source references (STRATHEX):
     woodchopping/predictions/prediction_aggregator.py -> get_all_predictions()
     woodchopping/predictions/prediction_aggregator.py -> select_best_prediction()
     woodchopping/predictions/ai_predictor.py          -> predict_competitor_time_with_ai()
@@ -239,7 +234,7 @@ class HistoricalResult:
     """Wood quality at time of event (1-10 scale; 5 = average)."""
 
     result_date: Optional[date] = None
-    """Date of competition. None disables time-decay for this result."""
+    """Competition date. V2 excludes undated, same-day, and future evidence."""
 
     heat_id: Optional[str] = None
     """Optional identifier linking results to a specific tournament heat."""
@@ -268,12 +263,11 @@ class CompetitorRecord:
     """Display name used for all output."""
 
     history: List[HistoricalResult] = field(default_factory=list)
-    """Historical results, any order. Time-decay weighting is applied internally."""
+    """Historical results, any order; V2 uses only dated evidence before the cutoff."""
 
     division: Optional[str] = None
     """
-    Competition division. Used for panel mark fallback when no history exists.
-    Recognized values: 'Open', 'Novice', 'Junior', 'Veterans', 'Womens'.
+    Legacy compatibility field. V2 accepts but does not use division numerically.
     """
 
     manual_time_override: Optional[float] = None
@@ -284,20 +278,13 @@ class CompetitorRecord:
 
     tournament_time: Optional[float] = None
     """
-    Actual time from an earlier round in the SAME tournament on the SAME wood.
-    Weight applied depends on num_tournament_rounds (see graduated weighting below).
-    Confidence is upgraded to VERY HIGH.
+    Legacy compatibility field. V2 accepts but does not numerically reweight
+    same-tournament results.
     """
 
     num_tournament_rounds: int = 1
     """
-    Number of rounds already completed in this tournament for this event.
-    Used to graduate the tournament weight:
-        1 round -> 65%  (single data point, still uncertain)
-        2 rounds -> 80%
-        3 rounds -> 90%
-        4+ rounds -> 97%
-    Only used when tournament_time is set.
+    Legacy compatibility field; it has no numeric effect in V2.
     """
 
     personal_scaling_exponent: Optional[float] = None
@@ -329,8 +316,8 @@ class WoodProfile:
     """
     Wood characteristics for a single event.
 
-    These values drive diameter scaling, species-hardness lookup, and
-    the quality multiplier applied during prediction.
+    Species and diameter inform V2. Quality is accepted for compatibility but has no
+    numeric effect in 2.0.0.
     """
 
     species: str
@@ -347,10 +334,7 @@ class WoodProfile:
 
     quality: int
     """
-    Wood firmness rating 1-10.
-        1-3  = Soft/rotten (faster times, multiplier ~0.85-0.92)
-        4-6  = Average firmness (baseline reference; 5 = no adjustment)
-        7-10 = Above average / very hard (slower times, multiplier ~1.05-1.15)
+    Legacy 1-10 quality field. Accepted but numerically inactive in V2.
     """
 
 

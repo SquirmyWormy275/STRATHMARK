@@ -2,7 +2,7 @@
 Wood Properties and Factors
 ============================
 
-Species hardness lookup, diameter scaling, and quality adjustment.
+Species hardness lookup, diameter scaling, and legacy quality helpers.
 
 This module provides all wood-related computations needed before time
 prediction can occur:
@@ -17,7 +17,7 @@ prediction can occur:
        The exponent is calibrated from historical data when enough
        multi-diameter pairs exist; falls back to 1.4 otherwise.
 
-    3. Quality adjustment
+    3. Legacy quality adjustment helpers (not used numerically by V2)
        Wood firmness rated 1-10 (5 = average reference, no adjustment).
        Linear Janka adjustment: effective_janka = base_janka * (1 + (quality-5)*0.1)
            quality 1  -> 0.6x base Janka (very soft/rotten, faster times)

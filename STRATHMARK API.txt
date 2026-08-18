@@ -1,10 +1,13 @@
 STRATHMARK 2.0.0 REST API
 =========================
 
+This is the concise reference for the base 2.0 routes. Live OpenAPI and
+docs/SHADOW_CONSUMER_CONTRACT.md are authoritative for trusted-shadow routes.
+
 Start locally
 -------------
 
-    pip install "strathmark[api]"
+    python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
     uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 
 Interactive OpenAPI documentation is available at /docs. JSON examples below omit

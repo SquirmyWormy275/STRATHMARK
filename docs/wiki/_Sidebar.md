@@ -8,6 +8,7 @@
 - [Installation](Installation)
 - [Quick Start](Quick-Start)
 - [REST API](REST-API)
+- [STRATHEX Consumer](STRATHEX-Consumer)
 
 **How it works**
 

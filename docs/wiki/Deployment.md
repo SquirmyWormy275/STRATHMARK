@@ -1,6 +1,7 @@
 # Deployment
 
-1. Pin `strathmark==2.0.*` and install only needed extras.
+1. Pin commit `da5c44d07311b226c1e9842104477efaf61253fa` and install only
+   needed extras; no 2.0 package release exists yet.
 2. Run `python train_model.py` from a checkout to verify published checksums/report.
 3. Run deployment/API fallback tests and `scripts/validate_deployment.py`.
 4. Start the service and inspect `/health`.
