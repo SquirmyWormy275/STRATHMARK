@@ -1,0 +1,41 @@
+name: STRATHEX Migration Export
+
+on:
+  push:
+    branches:
+      - agent/strathex-migration-export
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Package pinned and current source
+        shell: bash
+        run: |
+          git archive --format=tar.gz \
+            --output="$RUNNER_TEMP/strathmark-pinned-47bb143.tar.gz" \
+            47bb143
+          git archive --format=tar.gz \
+            --output="$RUNNER_TEMP/strathmark-current-main.tar.gz" \
+            HEAD
+
+      - name: Upload engine sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: strathmark-migration-sources
+          path: |
+            ${{ runner.temp }}/strathmark-pinned-47bb143.tar.gz
+            ${{ runner.temp }}/strathmark-current-main.tar.gz
+          if-no-files-found: error
+          retention-days: 1
