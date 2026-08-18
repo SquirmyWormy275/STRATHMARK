@@ -1,8 +1,8 @@
 # STRATHEX Consumer Migration: 0.4.1 to 2.0.0
 
-This is the downstream contract for STRATHEX 7.0.0. STRATHEX pins STRATHMARK commit
-`da5c44d07311b226c1e9842104477efaf61253fa` because no 2.0 tag or package release
-exists yet.
+This is the downstream contract for STRATHEX 7.0.0. STRATHMARK 2.0.0 is published as
+the immutable `v2.0.0` Git tag and GitHub release. STRATHEX records the exact commit
+behind that release in its dependency pin for reproducible race-day installs.
 
 ## Runtime boundary
 
@@ -78,4 +78,3 @@ Before changing the pinned STRATHMARK commit:
 4. Rehearse any ResultStore schema migration on a copied database.
 5. Review mark changes against a representative, non-production fixture.
 6. Update STRATHEX's runtime contract, release notes, help text, and wiki together.
-

@@ -6,15 +6,16 @@ not prerequisites for numeric marks.
 
 ## 1. Prepare
 
-Install the exact reviewed commit and only the extras the host actually needs:
+Install the immutable release tag and only the extras the host actually needs:
 
 ```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"  # REST host only
+python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
+python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"  # REST host only
 ```
 
-No 2.0 tag, GitHub release, or PyPI distribution exists yet. Replace the Git pin only
-after a reviewed release is published.
+The `v2.0.0` Git tag and GitHub release are the supported distribution. There is no
+PyPI distribution for this version. High-assurance consumers may pin the exact commit
+behind the release tag.
 
 The validated core artifact is packaged at
 `strathmark/models/prediction_v2_core.json`. Do not download or train a model during an

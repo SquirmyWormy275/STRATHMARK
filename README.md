@@ -12,13 +12,14 @@ interfaces.
 ## Install
 
 ```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
+python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
+python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
 ```
 
-There is not yet a STRATHMARK 2.0 tag, GitHub release, or PyPI distribution. Until
-one is published, production consumers must use the exact reviewed commit above.
-Other optional extras are `ml`, `db`, `llm`, and `dev`.
+STRATHMARK 2.0.0 is published as the immutable `v2.0.0` Git tag and GitHub release;
+there is no PyPI distribution for this version. Production consumers may pin the
+exact release commit for an even stricter lock. Other optional extras are `ml`, `db`,
+`llm`, and `dev`.
 
 The NumPy/Pandas V2 core and its validated JSON artifact ship in the base package. No
 network, database, LLM, or native ML library is required to calculate marks.

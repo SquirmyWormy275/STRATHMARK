@@ -1,7 +1,7 @@
 # Deployment
 
-1. Pin commit `da5c44d07311b226c1e9842104477efaf61253fa` and install only
-   needed extras; no 2.0 package release exists yet.
+1. Install immutable release tag `v2.0.0` (or pin its exact commit) and only the
+   needed extras. This version is distributed through GitHub, not PyPI.
 2. Run `python train_model.py` from a checkout to verify published checksums/report.
 3. Run deployment/API fallback tests and `scripts/validate_deployment.py`.
 4. Start the service and inspect `/health`.
