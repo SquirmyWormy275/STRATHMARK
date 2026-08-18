@@ -3,13 +3,13 @@
 Python 3.10 or newer is required.
 
 ```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
+python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
+python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
 ```
 
-There is not yet a 2.0 tag, GitHub release, or PyPI distribution. Pin the exact
-reviewed commit until one is published. Optional extras are `api`, `ml`, `db`, `llm`,
-and `dev`.
+Version 2.0.0 is published as the immutable `v2.0.0` Git tag and GitHub release;
+there is no PyPI distribution for this version. High-assurance consumers may pin the
+exact release commit. Optional extras are `api`, `ml`, `db`, `llm`, and `dev`.
 
 The V2 NumPy/Pandas core and validated JSON artifact are in the base wheel. Installing
 `ml` does not activate a residual model; promotion evidence and a compatible artifact

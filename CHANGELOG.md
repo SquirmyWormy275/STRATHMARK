@@ -4,6 +4,12 @@ All notable changes to STRATHMARK will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-18
+
+Prediction Engine V2 replaces the numeric Manual/LLM/ML/baseline cascade with one
+reproducible, prior-only prediction system while retaining the five legacy result keys
+for compatibility.
+
 ### Hardening
 
 - Added adversarial causal and artifact validation, trusted-ledger admission and
@@ -27,12 +33,8 @@ All notable changes to STRATHMARK will be documented in this file.
   The RPC recomputes each delivery digest from an explicit JSON body, validates the
   frozen nested receipt contract, and requires receipt prediction identities to exactly
   match the embedded ledger without duplicates.
-
-## [2.0.0] - 2026-08-11
-
-Prediction Engine V2 replaces the numeric Manual/LLM/ML/baseline cascade with one
-reproducible, prior-only prediction system while retaining the five legacy result keys
-for compatibility.
+- Published the STRATHEX 7 consumer migration contract and reconciled maintained
+  deployment, REST, architecture, installation, and wiki guidance.
 
 ### Added
 
