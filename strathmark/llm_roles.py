@@ -2,9 +2,9 @@
 Expanded LLM Roles
 ==================
 
-Additional LLM-powered features beyond the core quality adjustment.
-All functions use JSON schema enforcement and gracefully return None
-if Ollama is unavailable.
+Narrative-only LLM features outside the numeric prediction core. All functions use
+JSON schema enforcement and gracefully return None if Ollama is unavailable. They
+cannot change a V2 predicted time or mark.
 
 Roles:
     generate_competitor_profile()  -- spectator-facing competitor narrative

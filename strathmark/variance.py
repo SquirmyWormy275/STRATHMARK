@@ -402,7 +402,7 @@ def run_monte_carlo_simulation(
                      'name', 'mark', 'predicted_time', and optionally
                      'performance_std_dev' or 'std_dev'.
                      Same format as simulate_single_race().
-        num_simulations: Number of race iterations (default 2M for high precision).
+        num_simulations: Number of race iterations (default 500,000).
         heat_variance_seconds: Shared heat-level noise std-dev.
         seed: Optional random seed for reproducibility.
         include_finish_spreads: Include the per-race spread list in the returned

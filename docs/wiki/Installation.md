@@ -3,13 +3,15 @@
 Python 3.10 or newer is required.
 
 ```bash
-pip install strathmark
-pip install "strathmark[api]"       # FastAPI and Uvicorn
-pip install "strathmark[ml]"        # optional residual tooling
-pip install "strathmark[db]"        # Supabase helpers
-pip install "strathmark[llm]"       # narrative-only Ollama/Gemini features
-pip install "strathmark[dev]"       # tests and Ruff
+python -m pip install \
+  "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
+python -m pip install \
+  "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
 ```
+
+There is not yet a 2.0 tag, GitHub release, or PyPI distribution. Pin the exact
+reviewed commit until one is published. Optional extras are `api`, `ml`, `db`, `llm`,
+and `dev`.
 
 The V2 NumPy/Pandas core and validated JSON artifact are in the base wheel. Installing
 `ml` does not activate a residual model; promotion evidence and a compatible artifact

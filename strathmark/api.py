@@ -7,12 +7,11 @@ FastAPI server exposing STRATHMARK's handicap engine over HTTP.
 Designed for future projects (web apps, mobile, non-Python consumers)
 that cannot use the Python import API directly.
 
-Start the server:
-    pip install strathmark[api]
+Start the server after installing the ``api`` extra from the selected package source:
     uvicorn strathmark.api:app --host 0.0.0.0 --port 8000
 
-STRATHEX (Python) uses the direct import API (zero overhead).
-Other projects use this HTTP API.
+STRATHEX uses the direct import API for offline operation and can select this REST API
+explicitly for integration demonstrations. Other projects may use either interface.
 
 Endpoints:
     GET  /health                   -- Check Ollama and store availability
@@ -114,7 +113,7 @@ from strathmark.variance import run_monte_carlo_simulation
 if not _FASTAPI_AVAILABLE:
     raise ImportError(
         "FastAPI and uvicorn are required to run the STRATHMARK HTTP API.\n"
-        "Install them with: pip install strathmark[api]\n"
+        "Install the 'api' extra from your selected STRATHMARK package source.\n"
         "  or: pip install fastapi uvicorn[standard]"
     )
 
@@ -1582,9 +1581,10 @@ def predict(
     prediction_provider: PredictionEngineProvider = Depends(get_prediction_provider),
 ) -> PredictResponse:
     """
-    Run all prediction methods for a single competitor and return all results.
+    Return single-competitor prediction diagnostics.
 
-    Useful for the 3-column prediction display in STRATHEX.
+    Field handicaps must use /calculate so one immutable model bundle and the joint
+    optimizer own every mark in the field.
     """
     record = _to_competitor_record(req.competitor)
     wood = _to_wood_profile(req.wood)

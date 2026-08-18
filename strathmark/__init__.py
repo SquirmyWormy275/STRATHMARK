@@ -2,7 +2,7 @@
 strathmark — Woodchopping Handicap Engine
 ==========================================
 
-A pip-installable Python package that exposes the STRATHEX handicap calculation
+A Python package that exposes the STRATHMARK handicap calculation
 engine for use in external applications (tournament software, scoring apps, etc.).
 
 Quick start
@@ -41,10 +41,9 @@ Design Rules (invariants enforced in all submodules)
     - Output:        plain text only — no emojis, no ANSI color codes
     - Style:         lean and simple, no unnecessary complexity
 
-Live integration (editable install):
-    pip install -e ./STRATHMARK
-    Improvements to STRATHMARK are immediately available to STRATHEX on next run.
-    No rebuild or reinstall required.
+Downstream integration:
+    Pin an immutable reviewed release or commit. STRATHEX uses direct Python for its
+    offline default and may select the REST /calculate transport explicitly.
 """
 
 from strathmark.auth import (

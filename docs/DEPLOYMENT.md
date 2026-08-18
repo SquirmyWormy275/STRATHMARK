@@ -6,12 +6,17 @@ not prerequisites for numeric marks.
 
 ## 1. Prepare
 
-Install the exact release and the extras the host actually needs:
+Install the exact reviewed commit and only the extras the host actually needs:
 
 ```bash
-pip install "strathmark==2.0.*"
-pip install "strathmark[api]==2.0.*"   # REST host only
+python -m pip install \
+  "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
+python -m pip install \
+  "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"  # REST host only
 ```
+
+No 2.0 tag, GitHub release, or PyPI distribution exists yet. Replace the Git pin only
+after a reviewed release is published.
 
 The validated core artifact is packaged at
 `strathmark/models/prediction_v2_core.json`. Do not download or train a model during an
@@ -59,7 +64,7 @@ Check `GET /health` (or `GET /health?prediction_as_of=YYYY-MM-DD` for a backdate
 Before accepting calculations, confirm:
 
 - `prediction_engine.core.available` is true;
-- `prediction_engine.core.compatible` is true for the intended cutoff;
+- `prediction_engine.core.compatible_with_cutoff` is true for the intended cutoff;
 - calibration is available;
 - expected core/calibration versions are shown;
 - `source` is the intended environment, local, or package source;
