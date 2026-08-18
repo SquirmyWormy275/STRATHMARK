@@ -9,10 +9,8 @@ not prerequisites for numeric marks.
 Install the exact reviewed commit and only the extras the host actually needs:
 
 ```bash
-python -m pip install \
-  "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
-python -m pip install \
-  "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"  # REST host only
+python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"
+python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@da5c44d07311b226c1e9842104477efaf61253fa"  # REST host only
 ```
 
 No 2.0 tag, GitHub release, or PyPI distribution exists yet. Replace the Git pin only
