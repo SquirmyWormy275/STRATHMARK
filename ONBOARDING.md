@@ -3,6 +3,18 @@
 STRATHMARK 2.0.0 is an offline-capable woodchopping prediction and handicap-mark
 engine. Start with the current mechanism, not the historical cascade documents.
 
+## Mandatory domain gate
+
+Before reading model or implementation details, read
+[`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md) in full. It is the
+project source of truth for what a woodchopping handicap is, how the staggered start
+works, why smaller marks start earlier, how common-offset rebasing preserves a race,
+and why displayed marks from independently rebased fields are not directly portable.
+
+This requirement applies to human contributors, coding agents, reviewers, model
+systems, and downstream consumers. Association-specific rules are context, not a
+replacement for the domain foundation.
+
 ## First five minutes
 
 ```bash
@@ -16,12 +28,14 @@ not retrain or reopen the locked test.
 
 Read in this order:
 
-1. [`README.md`](README.md) — install and public usage.
-2. [`docs/PREDICTION_ENGINE_V2.md`](docs/PREDICTION_ENGINE_V2.md) — active evidence,
+1. [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md) — mandatory
+   handicap-domain source of truth.
+2. [`README.md`](README.md) — install and public usage.
+3. [`docs/PREDICTION_ENGINE_V2.md`](docs/PREDICTION_ENGINE_V2.md) — active evidence,
    model, uncertainty, optimizer, ledger, and migration contract.
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module and request data flow.
-4. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — race-day runbook and rollback.
-5. [`docs/SHADOW_CONSUMER_CONTRACT.md`](docs/SHADOW_CONSUMER_CONTRACT.md) — the
+4. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module and request data flow.
+5. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — race-day runbook and rollback.
+6. [`docs/SHADOW_CONSUMER_CONTRACT.md`](docs/SHADOW_CONSUMER_CONTRACT.md) — the
    frozen six-route trusted-shadow boundary, dual authentication, readiness, and
    recovery contract.
 

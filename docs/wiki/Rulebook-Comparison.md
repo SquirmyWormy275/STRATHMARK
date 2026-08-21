@@ -1,8 +1,12 @@
 # Rulebook and Model Boundaries
 
-STRATHMARK enforces the repository's AAA-compatible calculation invariants: a 3-second
-minimum mark, a system ceiling of 183 seconds (with lower event ceilings allowed),
-integer marks, and a deterministic bounded fallback.
+Read [Woodchopping Handicap Foundations](Handicap-Mark-Math) first. It is the domain
+source of truth; this page only separates model policy from governing rules.
+
+STRATHMARK enforces a 3-second minimum mark, a system ceiling of 183 seconds (with
+lower event ceilings allowed), integer marks, and a deterministic bounded fallback.
+The reviewed AAA/QAA context supports the 3-second minimum. The 183-second ceiling is
+a STRATHMARK event-duration safety boundary, not a claimed universal association rule.
 
 Rulebooks define competition authority and procedures. Prediction Engine V2 is a
 statistical aid for the handicapper; it does not replace show officials or add rules for

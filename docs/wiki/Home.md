@@ -4,7 +4,8 @@ STRATHMARK 2.0.0 is an offline-capable woodchopping prediction and handicap-mark
 engine. It uses strictly prior evidence, returns calibrated positive finish-time
 distributions, and assigns marks jointly for a field.
 
-Start with [Prediction Engine V2](Prediction-Engine-V2), then follow the [Quick
+Start with the mandatory [Woodchopping Handicap Foundations](Handicap-Mark-Math) domain
+guide. Then read [Prediction Engine V2](Prediction-Engine-V2) and follow the [Quick
 Start](Quick-Start) or [REST API](REST-API).
 
 ## Stable rules

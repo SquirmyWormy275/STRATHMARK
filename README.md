@@ -161,6 +161,8 @@ readiness gates, frozen OpenAPI checksum, and the complete offline lifecycle.
 
 ## Documentation
 
+- [Woodchopping Handicap Foundations](docs/wiki/Handicap-Mark-Math.md) — mandatory
+  domain reading for contributors, agents, and downstream systems
 - [Prediction Engine V2](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md)
 - [Architecture](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md)
 - [Deployment runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md)

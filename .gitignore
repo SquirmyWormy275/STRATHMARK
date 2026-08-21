@@ -46,7 +46,6 @@ htmlcov/
 STRATHMARK API.txt
 *.secrets.txt
 
-# Local agent / editor config (per-developer, not portfolio content)
-CLAUDE.md
+# Local agent / editor state (per-developer, not portfolio content).
+# Repository-wide AGENTS.md and CLAUDE.md instructions are intentionally tracked.
 .claude/
-AGENTS.md

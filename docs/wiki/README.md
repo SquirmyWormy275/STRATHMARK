@@ -4,6 +4,10 @@ This directory is the canonical source for the STRATHMARK GitHub wiki. Wiki chan
 must be reviewed with the matching code release and copied one-way to
 `STRATHMARK.wiki.git`.
 
+`Handicap-Mark-Math.md` is the mandatory domain source of truth for what a
+woodchopping handicap is and does. Agent and system onboarding must begin there before
+the model-specific pages.
+
 `Prediction-Engine-V2.md` is the primary model page. `Prediction-Cascade.md` is retained
 only because external links may still use that name; it now documents the compatibility
 key mapping rather than the retired numeric cascade.

@@ -14,7 +14,7 @@
 
 - [Architecture Overview](Architecture-Overview)
 - [Legacy Key Mapping](Prediction-Cascade)
-- [Handicap Mark Math](Handicap-Mark-Math)
+- [Woodchopping Handicap Foundations](Handicap-Mark-Math)
 - [Wood and Diameter](Wood-and-Diameter-Scaling)
 - [Prior-Only Recency](Time-Decay-Weighting)
 - [Variance and Monte Carlo](Variance-and-Monte-Carlo)

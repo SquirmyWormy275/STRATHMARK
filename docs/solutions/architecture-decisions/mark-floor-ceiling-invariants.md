@@ -16,11 +16,19 @@ last_updated: 2026-04-21
 # Mark Floor and Ceiling Invariants
 
 ## Context
-STRATHMARK computes handicap marks for woodchopping competitions. The mark system has domain-imposed bounds that must never be violated: marks are seconds-of-head-start assigned by a human panel of experts, and the bounds are fixed by competition rules, not by algorithmic choice.
+STRATHMARK computes handicap marks for woodchopping competitions. The engine has
+load-bearing mark bounds, but their authority differs. The 3-second floor matches the
+reviewed AAA/QAA handicap context. The 183-second ceiling is a STRATHMARK safety policy
+derived from the 180-second event-duration boundary plus the 3-second displayed base;
+it is not stated as a universal rulebook maximum. Read
+[`../../wiki/Handicap-Mark-Math.md`](../../wiki/Handicap-Mark-Math.md) for the domain
+meaning of a mark and common-offset rebasing.
 
 ## Pattern
-- **Mark floor: 3 seconds** — the slowest predicted competitor gets mark 3; no competitor ever gets a mark below 3. Do not lower this floor under any circumstance.
-- **Mark ceiling: 183 seconds system-wide** — the event time limit is 180s plus the 3s minimum mark. No valid mark can exceed 183.
+- **Mark floor: 3 seconds** — the slowest predicted competitor gets Mark 3; no
+  competitor receives a mark below 3 in STRATHMARK.
+- **Mark ceiling: 183 seconds system-wide** — STRATHMARK's event time limit is 180
+  seconds plus the 3-second displayed base. No valid engine mark exceeds 183.
 - **Gap logic**: `gap = predicted_time(competitor) - predicted_time(front_marker); mark = 3 + round(gap); mark = min(mark, 183)`. Rounding is standard half-to-even (banker's rounding).
 - **Variance**: absolute ±3 seconds only. Proportional variance is FORBIDDEN.
 
