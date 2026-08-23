@@ -10,6 +10,7 @@ from strathmark.v3.contracts.evidence import (
     EvidencePacket,
     ResultObservation,
     TargetContext,
+    require_utc_milliseconds,
 )
 from strathmark.v3.contracts.identifiers import StableIdentifier
 from strathmark.v3.contracts.statuses import (
@@ -38,6 +39,14 @@ def _context() -> TargetContext:
             ),
         ),
     )
+
+
+def test_canonical_utc_validator_is_a_shared_public_contract() -> None:
+    value = "2026-08-22T17:30:00.000Z"
+
+    assert require_utc_milliseconds(value) == value
+    with pytest.raises(ContractError):
+        require_utc_milliseconds("2026-02-29T17:30:00.000Z")
 
 
 def _observation() -> ResultObservation:

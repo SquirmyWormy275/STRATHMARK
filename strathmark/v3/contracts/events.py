@@ -9,7 +9,11 @@ from typing import Any, Mapping
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.commands import CommandEnvelope
 from strathmark.v3.contracts.errors import ContractError
-from strathmark.v3.contracts.evidence import _require_digest, _require_id, _require_utc
+from strathmark.v3.contracts.evidence import (
+    _require_digest,
+    _require_id,
+    require_utc_milliseconds,
+)
 from strathmark.v3.contracts.identifiers import StableIdentifier, require_identifier
 from strathmark.v3.contracts.statuses import (
     _require_fields,
@@ -112,7 +116,7 @@ class EventEnvelope:
         _require_positive_int(self.global_sequence, "global_sequence")
         _require_digest(self.prior_global_digest, "prior_global_digest")
         _require_digest(self.prior_aggregate_digest, "prior_aggregate_digest")
-        _require_utc(self.occurred_at_utc)
+        require_utc_milliseconds(self.occurred_at_utc)
         _require_nonnegative_int(self.monotonic_elapsed_ms, "monotonic_elapsed_ms")
         if not isinstance(self.command, CommandEnvelope):
             raise ContractError("event command must be a CommandEnvelope")

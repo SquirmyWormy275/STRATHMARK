@@ -35,6 +35,7 @@ from strathmark.v3.contracts.evidence import (
     EvidencePacket,
     ResultObservation,
     TargetContext,
+    require_utc_milliseconds,
 )
 from strathmark.v3.contracts.forecasts import (
     ArtifactIdentity,
@@ -142,4 +143,5 @@ __all__ = [
     "milliseconds_from_seconds",
     "require_idempotency_key",
     "require_identifier",
+    "require_utc_milliseconds",
 ]

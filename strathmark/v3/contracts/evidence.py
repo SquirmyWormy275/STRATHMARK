@@ -167,7 +167,7 @@ class ResultObservation:
         if not isinstance(self.context, TargetContext):
             raise ContractError("context must be a TargetContext")
         _require_positive_int(self.observation_sequence, "observation_sequence")
-        _require_utc(self.occurred_at_utc)
+        require_utc_milliseconds(self.occurred_at_utc)
         _require_positive_int(self.issued_mark, "issued_mark")
         if self.completion_clock_ms is not None:
             _require_positive_int(self.completion_clock_ms, "completion_clock_ms")
@@ -427,7 +427,9 @@ def _require_digest(value: object, label: str) -> str:
     return value
 
 
-def _require_utc(value: object) -> str:
+def require_utc_milliseconds(value: object) -> str:
+    """Validate and return the one canonical UTC-millisecond timestamp form."""
+
     if not isinstance(value, str) or not _UTC_MILLISECONDS.fullmatch(value):
         raise ContractError("occurred_at_utc must be canonical UTC with milliseconds")
     try:
@@ -445,4 +447,5 @@ __all__ = [
     "EvidencePacket",
     "ResultObservation",
     "TargetContext",
+    "require_utc_milliseconds",
 ]
