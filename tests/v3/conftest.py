@@ -34,6 +34,9 @@ def pytest_configure(config: pytest.Config) -> None:
         "STRATHMARK_V3_BLOB_ROOT": session_root / "blobs",
         "STRATHMARK_V3_BUNDLE_ROOT": session_root / "bundles",
         "STRATHMARK_V3_ARCHIVE_ROOT": session_root / "archive",
+        "STRATHMARK_V3_BACKUP_ROOT": session_root / "backup",
+        "STRATHMARK_V3_RECOVERY_ROOT": session_root / "recovery",
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT": session_root / "integrity-keys",
         "HYPOTHESIS_STORAGE_DIRECTORY": session_root / "hypothesis",
     }
 

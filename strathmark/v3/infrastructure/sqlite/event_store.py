@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,11 +25,20 @@ from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKi
 from strathmark.v3.contracts.evidence import require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import deterministic_identifier
 from strathmark.v3.domain.state_machines import replay, transition
+from strathmark.v3.infrastructure.integrity import (
+    CriticalDatabaseCommit,
+    CriticalIssueCoordinator,
+    CriticalIssueIntent,
+)
 from strathmark.v3.infrastructure.sqlite.connection import (
     immediate_transaction,
     open_v3_connection,
 )
-from strathmark.v3.infrastructure.sqlite.migrations import migrate_connection
+from strathmark.v3.infrastructure.sqlite.migrations import (
+    EXPECTED_SCHEMA_DIGEST,
+    canonical_schema_digest,
+    migrate_connection,
+)
 
 ZERO_DIGEST = "0" * 64
 EVENT_SET_SCHEMA_VERSION = "strathmark-v3-event-set-v1"
@@ -140,6 +149,29 @@ class SQLiteEventStore:
         except Exception as exc:
             raise EventStoreIntegrityError("event-store startup verification failed") from exc
 
+    @classmethod
+    def from_checkpoint_registry(
+        cls, database_path: Path | str, checkpoint_registry: Any
+    ) -> SQLiteEventStore:
+        """Open authority only after the external signed checkpoint is present.
+
+        The lazy structural check avoids coupling V2/core imports to the optional
+        cryptography runtime while ensuring callers cannot substitute an unsigned
+        ``AuthorityAnchor`` at the trusted startup boundary.
+        """
+
+        from strathmark.v3.infrastructure.integrity import CheckpointRegistry
+
+        if not isinstance(checkpoint_registry, CheckpointRegistry):
+            raise EventStoreError("trusted startup requires a CheckpointRegistry")
+        checkpoint = checkpoint_registry.verify_database(database_path, require_current=False)
+        return cls(
+            database_path,
+            trusted_anchor=AuthorityAnchor(
+                checkpoint.authority_sequence, checkpoint.authority_digest
+            ),
+        )
+
     @property
     def database_path(self) -> Path:
         return self._database_path
@@ -244,6 +276,66 @@ class SQLiteEventStore:
         except Exception as exc:
             raise EventStoreIntegrityError("event-store verification failed") from exc
 
+    def execute_critical_issue(
+        self,
+        request: CommandRequest,
+        *,
+        intent: CriticalIssueIntent,
+        coordinator: CriticalIssueCoordinator,
+        critical_fault_hook: FaultHook | None = None,
+        event_fault_hook: FaultHook | None = None,
+        projection_hook: ProjectionHook | None = None,
+    ) -> StoredCommandResult:
+        """Run the signed intent -> DB commit -> signed marker issue protocol.
+
+        Blob/report construction remains outside this method.  A crash after SQLite commit
+        but before the marker produces an ambiguous timeout; exact retry or journal
+        reconciliation recovers the original stored result without issuing twice.
+        """
+
+        if request.command.kind not in {
+            CommandKind.ACKNOWLEDGE_ISSUE,
+            CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
+        }:
+            raise EventStoreError("critical issue protocol accepts only issue commands")
+        if intent.command_id != str(request.command.command_id):
+            raise EventStoreError("critical issue intent command differs from the event command")
+        if not isinstance(coordinator, CriticalIssueCoordinator):
+            raise EventStoreError("critical issue coordinator is required")
+        command_digest = canonical_digest(request.command.to_dict())
+        approval_snapshot_digest = _critical_approval_snapshot_digest(request)
+        receipt_ids = _critical_receipt_ids(request.result)
+        if intent.command_digest != command_digest:
+            raise EventStoreError("critical issue intent command digest differs")
+        if intent.expected_versions != request.command.expected_versions:
+            raise EventStoreError("critical issue intent expected versions differ")
+        if intent.approval_snapshot_digest != approval_snapshot_digest:
+            raise EventStoreError("critical issue intent approval snapshot differs")
+        if intent.receipt_ids != receipt_ids:
+            raise EventStoreError("critical issue intent receipts differ from the stored result")
+        committed: list[StoredCommandResult] = []
+
+        def commit(intent_digest: str) -> CriticalDatabaseCommit:
+            result = self.execute(
+                request,
+                fault_hook=event_fault_hook,
+                projection_hook=projection_hook,
+            )
+            committed.append(result)
+            return CriticalDatabaseCommit(
+                result.last_global_sequence,
+                result.result_digest,
+                receipt_ids,
+                intent_digest,
+            )
+
+        coordinator.execute(intent, database_commit=commit, fault_hook=critical_fault_hook)
+        if len(committed) != 1:
+            raise EventStoreIntegrityError(
+                "critical issue protocol did not resolve one stored result"
+            )
+        return committed[0]
+
     def event_count(self) -> int:
         with open_v3_connection(self._database_path, read_only=True) as connection:
             return int(connection.execute("SELECT COUNT(*) FROM v3_events").fetchone()[0])
@@ -286,8 +378,8 @@ class SQLiteEventStore:
                 "SELECT envelope_json FROM v3_events WHERE global_sequence=?",
                 (result.first_global_sequence,),
             ).fetchone()
-            if envelope is None:
-                raise EventStoreIntegrityError("retry event set is missing")
+            # _verified_stored_result just proved the complete contiguous event set,
+            # including this first sequence, on the same read connection.
             event = EventEnvelope.from_dict(json.loads(str(envelope[0])))
             command = event.command
             if (
@@ -746,6 +838,48 @@ def _event_set_digest(events: Iterable[EventEnvelope]) -> str:
     )
 
 
+def _critical_approval_snapshot_digest(request: CommandRequest) -> str:
+    payload = request.command.payload
+    if not isinstance(payload, InlinePayload):
+        raise EventStoreError("critical issue command must inline its approval snapshot binding")
+    value = payload.to_value()
+    digest = value.get("approval_snapshot_digest")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise EventStoreError("critical issue command has no canonical approval snapshot digest")
+    return digest
+
+
+def _critical_receipt_ids(value: Any) -> tuple[str, ...]:
+    found: set[str] = set()
+
+    def collect(candidate: Any) -> None:
+        if isinstance(candidate, Mapping):
+            receipt = candidate.get("receipt_id")
+            if isinstance(receipt, str) and receipt.startswith("receipt:"):
+                found.add(receipt)
+            receipts = candidate.get("receipt_ids")
+            if isinstance(receipts, (list, tuple)):
+                found.update(
+                    item
+                    for item in receipts
+                    if isinstance(item, str) and item.startswith("receipt:")
+                )
+            for child in candidate.values():
+                collect(child)
+        elif isinstance(candidate, list):
+            for child in candidate:
+                collect(child)
+
+    collect(value)
+    if not found:
+        raise EventStoreError("critical issue result contains no receipt identities")
+    return tuple(sorted(found))
+
+
 def _expected_event_id(event: EventEnvelope):
     if event.kind is EventKind.HISTORY_IMPORTED:
         payload = event.command.payload
@@ -800,6 +934,39 @@ def _require_head_advance(cursor: sqlite3.Cursor) -> None:
         raise EventStoreConflict("aggregate head changed during atomic command")
 
 
+def verify_read_only_authority(
+    database_path: Path | str,
+    *,
+    trusted_anchor: AuthorityAnchor,
+) -> AuthorityAnchor:
+    """Verify a signed backup without migrating or opening a writer connection."""
+
+    if not isinstance(trusted_anchor, AuthorityAnchor):
+        raise EventStoreError("read-only verification requires an AuthorityAnchor")
+    path = Path(database_path).expanduser().resolve(strict=False)
+    try:
+        with open_v3_connection(path, read_only=True) as connection:
+            if canonical_schema_digest(connection) != EXPECTED_SCHEMA_DIGEST:
+                raise EventStoreIntegrityError("read-only authority schema is stale or different")
+            verifier = object.__new__(SQLiteEventStore)
+            verifier._database_path = path
+            verifier._trusted_anchor = trusted_anchor
+            verifier._verify_connection(connection)
+            row = connection.execute(
+                "SELECT global_sequence, event_digest FROM v3_events "
+                "ORDER BY global_sequence DESC LIMIT 1"
+            ).fetchone()
+            return (
+                AuthorityAnchor(0, ZERO_DIGEST)
+                if row is None
+                else AuthorityAnchor(int(row[0]), str(row[1]))
+            )
+    except EventStoreIntegrityError:
+        raise
+    except Exception as exc:
+        raise EventStoreIntegrityError("read-only authority verification failed") from exc
+
+
 __all__ = [
     "AuthorityAnchor",
     "EventStoreConflict",
@@ -808,4 +975,5 @@ __all__ = [
     "InjectedEventStoreFailure",
     "SQLiteEventStore",
     "StoredCommandResult",
+    "verify_read_only_authority",
 ]

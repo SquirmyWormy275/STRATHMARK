@@ -29,6 +29,9 @@ class V3RuntimeConfig:
     blob_root: Path
     bundle_root: Path
     archive_root: Path
+    backup_root: Path
+    recovery_root: Path
+    integrity_key_root: Path
     test_mode: bool
     canonical_max_bytes: int = DEFAULT_MAX_BYTES
     canonical_max_depth: int = DEFAULT_MAX_DEPTH
@@ -61,6 +64,20 @@ def resolve_runtime_config(environment: Mapping[str, str] | None = None) -> V3Ru
         source.get("STRATHMARK_V3_ARCHIVE_ROOT", str(artifact_default_root / "archive")),
         "STRATHMARK_V3_ARCHIVE_ROOT",
     )
+    backup_root = _absolute_path(
+        source.get("STRATHMARK_V3_BACKUP_ROOT", str(artifact_default_root / "backup")),
+        "STRATHMARK_V3_BACKUP_ROOT",
+    )
+    recovery_root = _absolute_path(
+        source.get("STRATHMARK_V3_RECOVERY_ROOT", str(artifact_default_root / "recovery")),
+        "STRATHMARK_V3_RECOVERY_ROOT",
+    )
+    integrity_key_root = _absolute_path(
+        source.get(
+            "STRATHMARK_V3_INTEGRITY_KEY_ROOT", str(artifact_default_root / "integrity-keys")
+        ),
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT",
+    )
     max_bytes = _positive_integer(
         source.get("STRATHMARK_V3_CANONICAL_MAX_BYTES", str(DEFAULT_MAX_BYTES)),
         "STRATHMARK_V3_CANONICAL_MAX_BYTES",
@@ -70,7 +87,16 @@ def resolve_runtime_config(environment: Mapping[str, str] | None = None) -> V3Ru
         "STRATHMARK_V3_CANONICAL_MAX_DEPTH",
     )
 
-    mutable_paths = (database_path, temp_path, blob_root, bundle_root, archive_root)
+    mutable_paths = (
+        database_path,
+        temp_path,
+        blob_root,
+        bundle_root,
+        archive_root,
+        backup_root,
+        recovery_root,
+        integrity_key_root,
+    )
     if len(set(mutable_paths)) != len(mutable_paths) or temp_path in database_path.parents:
         raise ConfigurationError("V3 database and mutable runtime paths must be separate")
     if test_mode:
@@ -83,6 +109,9 @@ def resolve_runtime_config(environment: Mapping[str, str] | None = None) -> V3Ru
         blob_root=blob_root,
         bundle_root=bundle_root,
         archive_root=archive_root,
+        backup_root=backup_root,
+        recovery_root=recovery_root,
+        integrity_key_root=integrity_key_root,
         test_mode=test_mode,
         canonical_max_bytes=max_bytes,
         canonical_max_depth=max_depth,

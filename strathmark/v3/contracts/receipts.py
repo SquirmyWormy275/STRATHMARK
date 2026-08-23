@@ -8,7 +8,13 @@ from enum import Enum
 from typing import Any, Mapping
 
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
-from strathmark.v3.contracts.commands import BlobReference, InlinePayload, PayloadReference
+from strathmark.v3.contracts.commands import (
+    BLOB_REFERENCE_V2_SCHEMA_VERSION,
+    BlobReference,
+    BlobReferenceV2,
+    InlinePayload,
+    PayloadReference,
+)
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.evidence import (
     TargetContext,
@@ -124,7 +130,7 @@ class ReceiptSection:
         _require_schema(self.schema_version, RECEIPT_SECTION_SCHEMA_VERSION)
         if not isinstance(self.kind, ReceiptSectionKind):
             raise ContractError("receipt section kind must be a ReceiptSectionKind value")
-        if not isinstance(self.payload, (InlinePayload, BlobReference)):
+        if not isinstance(self.payload, (InlinePayload, BlobReference, BlobReferenceV2)):
             raise ContractError("receipt section payload must be inline or a blob reference")
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,7 +152,13 @@ class ReceiptSection:
         if value["payload_type"] == "inline":
             payload: PayloadReference = InlinePayload.from_dict(value["payload"])
         elif value["payload_type"] == "blob":
-            payload = BlobReference.from_dict(value["payload"])
+            payload_value = value["payload"]
+            if not isinstance(payload_value, Mapping):
+                raise ContractError("receipt blob payload must be an object")
+            if payload_value.get("schema_version") == BLOB_REFERENCE_V2_SCHEMA_VERSION:
+                payload = BlobReferenceV2.from_dict(payload_value)
+            else:
+                payload = BlobReference.from_dict(payload_value)
         else:
             raise ContractError("unknown receipt section payload type")
         return cls(kind, payload)

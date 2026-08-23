@@ -10,13 +10,19 @@ from strathmark.v3.contracts.commands import (
     MAX_BLOB_BYTES,
     MAX_INLINE_PAYLOAD_BYTES,
     BlobReference,
+    BlobReferenceV2,
+    BlobRetentionClass,
     CommandEnvelope,
     CommandKind,
     InlinePayload,
 )
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
-from strathmark.v3.contracts.identifiers import IdempotencyKey, StableIdentifier
+from strathmark.v3.contracts.identifiers import (
+    IdempotencyKey,
+    StableIdentifier,
+    deterministic_identifier,
+)
 
 
 def _command() -> CommandEnvelope:
@@ -69,6 +75,39 @@ def test_blob_references_are_required_above_the_inline_boundary_and_bounded() ->
         BlobReference(
             StableIdentifier("blob:small"), "a" * 64, MAX_INLINE_PAYLOAD_BYTES, "application/json"
         )
+
+
+def test_v2_blob_reference_binds_content_identity_schema_retention_and_round_trips() -> None:
+    digest = "b" * 64
+    reference = BlobReferenceV2(
+        blob_id=deterministic_identifier("blob", {"digest": digest}),
+        digest=digest,
+        byte_count=MAX_INLINE_PAYLOAD_BYTES + 1,
+        media_type="application/json",
+        payload_schema_version="strathmark-v3-model-output-v1",
+        retention_class=BlobRetentionClass.REQUIRED,
+    )
+    assert BlobReferenceV2.from_dict(reference.to_dict()) == reference
+    assert (
+        CommandEnvelope.from_dict(replace(_command(), payload=reference).to_dict()).payload
+        == reference
+    )
+    with pytest.raises(ContractError, match="content identity"):
+        replace(reference, blob_id=StableIdentifier("blob:arbitrary"))
+    with pytest.raises(ContractError, match="inline boundary"):
+        replace(reference, byte_count=MAX_INLINE_PAYLOAD_BYTES)
+    with pytest.raises(ContractError, match="maximum"):
+        replace(reference, byte_count=MAX_BLOB_BYTES + 1)
+    with pytest.raises(ContractError, match="media_type"):
+        replace(reference, media_type="text/plain")
+    with pytest.raises(ContractError, match="payload_schema_version"):
+        replace(reference, payload_schema_version="bad")
+    with pytest.raises(ContractError, match="retention_class"):
+        replace(reference, retention_class="required")
+    invalid_retention = reference.to_dict()
+    invalid_retention["retention_class"] = "unknown"
+    with pytest.raises(ContractError, match="unknown blob retention"):
+        BlobReferenceV2.from_dict(invalid_retention)
     with pytest.raises(ContractError, match="maximum"):
         BlobReference(
             StableIdentifier("blob:huge"), "a" * 64, MAX_BLOB_BYTES + 1, "application/json"
@@ -152,6 +191,10 @@ def test_command_decoder_supports_a_blob_reference() -> None:
     )
     command = replace(_command(), payload=blob)
     assert CommandEnvelope.from_dict(command.to_dict()) == command
+    encoded = command.to_dict()
+    encoded["payload"] = []
+    with pytest.raises(ContractError, match="blob payload must be an object"):
+        CommandEnvelope.from_dict(encoded)
 
 
 def test_plan_transition_command_vocabulary_is_closed_and_round_trips() -> None:

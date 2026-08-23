@@ -61,6 +61,10 @@ ml = [
 db = [
     "supabase>=2.0",
 ]
+security = [
+    # Loaded lazily by V3 integrity adapters; core V2 imports remain dependency-free.
+    "cryptography>=43,<47",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -68,6 +72,7 @@ dev = [
     "jsonschema>=4.18",
     "ruff>=0.4",
     "openpyxl>=3.1",
+    "cryptography>=43,<47",
 ]
 
 [project.urls]

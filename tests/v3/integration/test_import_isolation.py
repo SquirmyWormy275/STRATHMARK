@@ -20,6 +20,9 @@ def _run_isolated_import(code: str, tmp_path: Path) -> subprocess.CompletedProce
             "STRATHMARK_V3_BLOB_ROOT": str(tmp_path / "blobs"),
             "STRATHMARK_V3_BUNDLE_ROOT": str(tmp_path / "bundles"),
             "STRATHMARK_V3_ARCHIVE_ROOT": str(tmp_path / "archive"),
+            "STRATHMARK_V3_BACKUP_ROOT": str(tmp_path / "backup"),
+            "STRATHMARK_V3_RECOVERY_ROOT": str(tmp_path / "recovery"),
+            "STRATHMARK_V3_INTEGRITY_KEY_ROOT": str(tmp_path / "integrity-keys"),
         }
     )
     return subprocess.run(
@@ -125,4 +128,31 @@ def test_production_test_path_is_rejected_before_any_client_can_load(tmp_path: P
         tmp_path,
     )
 
+    assert result.returncode == 0, result.stderr
+
+
+def test_integrity_extra_is_lazy_and_missing_runtime_fails_explicitly(tmp_path: Path) -> None:
+    result = _run_isolated_import(
+        """
+        import importlib.abc
+        import sys
+
+        class BlockCryptography(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "cryptography" or fullname.startswith("cryptography."):
+                    raise ImportError("security extra unavailable")
+                return None
+
+        sys.meta_path.insert(0, BlockCryptography())
+        from strathmark.v3.infrastructure.integrity import IntegrityError, P256EphemeralSigner
+        assert "cryptography" not in sys.modules
+        try:
+            P256EphemeralSigner.generate("integrity-key:missing-extra")
+        except IntegrityError as exc:
+            assert "cryptography runtime extra" in str(exc)
+        else:
+            raise AssertionError("missing integrity extra did not fail explicitly")
+        """,
+        tmp_path,
+    )
     assert result.returncode == 0, result.stderr

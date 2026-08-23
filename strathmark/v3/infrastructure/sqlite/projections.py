@@ -161,7 +161,19 @@ class SQLiteProjectionStore:
                 ):
                     self.apply_events(connection, tuple(grouped))
                 self._advance_barrier(connection)
-                return self.projection_digest(connection)
+            return self.projection_digest(connection)
+
+    def rebuild_from_checkpoint_registry(self, checkpoint_registry: object) -> str:
+        """Rebuild only from authority containing the external signed checkpoint."""
+
+        from strathmark.v3.infrastructure.integrity import CheckpointRegistry
+
+        if not isinstance(checkpoint_registry, CheckpointRegistry):
+            raise ProjectionError("trusted rebuild requires a CheckpointRegistry")
+        checkpoint_registry.verify_database(self._database_path, require_current=False)
+        rebuilt = self.rebuild_reaction_projection()
+        checkpoint_registry.verify_database(self._database_path, require_current=False)
+        return rebuilt
 
     def apply_events(
         self, connection: sqlite3.Connection, events: tuple[EventEnvelope, ...]

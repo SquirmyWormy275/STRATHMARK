@@ -5,10 +5,20 @@ from dataclasses import replace
 import pytest
 
 import strathmark.v3.contracts.receipts as receipt_contracts
-from strathmark.v3.contracts.commands import MAX_INLINE_PAYLOAD_BYTES, BlobReference, InlinePayload
+from strathmark.v3.contracts.commands import (
+    MAX_INLINE_PAYLOAD_BYTES,
+    BlobReference,
+    BlobReferenceV2,
+    BlobRetentionClass,
+    InlinePayload,
+)
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.evidence import ContextProperty, TargetContext
-from strathmark.v3.contracts.identifiers import IdempotencyKey, StableIdentifier
+from strathmark.v3.contracts.identifiers import (
+    IdempotencyKey,
+    StableIdentifier,
+    deterministic_identifier,
+)
 from strathmark.v3.contracts.receipts import (
     BundleIdentity,
     FieldReceipt,
@@ -76,6 +86,24 @@ def test_atomic_field_receipt_is_content_addressed_and_round_trips() -> None:
     assert receipt.receipt_id == receipt.recompute_receipt_id()
     assert receipt.target_context.event_code == "underhand"
     assert receipt.target_context_digest == receipt.target_context.digest
+
+
+def test_receipt_section_round_trips_authoritative_v2_blob_and_rejects_nonobject() -> None:
+    digest = "e" * 64
+    reference = BlobReferenceV2(
+        deterministic_identifier("blob", {"digest": digest}),
+        digest,
+        MAX_INLINE_PAYLOAD_BYTES + 1,
+        "application/json",
+        "strathmark-v3-receipt-audit-v1",
+        BlobRetentionClass.ISSUED_RECEIPT,
+    )
+    section = ReceiptSection(ReceiptSectionKind.COMPONENT_OUTPUTS, reference)
+    assert ReceiptSection.from_dict(section.to_dict()) == section
+    value = section.to_dict()
+    value["payload"] = []
+    with pytest.raises(ContractError, match="blob payload must be an object"):
+        ReceiptSection.from_dict(value)
 
 
 def test_receipt_rejects_mismatched_or_tampered_target_context() -> None:

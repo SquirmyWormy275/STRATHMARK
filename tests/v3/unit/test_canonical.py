@@ -282,6 +282,9 @@ def test_runtime_configuration_is_an_immutable_snapshot(tmp_path) -> None:
         "STRATHMARK_V3_BLOB_ROOT": str(tmp_path / "blobs"),
         "STRATHMARK_V3_BUNDLE_ROOT": str(tmp_path / "bundles"),
         "STRATHMARK_V3_ARCHIVE_ROOT": str(tmp_path / "archive"),
+        "STRATHMARK_V3_BACKUP_ROOT": str(tmp_path / "backup"),
+        "STRATHMARK_V3_RECOVERY_ROOT": str(tmp_path / "recovery"),
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT": str(tmp_path / "integrity-keys"),
         "STRATHMARK_TEST_DB": "1",
     }
 
@@ -293,6 +296,9 @@ def test_runtime_configuration_is_an_immutable_snapshot(tmp_path) -> None:
     assert config.blob_root == (tmp_path / "blobs").resolve()
     assert config.bundle_root == (tmp_path / "bundles").resolve()
     assert config.archive_root == (tmp_path / "archive").resolve()
+    assert config.backup_root == (tmp_path / "backup").resolve()
+    assert config.recovery_root == (tmp_path / "recovery").resolve()
+    assert config.integrity_key_root == (tmp_path / "integrity-keys").resolve()
     with pytest.raises(FrozenInstanceError):
         config.test_mode = False  # type: ignore[misc]
 
@@ -315,6 +321,9 @@ def test_runtime_configuration_supports_explicit_non_test_defaults(monkeypatch) 
     monkeypatch.delenv("STRATHMARK_V3_BLOB_ROOT", raising=False)
     monkeypatch.delenv("STRATHMARK_V3_BUNDLE_ROOT", raising=False)
     monkeypatch.delenv("STRATHMARK_V3_ARCHIVE_ROOT", raising=False)
+    monkeypatch.delenv("STRATHMARK_V3_BACKUP_ROOT", raising=False)
+    monkeypatch.delenv("STRATHMARK_V3_RECOVERY_ROOT", raising=False)
+    monkeypatch.delenv("STRATHMARK_V3_INTEGRITY_KEY_ROOT", raising=False)
 
     config = resolve_runtime_config()
 
@@ -424,6 +433,9 @@ def test_test_mode_rejects_production_temporary_path(tmp_path) -> None:
         "STRATHMARK_V3_BLOB_ROOT",
         "STRATHMARK_V3_BUNDLE_ROOT",
         "STRATHMARK_V3_ARCHIVE_ROOT",
+        "STRATHMARK_V3_BACKUP_ROOT",
+        "STRATHMARK_V3_RECOVERY_ROOT",
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT",
     ],
 )
 def test_test_mode_rejects_production_artifact_roots(tmp_path, variable: str) -> None:
@@ -433,6 +445,9 @@ def test_test_mode_rejects_production_artifact_roots(tmp_path, variable: str) ->
         "STRATHMARK_V3_BLOB_ROOT": str(tmp_path / "blobs"),
         "STRATHMARK_V3_BUNDLE_ROOT": str(tmp_path / "bundles"),
         "STRATHMARK_V3_ARCHIVE_ROOT": str(tmp_path / "archive"),
+        "STRATHMARK_V3_BACKUP_ROOT": str(tmp_path / "backup"),
+        "STRATHMARK_V3_RECOVERY_ROOT": str(tmp_path / "recovery"),
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT": str(tmp_path / "integrity-keys"),
         "STRATHMARK_TEST_DB": "1",
     }
     environment[variable] = "C:/runtime/production/artifacts"
@@ -448,6 +463,9 @@ def test_test_mode_rejects_production_artifact_roots(tmp_path, variable: str) ->
         "STRATHMARK_V3_BLOB_ROOT",
         "STRATHMARK_V3_BUNDLE_ROOT",
         "STRATHMARK_V3_ARCHIVE_ROOT",
+        "STRATHMARK_V3_BACKUP_ROOT",
+        "STRATHMARK_V3_RECOVERY_ROOT",
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT",
     ],
 )
 def test_mutable_runtime_paths_must_be_distinct(tmp_path, variable: str) -> None:
@@ -458,6 +476,9 @@ def test_mutable_runtime_paths_must_be_distinct(tmp_path, variable: str) -> None
         "STRATHMARK_V3_BLOB_ROOT": str(tmp_path / "blobs"),
         "STRATHMARK_V3_BUNDLE_ROOT": str(tmp_path / "bundles"),
         "STRATHMARK_V3_ARCHIVE_ROOT": str(tmp_path / "archive"),
+        "STRATHMARK_V3_BACKUP_ROOT": str(tmp_path / "backup"),
+        "STRATHMARK_V3_RECOVERY_ROOT": str(tmp_path / "recovery"),
+        "STRATHMARK_V3_INTEGRITY_KEY_ROOT": str(tmp_path / "integrity-keys"),
         "STRATHMARK_TEST_DB": "1",
     }
     environment[variable] = database_path

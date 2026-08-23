@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
@@ -13,6 +14,7 @@ from strathmark.v3.contracts.evidence import _require_digest, _require_id
 from strathmark.v3.contracts.identifiers import (
     IdempotencyKey,
     StableIdentifier,
+    deterministic_identifier,
     require_idempotency_key,
     require_identifier,
 )
@@ -21,8 +23,10 @@ from strathmark.v3.contracts.statuses import _require_fields, _require_schema
 COMMAND_SCHEMA_VERSION = "strathmark-v3-command-envelope-v1"
 INLINE_PAYLOAD_SCHEMA_VERSION = "strathmark-v3-inline-payload-v1"
 BLOB_REFERENCE_SCHEMA_VERSION = "strathmark-v3-blob-reference-v1"
+BLOB_REFERENCE_V2_SCHEMA_VERSION = "strathmark-v3-blob-reference-v2"
 MAX_INLINE_PAYLOAD_BYTES = 65_536
 MAX_BLOB_BYTES = 16_777_216
+_PAYLOAD_SCHEMA_VERSION = re.compile(r"^strathmark-v3-[a-z0-9][a-z0-9-]{0,94}-v[1-9][0-9]*$")
 
 
 class CommandKind(str, Enum):
@@ -178,7 +182,99 @@ class BlobReference:
         )
 
 
-PayloadReference = InlinePayload | BlobReference
+class BlobRetentionClass(str, Enum):
+    """Lifecycle reason that prevents an authoritative blob from being reclaimed."""
+
+    REQUIRED = "required"
+    OPEN_TOURNAMENT = "open_tournament"
+    ISSUED_RECEIPT = "issued_receipt"
+    UNDELIVERED_OUTBOX = "undelivered_outbox"
+    ARCHIVABLE = "archivable"
+
+
+@dataclass(frozen=True, slots=True)
+class BlobReferenceV2:
+    """Complete content identity embedded in authority events and receipts.
+
+    Unlike the historical V1 contract, a V2 identifier is derived from the content
+    digest and the reference also commits the payload schema and retention class.
+    Descriptor metadata may vary for the same content without changing blob identity.
+    """
+
+    blob_id: StableIdentifier
+    digest: str
+    byte_count: int
+    media_type: str
+    payload_schema_version: str
+    retention_class: BlobRetentionClass
+    schema_version: str = BLOB_REFERENCE_V2_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _require_schema(self.schema_version, BLOB_REFERENCE_V2_SCHEMA_VERSION)
+        _require_id(self.blob_id, "blob")
+        _require_digest(self.digest, "blob digest")
+        expected_id = deterministic_identifier("blob", {"digest": self.digest})
+        if self.blob_id != expected_id:
+            raise ContractError("blob_id must be the content identity derived from digest")
+        if (
+            isinstance(self.byte_count, bool)
+            or not isinstance(self.byte_count, int)
+            or self.byte_count <= MAX_INLINE_PAYLOAD_BYTES
+        ):
+            raise ContractError("blob byte_count must be above the inline boundary")
+        if self.byte_count > MAX_BLOB_BYTES:
+            raise ContractError("blob byte_count exceeds the maximum")
+        if self.media_type not in {"application/json", "application/octet-stream"}:
+            raise ContractError("unsupported blob media_type")
+        if (
+            not isinstance(self.payload_schema_version, str)
+            or _PAYLOAD_SCHEMA_VERSION.fullmatch(self.payload_schema_version) is None
+        ):
+            raise ContractError("invalid blob payload_schema_version")
+        if not isinstance(self.retention_class, BlobRetentionClass):
+            raise ContractError("blob retention_class must be a BlobRetentionClass value")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "blob_id": str(self.blob_id),
+            "digest": self.digest,
+            "byte_count": self.byte_count,
+            "media_type": self.media_type,
+            "payload_schema_version": self.payload_schema_version,
+            "retention_class": self.retention_class.value,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> BlobReferenceV2:
+        _require_fields(
+            value,
+            {
+                "schema_version",
+                "blob_id",
+                "digest",
+                "byte_count",
+                "media_type",
+                "payload_schema_version",
+                "retention_class",
+            },
+        )
+        _require_schema(value["schema_version"], BLOB_REFERENCE_V2_SCHEMA_VERSION)
+        try:
+            retention = BlobRetentionClass(value["retention_class"])
+        except (TypeError, ValueError) as exc:
+            raise ContractError("unknown blob retention_class") from exc
+        return cls(
+            blob_id=require_identifier(value["blob_id"], expected_namespace="blob"),
+            digest=value["digest"],
+            byte_count=value["byte_count"],
+            media_type=value["media_type"],
+            payload_schema_version=value["payload_schema_version"],
+            retention_class=retention,
+        )
+
+
+PayloadReference = InlinePayload | BlobReference | BlobReferenceV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +315,7 @@ class CommandEnvelope:
             raise ContractError("expected_versions must be sorted by aggregate identity")
         if str(self.target_aggregate) not in seen:
             raise ContractError("expected_versions must include the target aggregate")
-        if not isinstance(self.payload, (InlinePayload, BlobReference)):
+        if not isinstance(self.payload, (InlinePayload, BlobReference, BlobReferenceV2)):
             raise ContractError("payload must be an InlinePayload or BlobReference")
 
     @property
@@ -268,7 +364,13 @@ class CommandEnvelope:
         if payload_type == "inline":
             payload: PayloadReference = InlinePayload.from_dict(value["payload"])
         elif payload_type == "blob":
-            payload = BlobReference.from_dict(value["payload"])
+            payload_value = value["payload"]
+            if not isinstance(payload_value, Mapping):
+                raise ContractError("blob payload must be an object")
+            if payload_value.get("schema_version") == BLOB_REFERENCE_V2_SCHEMA_VERSION:
+                payload = BlobReferenceV2.from_dict(payload_value)
+            else:
+                payload = BlobReference.from_dict(payload_value)
         else:
             raise ContractError("unknown payload type")
         return cls(
@@ -283,11 +385,14 @@ class CommandEnvelope:
 
 __all__ = [
     "BLOB_REFERENCE_SCHEMA_VERSION",
+    "BLOB_REFERENCE_V2_SCHEMA_VERSION",
     "COMMAND_SCHEMA_VERSION",
     "INLINE_PAYLOAD_SCHEMA_VERSION",
     "MAX_BLOB_BYTES",
     "MAX_INLINE_PAYLOAD_BYTES",
     "BlobReference",
+    "BlobReferenceV2",
+    "BlobRetentionClass",
     "CommandEnvelope",
     "CommandKind",
     "InlinePayload",
