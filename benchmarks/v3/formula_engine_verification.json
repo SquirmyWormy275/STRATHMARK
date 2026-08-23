@@ -1,0 +1,51 @@
+{
+  "schema_version": "strathmark-v3-formula-engine-verification-v1",
+  "artifact_tool_version": "2.8.48",
+  "node_version": "v24.19.0",
+  "builder_sha256": "c225ed99b2e96ebb8295fdde3ed94fb9e2de0069dfe957634b87b356c41bd538",
+  "workbook_sha256": "12d22cb37044dafdcfbf49c28964dbd423c420f8cff1389b5c5df710d48e00ed",
+  "formula_graph_sha256": "42bd7e636d3f72fdf07ec69d6acc839e77b6047239715fdb5a093056d59b6ff3",
+  "baseline_inputs_sha256": "7d6e69fb385f4b49a995886e748ea39e90006531e29194037c109c8cbb012a7f",
+  "governor_binding_sha256": "0ac8a9c61f5c5428aa9dbdd744a35568ebcc9659b9fb61fb35df956ef4d104ed",
+  "manifest_digest": "2c58a9527c77a33e0b813fe938db44c6298ac0ea8b543a199b720d97baaf1354",
+  "baseline_outputs": {
+    "log_center": 3.7829100777791904,
+    "log_scale": 0.4137341044482971,
+    "center_ms": 43944,
+    "uncertainty_ms": 32271
+  },
+  "mutation_outputs": {
+    "center_ms": 44565,
+    "uncertainty_ms": 32182
+  },
+  "restored_outputs": {
+    "log_center": 3.7829100777791904,
+    "log_scale": 0.4137341044482971,
+    "center_ms": 43944,
+    "uncertainty_ms": 32271
+  },
+  "mutation": {
+    "cell": "Inputs!B13",
+    "before": 38200,
+    "after": 43200,
+    "restored": 38200
+  },
+  "formula_error_count": 0,
+  "inspection_sha256": {
+    "Assumptions": "8f88a7efbe400de3761f1fac4f6b94f8140cbba3a146cc4d1d9529ec9f00717e",
+    "Inputs": "11d90af4f68b255d1ab406c4666db0b6e534898889555918cb441e6c24ed0e26",
+    "Governor Projection": "fb6a333d4d56ba22faffd32cef1f15f6feffb0994bad6151a791d6fc7d4920a0",
+    "Transforms": "0b04fb9cdee8d4f37663b00bff6c8656747e5b2c79499e44fd8eb152dc23c144",
+    "IRLS Trace": "b02d154ac4fb5ba7902e75e7f94710e6cb830b447f106a7c7eb2576c79920bc4",
+    "Distribution": "8ba72bb5ae0ec4e726f53a456fac1b54eec57ee95ffb1ef1134680b6a42a9759"
+  },
+  "render_sha256": {
+    "Assumptions": "cae0f0c9d4716128967b81dc5267600ccc5d4a4c600d4471922eca567cf8dd80",
+    "Inputs": "69ef43ef4993602498d33245d291e7f2d7e52e62722747365710d6c4c2e99a42",
+    "Governor Projection": "c7a3f6a7b528b66f712bc04531790b74bc015813aa449cbc24931fdbbbaaa763",
+    "Transforms": "478a890e7bebb8f8a0ed5c4a5175db81522d7682fd26d54868bea8832b5b39f0",
+    "IRLS Trace": "cf3bf4759552f0d816daca32873b6573e1cbd718cdf50b33f669898cab124541",
+    "Distribution": "ca7f70521d62ca56c78ac8063602f476fb023aed0df7de42f37bd76666733da9"
+  },
+  "receipt_digest": "1c55beb779595a06ab8c0e76611dad08883cdeabb1ea9d0e83a1e35adf14d425"
+}

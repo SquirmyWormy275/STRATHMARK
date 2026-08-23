@@ -1,0 +1,22 @@
+{
+  "assessment_digest": "58268c0403fd50671ff7f99c983bb1f8b2681813653fe9f85cc495af71de9678",
+  "center_ms": 43944,
+  "distribution": {
+    "quantiles": [
+      {"probability": "0.05", "time_ms": 22249},
+      {"probability": "0.25", "time_ms": 33250},
+      {"probability": "0.5", "time_ms": 43944},
+      {"probability": "0.75", "time_ms": 58077},
+      {"probability": "0.95", "time_ms": 86791}
+    ],
+    "schema_version": "strathmark-v3-positive-quantile-distribution-v1"
+  },
+  "effective_sample_size": "1.989684676867726980476341039172500510664480750893445250637236286",
+  "input_digest": "b9577b4a9f5dba54d3947e67adf77febed3ca5f3e5ba7697ff53fa47579734a8",
+  "log_center": "3.782910077779190697791137628831035699594656417188323578049901078",
+  "log_scale": "0.4137341044482971224319323134365189381140242799826636662882341796",
+  "manifest_digest": "2c58a9527c77a33e0b813fe938db44c6298ac0ea8b543a199b720d97baaf1354",
+  "personal_weight": "1.495448074380641229818741098665164547351652341218233459750037993",
+  "trace_digest": "5050f05bcdc28b8707180c388953529af29b0d77d17ac760d4cdedf5109500a4",
+  "uncertainty_ms": 32271
+}
