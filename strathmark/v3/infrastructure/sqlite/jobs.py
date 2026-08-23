@@ -29,6 +29,7 @@ from strathmark.v3.application.job_ports import (
     JobAdmissionRejected,
     JobConflict,
     JobDeadlineExceeded,
+    ProviderExecutionAudit,
     ReadinessDependencySnapshot,
     ReadinessProbePort,
     RetryPolicy,
@@ -396,6 +397,26 @@ class DurableJobRepository:
                 raise KeyError((job_id, job_revision))
             return _decode(row)
 
+    def provider_execution(
+        self, job_id: str, job_revision: int, fencing_token: int
+    ) -> ProviderExecutionAudit:
+        _job_identity(job_id, job_revision)
+        if (
+            isinstance(fencing_token, bool)
+            or not isinstance(fencing_token, int)
+            or fencing_token <= 0
+        ):
+            raise DurableJobError("provider execution fencing token must be positive")
+        with open_v3_connection(self.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM v3_job_provider_executions WHERE job_id=? AND job_revision=? "
+                "AND fencing_token=?",
+                (job_id, job_revision, fencing_token),
+            ).fetchone()
+            if row is None:
+                raise JobConflict("provider execution audit does not exist")
+            return self._decode_provider_execution(connection, row)
+
     def claim(
         self,
         lane: JobLane,
@@ -511,6 +532,7 @@ class DurableJobRepository:
         current_context: ContextHook,
         clock: ClockHook,
         publish: PublishHook | None = None,
+        provider_audit: ProviderExecutionAudit | None = None,
     ) -> JobRecord:
         _digest(result_digest, "result digest")
         if not callable(current_context) or not callable(clock):
@@ -546,6 +568,9 @@ class DurableJobRepository:
                         else "bundle_changed"
                     )
                     return self._finish(connection, current, JobState.STALE, now, reason=reason)
+                self._persist_provider_execution(
+                    connection, current, provider_audit, "succeeded", None, now
+                )
                 connection.execute(
                     "INSERT INTO v3_job_publications(job_id, job_revision, fencing_token, "
                     "result_digest, published_at, auth_body_json, auth_body_digest, auth_key_id, "
@@ -577,6 +602,7 @@ class DurableJobRepository:
         failure_kind: FailureKind,
         reason: str,
         policy: RetryPolicy,
+        provider_audit: ProviderExecutionAudit | None = None,
     ) -> JobRecord:
         if not isinstance(failure_kind, FailureKind) or not isinstance(policy, RetryPolicy):
             raise DurableJobError("failure handling requires typed kind and retry policy")
@@ -589,6 +615,9 @@ class DurableJobRepository:
                 )
                 if current.retry_policy_version != policy.version:
                     raise JobConflict("job retry policy version differs from worker policy")
+                self._persist_provider_execution(
+                    connection, current, provider_audit, "failed", reason, now
+                )
                 if failure_kind is FailureKind.VALIDATION:
                     return self._finish(connection, current, JobState.INVALID, now, reason=reason)
                 if failure_kind is FailureKind.PERMANENT:
@@ -948,6 +977,169 @@ class DurableJobRepository:
         jitter = int(hashlib.sha256(material.encode("utf-8")).hexdigest()[:8], 16) % jitter_window
         return min(policy.maximum_delay_ms, bounded + jitter)
 
+    def _persist_provider_execution(
+        self,
+        connection: sqlite3.Connection,
+        current: JobRecord,
+        audit: ProviderExecutionAudit | None,
+        status: str,
+        reason: str | None,
+        observed_at: str,
+    ) -> None:
+        if audit is None:
+            return
+        if not isinstance(audit, ProviderExecutionAudit):
+            raise DurableJobError("provider execution audit must be typed")
+        if audit.status != status or audit.reason != reason:
+            raise JobConflict("provider execution audit outcome differs from transition")
+        payload = current.payload()
+        packet = payload.get("provider_packet")
+        pin = json.loads(audit.member_pin_json)
+        if (
+            not isinstance(packet, Mapping)
+            or packet.get("provider_id") != audit.provider_id
+            or pin.get("member_manifest_digest") != payload.get("member_manifest_digest")
+        ):
+            raise JobConflict("provider execution audit differs from persisted job pins")
+        execution = audit.to_dict()
+        execution_json = canonical_bytes(execution).decode("utf-8")
+        authority_payload = {
+            "schema_version": "strathmark-v3-provider-execution-authority-v1",
+            "job_id": current.job_id,
+            "job_revision": current.job_revision,
+            "fencing_token": current.fencing_token,
+            "lease_owner": current.lease_owner,
+            "execution": execution,
+            "execution_digest": audit.digest,
+            "observed_at": observed_at,
+        }
+        authority = sign_manifest(
+            "provider_execution", authority_payload, signer=self._signer, created_at=observed_at
+        )
+        connection.execute(
+            "INSERT INTO v3_job_provider_executions(job_id, job_revision, fencing_token, "
+            "lease_owner, provider_id, member_id, member_pin_json, member_pin_digest, status, "
+            "reason, attempt_count, execution_json, execution_digest, observed_at, "
+            "auth_body_json, auth_body_digest, auth_key_id, auth_signature_der_b64) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                current.job_id,
+                current.job_revision,
+                current.fencing_token,
+                current.lease_owner,
+                audit.provider_id,
+                audit.member_id,
+                audit.member_pin_json,
+                audit.member_pin_digest,
+                audit.status,
+                audit.reason,
+                len(audit.attempts),
+                execution_json,
+                audit.digest,
+                observed_at,
+                authority.body_json,
+                authority.body_digest,
+                authority.key_id,
+                authority.signature_der_b64,
+            ),
+        )
+        for attempt in audit.attempts:
+            connection.execute(
+                "INSERT INTO v3_job_provider_attempts(job_id, job_revision, fencing_token, "
+                "attempt_ordinal, raw_digest, validator_code, accepted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    current.job_id,
+                    current.job_revision,
+                    current.fencing_token,
+                    attempt.ordinal,
+                    attempt.raw_digest,
+                    attempt.validator_code,
+                    int(attempt.accepted),
+                ),
+            )
+            storage = attempt.storage_reference
+            connection.execute(
+                "INSERT INTO v3_job_provider_storage_refs(job_id, job_revision, fencing_token, "
+                "attempt_ordinal, raw_digest, byte_count, reference_json, reference_digest) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    current.job_id,
+                    current.job_revision,
+                    current.fencing_token,
+                    attempt.ordinal,
+                    storage.raw_digest,
+                    storage.byte_count,
+                    storage.reference_json,
+                    storage.reference_digest,
+                ),
+            )
+
+    def _decode_provider_execution(
+        self, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> ProviderExecutionAudit:
+        try:
+            value = json.loads(str(row["execution_json"]))
+            audit = ProviderExecutionAudit.from_dict(value)
+            authority = SignedManifest(
+                "provider_execution",
+                str(row["auth_body_json"]),
+                str(row["auth_body_digest"]),
+                str(row["auth_key_id"]),
+                str(row["auth_signature_der_b64"]),
+            )
+            signed = verify_manifest(authority, self._trust_store)
+        except Exception as exc:
+            raise DurableJobError("provider execution audit failed integrity verification") from exc
+        expected_signed = {
+            "schema_version": "strathmark-v3-provider-execution-authority-v1",
+            "job_id": str(row["job_id"]),
+            "job_revision": int(row["job_revision"]),
+            "fencing_token": int(row["fencing_token"]),
+            "lease_owner": str(row["lease_owner"]),
+            "execution": value,
+            "execution_digest": audit.digest,
+            "observed_at": str(row["observed_at"]),
+        }
+        if signed != expected_signed or (
+            row["provider_id"] != audit.provider_id
+            or row["member_id"] != audit.member_id
+            or row["member_pin_json"] != audit.member_pin_json
+            or row["member_pin_digest"] != audit.member_pin_digest
+            or row["status"] != audit.status
+            or row["reason"] != audit.reason
+            or int(row["attempt_count"]) != len(audit.attempts)
+            or row["execution_json"] != canonical_bytes(value).decode("utf-8")
+            or row["execution_digest"] != audit.digest
+        ):
+            raise DurableJobError("provider execution audit material differs")
+        attempt_rows = connection.execute(
+            "SELECT * FROM v3_job_provider_attempts WHERE job_id=? AND job_revision=? "
+            "AND fencing_token=? ORDER BY attempt_ordinal",
+            (row["job_id"], row["job_revision"], row["fencing_token"]),
+        ).fetchall()
+        storage_rows = connection.execute(
+            "SELECT * FROM v3_job_provider_storage_refs WHERE job_id=? AND job_revision=? "
+            "AND fencing_token=? ORDER BY attempt_ordinal",
+            (row["job_id"], row["job_revision"], row["fencing_token"]),
+        ).fetchall()
+        if len(attempt_rows) != len(audit.attempts) or len(storage_rows) != len(audit.attempts):
+            raise DurableJobError("provider execution normalized audit rows differ")
+        for expected, attempt_row, storage_row in zip(audit.attempts, attempt_rows, storage_rows):
+            storage = expected.storage_reference
+            if (
+                int(attempt_row["attempt_ordinal"]) != expected.ordinal
+                or attempt_row["raw_digest"] != expected.raw_digest
+                or attempt_row["validator_code"] != expected.validator_code
+                or bool(attempt_row["accepted"]) is not expected.accepted
+                or int(storage_row["attempt_ordinal"]) != expected.ordinal
+                or storage_row["raw_digest"] != storage.raw_digest
+                or int(storage_row["byte_count"]) != storage.byte_count
+                or storage_row["reference_json"] != storage.reference_json
+                or storage_row["reference_digest"] != storage.reference_digest
+            ):
+                raise DurableJobError("provider execution normalized audit material differs")
+        return audit
+
     def _append_history(
         self,
         connection: sqlite3.Connection,
@@ -1157,6 +1349,25 @@ class DurableJobRepository:
                 or payload["authority_tip"] != str(succeeded_row[0])
             ):
                 raise DurableJobError("job publication authority binding differs")
+        for row in connection.execute(
+            "SELECT * FROM v3_job_provider_executions ORDER BY job_id, job_revision, fencing_token"
+        ):
+            key = (str(row["job_id"]), int(row["job_revision"]))
+            if key not in jobs:
+                raise DurableJobError("provider execution audit references unknown work")
+            transition = connection.execute(
+                "SELECT operation_kind FROM v3_job_history WHERE job_id=? AND job_revision=? "
+                "AND fencing_token=? AND operation_kind IN ('succeeded', 'invalid', "
+                "'retryable-failed', 'permanent-failed')",
+                (row["job_id"], row["job_revision"], row["fencing_token"]),
+            ).fetchone()
+            if transition is None:
+                raise DurableJobError(
+                    "provider execution audit lacks a terminal attempt transition"
+                )
+            if (row["status"] == "succeeded") != (transition[0] == "succeeded"):
+                raise DurableJobError("provider execution audit status differs from job history")
+            self._decode_provider_execution(connection, row)
 
     @staticmethod
     def _get_connection(

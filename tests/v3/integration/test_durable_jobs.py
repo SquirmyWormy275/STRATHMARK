@@ -746,6 +746,38 @@ def test_coordinator_never_calls_provider_before_durable_lease(tmp_path: Path) -
     assert health.oldest_job_at is None
 
 
+def test_coordinator_settles_an_existing_persisted_lease_and_returns_response(
+    tmp_path: Path,
+) -> None:
+    repo = repository(tmp_path)
+    repo.enqueue(request(1))
+    lease = claim(
+        repo,
+        JobLane.INFERENCE,
+        worker_id="worker:one",
+        observed_at=T1,
+        lease_duration_ms=2_000,
+    )
+    assert lease is not None
+    response = ProviderResponse(DIGEST_C, DIGEST_A, DIGEST_B, {"forecast": 42})
+
+    class Provider:
+        def execute(self, job):
+            assert job == lease
+            return response
+
+    outcome = DurableCoordinator(repo, retry_policy=RetryPolicy("retry.v1")).run_claimed(
+        lease,
+        provider=Provider(),
+        current_context=lambda _job: (DIGEST_A, DIGEST_B),
+        publish=lambda *_: None,
+        clock=lambda: T2,
+    )
+
+    assert outcome.job.state is JobState.SUCCEEDED
+    assert outcome.provider_response is response
+
+
 @pytest.mark.parametrize(
     ("provider", "expected"),
     [

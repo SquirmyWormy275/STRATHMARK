@@ -46,6 +46,7 @@ _PINNED_CHECKSUMS: Final[dict[str, str]] = {
     "0004_recovery_storage.sql": "99cc6226024380bc26ca98e7376f118ac188a4b31faa46424d87a5d6b57cfaee",
     "0005_durable_jobs.sql": "8df9584e7961afb96eb7d87e28d4180864ede7bb195d96a1535b9304823cbcb4",
     "0006_signed_historical_cutover.sql": "2694b757596ccce399b67057bfce4d93fed42819dfece0d01573f62f658e5121",
+    "0007_provider_execution_audit.sql": "1cc0aa52c2625b58d3a2975d3913286ab637358fa104d8c9c3c1ec11d8aa6fa5",
 }
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<label>[a-z0-9_]+)\.sql$")
 _MIGRATION_ROOT = Path(__file__).resolve().parents[2] / "migrations"
@@ -106,7 +107,7 @@ _METADATA_COLUMNS = (
     ("checksum", "TEXT", 1, 0),
     ("applied_at", "TEXT", 1, 0),
 )
-EXPECTED_SCHEMA_DIGEST = "5497e056fd4c72c058b4a43eba2b9300f1ec7c985fa4b55156aa91c1b7beb969"
+EXPECTED_SCHEMA_DIGEST = "88ce75372bcf8a8ba81269a7d7d32d0fa43b39b4a679e25e20d308e88dc0d65f"
 
 
 def _ensure_metadata_table(connection: sqlite3.Connection) -> None:
@@ -208,14 +209,12 @@ def _apply_migration(
 def canonical_schema_digest(connection: sqlite3.Connection) -> str:
     """Digest normalized catalog semantics, excluding SQLite's internal objects."""
 
-    rows = connection.execute(
-        """
+    rows = connection.execute("""
         SELECT type, name, tbl_name, sql
         FROM sqlite_master
         WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
         ORDER BY type, name
-        """
-    ).fetchall()
+        """).fetchall()
     catalog = [
         {
             "type": str(row[0]),

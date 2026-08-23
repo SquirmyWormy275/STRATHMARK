@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Protocol
 
 from strathmark.v3.application.capacity import JobLane
+from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 
 _TOKEN = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
 MANDATORY_EXTERNAL_FIELD_DEPENDENCIES = (
@@ -41,6 +43,176 @@ class FailureKind(str, Enum):
     PROCESS = "process"
     VALIDATION = "validation"
     PERMANENT = "permanent"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderStorageAudit:
+    raw_digest: str
+    byte_count: int
+    reference_json: str
+    reference_digest: str
+
+    @classmethod
+    def create(cls, reference: Any) -> ProviderStorageAudit:
+        to_dict = getattr(reference, "to_dict", None)
+        if not callable(to_dict):
+            raise DurableJobError("provider storage audit requires a canonical reference")
+        value = to_dict()
+        encoded = canonical_bytes(value)
+        return cls(
+            value.get("raw_digest"),
+            value.get("byte_count"),
+            encoded.decode("utf-8"),
+            canonical_digest(value),
+        )
+
+    def __post_init__(self) -> None:
+        _digest(self.raw_digest, "provider storage raw digest")
+        if (
+            isinstance(self.byte_count, bool)
+            or not isinstance(self.byte_count, int)
+            or self.byte_count < 0
+        ):
+            raise DurableJobError("provider storage byte count must be non-negative")
+        _canonical_json(self.reference_json, self.reference_digest, "provider storage reference")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAttemptAudit:
+    ordinal: int
+    raw_digest: str
+    validator_code: str
+    accepted: bool
+    storage_reference: ProviderStorageAudit
+
+    def __post_init__(self) -> None:
+        _positive(self.ordinal, "provider attempt ordinal")
+        _digest(self.raw_digest, "provider attempt raw digest")
+        if (
+            not isinstance(self.validator_code, str)
+            or _TOKEN.fullmatch(self.validator_code) is None
+        ):
+            raise DurableJobError("provider attempt validator code must be a machine token")
+        if not isinstance(self.accepted, bool):
+            raise DurableJobError("provider attempt acceptance must be explicit")
+        if not isinstance(self.storage_reference, ProviderStorageAudit):
+            raise DurableJobError("provider attempt requires one durable storage reference")
+        if self.storage_reference.raw_digest != self.raw_digest:
+            raise DurableJobError("provider attempt storage digest differs")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderExecutionAudit:
+    provider_id: str
+    member_id: str
+    member_pin_json: str
+    member_pin_digest: str
+    status: str
+    reason: str | None
+    attempts: tuple[ProviderAttemptAudit, ...]
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.provider_id, "provider execution provider id"),
+            (self.member_id, "provider execution member id"),
+            (self.status, "provider execution status"),
+        ):
+            if not isinstance(value, str) or _TOKEN.fullmatch(value) is None:
+                raise DurableJobError(f"{label} must be a machine token")
+        if self.status not in {"succeeded", "failed"}:
+            raise DurableJobError("provider execution status is closed")
+        if (self.status == "succeeded") != (self.reason is None):
+            raise DurableJobError("provider execution reason differs from status")
+        if self.reason is not None and _TOKEN.fullmatch(self.reason) is None:
+            raise DurableJobError("provider execution reason must be a machine token")
+        _canonical_json(self.member_pin_json, self.member_pin_digest, "provider member pin")
+        if not isinstance(self.attempts, tuple):
+            raise DurableJobError("provider execution attempts must be immutable")
+        if self.status == "succeeded" and not self.attempts:
+            raise DurableJobError("successful provider execution requires a retained attempt")
+        if any(not isinstance(item, ProviderAttemptAudit) for item in self.attempts):
+            raise DurableJobError("provider execution attempts must be typed")
+        if tuple(item.ordinal for item in self.attempts) != tuple(range(1, len(self.attempts) + 1)):
+            raise DurableJobError("provider execution attempt ordinals must be consecutive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "strathmark-v3-provider-execution-audit-v1",
+            "provider_id": self.provider_id,
+            "member_id": self.member_id,
+            "member_pin": json.loads(self.member_pin_json),
+            "status": self.status,
+            "reason": self.reason,
+            "attempts": [
+                {
+                    "ordinal": item.ordinal,
+                    "raw_digest": item.raw_digest,
+                    "validator_code": item.validator_code,
+                    "accepted": item.accepted,
+                    "storage_reference": json.loads(item.storage_reference.reference_json),
+                }
+                for item in self.attempts
+            ],
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ProviderExecutionAudit:
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version",
+            "provider_id",
+            "member_id",
+            "member_pin",
+            "status",
+            "reason",
+            "attempts",
+        }:
+            raise DurableJobError("provider execution audit fields differ")
+        if value["schema_version"] != "strathmark-v3-provider-execution-audit-v1":
+            raise DurableJobError("provider execution audit schema differs")
+        attempts_value = value["attempts"]
+        if not isinstance(attempts_value, list):
+            raise DurableJobError("provider execution attempts must be a list")
+        attempts = []
+        for item in attempts_value:
+            if not isinstance(item, dict) or set(item) != {
+                "ordinal",
+                "raw_digest",
+                "validator_code",
+                "accepted",
+                "storage_reference",
+            }:
+                raise DurableJobError("provider attempt audit fields differ")
+            reference = item["storage_reference"]
+            encoded_reference = canonical_bytes(reference).decode("utf-8")
+            storage = ProviderStorageAudit(
+                reference.get("raw_digest") if isinstance(reference, dict) else None,
+                reference.get("byte_count") if isinstance(reference, dict) else None,
+                encoded_reference,
+                canonical_digest(reference),
+            )
+            attempts.append(
+                ProviderAttemptAudit(
+                    item["ordinal"],
+                    item["raw_digest"],
+                    item["validator_code"],
+                    item["accepted"],
+                    storage,
+                )
+            )
+        pin_json = canonical_bytes(value["member_pin"]).decode("utf-8")
+        return cls(
+            value["provider_id"],
+            value["member_id"],
+            pin_json,
+            canonical_digest(value["member_pin"]),
+            value["status"],
+            value["reason"],
+            tuple(attempts),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +410,28 @@ def _nonnegative(value: object, label: str) -> int:
     return value
 
 
+def _digest(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise DurableJobError(f"{label} must be a lower-case SHA-256 digest")
+    return value
+
+
+def _canonical_json(value: object, digest: object, label: str) -> None:
+    _digest(digest, f"{label} digest")
+    if not isinstance(value, str):
+        raise DurableJobError(f"{label} must be canonical JSON")
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError) as exc:
+        raise DurableJobError(f"{label} must be canonical JSON") from exc
+    if canonical_bytes(decoded).decode("utf-8") != value or canonical_digest(decoded) != digest:
+        raise DurableJobError(f"{label} canonical identity differs")
+
+
 __all__ = [
     "DurableJobError",
     "FailureKind",
@@ -248,6 +442,9 @@ __all__ = [
     "JobRepositoryPort",
     "MANDATORY_EXTERNAL_FIELD_DEPENDENCIES",
     "PublicationPort",
+    "ProviderAttemptAudit",
+    "ProviderExecutionAudit",
+    "ProviderStorageAudit",
     "QueueHealthPort",
     "ReadinessDependencySnapshot",
     "ReadinessProbePort",
