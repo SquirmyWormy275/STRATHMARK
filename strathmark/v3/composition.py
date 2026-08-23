@@ -7,13 +7,25 @@ provider, or otherwise construct runtime clients.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from strathmark.v3.contracts.canonical import DEFAULT_MAX_BYTES, DEFAULT_MAX_DEPTH
+from strathmark.v3.contracts.canonical import DEFAULT_MAX_BYTES, DEFAULT_MAX_DEPTH, canonical_bytes
 from strathmark.v3.contracts.errors import ConfigurationError
+
+if TYPE_CHECKING:
+    from strathmark.v3.factory.ml_training import (
+        TrustedMLAuditAuthority,
+        TrustedMLRoleAuthority,
+    )
+    from strathmark.v3.infrastructure.integrity import (
+        P256EphemeralSigner,
+        SignedManifest,
+    )
 
 _KNOWN_PRODUCTION_IDENTIFIERS = frozenset({"iordtvxryrdhqvdkfgzf", "production", "prod"})
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -118,6 +130,150 @@ def resolve_runtime_config(environment: Mapping[str, str] | None = None) -> V3Ru
     )
 
 
+def compose_test_ml_candidate_authority(
+    signed_manifest: SignedManifest,
+    *,
+    signer: P256EphemeralSigner,
+) -> TrustedMLRoleAuthority:
+    """Create an explicitly non-production ephemeral candidate authority for tests."""
+
+    from strathmark.v3.factory.ml_training import (
+        MLAuthorityEnvironment,
+        _compose_ml_candidate_authority,
+    )
+
+    return _compose_ml_candidate_authority(
+        signed_manifest,
+        signer.identity,
+        signer,
+        environment=MLAuthorityEnvironment.TEST_EPHEMERAL,
+    )
+
+
+def compose_test_ml_audit_authority(
+    signed_manifest: SignedManifest,
+    *,
+    signer: P256EphemeralSigner,
+) -> TrustedMLAuditAuthority:
+    """Create an explicitly non-production ephemeral audit authority for tests."""
+
+    from strathmark.v3.factory.ml_training import (
+        MLAuthorityEnvironment,
+        _compose_ml_audit_authority,
+    )
+
+    return _compose_ml_audit_authority(
+        signed_manifest,
+        signer.identity,
+        signer,
+        environment=MLAuthorityEnvironment.TEST_EPHEMERAL,
+    )
+
+
+def compose_production_ml_authorities(
+    config: V3RuntimeConfig,
+) -> tuple[TrustedMLRoleAuthority, TrustedMLAuditAuthority]:
+    """Load both ML authorities only from installation-owned CNG registry material."""
+
+    if not isinstance(config, V3RuntimeConfig) or config.test_mode:
+        raise ConfigurationError(
+            "production ML composition requires a non-test runtime configuration"
+        )
+    candidate = _load_production_ml_authority(config, "candidate")
+    audit = _load_production_ml_authority(config, "audit")
+    return candidate, audit
+
+
+def _load_production_ml_authority(
+    config: V3RuntimeConfig, role_set: str
+) -> TrustedMLRoleAuthority | TrustedMLAuditAuthority:
+    from strathmark.v3.factory.ml_training import (
+        MLAuthorityEnvironment,
+        _compose_ml_audit_authority,
+        _compose_ml_candidate_authority,
+    )
+    from strathmark.v3.infrastructure.integrity import (
+        IntegrityError,
+        IntegrityKeyClass,
+        IntegrityKeyIdentity,
+        P256WindowsCNGSigner,
+        SignedManifest,
+    )
+
+    root = config.integrity_key_root
+    identity_value = _read_installation_mapping(
+        root / f"ml-{role_set}-public-identity.json", config
+    )
+    try:
+        identity = IntegrityKeyIdentity.from_dict(identity_value)
+    except IntegrityError as exc:
+        raise ConfigurationError("installed ML public identity is invalid") from exc
+    if identity.key_class is not IntegrityKeyClass.PRODUCTION_CNG:
+        raise ConfigurationError(
+            "production ML composition rejects non-CNG or test-ephemeral identity"
+        )
+    manifest_value = _read_installation_mapping(
+        root / f"ml-{role_set}-role-manifest.json", config
+    )
+    try:
+        manifest = SignedManifest.from_dict(manifest_value)
+        key_name = _read_installation_key_name(
+            root / f"ml-{role_set}-cng-key-name.txt"
+        )
+        signer = P256WindowsCNGSigner.open(key_name)
+    except IntegrityError as exc:
+        raise ConfigurationError("installed ML CNG authority material is invalid") from exc
+    if signer.identity != identity:
+        raise ConfigurationError(
+            "installed ML public identity differs from the live Windows CNG key"
+        )
+    compose = (
+        _compose_ml_audit_authority
+        if role_set == "audit"
+        else _compose_ml_candidate_authority
+    )
+    return compose(
+        manifest,
+        identity,
+        signer,
+        environment=MLAuthorityEnvironment.PRODUCTION_CNG,
+    )
+
+
+def _read_installation_mapping(
+    path: Path, config: V3RuntimeConfig
+) -> Mapping[str, object]:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ConfigurationError("installed ML authority file cannot be read") from exc
+    if not raw or len(raw) > config.canonical_max_bytes:
+        raise ConfigurationError("installed ML authority file exceeds its byte bound")
+    try:
+        value = json.loads(raw)
+        encoded = canonical_bytes(
+            value,
+            max_bytes=config.canonical_max_bytes,
+            max_depth=config.canonical_max_depth,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("installed ML authority file is not canonical JSON") from exc
+    if not isinstance(value, Mapping) or encoded != raw:
+        raise ConfigurationError("installed ML authority file is not a canonical object")
+    return value
+
+
+def _read_installation_key_name(path: Path) -> str:
+    try:
+        raw = path.read_bytes()
+        value = raw.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ConfigurationError("installed ML CNG key name cannot be read") from exc
+    if not value or len(raw) > 512 or value != value.strip() or "\x00" in value:
+        raise ConfigurationError("installed ML CNG key name is invalid")
+    return value
+
+
 def _absolute_path(raw_value: str, label: str) -> Path:
     if not isinstance(raw_value, str) or not raw_value.strip():
         raise ConfigurationError(f"{label} must be a nonempty filesystem path")
@@ -162,4 +318,10 @@ def _reject_production_test_path(path: Path) -> None:
         )
 
 
-__all__ = ["V3RuntimeConfig", "resolve_runtime_config"]
+__all__ = [
+    "V3RuntimeConfig",
+    "compose_production_ml_authorities",
+    "compose_test_ml_audit_authority",
+    "compose_test_ml_candidate_authority",
+    "resolve_runtime_config",
+]
