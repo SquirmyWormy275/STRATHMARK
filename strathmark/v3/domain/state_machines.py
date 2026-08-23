@@ -1,0 +1,132 @@
+"""Closed, side-effect-free lifecycle transitions for V3 aggregates."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from strathmark.v3.contracts.errors import ContractError
+from strathmark.v3.contracts.events import AggregateKind, EventKind
+from strathmark.v3.contracts.statuses import LifecycleStatus
+
+State = LifecycleStatus | None
+
+_EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
+    AggregateKind.TOURNAMENT: {
+        (None, EventKind.TOURNAMENT_CONFIGURED): LifecycleStatus.TOURNAMENT_CONFIGURED,
+        (
+            LifecycleStatus.TOURNAMENT_CONFIGURED,
+            EventKind.TOURNAMENT_OPENED,
+        ): LifecycleStatus.TOURNAMENT_OPEN,
+        (
+            LifecycleStatus.TOURNAMENT_OPEN,
+            EventKind.TOURNAMENT_CLOSED,
+        ): LifecycleStatus.TOURNAMENT_CLOSED,
+    },
+    AggregateKind.ROUND: {
+        (None, EventKind.ROUND_CONFIGURED): LifecycleStatus.ROUND_CONFIGURED,
+        (LifecycleStatus.ROUND_CONFIGURED, EventKind.ROUND_FROZEN): LifecycleStatus.ROUND_FROZEN,
+        (
+            LifecycleStatus.ROUND_FROZEN,
+            EventKind.ROUND_CLOSING_STARTED,
+        ): LifecycleStatus.ROUND_CLOSING,
+        (LifecycleStatus.ROUND_CLOSING, EventKind.ROUND_CLOSED): LifecycleStatus.ROUND_CLOSED,
+    },
+    AggregateKind.FIELD: {
+        (None, EventKind.FIELD_OPTIMIZED): LifecycleStatus.FIELD_PREPARED,
+        (
+            LifecycleStatus.FIELD_PREPARED,
+            EventKind.FIELD_SUPERSEDED,
+        ): LifecycleStatus.FIELD_SUPERSEDED,
+        (
+            LifecycleStatus.FIELD_SUPERSEDED,
+            EventKind.FIELD_REGENERATED,
+        ): LifecycleStatus.FIELD_PREPARED,
+        (LifecycleStatus.FIELD_PREPARED, EventKind.FIELD_ISSUED): LifecycleStatus.FIELD_ISSUED,
+        (LifecycleStatus.FIELD_ISSUED, EventKind.FIELD_SETTLED): LifecycleStatus.FIELD_SETTLED,
+    },
+    AggregateKind.JOB: {
+        (None, EventKind.JOB_QUEUED): LifecycleStatus.JOB_QUEUED,
+        (LifecycleStatus.JOB_QUEUED, EventKind.JOB_LEASED): LifecycleStatus.JOB_LEASED,
+        (LifecycleStatus.JOB_QUEUED, EventKind.JOB_CANCELLED): LifecycleStatus.JOB_CANCELLED,
+        (LifecycleStatus.JOB_LEASED, EventKind.JOB_SUCCEEDED): LifecycleStatus.JOB_SUCCEEDED,
+        (LifecycleStatus.JOB_LEASED, EventKind.JOB_INVALID): LifecycleStatus.JOB_INVALID,
+        (
+            LifecycleStatus.JOB_LEASED,
+            EventKind.JOB_RETRYABLE_FAILED,
+        ): LifecycleStatus.JOB_RETRYABLE_FAILED,
+        (LifecycleStatus.JOB_LEASED, EventKind.JOB_STALE): LifecycleStatus.JOB_STALE,
+        (
+            LifecycleStatus.JOB_LEASED,
+            EventKind.JOB_PERMANENT_FAILED,
+        ): LifecycleStatus.JOB_PERMANENT_FAILED,
+        (
+            LifecycleStatus.JOB_RETRYABLE_FAILED,
+            EventKind.JOB_REQUEUED,
+        ): LifecycleStatus.JOB_QUEUED,
+    },
+    AggregateKind.BUNDLE: {
+        (None, EventKind.MODEL_CANDIDATE_CREATED): LifecycleStatus.BUNDLE_CANDIDATE,
+        (
+            LifecycleStatus.BUNDLE_CANDIDATE,
+            EventKind.BUNDLE_PROMOTED,
+        ): LifecycleStatus.BUNDLE_PROMOTED,
+        (
+            LifecycleStatus.BUNDLE_PROMOTED,
+            EventKind.BUNDLE_ROLLED_BACK,
+        ): LifecycleStatus.BUNDLE_ROLLED_BACK,
+    },
+    AggregateKind.ISSUE_BATCH: {
+        (None, EventKind.ISSUE_BATCH_ISSUED): LifecycleStatus.ISSUE_BATCH_ISSUED,
+    },
+}
+
+
+def initial_event(aggregate_kind: AggregateKind) -> EventKind:
+    """Return the sole legal genesis event for a stateful aggregate."""
+
+    edges = _machine(aggregate_kind)
+    initial = [event for (state, event), _next in edges.items() if state is None]
+    if len(initial) != 1:
+        raise ContractError("aggregate state machine must define exactly one initial event")
+    return initial[0]
+
+
+def transition(
+    aggregate_kind: AggregateKind, current: State, event_kind: EventKind
+) -> LifecycleStatus:
+    """Apply one legal edge or fail without mutating any state."""
+
+    edges = _machine(aggregate_kind)
+    if current is not None:
+        if not isinstance(current, LifecycleStatus) or not current.value.startswith(
+            f"{aggregate_kind.value}_"
+        ):
+            raise ContractError("current lifecycle status does not belong to aggregate kind")
+    if not isinstance(event_kind, EventKind):
+        raise ContractError("event kind must be an EventKind")
+    try:
+        return edges[(current, event_kind)]
+    except KeyError as exc:
+        state = "genesis" if current is None else current.value
+        raise ContractError(
+            f"illegal {aggregate_kind.value} lifecycle transition from {state} "
+            f"using {event_kind.value}"
+        ) from exc
+
+
+def replay(aggregate_kind: AggregateKind, events: Iterable[EventKind]) -> State:
+    """Rebuild one aggregate state from its immutable event-kind stream."""
+
+    state: State = None
+    for event_kind in events:
+        state = transition(aggregate_kind, state, event_kind)
+    return state
+
+
+def _machine(aggregate_kind: AggregateKind) -> dict[tuple[State, EventKind], LifecycleStatus]:
+    if not isinstance(aggregate_kind, AggregateKind) or aggregate_kind not in _EDGES:
+        raise ContractError("aggregate kind has no lifecycle state machine")
+    return _EDGES[aggregate_kind]
+
+
+__all__ = ["State", "initial_event", "replay", "transition"]

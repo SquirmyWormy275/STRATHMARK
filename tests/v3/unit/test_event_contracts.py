@@ -170,6 +170,7 @@ def test_plan_transition_command_vocabulary_is_closed_and_round_trips() -> None:
         CommandKind.MARK_JOB_STALE,
         CommandKind.RECORD_PERMANENT_JOB_FAILURE,
         CommandKind.CANCEL_JOB,
+        CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
     }
     for kind in required:
         command = replace(_command(), kind=kind)
@@ -328,6 +329,7 @@ def test_plan_transition_event_vocabulary_is_closed_and_round_trips() -> None:
         EventKind.JOB_STALE,
         EventKind.JOB_PERMANENT_FAILED,
         EventKind.JOB_CANCELLED,
+        EventKind.ISSUE_BATCH_ISSUED,
     }
     for sequence, kind in enumerate(sorted(required, key=lambda item: item.value), start=100):
         event = EventEnvelope.create(
@@ -344,6 +346,31 @@ def test_plan_transition_event_vocabulary_is_closed_and_round_trips() -> None:
             command=_command(),
         )
         assert EventEnvelope.from_dict(event.to_dict()) == event
+
+
+def test_event_envelope_supports_one_declared_nonprimary_aggregate_for_atomic_batch() -> None:
+    command = CommandEnvelope(
+        kind=CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
+        command_id=IdempotencyKey("command:batch-1"),
+        target_aggregate=StableIdentifier("issue_batch:batch-1"),
+        expected_versions=(("field:heat-a", 2), ("issue_batch:batch-1", 0)),
+        actor_id=StableIdentifier("actor:tournament-manager"),
+        payload=InlinePayload.from_value({"snapshot": "snapshot:1"}),
+    )
+    event = EventEnvelope.create(
+        event_id=StableIdentifier("event:field-issued-by-batch"),
+        kind=EventKind.FIELD_ISSUED,
+        aggregate_kind=AggregateKind.FIELD,
+        aggregate_id=StableIdentifier("field:heat-a"),
+        aggregate_version=3,
+        global_sequence=19,
+        prior_global_digest="1" * 64,
+        prior_aggregate_digest="2" * 64,
+        occurred_at_utc="2026-08-22T17:30:00.000Z",
+        monotonic_elapsed_ms=91823,
+        command=command,
+    )
+    assert EventEnvelope.from_dict(event.to_dict()) == event
 
 
 def test_event_sequences_timestamps_and_numeric_types_fail_closed() -> None:

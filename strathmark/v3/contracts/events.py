@@ -37,6 +37,7 @@ class AggregateKind(str, Enum):
     SCORE = "score"
     WEIGHTS = "weights"
     SYSTEM = "system"
+    ISSUE_BATCH = "issue_batch"
 
 
 class EventKind(str, Enum):
@@ -65,6 +66,7 @@ class EventKind(str, Enum):
     FIELD_SUPERSEDED = "field_superseded"
     FIELD_REGENERATED = "field_regenerated"
     FIELD_ISSUED = "field_issued"
+    ISSUE_BATCH_ISSUED = "issue_batch_issued"
     FIELD_SETTLED = "field_settled"
     HISTORY_IMPORTED = "history_imported"
     JOB_QUEUED = "job_queued"
@@ -120,9 +122,9 @@ class EventEnvelope:
         _require_nonnegative_int(self.monotonic_elapsed_ms, "monotonic_elapsed_ms")
         if not isinstance(self.command, CommandEnvelope):
             raise ContractError("event command must be a CommandEnvelope")
-        if self.command.target_aggregate != self.aggregate_id:
-            raise ContractError("event aggregate must match its command target")
         expected = dict(self.command.expected_versions).get(str(self.aggregate_id))
+        if expected is None:
+            raise ContractError("event aggregate must match a declared command target")
         if expected != self.aggregate_version - 1:
             raise ContractError("event aggregate version must follow the command expected version")
         _require_digest(self.event_digest, "event_digest")

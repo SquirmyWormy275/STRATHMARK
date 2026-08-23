@@ -2,4 +2,20 @@
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from strathmark.v3.infrastructure.sqlite.event_store import (
+    AuthorityAnchor,
+    EventStoreConflict,
+    EventStoreError,
+    EventStoreIntegrityError,
+    SQLiteEventStore,
+    StoredCommandResult,
+)
+
+__all__ = [
+    "AuthorityAnchor",
+    "EventStoreConflict",
+    "EventStoreError",
+    "EventStoreIntegrityError",
+    "SQLiteEventStore",
+    "StoredCommandResult",
+]

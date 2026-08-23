@@ -48,6 +48,7 @@ class CommandKind(str, Enum):
     APPLY_OVERRIDE = "apply_override"
     OPTIMIZE_FIELD = "optimize_field"
     ACKNOWLEDGE_ISSUE = "acknowledge_issue"
+    ACKNOWLEDGE_BATCH_ISSUE = "acknowledge_batch_issue"
     SETTLE_FIELD = "settle_field"
     IMPORT_HISTORY = "import_history"
     CREATE_MODEL_CANDIDATE = "create_model_candidate"
