@@ -45,6 +45,7 @@ _PINNED_CHECKSUMS: Final[dict[str, str]] = {
     "0003_ingress_epochs.sql": "dfffdc51298cd001d18b50a605ded4463ea9365133b7cc749ec6c1a010c53301",
     "0004_recovery_storage.sql": "99cc6226024380bc26ca98e7376f118ac188a4b31faa46424d87a5d6b57cfaee",
     "0005_durable_jobs.sql": "8df9584e7961afb96eb7d87e28d4180864ede7bb195d96a1535b9304823cbcb4",
+    "0006_signed_historical_cutover.sql": "2694b757596ccce399b67057bfce4d93fed42819dfece0d01573f62f658e5121",
 }
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<label>[a-z0-9_]+)\.sql$")
 _MIGRATION_ROOT = Path(__file__).resolve().parents[2] / "migrations"
@@ -105,7 +106,7 @@ _METADATA_COLUMNS = (
     ("checksum", "TEXT", 1, 0),
     ("applied_at", "TEXT", 1, 0),
 )
-EXPECTED_SCHEMA_DIGEST = "444dafa6493fdf16a4b375af221e5db71ba4f9c74aba9b5beb8de1d88e73777c"
+EXPECTED_SCHEMA_DIGEST = "5497e056fd4c72c058b4a43eba2b9300f1ec7c985fa4b55156aa91c1b7beb969"
 
 
 def _ensure_metadata_table(connection: sqlite3.Connection) -> None:

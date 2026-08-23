@@ -116,6 +116,17 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
     AggregateKind.ISSUE_BATCH: {
         (None, EventKind.ISSUE_BATCH_ISSUED): LifecycleStatus.ISSUE_BATCH_ISSUED,
     },
+    AggregateKind.COMPETITOR: {
+        (None, EventKind.CAPABILITY_UPDATED): LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT,
+        (
+            LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT,
+            EventKind.CAPABILITY_UPDATED,
+        ): LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT,
+        (
+            LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT,
+            EventKind.CAPABILITY_STATE_REBASED,
+        ): LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT,
+    },
 }
 
 

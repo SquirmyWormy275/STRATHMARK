@@ -71,6 +71,7 @@ class EventKind(str, Enum):
     COMPONENT_FORECAST_REJECTED = "component_forecast_rejected"
     COUNCIL_MEMBER_COMMITTED = "council_member_committed"
     CAPABILITY_UPDATED = "capability_updated"
+    CAPABILITY_STATE_REBASED = "capability_state_rebased"
     SCORE_RECORDED = "score_recorded"
     SCORE_REVERSED = "score_reversed"
     WEIGHTS_CHANGED = "weights_changed"

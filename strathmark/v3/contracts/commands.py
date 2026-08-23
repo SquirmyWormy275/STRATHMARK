@@ -53,6 +53,7 @@ class CommandKind(str, Enum):
     PREPARE_FORECAST = "prepare_forecast"
     COMMIT_FORECAST = "commit_forecast"
     RECORD_CAPABILITY_UPDATE = "record_capability_update"
+    REBASE_CAPABILITY_STATE = "rebase_capability_state"
     RECORD_SCORE = "record_score"
     CHANGE_WEIGHTS = "change_weights"
     POOL_FORECASTS = "pool_forecasts"

@@ -75,6 +75,14 @@ _COMMAND_EVENT: dict[CommandKind, tuple[AggregateKind, EventKind]] = {
     ),
     CommandKind.PROMOTE_BUNDLE: (AggregateKind.BUNDLE, EventKind.BUNDLE_PROMOTED),
     CommandKind.ROLLBACK_BUNDLE: (AggregateKind.BUNDLE, EventKind.BUNDLE_ROLLED_BACK),
+    CommandKind.RECORD_CAPABILITY_UPDATE: (
+        AggregateKind.COMPETITOR,
+        EventKind.CAPABILITY_UPDATED,
+    ),
+    CommandKind.REBASE_CAPABILITY_STATE: (
+        AggregateKind.COMPETITOR,
+        EventKind.CAPABILITY_STATE_REBASED,
+    ),
 }
 
 

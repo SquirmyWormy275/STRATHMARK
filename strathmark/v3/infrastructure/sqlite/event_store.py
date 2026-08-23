@@ -679,6 +679,7 @@ class SQLiteEventStore:
                 AggregateKind.JOB,
                 AggregateKind.BUNDLE,
                 AggregateKind.ISSUE_BATCH,
+                AggregateKind.COMPETITOR,
             }:
                 try:
                     transition(

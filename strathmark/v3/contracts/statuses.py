@@ -38,6 +38,7 @@ class LifecycleAggregateKind(str, Enum):
     JOB = "job"
     BUNDLE = "bundle"
     ISSUE_BATCH = "issue_batch"
+    COMPETITOR = "competitor"
 
 
 class LifecycleStatus(str, Enum):
@@ -72,6 +73,7 @@ class LifecycleStatus(str, Enum):
     BUNDLE_PROMOTED = "bundle_promoted"
     BUNDLE_ROLLED_BACK = "bundle_rolled_back"
     ISSUE_BATCH_ISSUED = "issue_batch_issued"
+    COMPETITOR_CAPABILITY_CURRENT = "competitor_capability_current"
 
 
 _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
@@ -120,6 +122,9 @@ _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
     LifecycleStatus.BUNDLE_PROMOTED: frozenset({LifecycleStatus.BUNDLE_ROLLED_BACK}),
     LifecycleStatus.BUNDLE_ROLLED_BACK: frozenset(),
     LifecycleStatus.ISSUE_BATCH_ISSUED: frozenset(),
+    LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT: frozenset(
+        {LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT}
+    ),
 }
 
 
