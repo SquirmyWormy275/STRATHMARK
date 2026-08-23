@@ -13,7 +13,7 @@ import json
 import math
 import unicodedata
 from collections.abc import Mapping, Sequence
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
 from typing import Any
 
 from strathmark.v3.contracts.errors import (
@@ -81,7 +81,13 @@ def milliseconds_from_seconds(value: Decimal | int | float | str) -> int:
         raise CanonicalNumberError("time must be a finite decimal") from exc
     if decimal_value < 0:
         raise CanonicalNumberError("time in seconds must be non-negative")
-    quantized = (decimal_value * 1000).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
+    # Decimal arithmetic otherwise inherits mutable process/thread context.  Pin
+    # enough precision for the bounded canonical input plus the millisecond
+    # scale so replay cannot change when unrelated code adjusts that context.
+    with localcontext() as context:
+        context.prec = MAX_DECIMAL_CHARACTERS + 16
+        context.rounding = ROUND_HALF_EVEN
+        quantized = (decimal_value * 1000).quantize(Decimal("1"))
     milliseconds = int(quantized)
     _validate_int64(milliseconds)
     return milliseconds

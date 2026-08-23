@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -67,6 +67,17 @@ def test_seconds_use_one_millisecond_half_even_quantization(
     seconds: str | Decimal | float, expected: int
 ) -> None:
     assert milliseconds_from_seconds(seconds) == expected
+
+
+def test_millisecond_quantization_ignores_ambient_decimal_context() -> None:
+    expected = milliseconds_from_seconds("123.4565")
+
+    with localcontext() as context:
+        context.prec = 2
+        context.rounding = "ROUND_UP"
+        observed = milliseconds_from_seconds("123.4565")
+
+    assert observed == expected == 123456
 
 
 def test_negative_zero_has_one_canonical_decimal_representation() -> None:
