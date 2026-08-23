@@ -24,6 +24,14 @@ class ResultStatus(str, Enum):
 
 
 class LifecycleAggregateKind(str, Enum):
+    TOURNAMENT_INGRESS = "tournament_ingress"
+    ROUND_INGRESS = "round_ingress"
+    FIELD_INGRESS = "field_ingress"
+    RESULT = "result"
+    SETTLEMENT = "settlement"
+    EPOCH = "epoch"
+    REACTION = "reaction"
+    DERIVATION = "derivation"
     TOURNAMENT = "tournament"
     ROUND = "round"
     FIELD = "field"
@@ -33,6 +41,14 @@ class LifecycleAggregateKind(str, Enum):
 
 
 class LifecycleStatus(str, Enum):
+    TOURNAMENT_INGRESS_CURRENT = "tournament_ingress_current"
+    ROUND_INGRESS_CURRENT = "round_ingress_current"
+    FIELD_INGRESS_CURRENT = "field_ingress_current"
+    RESULT_ACTIVE = "result_active"
+    SETTLEMENT_RECORDED = "settlement_recorded"
+    EPOCH_FROZEN = "epoch_frozen"
+    REACTION_COMPLETED = "reaction_completed"
+    DERIVATION_COMPLETED = "derivation_completed"
     TOURNAMENT_CONFIGURED = "tournament_configured"
     TOURNAMENT_OPEN = "tournament_open"
     TOURNAMENT_CLOSED = "tournament_closed"
@@ -59,6 +75,16 @@ class LifecycleStatus(str, Enum):
 
 
 _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
+    LifecycleStatus.TOURNAMENT_INGRESS_CURRENT: frozenset(
+        {LifecycleStatus.TOURNAMENT_INGRESS_CURRENT}
+    ),
+    LifecycleStatus.ROUND_INGRESS_CURRENT: frozenset({LifecycleStatus.ROUND_INGRESS_CURRENT}),
+    LifecycleStatus.FIELD_INGRESS_CURRENT: frozenset({LifecycleStatus.FIELD_INGRESS_CURRENT}),
+    LifecycleStatus.RESULT_ACTIVE: frozenset({LifecycleStatus.RESULT_ACTIVE}),
+    LifecycleStatus.SETTLEMENT_RECORDED: frozenset(),
+    LifecycleStatus.EPOCH_FROZEN: frozenset(),
+    LifecycleStatus.REACTION_COMPLETED: frozenset(),
+    LifecycleStatus.DERIVATION_COMPLETED: frozenset(),
     LifecycleStatus.TOURNAMENT_CONFIGURED: frozenset({LifecycleStatus.TOURNAMENT_OPEN}),
     LifecycleStatus.TOURNAMENT_OPEN: frozenset({LifecycleStatus.TOURNAMENT_CLOSED}),
     LifecycleStatus.TOURNAMENT_CLOSED: frozenset(),

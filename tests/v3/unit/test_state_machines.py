@@ -38,6 +38,7 @@ LIFECYCLES = {
     AggregateKind.ROUND: (
         (None, EventKind.ROUND_CONFIGURED, LifecycleStatus.ROUND_CONFIGURED),
         (LifecycleStatus.ROUND_CONFIGURED, EventKind.ROUND_FROZEN, LifecycleStatus.ROUND_FROZEN),
+        (LifecycleStatus.ROUND_FROZEN, EventKind.ROUND_FROZEN, LifecycleStatus.ROUND_FROZEN),
         (
             LifecycleStatus.ROUND_FROZEN,
             EventKind.ROUND_CLOSING_STARTED,
@@ -312,7 +313,7 @@ def test_command_event_catalog_rejects_every_batch_and_single_mismatch() -> None
 
     with pytest.raises(ContractError, match="not supported"):
         validate_command_event_intents(
-            replace(request.command, kind=CommandKind.RECORD_RESULT), request.events
+            replace(request.command, kind=CommandKind.PREPARE_FORECAST), request.events
         )
     with pytest.raises(ContractError, match="exactly one"):
         validate_command_event_intents(request.command, request.events * 2)
@@ -327,3 +328,94 @@ def test_command_event_catalog_rejects_every_batch_and_single_mismatch() -> None
     ):
         with pytest.raises(ContractError, match="do not match"):
             validate_command_event_intents(request.command, (wrong,))
+
+
+def test_u5_multi_event_commands_require_the_material_event_as_primary_target() -> None:
+    request = _application_request()
+    epoch = EventIntent(
+        AggregateKind.EPOCH,
+        StableIdentifier("epoch:revision-a"),
+        EventKind.ROUND_EPOCH_FROZEN,
+    )
+    round_freeze = EventIntent(
+        AggregateKind.ROUND,
+        StableIdentifier("round:revision-a"),
+        EventKind.ROUND_FROZEN,
+    )
+    secondary_round_target = replace(
+        request.command,
+        kind=CommandKind.FREEZE_EVIDENCE_EPOCH,
+        target_aggregate=round_freeze.aggregate_id,
+        expected_versions=(
+            (str(epoch.aggregate_id), 0),
+            (str(round_freeze.aggregate_id), 1),
+        ),
+    )
+    with pytest.raises(ContractError, match="evidence epoch freeze"):
+        validate_command_event_intents(secondary_round_target, (epoch, round_freeze))
+
+    ingress = EventIntent(
+        AggregateKind.FIELD_INGRESS,
+        StableIdentifier("field_ingress:revision-a"),
+        EventKind.FIELD_ROSTER_REVISED,
+    )
+    field = EventIntent(
+        AggregateKind.FIELD,
+        StableIdentifier("field:a"),
+        EventKind.FIELD_SUPERSEDED,
+    )
+    secondary_field_target = replace(
+        request.command,
+        kind=CommandKind.REVISE_FIELD_ROSTER,
+        target_aggregate=field.aggregate_id,
+        expected_versions=((str(field.aggregate_id), 1), (str(ingress.aggregate_id), 0)),
+    )
+    with pytest.raises(ContractError, match="field roster revision"):
+        validate_command_event_intents(secondary_field_target, (ingress, field))
+
+    live_settlement = EventIntent(
+        AggregateKind.SETTLEMENT,
+        StableIdentifier("settlement:live-a"),
+        EventKind.LIVE_RACE_SETTLED,
+    )
+    field_settlement = replace(field, event_kind=EventKind.FIELD_SETTLED)
+    secondary_live_field_target = replace(
+        request.command,
+        kind=CommandKind.SETTLE_LIVE_RACE,
+        target_aggregate=field_settlement.aggregate_id,
+        expected_versions=(
+            (str(field_settlement.aggregate_id), 1),
+            (str(live_settlement.aggregate_id), 0),
+        ),
+    )
+    with pytest.raises(ContractError, match="live settlement"):
+        validate_command_event_intents(
+            secondary_live_field_target,
+            (live_settlement, field_settlement),
+        )
+
+    result = EventIntent(
+        AggregateKind.RESULT,
+        StableIdentifier("result:revision-a"),
+        EventKind.RESULT_SUPERSEDED,
+    )
+    settlement = EventIntent(
+        AggregateKind.SETTLEMENT,
+        StableIdentifier("settlement:revision-a"),
+        EventKind.LIVE_RACE_SETTLED,
+    )
+    secondary_settlement_target = replace(
+        request.command,
+        kind=CommandKind.SUPERSEDE_AND_SETTLE_RESULT,
+        target_aggregate=settlement.aggregate_id,
+        expected_versions=(
+            (str(field.aggregate_id), 1),
+            (str(result.aggregate_id), 1),
+            (str(settlement.aggregate_id), 0),
+        ),
+    )
+    with pytest.raises(ContractError, match="atomic correction"):
+        validate_command_event_intents(
+            secondary_settlement_target,
+            (result, settlement, field),
+        )

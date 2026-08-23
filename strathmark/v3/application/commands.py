@@ -17,6 +17,31 @@ from strathmark.v3.contracts.identifiers import StableIdentifier, require_identi
 MAX_COMMAND_RESULT_BYTES = 1_048_576
 
 _COMMAND_EVENT: dict[CommandKind, tuple[AggregateKind, EventKind]] = {
+    CommandKind.REVISE_TOURNAMENT_SNAPSHOT: (
+        AggregateKind.TOURNAMENT_INGRESS,
+        EventKind.TOURNAMENT_SNAPSHOT_REVISED,
+    ),
+    CommandKind.REVISE_ROUND_SNAPSHOT: (
+        AggregateKind.ROUND_INGRESS,
+        EventKind.ROUND_SNAPSHOT_REVISED,
+    ),
+    CommandKind.REVISE_FIELD_ROSTER: (
+        AggregateKind.FIELD_INGRESS,
+        EventKind.FIELD_ROSTER_REVISED,
+    ),
+    CommandKind.RECORD_RESULT: (AggregateKind.RESULT, EventKind.RESULT_RECORDED),
+    CommandKind.CORRECT_RESULT: (AggregateKind.RESULT, EventKind.RESULT_SUPERSEDED),
+    CommandKind.VOID_RESULT: (AggregateKind.RESULT, EventKind.RESULT_SUPERSEDED),
+    CommandKind.SETTLE_LIVE_RACE: (AggregateKind.SETTLEMENT, EventKind.LIVE_RACE_SETTLED),
+    CommandKind.FREEZE_EVIDENCE_EPOCH: (AggregateKind.EPOCH, EventKind.ROUND_EPOCH_FROZEN),
+    CommandKind.COMPLETE_DERIVATION_REACTION: (
+        AggregateKind.REACTION,
+        EventKind.DERIVATION_REACTION_COMPLETED,
+    ),
+    CommandKind.COMPLETE_DERIVATION_SEQUENCE: (
+        AggregateKind.DERIVATION,
+        EventKind.DERIVATION_SEQUENCE_COMPLETED,
+    ),
     CommandKind.CONFIGURE_TOURNAMENT: (AggregateKind.TOURNAMENT, EventKind.TOURNAMENT_CONFIGURED),
     CommandKind.OPEN_TOURNAMENT: (AggregateKind.TOURNAMENT, EventKind.TOURNAMENT_OPENED),
     CommandKind.CLOSE_TOURNAMENT: (AggregateKind.TOURNAMENT, EventKind.TOURNAMENT_CLOSED),
@@ -124,6 +149,68 @@ def validate_command_event_intents(
 ) -> None:
     """Bind a closed command kind to its exact aggregate/event intent set."""
 
+    if command.kind is CommandKind.FREEZE_EVIDENCE_EPOCH:
+        epochs = [item for item in events if item.aggregate_kind is AggregateKind.EPOCH]
+        rounds = [item for item in events if item.aggregate_kind is AggregateKind.ROUND]
+        if (
+            len(epochs) != 1
+            or epochs[0].event_kind is not EventKind.ROUND_EPOCH_FROZEN
+            or epochs[0].aggregate_id != command.target_aggregate
+            or len(rounds) != 1
+            or rounds[0].event_kind is not EventKind.ROUND_FROZEN
+            or len(events) != 2
+        ):
+            raise ContractError(
+                "evidence epoch freeze requires one epoch event and its round freeze"
+            )
+        return
+    if command.kind is CommandKind.SETTLE_LIVE_RACE:
+        settlements = [item for item in events if item.aggregate_kind is AggregateKind.SETTLEMENT]
+        fields = [item for item in events if item.aggregate_kind is AggregateKind.FIELD]
+        if (
+            len(settlements) != 1
+            or settlements[0].event_kind is not EventKind.LIVE_RACE_SETTLED
+            or settlements[0].aggregate_id != command.target_aggregate
+            or len(fields) != 1
+            or fields[0].event_kind is not EventKind.FIELD_SETTLED
+            or len(events) != 2
+        ):
+            raise ContractError(
+                "live settlement requires one settlement event and its field settlement"
+            )
+        return
+    if command.kind is CommandKind.SUPERSEDE_AND_SETTLE_RESULT:
+        results = [item for item in events if item.aggregate_kind is AggregateKind.RESULT]
+        settlements = [item for item in events if item.aggregate_kind is AggregateKind.SETTLEMENT]
+        fields = [item for item in events if item.aggregate_kind is AggregateKind.FIELD]
+        if (
+            len(results) != 1
+            or results[0].event_kind is not EventKind.RESULT_SUPERSEDED
+            or results[0].aggregate_id != command.target_aggregate
+            or len(settlements) != 1
+            or settlements[0].event_kind is not EventKind.LIVE_RACE_SETTLED
+            or any(item.event_kind is not EventKind.FIELD_SUPERSEDED for item in fields)
+            or len(results) + len(settlements) + len(fields) != len(events)
+        ):
+            raise ContractError(
+                "atomic correction requires one result supersession and one live settlement"
+            )
+        return
+    if command.kind is CommandKind.REVISE_FIELD_ROSTER:
+        ingress = [item for item in events if item.aggregate_kind is AggregateKind.FIELD_INGRESS]
+        fields = [item for item in events if item.aggregate_kind is AggregateKind.FIELD]
+        if (
+            len(ingress) != 1
+            or ingress[0].event_kind is not EventKind.FIELD_ROSTER_REVISED
+            or ingress[0].aggregate_id != command.target_aggregate
+            or len(fields) > 1
+            or any(item.event_kind is not EventKind.FIELD_SUPERSEDED for item in fields)
+            or len(ingress) + len(fields) != len(events)
+        ):
+            raise ContractError(
+                "field roster revision requires ingress and at most one prepared-field supersession"
+            )
+        return
     if command.kind is CommandKind.ACKNOWLEDGE_BATCH_ISSUE:
         if command.target_aggregate.namespace != AggregateKind.ISSUE_BATCH.value:
             raise ContractError("batch issue must target an issue_batch aggregate")

@@ -11,6 +11,43 @@ from strathmark.v3.contracts.statuses import LifecycleStatus
 State = LifecycleStatus | None
 
 _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
+    AggregateKind.TOURNAMENT_INGRESS: {
+        (None, EventKind.TOURNAMENT_SNAPSHOT_REVISED): LifecycleStatus.TOURNAMENT_INGRESS_CURRENT,
+        (
+            LifecycleStatus.TOURNAMENT_INGRESS_CURRENT,
+            EventKind.TOURNAMENT_SNAPSHOT_REVISED,
+        ): LifecycleStatus.TOURNAMENT_INGRESS_CURRENT,
+    },
+    AggregateKind.ROUND_INGRESS: {
+        (None, EventKind.ROUND_SNAPSHOT_REVISED): LifecycleStatus.ROUND_INGRESS_CURRENT,
+        (
+            LifecycleStatus.ROUND_INGRESS_CURRENT,
+            EventKind.ROUND_SNAPSHOT_REVISED,
+        ): LifecycleStatus.ROUND_INGRESS_CURRENT,
+    },
+    AggregateKind.FIELD_INGRESS: {
+        (None, EventKind.FIELD_ROSTER_REVISED): LifecycleStatus.FIELD_INGRESS_CURRENT,
+        (
+            LifecycleStatus.FIELD_INGRESS_CURRENT,
+            EventKind.FIELD_ROSTER_REVISED,
+        ): LifecycleStatus.FIELD_INGRESS_CURRENT,
+    },
+    AggregateKind.RESULT: {
+        (None, EventKind.RESULT_RECORDED): LifecycleStatus.RESULT_ACTIVE,
+        (LifecycleStatus.RESULT_ACTIVE, EventKind.RESULT_SUPERSEDED): LifecycleStatus.RESULT_ACTIVE,
+    },
+    AggregateKind.SETTLEMENT: {
+        (None, EventKind.LIVE_RACE_SETTLED): LifecycleStatus.SETTLEMENT_RECORDED,
+    },
+    AggregateKind.EPOCH: {
+        (None, EventKind.ROUND_EPOCH_FROZEN): LifecycleStatus.EPOCH_FROZEN,
+    },
+    AggregateKind.REACTION: {
+        (None, EventKind.DERIVATION_REACTION_COMPLETED): LifecycleStatus.REACTION_COMPLETED,
+    },
+    AggregateKind.DERIVATION: {
+        (None, EventKind.DERIVATION_SEQUENCE_COMPLETED): LifecycleStatus.DERIVATION_COMPLETED,
+    },
     AggregateKind.TOURNAMENT: {
         (None, EventKind.TOURNAMENT_CONFIGURED): LifecycleStatus.TOURNAMENT_CONFIGURED,
         (
@@ -25,6 +62,7 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
     AggregateKind.ROUND: {
         (None, EventKind.ROUND_CONFIGURED): LifecycleStatus.ROUND_CONFIGURED,
         (LifecycleStatus.ROUND_CONFIGURED, EventKind.ROUND_FROZEN): LifecycleStatus.ROUND_FROZEN,
+        (LifecycleStatus.ROUND_FROZEN, EventKind.ROUND_FROZEN): LifecycleStatus.ROUND_FROZEN,
         (
             LifecycleStatus.ROUND_FROZEN,
             EventKind.ROUND_CLOSING_STARTED,

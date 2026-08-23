@@ -373,6 +373,14 @@ def test_exact_issue_retry_replays_both_chains_before_returning_stored_bytes(
         ),
     )
     with pytest.raises(EventStoreIntegrityError):
+        store.lookup_exact_retry(
+            principal_id="actor:judge",
+            idempotency_key="command:issue-exact-retry",
+            command_kind=CommandKind.ACKNOWLEDGE_ISSUE,
+            target_aggregate="field:a",
+            payload_digest=issue.command.payload_digest,
+        )
+    with pytest.raises(EventStoreIntegrityError):
         store.execute(issue)
     assert store.event_count() == before
     assert first.first_global_sequence == 2

@@ -113,6 +113,7 @@ class AuthorityAnchor:
 
 
 FaultHook = Callable[[str], None]
+ProjectionHook = Callable[[sqlite3.Connection, tuple[EventEnvelope, ...]], None]
 
 
 class SQLiteEventStore:
@@ -144,7 +145,11 @@ class SQLiteEventStore:
         return self._database_path
 
     def execute(
-        self, request: CommandRequest, *, fault_hook: FaultHook | None = None
+        self,
+        request: CommandRequest,
+        *,
+        fault_hook: FaultHook | None = None,
+        projection_hook: ProjectionHook | None = None,
     ) -> StoredCommandResult:
         """Commit one command or return its exact prior result on retry."""
 
@@ -152,6 +157,8 @@ class SQLiteEventStore:
             raise EventStoreError("execute requires a validated CommandRequest")
         if fault_hook is not None and not callable(fault_hook):
             raise EventStoreError("fault_hook must be callable")
+        if projection_hook is not None and not callable(projection_hook):
+            raise EventStoreError("projection_hook must be callable")
 
         # Canonical bounded work is deliberately completed before taking the
         # writer lock.  Exact retry resolution below performs no new state work.
@@ -187,6 +194,9 @@ class SQLiteEventStore:
                         command_digest=command_digest,
                         fault_hook=fault_hook,
                     )
+                    if projection_hook is not None:
+                        projection_hook(connection, events)
+                    _fault(fault_hook, "after_projection")
                     _fault(fault_hook, "before_result")
                     event_set_digest = _event_set_digest(events)
                     connection.execute(
@@ -237,6 +247,56 @@ class SQLiteEventStore:
     def event_count(self) -> int:
         with open_v3_connection(self._database_path, read_only=True) as connection:
             return int(connection.execute("SELECT COUNT(*) FROM v3_events").fetchone()[0])
+
+    def lookup_exact_retry(
+        self,
+        *,
+        principal_id: str,
+        idempotency_key: str,
+        command_kind: CommandKind,
+        target_aggregate: str,
+        payload_digest: str,
+    ) -> StoredCommandResult | None:
+        """Resolve a retry before callers read mutable aggregate state.
+
+        Material changes under a claimed key conflict; expected versions are
+        deliberately taken from the original stored command, not reconstructed
+        from the now-current head.
+        """
+
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT principal_id, idempotency_key, command_digest, result_schema_version, "
+                "result_json, result_digest, first_global_sequence, last_global_sequence, "
+                "event_set_digest, created_at FROM v3_idempotency_records "
+                "WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if command_kind in {
+                CommandKind.ACKNOWLEDGE_ISSUE,
+                CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
+            }:
+                self._verify_connection(connection)
+            if str(row[0]) != principal_id:
+                raise EventStoreConflict("idempotency key was claimed by another principal")
+            result = self._verified_stored_result(connection, row)
+            envelope = connection.execute(
+                "SELECT envelope_json FROM v3_events WHERE global_sequence=?",
+                (result.first_global_sequence,),
+            ).fetchone()
+            if envelope is None:
+                raise EventStoreIntegrityError("retry event set is missing")
+            event = EventEnvelope.from_dict(json.loads(str(envelope[0])))
+            command = event.command
+            if (
+                command.kind is not command_kind
+                or str(command.target_aggregate) != target_aggregate
+                or command.payload_digest != payload_digest
+            ):
+                raise EventStoreConflict("idempotency key already binds different material input")
+            return result
 
     def global_sequences(self) -> tuple[int, ...]:
         with open_v3_connection(self._database_path, read_only=True) as connection:
@@ -513,6 +573,14 @@ class SQLiteEventStore:
             ):
                 raise EventStoreIntegrityError("aggregate version or digest chain is broken")
             if event.aggregate_kind in {
+                AggregateKind.TOURNAMENT_INGRESS,
+                AggregateKind.ROUND_INGRESS,
+                AggregateKind.FIELD_INGRESS,
+                AggregateKind.RESULT,
+                AggregateKind.SETTLEMENT,
+                AggregateKind.EPOCH,
+                AggregateKind.REACTION,
+                AggregateKind.DERIVATION,
                 AggregateKind.TOURNAMENT,
                 AggregateKind.ROUND,
                 AggregateKind.FIELD,

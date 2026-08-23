@@ -42,6 +42,7 @@ class Migration:
 _PINNED_CHECKSUMS: Final[dict[str, str]] = {
     "0001_event_authority.sql": "329a03d7bba29d5bcd37c5bb0a3711192b03c47d58c47f972738730e5b0db15f",
     "0002_historical_v2_import.sql": "421e37969130a7f6bfd4ac973f2a78d5da3cecbd12b364238586803791b363ab",
+    "0003_ingress_epochs.sql": "dfffdc51298cd001d18b50a605ded4463ea9365133b7cc749ec6c1a010c53301",
 }
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<label>[a-z0-9_]+)\.sql$")
 _MIGRATION_ROOT = Path(__file__).resolve().parents[2] / "migrations"
@@ -102,7 +103,7 @@ _METADATA_COLUMNS = (
     ("checksum", "TEXT", 1, 0),
     ("applied_at", "TEXT", 1, 0),
 )
-EXPECTED_SCHEMA_DIGEST = "6c28a6e4c02451c835599ea23013bbbe56d6398b94307d1cedc4bee38d0b66de"
+EXPECTED_SCHEMA_DIGEST = "be612a3d1f5e7d19e1f9c5ad6f556c8db005927112301f98e9cc99c725d7c85b"
 
 
 def _ensure_metadata_table(connection: sqlite3.Connection) -> None:

@@ -26,6 +26,9 @@ MAX_BLOB_BYTES = 16_777_216
 
 
 class CommandKind(str, Enum):
+    REVISE_TOURNAMENT_SNAPSHOT = "revise_tournament_snapshot"
+    REVISE_ROUND_SNAPSHOT = "revise_round_snapshot"
+    REVISE_FIELD_ROSTER = "revise_field_roster"
     CONFIGURE_TOURNAMENT = "configure_tournament"
     OPEN_TOURNAMENT = "open_tournament"
     CLOSE_TOURNAMENT = "close_tournament"
@@ -38,6 +41,11 @@ class CommandKind(str, Enum):
     RECORD_RESULT = "record_result"
     CORRECT_RESULT = "correct_result"
     VOID_RESULT = "void_result"
+    SUPERSEDE_AND_SETTLE_RESULT = "supersede_and_settle_result"
+    SETTLE_LIVE_RACE = "settle_live_race"
+    FREEZE_EVIDENCE_EPOCH = "freeze_evidence_epoch"
+    COMPLETE_DERIVATION_REACTION = "complete_derivation_reaction"
+    COMPLETE_DERIVATION_SEQUENCE = "complete_derivation_sequence"
     PREPARE_FORECAST = "prepare_forecast"
     COMMIT_FORECAST = "commit_forecast"
     RECORD_CAPABILITY_UPDATE = "record_capability_update"

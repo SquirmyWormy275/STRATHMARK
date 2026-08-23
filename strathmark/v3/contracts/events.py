@@ -27,6 +27,14 @@ MAX_EVENT_CANONICAL_BYTES = 1_048_576
 
 
 class AggregateKind(str, Enum):
+    TOURNAMENT_INGRESS = "tournament_ingress"
+    ROUND_INGRESS = "round_ingress"
+    FIELD_INGRESS = "field_ingress"
+    RESULT = "result"
+    SETTLEMENT = "settlement"
+    EPOCH = "epoch"
+    REACTION = "reaction"
+    DERIVATION = "derivation"
     TOURNAMENT = "tournament"
     ROUND = "round"
     FIELD = "field"
@@ -41,6 +49,9 @@ class AggregateKind(str, Enum):
 
 
 class EventKind(str, Enum):
+    TOURNAMENT_SNAPSHOT_REVISED = "tournament_snapshot_revised"
+    ROUND_SNAPSHOT_REVISED = "round_snapshot_revised"
+    FIELD_ROSTER_REVISED = "field_roster_revised"
     TOURNAMENT_CONFIGURED = "tournament_configured"
     TOURNAMENT_OPENED = "tournament_opened"
     TOURNAMENT_CLOSED = "tournament_closed"
@@ -51,6 +62,11 @@ class EventKind(str, Enum):
     RESULT_RECORDED = "result_recorded"
     RESULT_CORRECTED = "result_corrected"
     RESULT_VOIDED = "result_voided"
+    RESULT_SUPERSEDED = "result_superseded"
+    LIVE_RACE_SETTLED = "live_race_settled"
+    ROUND_EPOCH_FROZEN = "round_epoch_frozen"
+    DERIVATION_REACTION_COMPLETED = "derivation_reaction_completed"
+    DERIVATION_SEQUENCE_COMPLETED = "derivation_sequence_completed"
     COMPONENT_FORECAST_COMMITTED = "component_forecast_committed"
     COMPONENT_FORECAST_REJECTED = "component_forecast_rejected"
     COUNCIL_MEMBER_COMMITTED = "council_member_committed"
