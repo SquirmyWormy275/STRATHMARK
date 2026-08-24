@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, localcontext
 
 import pytest
 
+import strathmark.v3.domain.joint_dependence as joint_module
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.forecasts import (
     DependenceMode,
@@ -18,12 +19,15 @@ from strathmark.v3.domain.joint_dependence import (
     DependenceModel,
     DependencePolicy,
     FieldCompetitorForecast,
+    GeneratedJointUniforms,
     JointCompetitorDraws,
     JointDraws,
     ResidualObservation,
     bind_field_dependence,
     fit_field_dependence,
     generate_joint_draws,
+    generate_joint_uniforms,
+    has_fresh_joint_generation_proof,
     train_dependence_artifact,
 )
 
@@ -38,7 +42,9 @@ def _distribution(median: int) -> PositiveTimeDistribution:
     )
 
 
-def _observation(field: int, competitor: int, residual: str, sequence: int, context: ContextNode):
+def _observation(
+    field: int, competitor: int, residual: str, sequence: int, context: ContextNode
+):
     return ResidualObservation(
         field_id=StableIdentifier(f"field:history-{field}"),
         competitor_id=StableIdentifier(f"competitor:history-{competitor}"),
@@ -116,7 +122,9 @@ def test_training_produces_one_frozen_artifact_then_runtime_only_binds_fields() 
             StableIdentifier("competitor:a"), "stand:1", _distribution(40_000), 0
         ),
     )
-    replay = generate_joint_draws(field, first, installed_artifact=artifact, seed=9, draw_count=32)
+    replay = generate_joint_draws(
+        field, first, installed_artifact=artifact, seed=9, draw_count=32
+    )
     assert replay == generate_joint_draws(
         field, first, installed_artifact=artifact, seed=9, draw_count=32
     )
@@ -149,6 +157,504 @@ def test_training_produces_one_frozen_artifact_then_runtime_only_binds_fields() 
         )
 
 
+def test_fresh_joint_generation_derives_common_uniforms_exactly_once(
+    monkeypatch,
+) -> None:
+    """The trusted generator must not repeat the expensive deterministic CRN pass.
+
+    Persisted/untrusted ``JointDraws.from_dict`` still performs the complete
+    independent replay; this only pins the fresh in-process construction path.
+    """
+
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:single-crn-pass"),
+    )
+    field = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:single-crn-{index}"),
+            f"stand:{index}",
+            _distribution(40_000 + index * 1_000),
+            index,
+        )
+        for index in range(12)
+    )
+    original = joint_module._joint_uniforms
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(joint_module, "_joint_uniforms", counted)
+    generated = generate_joint_draws(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=20260824,
+        draw_count=256,
+    )
+
+    assert calls == 1
+    decoded = JointDraws.from_dict(generated.to_dict())
+    assert decoded == generated
+    assert has_fresh_joint_generation_proof(generated)
+    assert not has_fresh_joint_generation_proof(decoded)
+    assert calls == 2
+
+
+def test_one_generated_uniform_plan_drives_every_component_without_rework(
+    monkeypatch,
+) -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:shared-uniform-plan"),
+    )
+    pooled = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:shared-plan-{index}"),
+            f"stand:{index}",
+            _distribution(40_000 + index * 1_000),
+            index,
+        )
+        for index in range(12)
+    )
+    component = tuple(
+        replace(item, distribution=_distribution(35_000 + index * 1_250))
+        for index, item in enumerate(pooled)
+    )
+    original = joint_module._joint_uniforms
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(joint_module, "_joint_uniforms", counted)
+    plan = generate_joint_uniforms(
+        pooled,
+        model,
+        installed_artifact=artifact,
+        seed=20260824,
+        draw_count=4096,
+    )
+    pooled_draws = generate_joint_draws(
+        pooled,
+        model,
+        installed_artifact=artifact,
+        seed=20260824,
+        draw_count=4096,
+        uniform_plan=plan,
+    )
+    component_draws = generate_joint_draws(
+        component,
+        model,
+        installed_artifact=artifact,
+        seed=20260824,
+        draw_count=4096,
+        uniform_plan=plan,
+    )
+
+    assert calls == 1
+    assert (
+        pooled_draws.common_random_map_digest
+        == component_draws.common_random_map_digest
+    )
+    assert tuple(row.common_uniforms for row in pooled_draws.competitors) == tuple(
+        row.common_uniforms for row in component_draws.competitors
+    )
+    assert GeneratedJointUniforms.from_dict(plan.to_dict()) == plan
+
+    tampered = plan.to_dict()
+    tampered["uniforms"][0][1][0] = "0.5"
+    with pytest.raises(ContractError, match="uniform"):
+        GeneratedJointUniforms.from_dict(tampered)
+
+    forged_uniforms = tuple(
+        (
+            slot,
+            (("0.5", *values[1:]) if index == 0 else values),
+        )
+        for index, (slot, values) in enumerate(plan.uniforms)
+    )
+    caller_proof = joint_module._GeneratedJointUniformsProof(
+        object(),
+        plan.slots,
+        forged_uniforms,
+        plan.common_random_map_digest,
+    )
+    with pytest.raises(ContractError, match="uniform"):
+        GeneratedJointUniforms(
+            plan.field_id,
+            plan.artifact_digest,
+            plan.mode,
+            plan.rho,
+            plan.effective_rho,
+            plan.seed,
+            plan.draw_count,
+            plan.slots,
+            forged_uniforms,
+            plan.common_random_map_digest,
+            caller_proof,
+        )
+
+    changed_slot = (replace(component[0], draw_slot="stand:changed"), *component[1:])
+    with pytest.raises(ContractError, match="uniform plan"):
+        generate_joint_draws(
+            changed_slot,
+            model,
+            installed_artifact=artifact,
+            seed=20260824,
+            draw_count=4096,
+            uniform_plan=plan,
+        )
+
+
+def test_caller_constructed_generation_proof_cannot_bypass_joint_replay() -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:forged-generation-proof"),
+    )
+    field = (
+        FieldCompetitorForecast(
+            StableIdentifier("competitor:forged-generation-proof"),
+            "stand:0",
+            _distribution(40_000),
+            0,
+        ),
+    )
+    generated = generate_joint_draws(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=20260824,
+        draw_count=8,
+    )
+    original = generated.competitors[0]
+    forged_row = replace(
+        original,
+        samples_ms=(99_999, *original.samples_ms[1:]),
+        samples_digest="e" * 64,
+    )
+    forged_rows = (forged_row,)
+    forged_digest = "f" * 64
+    caller_proof = joint_module._GeneratedJointDrawsProof(
+        object(),
+        generated.inputs,
+        generated.artifact_digest,
+        generated.rho,
+        generated.effective_rho,
+        forged_rows,
+        generated.common_random_map_digest,
+        generated.algorithm,
+        generated.dependency_version,
+        generated.time_quantum_ms,
+        forged_digest,
+    )
+
+    with pytest.raises(ContractError, match="sample digest"):
+        JointDraws(
+            generated.inputs,
+            generated.artifact_digest,
+            generated.rho,
+            generated.effective_rho,
+            forged_rows,
+            generated.common_random_map_digest,
+            generated.algorithm,
+            generated.dependency_version,
+            generated.time_quantum_ms,
+            forged_digest,
+            caller_proof,
+        )
+
+
+def test_joint_generation_rejects_declared_artifact_overflow_before_work(
+    monkeypatch,
+) -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:preflight-bound"),
+    )
+    field = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:preflight-{index}"),
+            f"stand:{index}",
+            _distribution(40_000 + index * 1_000),
+            index,
+        )
+        for index in range(12)
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("joint work began before the artifact bound check")
+
+    monkeypatch.setattr(joint_module, "_joint_uniforms", forbidden)
+    with pytest.raises(ContractError, match="artifact item bound"):
+        generate_joint_draws(
+            field,
+            model,
+            installed_artifact=artifact,
+            seed=20260824,
+            draw_count=30_000,
+        )
+
+
+def test_generated_uniform_decoder_rejects_declared_overflow_before_replay(
+    monkeypatch,
+) -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:bounded-uniform-decode"),
+    )
+    field = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:bounded-uniform-{index}"),
+            f"stand:{index}",
+            _distribution(40_000 + index),
+            index,
+        )
+        for index in range(12)
+    )
+    encoded = generate_joint_uniforms(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=91,
+        draw_count=2,
+    ).to_dict()
+    encoded["draw_count"] = 30_000
+    for row in encoded["uniforms"]:
+        row[1] = []
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError(
+            "joint uniform replay began before the artifact bound check"
+        )
+
+    monkeypatch.setattr(joint_module, "_joint_uniforms_from_slots", forbidden)
+    with pytest.raises(ContractError, match="artifact item bound"):
+        GeneratedJointUniforms.from_dict(encoded)
+
+
+def test_generated_uniform_decoder_rejects_unbounded_slot_before_replay(
+    monkeypatch,
+) -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:bounded-uniform-slot"),
+    )
+    field = (
+        FieldCompetitorForecast(
+            StableIdentifier("competitor:bounded-uniform-slot"),
+            "stand:1",
+            _distribution(40_000),
+            0,
+        ),
+    )
+    encoded = generate_joint_uniforms(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=91,
+        draw_count=2,
+    ).to_dict()
+    encoded["slots"][0][0] = "x" * 97
+    encoded["uniforms"][0][0] = "x" * 97
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("joint uniform replay began before slot validation")
+
+    monkeypatch.setattr(joint_module, "_joint_uniforms_from_slots", forbidden)
+    with pytest.raises(ContractError, match="bounded stable field slot"):
+        GeneratedJointUniforms.from_dict(encoded)
+
+
+def test_joint_draw_decoder_rejects_declared_overflow_before_row_materialization(
+    monkeypatch,
+) -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:bounded-joint-decode"),
+    )
+    field = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:bounded-joint-{index}"),
+            f"stand:{index}",
+            _distribution(40_000 + index),
+            index,
+        )
+        for index in range(12)
+    )
+    encoded = generate_joint_draws(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=91,
+        draw_count=2,
+    ).to_dict()
+    encoded["inputs"]["draw_count"] = 30_000
+    for row in encoded["competitors"]:
+        row["common_uniforms"] = []
+        row["samples_ms"] = []
+
+    def forbidden(_cls, _value):
+        raise AssertionError("joint rows materialized before the artifact bound check")
+
+    monkeypatch.setattr(
+        JointCompetitorDraws,
+        "from_dict",
+        classmethod(forbidden),
+    )
+    with pytest.raises(ContractError, match="artifact item bound"):
+        JointDraws.from_dict(encoded)
+
+
+def test_joint_draw_decoder_rejects_unbounded_slot_before_row_materialization(
+    monkeypatch,
+) -> None:
+    context = ContextNode("event", "underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        10,
+        DependencePolicy(),
+        StableIdentifier("field:bounded-joint-slot"),
+    )
+    field = (
+        FieldCompetitorForecast(
+            StableIdentifier("competitor:bounded-joint-slot"),
+            "stand:1",
+            _distribution(40_000),
+            0,
+        ),
+    )
+    encoded = generate_joint_draws(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=91,
+        draw_count=2,
+    ).to_dict()
+    encoded["competitors"][0]["draw_slot"] = "x" * 97
+
+    def forbidden(_cls, _value):
+        raise AssertionError("joint row materialized before slot validation")
+
+    monkeypatch.setattr(
+        JointCompetitorDraws,
+        "from_dict",
+        classmethod(forbidden),
+    )
+    with pytest.raises(ContractError, match="bounded stable field slot"):
+        JointDraws.from_dict(encoded)
+
+
+@pytest.mark.parametrize("direction", (0, 1, -1))
+def test_joint_generation_bytes_ignore_ambient_decimal_context(direction: int) -> None:
+    golden_digests = {
+        0: "337538a9b421dcc208a0aaf150bdccfbe78018650fe9e106e72ac0c047da2440",
+        1: "adbfec4b30bcb0e2b4f721c7408e24d8c321a83ee58a16071b495717861678b7",
+        -1: "d2f90af78a2138e776e1334a2c5e4c8bd0cf07151c5312c272198f3bff4721c4",
+    }
+    context = ContextNode("event", "underhand")
+    observations = (
+        ()
+        if direction == 0
+        else tuple(
+            _observation(
+                field,
+                competitor,
+                "1" if direction > 0 or competitor == 1 else "-1",
+                field,
+                context,
+            )
+            for field in (1, 2, 3)
+            for competitor in (1, 2)
+        )
+    )
+    artifact, model = _installed(
+        observations,
+        context,
+        4,
+        DependencePolicy(prior_strength="0.25", minimum_pair_count=2),
+        StableIdentifier(f"field:ambient-{direction}"),
+    )
+    field = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:ambient-{index}"),
+            f"stand:{index}",
+            _distribution(35_000 + index * 3_000),
+            index,
+        )
+        for index in range(4)
+    )
+    expected = generate_joint_draws(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=20260824,
+        draw_count=64,
+    )
+
+    with localcontext() as hostile:
+        hostile.prec = 6
+        hostile.rounding = ROUND_DOWN
+        actual = generate_joint_draws(
+            field,
+            model,
+            installed_artifact=artifact,
+            seed=20260824,
+            draw_count=64,
+        )
+
+    assert actual.to_dict() == expected.to_dict()
+    assert actual.joint_samples_digest == golden_digests[direction]
+
+
+def test_long_rank_strength_comparison_ignores_ambient_decimal_context() -> None:
+    slots = (("stand:0", 0), ("stand:1", 1))
+    rho = Decimal("0.6153268219383921863260706236")
+    expected = joint_module._joint_uniforms_from_slots(slots, 30, 3665, rho)
+
+    with localcontext() as hostile:
+        hostile.prec = 6
+        hostile.rounding = ROUND_DOWN
+        actual = joint_module._joint_uniforms_from_slots(slots, 30, 3665, rho)
+
+    assert actual == expected
+    assert expected["stand:0"][3664] == "0.4418466616579111987311722709"
+
+
 def test_sparse_fallback_is_a_frozen_artifact_decision() -> None:
     context = ContextNode("event", "underhand")
     artifact = train_dependence_artifact(
@@ -161,7 +667,9 @@ def test_sparse_fallback_is_a_frozen_artifact_decision() -> None:
         active_projection_digest="9" * 64,
         promotion_receipt_digest="e" * 64,
     )
-    model = bind_field_dependence(artifact, context, field_id=StableIdentifier("field:sparse"))
+    model = bind_field_dependence(
+        artifact, context, field_id=StableIdentifier("field:sparse")
+    )
     assert artifact.fallback_code == "unsupported_context_independence"
     assert model.fallback_code == artifact.fallback_code
     assert model.mode is DependenceMode.INDEPENDENCE
@@ -194,7 +702,9 @@ def test_supported_same_field_residuals_learn_positive_and_negative_dependence(
 ) -> None:
     context = ContextNode("event", "underhand")
     observations = tuple(
-        _observation(field, competitor, pairs[(field - 1) * 2 + competitor - 1], field, context)
+        _observation(
+            field, competitor, pairs[(field - 1) * 2 + competitor - 1], field, context
+        )
         for field in (1, 2)
         for competitor in (1, 2)
     )
@@ -222,12 +732,16 @@ def test_supported_same_field_residuals_learn_positive_and_negative_dependence(
         field, model, installed_artifact=artifact, seed=22, draw_count=2_000
     )
     assert draws.inputs.parameters_digest == model.parameters_digest
-    correlation = _correlation(draws.competitors[0].samples_ms, draws.competitors[1].samples_ms)
+    correlation = _correlation(
+        draws.competitors[0].samples_ms, draws.competitors[1].samples_ms
+    )
     assert (correlation > Decimal("0.25")) is (direction > 0)
     assert (correlation < Decimal("-0.25")) is (direction < 0)
 
 
-def test_hierarchical_sparse_context_shrinks_toward_supported_parent_then_independence() -> None:
+def test_hierarchical_sparse_context_shrinks_toward_supported_parent_then_independence() -> (
+    None
+):
     root = ContextNode()
     parent = ContextNode("underhand")
     target = ContextNode("underhand", "300", "pine")
@@ -257,7 +771,9 @@ def test_hierarchical_sparse_context_shrinks_toward_supported_parent_then_indepe
     assert model.shrinkage_path[-1] == model.rho
 
 
-def test_hierarchy_uses_global_evidence_then_excludes_unrelated_from_target_branch() -> None:
+def test_hierarchy_uses_global_evidence_then_excludes_unrelated_from_target_branch() -> (
+    None
+):
     target = ContextNode("underhand", "300", "pine")
     exact = ContextNode("underhand", "300", "pine")
     sibling = ContextNode("underhand", "350", "pine")
@@ -418,12 +934,17 @@ def test_joint_draws_are_permutation_identity_and_roster_invariant() -> None:
         return {row.draw_slot: row.samples_ms for row in result.competitors}
 
     assert by_slot(original) == by_slot(permuted)
-    assert all(by_slot(expanded)[slot] == samples for slot, samples in by_slot(original).items())
+    assert all(
+        by_slot(expanded)[slot] == samples
+        for slot, samples in by_slot(original).items()
+    )
     assert by_slot(renamed)["stand:1"] == by_slot(original)["stand:1"]
     assert original.common_random_map_digest == permuted.common_random_map_digest
 
 
-def test_same_generator_and_common_random_numbers_apply_to_counterfactual_distributions() -> None:
+def test_same_generator_and_common_random_numbers_apply_to_counterfactual_distributions() -> (
+    None
+):
     context = ContextNode("event", "underhand")
     artifact, model = _installed(
         (),
@@ -457,7 +978,10 @@ def test_same_generator_and_common_random_numbers_apply_to_counterfactual_distri
     assert first.common_random_map_digest == second.common_random_map_digest
     assert (
         tuple(
-            a < b for a, b in zip(first.competitors[0].samples_ms, second.competitors[0].samples_ms)
+            a < b
+            for a, b in zip(
+                first.competitors[0].samples_ms, second.competitors[0].samples_ms
+            )
         )
         == (True,) * 64
     )
@@ -579,6 +1103,37 @@ def test_dependence_and_joint_receipts_roundtrip_and_reject_forgery() -> None:
         )
 
 
+def test_twelve_entrant_production_draw_receipt_uses_declared_large_artifact_bound() -> (
+    None
+):
+    context = ContextNode("underhand")
+    artifact, model = _installed(
+        (),
+        context,
+        2,
+        DependencePolicy(),
+        StableIdentifier("field:twelve-entrant"),
+    )
+    field = tuple(
+        FieldCompetitorForecast(
+            StableIdentifier(f"competitor:capacity-{index:02d}"),
+            f"stand:{index:02d}",
+            _distribution(40_000 + index * 500),
+            index,
+        )
+        for index in range(12)
+    )
+    draws = generate_joint_draws(
+        field,
+        model,
+        installed_artifact=artifact,
+        seed=91,
+        draw_count=4_096,
+    )
+    assert len(draws.competitors) == 12
+    assert JointDraws.from_dict(draws.to_dict()) == draws
+
+
 def test_joint_contracts_fail_closed_across_all_public_constructor_edges() -> None:
     context = ContextNode("underhand")
     observation = _observation(1, 1, "1", 1, context)
@@ -594,7 +1149,9 @@ def test_joint_contracts_fail_closed_across_all_public_constructor_edges() -> No
     ):
         with pytest.raises(ContractError):
             replace(DependencePolicy(), **changes)
-    assert DependencePolicy.from_dict(DependencePolicy().to_dict()) == DependencePolicy()
+    assert (
+        DependencePolicy.from_dict(DependencePolicy().to_dict()) == DependencePolicy()
+    )
     with pytest.raises(ContractError, match="fields"):
         DependencePolicy.from_dict({})
 
@@ -700,12 +1257,16 @@ def test_joint_contracts_fail_closed_across_all_public_constructor_edges() -> No
         with pytest.raises(ContractError):
             DependenceArtifact.from_dict(changed)
 
-    model = bind_field_dependence(learned, context, field_id=StableIdentifier("field:edge"))
+    model = bind_field_dependence(
+        learned, context, field_id=StableIdentifier("field:edge")
+    )
     cold_model = bind_field_dependence(
         cold, ContextNode(), field_id=StableIdentifier("field:edge-cold")
     )
     with pytest.raises(ContractError, match="installed"):
-        bind_field_dependence(object(), context, field_id=StableIdentifier("field:edge"))
+        bind_field_dependence(
+            object(), context, field_id=StableIdentifier("field:edge")
+        )
     with pytest.raises(ContractError, match="context"):
         bind_field_dependence(
             learned, ContextNode("standing"), field_id=StableIdentifier("field:edge")
@@ -837,13 +1398,17 @@ def test_joint_contracts_fail_closed_across_all_public_constructor_edges() -> No
                 promotion_receipt_digest="b" * 64,
             )
     with pytest.raises(ContractError, match="field"):
-        generate_joint_draws([], model, installed_artifact=learned, seed=1, draw_count=2)
+        generate_joint_draws(
+            [], model, installed_artifact=learned, seed=1, draw_count=2
+        )
     with pytest.raises(ContractError, match="model"):
         generate_joint_draws(
             (forecast,), object(), installed_artifact=learned, seed=1, draw_count=2
         )
     with pytest.raises(ContractError, match="artifact"):
-        generate_joint_draws((forecast,), model, installed_artifact=object(), seed=1, draw_count=2)
+        generate_joint_draws(
+            (forecast,), model, installed_artifact=object(), seed=1, draw_count=2
+        )
     with pytest.raises(ContractError, match="context"):
         generate_joint_draws(
             (forecast,), cold_model, installed_artifact=learned, seed=1, draw_count=2

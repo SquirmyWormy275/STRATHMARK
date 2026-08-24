@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, localcontext
 
 import pytest
 
-from strathmark.v3.contracts.canonical import canonical_digest
+from strathmark.v3.contracts.canonical import canonical_decimal_string, canonical_digest
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.forecasts import (
     AssessorForecast,
@@ -64,7 +64,9 @@ def _forecast(
     *,
     state: ForecastState = ForecastState.COMMITTED,
 ) -> AssessorForecast:
-    distribution = _distribution(median_ms) if state is ForecastState.COMMITTED else None
+    distribution = (
+        _distribution(median_ms) if state is ForecastState.COMMITTED else None
+    )
     return AssessorForecast.create(
         forecast_id=StableIdentifier(f"forecast:{assessor.value}-u13"),
         assessor=assessor,
@@ -74,7 +76,9 @@ def _forecast(
         support=EvidenceSupport(4, "4", 4, "history:u13", 1),
         warnings=(),
         artifacts=(),
-        abstention_code=(None if state is ForecastState.COMMITTED else "runtime_unavailable"),
+        abstention_code=(
+            None if state is ForecastState.COMMITTED else "runtime_unavailable"
+        ),
     )
 
 
@@ -118,7 +122,9 @@ def _weights(
         components=(),
         calibration_cutoff_at_utc="2026-01-01T00:00:00.000Z",
         policy_digest="d" * 64,
-        receipt_digest=canonical_digest([(kind.value, value) for kind, value in weights]),
+        receipt_digest=canonical_digest(
+            [(kind.value, value) for kind, value in weights]
+        ),
     )
 
 
@@ -132,7 +138,9 @@ def _weight_authority(receipt: WeightReceipt) -> WeightAuthorityBinding:
 
 
 def pool_forecasts(forecasts, baseline, capability_state, sampling, **kwargs):
-    authority = _weight_authority(baseline) if isinstance(baseline, WeightReceipt) else object()
+    authority = (
+        _weight_authority(baseline) if isinstance(baseline, WeightReceipt) else object()
+    )
     return _domain_pool_forecasts(
         forecasts,
         baseline,
@@ -145,7 +153,10 @@ def pool_forecasts(forecasts, baseline, capability_state, sampling, **kwargs):
 
 def test_three_way_linear_pool_preserves_component_modes_and_audit_facts() -> None:
     result = pool_forecasts(
-        tuple(_forecast(kind, median) for kind, median in zip(OUTER, (20_000, 40_000, 60_000))),
+        tuple(
+            _forecast(kind, median)
+            for kind, median in zip(OUTER, (20_000, 40_000, 60_000))
+        ),
         _weights(("0.25", "0.5", "0.25")),
         _capability_state(),
         SamplingSpec(seed=20260823, draw_count=2_000),
@@ -157,15 +168,27 @@ def test_three_way_linear_pool_preserves_component_modes_and_audit_facts() -> No
     assert result.receipt.normalization_denominator == "1"
     assert result.receipt.missing_mass == "0"
     assert tuple(row.assessor for row in result.receipt.components) == OUTER
-    assert all(row.availability is AvailabilityState.VALID for row in result.receipt.components)
-    assert all(row.original_distribution is not None for row in result.receipt.components)
-    assert all(row.adjusted_distribution is not None for row in result.receipt.components)
-    assert all(row.capability_adjustment_digest is not None for row in result.receipt.components)
+    assert all(
+        row.availability is AvailabilityState.VALID for row in result.receipt.components
+    )
+    assert all(
+        row.original_distribution is not None for row in result.receipt.components
+    )
+    assert all(
+        row.adjusted_distribution is not None for row in result.receipt.components
+    )
+    assert all(
+        row.capability_adjustment_digest is not None
+        for row in result.receipt.components
+    )
     assert result.receipt.pooled_samples_digest == result.samples.samples_digest
     assert result.receipt.pooled_distribution == result.distribution
     assert result.receipt.seed == 20260823
     assert result.receipt.draw_count == 2_000
-    assert result.receipt.common_random_map_digest == result.samples.common_random_map_digest
+    assert (
+        result.receipt.common_random_map_digest
+        == result.samples.common_random_map_digest
+    )
     values = set(result.samples.samples_ms)
     assert len(values) >= 3
     assert min(values) < result.distribution.median_ms < max(values)
@@ -173,7 +196,8 @@ def test_three_way_linear_pool_preserves_component_modes_and_audit_facts() -> No
         tuple(
             reversed(
                 tuple(
-                    _forecast(kind, median) for kind, median in zip(OUTER, (20_000, 40_000, 60_000))
+                    _forecast(kind, median)
+                    for kind, median in zip(OUTER, (20_000, 40_000, 60_000))
                 )
             )
         ),
@@ -183,7 +207,72 @@ def test_three_way_linear_pool_preserves_component_modes_and_audit_facts() -> No
     )
 
 
-def test_two_way_pool_renormalizes_only_effective_weights_and_keeps_missing_mass() -> None:
+def test_two_way_pool_preserves_more_than_96_digit_authoritative_weights() -> None:
+    first = "0.1" + ("0" * 98) + "1"
+    with localcontext() as context:
+        context.prec = 256
+        third = canonical_decimal_string(Decimal(1) - Decimal(first) - Decimal("0.2"))
+    baseline = _weights((first, "0.2", third))
+    forecasts = (
+        _forecast(AssessorKind.FORMULA, 20_000),
+        _forecast(AssessorKind.ML, 40_000),
+        _forecast(
+            AssessorKind.LLM_COUNCIL,
+            60_000,
+            state=ForecastState.ABSTAINED,
+        ),
+    )
+
+    result = pool_forecasts(
+        forecasts,
+        baseline,
+        _capability_state(),
+        SamplingSpec(seed=20260824, draw_count=2_000),
+    )
+
+    assert result.mode is PoolMode.DEGRADED_TWO
+    with localcontext() as context:
+        context.prec = 256
+        expected_denominator = canonical_decimal_string(Decimal(first) + Decimal("0.2"))
+    assert result.receipt.normalization_denominator == expected_denominator
+    assert result.receipt.missing_mass == third
+
+
+def test_exact_three_way_weights_never_round_a_positive_component_below_zero() -> None:
+    first = (
+        "0.912454333798364736144220996277191966852353581110597537807495251434926103"
+        "920291626497162418227840519941037828543250313060700344"
+    )
+    second = (
+        "0.087545666201635263855779003722808033147646418889402462192504748565073896"
+        "079708373502837581772159480058962171456749686939199656"
+    )
+    third = "0." + ("0" * 120) + "1"
+    baseline = _weights((first, second, third))
+
+    result = pool_forecasts(
+        tuple(
+            _forecast(kind, median)
+            for kind, median in zip(OUTER, (30_000, 40_000, 50_000), strict=True)
+        ),
+        baseline,
+        _capability_state(),
+        SamplingSpec(seed=20260824, draw_count=16),
+    )
+
+    assert result.receipt.effective_weights == baseline.weights
+    assert all(
+        Decimal(value) > 0 for _assessor, value in result.receipt.effective_weights
+    )
+    assert sum(
+        (Decimal(value) for _assessor, value in result.receipt.effective_weights),
+        Decimal(0),
+    ) == Decimal(1)
+
+
+def test_two_way_pool_renormalizes_only_effective_weights_and_keeps_missing_mass() -> (
+    None
+):
     result = pool_forecasts(
         (_forecast(AssessorKind.FORMULA, 30_000), _forecast(AssessorKind.ML, 50_000)),
         _weights(("0.2", "0.3", "0.5")),
@@ -201,7 +290,9 @@ def test_two_way_pool_renormalizes_only_effective_weights_and_keeps_missing_mass
     assert result.receipt.normalization_denominator == "0.5"
     assert result.receipt.missing_mass == "0.5"
     council = next(
-        row for row in result.receipt.components if row.assessor is AssessorKind.LLM_COUNCIL
+        row
+        for row in result.receipt.components
+        if row.assessor is AssessorKind.LLM_COUNCIL
     )
     assert council.availability is AvailabilityState.MISSING
     assert council.effective_weight == "0"
@@ -228,7 +319,9 @@ def test_one_way_requires_deliberate_acceptance_and_never_masquerades_as_pool() 
         accept_single_survivor=True,
     )
     survivor = next(
-        row for row in accepted.receipt.components if row.availability is AvailabilityState.VALID
+        row
+        for row in accepted.receipt.components
+        if row.availability is AvailabilityState.VALID
     )
     assert accepted.mode is PoolMode.MANUAL_SINGLE
     assert accepted.receipt.is_ensemble is False
@@ -236,7 +329,10 @@ def test_one_way_requires_deliberate_acceptance_and_never_masquerades_as_pool() 
     assert accepted.distribution is not None
     assert accepted.distribution == survivor.adjusted_distribution
     assert accepted.receipt.effective_weights == ((AssessorKind.ML, "1"),)
-    assert accepted.receipt.normalization_denominator == "0.3333333333333333333333333333333333"
+    assert (
+        accepted.receipt.normalization_denominator
+        == "0.3333333333333333333333333333333333"
+    )
 
 
 def test_zero_valid_forecasts_requires_complete_manual_construction() -> None:
@@ -306,7 +402,9 @@ def test_pooling_fails_closed_on_duplicate_nonouter_or_invalid_weight_authority(
         )
 
 
-def test_linear_pool_moment_tracks_weighted_component_moment_without_endpoint_averaging() -> None:
+def test_linear_pool_moment_tracks_weighted_component_moment_without_endpoint_averaging() -> (
+    None
+):
     result = pool_forecasts(
         (_forecast(AssessorKind.FORMULA, 20_000), _forecast(AssessorKind.ML, 60_000)),
         _weights(("0.75", "0.25", "0")),
@@ -314,20 +412,24 @@ def test_linear_pool_moment_tracks_weighted_component_moment_without_endpoint_av
         SamplingSpec(seed=99, draw_count=10_000),
     )
     assert result.samples is not None
-    mean = Decimal(sum(result.samples.samples_ms)) / Decimal(len(result.samples.samples_ms))
+    mean = Decimal(sum(result.samples.samples_ms)) / Decimal(
+        len(result.samples.samples_ms)
+    )
     component_medians = {
         row.assessor: row.adjusted_distribution.median_ms
         for row in result.receipt.components
         if row.adjusted_distribution is not None
     }
-    expected = Decimal(component_medians[AssessorKind.FORMULA]) * Decimal("0.75") + Decimal(
-        component_medians[AssessorKind.ML]
-    ) * Decimal("0.25")
+    expected = Decimal(component_medians[AssessorKind.FORMULA]) * Decimal(
+        "0.75"
+    ) + Decimal(component_medians[AssessorKind.ML]) * Decimal("0.25")
     assert abs(mean - expected) < 500
     assert min(result.samples.samples_ms) < 35_000 < max(result.samples.samples_ms)
 
 
-def test_sealed_mixture_modes_survive_downstream_joint_and_counterfactual_sampling() -> None:
+def test_sealed_mixture_modes_survive_downstream_joint_and_counterfactual_sampling() -> (
+    None
+):
     result = pool_forecasts(
         (_forecast(AssessorKind.FORMULA, 12_000), _forecast(AssessorKind.ML, 100_000)),
         _weights(("0.5", "0.5", "0")),
@@ -386,7 +488,54 @@ def test_sealed_mixture_modes_survive_downstream_joint_and_counterfactual_sampli
     assert replay.common_random_map_digest == joint.common_random_map_digest
 
 
-def test_pool_receipt_roundtrip_replays_and_rejects_sample_or_component_substitution() -> None:
+def test_linear_pool_sampling_is_independent_of_ambient_decimal_context() -> None:
+    mixture = LinearPooledDistribution(
+        (
+            LinearPoolComponent(
+                AssessorKind.FORMULA,
+                "0.3333333333333333333333333333333333",
+                _distribution(30_000, 7_000),
+            ),
+            LinearPoolComponent(
+                AssessorKind.ML,
+                "0.3333333333333333333333333333333333",
+                _distribution(40_000, 9_000),
+            ),
+            LinearPoolComponent(
+                AssessorKind.LLM_COUNCIL,
+                "0.3333333333333333333333333333333334",
+                _distribution(50_000, 11_000),
+            ),
+        )
+    )
+    spec = SamplingSpec(
+        seed=20260824,
+        draw_count=8,
+        common_uniforms=(
+            "0.0000000000000000000000000001",
+            "0.3333333333333333333333333332",
+            "0.3333333333333333333333333334",
+            "0.5",
+            "0.6666666666666666666666666665",
+            "0.6666666666666666666666666667",
+            "0.9999999999999999999999999998",
+            "0.9999999999999999999999999999",
+        ),
+        common_random_map_digest="f" * 64,
+    )
+    expected = mixture.sample(spec)
+
+    with localcontext() as hostile:
+        hostile.prec = 6
+        hostile.rounding = ROUND_DOWN
+        actual = mixture.sample(spec)
+
+    assert actual == expected
+
+
+def test_pool_receipt_roundtrip_replays_and_rejects_sample_or_component_substitution() -> (
+    None
+):
     result = pool_forecasts(
         (_forecast(AssessorKind.FORMULA, 30_000), _forecast(AssessorKind.ML, 50_000)),
         _weights(("0.4", "0.6", "0")),
@@ -513,6 +662,19 @@ def test_pool_contracts_fail_closed_across_constructor_and_decoder_edges() -> No
         LinearPooledDistribution((ml_component, component))
     with pytest.raises(ContractError, match="sum"):
         LinearPooledDistribution((component, replace(ml_component, weight="0.4")))
+    with pytest.raises(ContractError, match="sum"):
+        LinearPooledDistribution(
+            (
+                component,
+                replace(
+                    ml_component,
+                    weight=(
+                        "0.50000000000000000000000000000000000000000000000000"
+                        "00000000000000000000000000000000000000000000000001"
+                    ),
+                ),
+            )
+        )
     with pytest.raises(ContractError, match="SamplingSpec"):
         mixture.sample(object())
     for change in (
@@ -567,7 +729,9 @@ def test_pool_contracts_fail_closed_across_constructor_and_decoder_edges() -> No
     assert normal.pooled_summary == normal.pooled_distribution.quantile_summary()
     assert single.pooled_summary == single.pooled_distribution
     assert blocked.pooled_summary is None
-    assert PoolReceipt.from_dict(normal.to_dict()).pooled_summary == normal.pooled_summary
+    assert (
+        PoolReceipt.from_dict(normal.to_dict()).pooled_summary == normal.pooled_summary
+    )
     with pytest.raises(ContractError, match="summary"):
         replace(normal, pooled_summary=None)
     with pytest.raises(ContractError, match="summary"):

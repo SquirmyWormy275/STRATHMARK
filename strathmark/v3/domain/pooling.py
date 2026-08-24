@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from dataclasses import dataclass, field
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
+from fractions import Fraction
 from typing import Any, Mapping
 
-from strathmark.v3.contracts.canonical import canonical_decimal_string, canonical_digest
+from strathmark.v3.contracts.canonical import (
+    MAX_DECIMAL_CHARACTERS,
+    canonical_decimal_string,
+    canonical_digest,
+)
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.forecasts import (
     SAMPLING_ALGORITHM,
@@ -95,7 +100,9 @@ class WeightAuthorityBinding:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ContractError(f"{label} must be a nonnegative integer")
         if self.verification_status is not WeightAuthorityStatus.PENDING:
-            raise ContractError("U12 trusted weight verifier is required for VERIFIED authority")
+            raise ContractError(
+                "U12 trusted weight verifier is required for VERIFIED authority"
+            )
         if self.binding_digest != canonical_digest(self.content_value()):
             raise ContractError("weight authority binding digest mismatch")
 
@@ -169,7 +176,8 @@ class WeightAuthorityBinding:
         }
         if (
             set(value) != expected
-            or value.get("schema_version") != "strathmark-v3-weight-authority-binding-v1"
+            or value.get("schema_version")
+            != "strathmark-v3-weight-authority-binding-v1"
         ):
             raise ContractError("weight authority fields or schema differ")
         context = value["context"]
@@ -211,7 +219,9 @@ class LinearPoolComponent:
         if weight <= 0:
             raise ContractError("linear pool component weight must be positive")
         if not isinstance(self.distribution, PositiveTimeDistribution):
-            raise ContractError("linear pool component requires a positive distribution")
+            raise ContractError(
+                "linear pool component requires a positive distribution"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -231,7 +241,9 @@ class LinearPoolComponent:
         distribution = value["distribution"]
         if not isinstance(distribution, Mapping):
             raise ContractError("linear pool distribution is invalid")
-        return cls(assessor, value["weight"], PositiveTimeDistribution.from_dict(distribution))
+        return cls(
+            assessor, value["weight"], PositiveTimeDistribution.from_dict(distribution)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,19 +251,42 @@ class LinearPooledDistribution:
     """A sealed weighted mixture whose sampler retains every component mode."""
 
     components: tuple[LinearPoolComponent, ...]
+    _weights: tuple[Decimal, ...] = field(init=False, repr=False, compare=False)
+    _left_edges: tuple[Decimal, ...] = field(init=False, repr=False, compare=False)
+    _right_edges: tuple[Decimal, ...] = field(init=False, repr=False, compare=False)
+    _digest_cache: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.components, tuple) or len(self.components) < 2:
-            raise ContractError("linear pool requires at least two immutable components")
+            raise ContractError(
+                "linear pool requires at least two immutable components"
+            )
         assessors = tuple(item.assessor for item in self.components)
         if assessors != tuple(item for item in _OUTER if item in assessors):
-            raise ContractError("linear pool components must be unique and canonically ordered")
-        if sum((Decimal(item.weight) for item in self.components), Decimal(0)) != 1:
+            raise ContractError(
+                "linear pool components must be unique and canonically ordered"
+            )
+        if sum((Fraction(item.weight) for item in self.components), Fraction()) != 1:
             raise ContractError("linear pool effective weights must sum exactly to one")
+        weights = tuple(Decimal(item.weight) for item in self.components)
+        left_edges = []
+        right_edges = []
+        with localcontext() as context:
+            context.prec = 28
+            context.rounding = ROUND_HALF_EVEN
+            left = Decimal(0)
+            for weight in weights:
+                left_edges.append(left)
+                left = left + weight
+                right_edges.append(left)
+        object.__setattr__(self, "_weights", weights)
+        object.__setattr__(self, "_left_edges", tuple(left_edges))
+        object.__setattr__(self, "_right_edges", tuple(right_edges))
+        object.__setattr__(self, "_digest_cache", canonical_digest(self.to_dict()))
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self.to_dict())
+        return self._digest_cache
 
     @property
     def median_ms(self) -> int:
@@ -260,8 +295,37 @@ class LinearPooledDistribution:
     def sample(self, spec: SamplingSpec) -> DistributionSamples:
         if not isinstance(spec, SamplingSpec):
             raise ContractError("linear pool sampling requires a SamplingSpec")
-        uniforms = spec.common_uniforms or _splitmix_uniforms(spec.seed, spec.draw_count)
-        samples = tuple(self._sample_at_uniform(Decimal(value)) for value in uniforms)
+        uniforms = spec.common_uniforms or _splitmix_uniforms(
+            spec.seed, spec.draw_count
+        )
+        buckets: list[list[tuple[int, Decimal]]] = [
+            [] for _component in self.components
+        ]
+        with localcontext() as context:
+            context.prec = 28
+            context.rounding = ROUND_HALF_EVEN
+            for sample_index, value in enumerate(uniforms):
+                probability = Decimal(value)
+                component_index = len(self.components) - 1
+                for index, right in enumerate(self._right_edges[:-1]):
+                    if probability < right:
+                        component_index = index
+                        break
+                local_probability = (
+                    probability - self._left_edges[component_index]
+                ) / self._weights[component_index]
+                buckets[component_index].append((sample_index, local_probability))
+        sample_values = [0] * len(uniforms)
+        for component, bucket in zip(self.components, buckets, strict=True):
+            evaluated = component.distribution._sample_probabilities(
+                tuple(probability for _index, probability in bucket)
+            )
+            for (sample_index, _probability), time_ms in zip(
+                bucket, evaluated, strict=True
+            ):
+                sample_values[sample_index] = time_ms
+        samples = tuple(sample_values)
+        distribution_digest = self.digest
         return DistributionSamples(
             samples_ms=samples,
             algorithm=SAMPLING_ALGORITHM,
@@ -269,11 +333,11 @@ class LinearPooledDistribution:
             seed=spec.seed,
             draw_count=spec.draw_count,
             time_quantum_ms=1,
-            distribution_digest=self.digest,
+            distribution_digest=distribution_digest,
             samples_digest=_samples_digest(
                 samples_ms=samples,
                 seed=spec.seed,
-                distribution_digest=self.digest,
+                distribution_digest=distribution_digest,
                 common_random_map_digest=spec.common_random_map_digest,
             ),
             common_random_map_digest=spec.common_random_map_digest,
@@ -282,7 +346,9 @@ class LinearPooledDistribution:
     def quantile_summary(self) -> PositiveTimeDistribution:
         return PositiveTimeDistribution(
             tuple(
-                QuantilePoint(_decimal_string(probability), self._at_probability(probability))
+                QuantilePoint(
+                    _decimal_string(probability), self._at_probability(probability)
+                )
                 for probability in _QUANTILES
             )
         )
@@ -303,36 +369,50 @@ class LinearPooledDistribution:
             or not isinstance(value["components"], list)
         ):
             raise ContractError("linear pooled distribution fields or algorithm differ")
-        return cls(tuple(LinearPoolComponent.from_dict(item) for item in value["components"]))
+        return cls(
+            tuple(LinearPoolComponent.from_dict(item) for item in value["components"])
+        )
 
     def _sample_at_uniform(self, probability: Decimal) -> int:
-        left = Decimal(0)
-        for index, component in enumerate(self.components):
-            right = left + Decimal(component.weight)
-            if probability < right or index == len(self.components) - 1:
-                local = (probability - left) / Decimal(component.weight)
-                return component.distribution._at_probability(local)
-            left = right
+        with localcontext() as context:
+            context.prec = 28
+            context.rounding = ROUND_HALF_EVEN
+            for index, component in enumerate(self.components):
+                if (
+                    probability < self._right_edges[index]
+                    or index == len(self.components) - 1
+                ):
+                    local = (probability - self._left_edges[index]) / self._weights[
+                        index
+                    ]
+                    return component.distribution._at_probability(local)
         raise AssertionError(  # pragma: no cover - validated weights cover the unit interval
             "validated mixture weights did not cover the unit interval"
         )
 
     def _at_probability(self, probability: Decimal) -> int:
-        low = min(item.distribution.quantiles[0].time_ms for item in self.components)
-        high = max(item.distribution.quantiles[-1].time_ms for item in self.components)
-        while low < high:
-            midpoint = (low + high) // 2
-            if self._cdf(midpoint) >= probability:
-                high = midpoint
-            else:
-                low = midpoint + 1
-        return low
+        with localcontext() as context:
+            context.prec = 28
+            context.rounding = ROUND_HALF_EVEN
+            low = min(
+                item.distribution.quantiles[0].time_ms for item in self.components
+            )
+            high = max(
+                item.distribution.quantiles[-1].time_ms for item in self.components
+            )
+            while low < high:
+                midpoint = (low + high) // 2
+                if self._cdf(midpoint) >= probability:
+                    high = midpoint
+                else:
+                    low = midpoint + 1
+            return low
 
     def _cdf(self, time_ms: int) -> Decimal:
         return sum(
             (
-                Decimal(item.weight) * _distribution_cdf(item.distribution, time_ms)
-                for item in self.components
+                weight * _distribution_cdf(item.distribution, time_ms)
+                for item, weight in zip(self.components, self._weights, strict=True)
             ),
             Decimal(0),
         )
@@ -353,12 +433,19 @@ class PoolComponentReceipt:
     samples_digest: str | None
 
     def __post_init__(self) -> None:
-        if self.assessor not in _OUTER or not isinstance(self.availability, AvailabilityState):
+        if self.assessor not in _OUTER or not isinstance(
+            self.availability, AvailabilityState
+        ):
             raise ContractError("pool component identity is invalid")
-        if not isinstance(self.availability_reason, str) or not self.availability_reason:
+        if (
+            not isinstance(self.availability_reason, str)
+            or not self.availability_reason
+        ):
             raise ContractError("pool component availability reason is required")
         baseline = _canonical_decimal(self.baseline_weight, "component baseline weight")
-        effective = _canonical_decimal(self.effective_weight, "component effective weight")
+        effective = _canonical_decimal(
+            self.effective_weight, "component effective weight"
+        )
         if baseline < 0 or effective < 0:
             raise ContractError("pool component weights must be nonnegative")
         for value, label in (
@@ -392,7 +479,9 @@ class PoolComponentReceipt:
             )
             or effective
         ):
-            raise ContractError("unavailable pool component cannot carry forecast influence")
+            raise ContractError(
+                "unavailable pool component cannot carry forecast influence"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -404,10 +493,14 @@ class PoolComponentReceipt:
             "forecast_id": self.forecast_id,
             "forecast_commit_digest": self.forecast_commit_digest,
             "original_distribution": (
-                self.original_distribution.to_dict() if self.original_distribution else None
+                self.original_distribution.to_dict()
+                if self.original_distribution
+                else None
             ),
             "adjusted_distribution": (
-                self.adjusted_distribution.to_dict() if self.adjusted_distribution else None
+                self.adjusted_distribution.to_dict()
+                if self.adjusted_distribution
+                else None
             ),
             "capability_adjustment_digest": self.capability_adjustment_digest,
             "samples_digest": self.samples_digest,
@@ -495,14 +588,18 @@ class PoolReceipt:
         if not all(isinstance(item, PoolComponentReceipt) for item in self.components):
             raise ContractError("pool receipt components must be typed")
         if tuple(item.assessor for item in self.components) != _OUTER:
-            raise ContractError("pool receipt must include all outer components in order")
+            raise ContractError(
+                "pool receipt must include all outer components in order"
+            )
         valid = tuple(
             item.assessor
             for item in self.components
             if item.availability is AvailabilityState.VALID
         )
         if self.available_count != len(valid):
-            raise ContractError("pool receipt available_count differs from component evidence")
+            raise ContractError(
+                "pool receipt available_count differs from component evidence"
+            )
         expected_mode = _mode(self.available_count, self.mode is PoolMode.MANUAL_SINGLE)
         if self.mode is not expected_mode:
             raise ContractError("pool mode is inconsistent with assessor availability")
@@ -516,25 +613,34 @@ class PoolReceipt:
             raise ContractError("pool baseline differs from weight authority binding")
         effective = _weight_values(self.effective_weights, require_all=False)
         if tuple(effective) != valid:
-            raise ContractError("effective weights must cover exactly the valid assessors")
-        with localcontext() as context:
-            context.prec = 96
-            denominator = _canonical_decimal(
-                self.normalization_denominator, "normalization_denominator"
+            raise ContractError(
+                "effective weights must cover exactly the valid assessors"
             )
-            missing = _canonical_decimal(self.missing_mass, "missing_mass")
-            if denominator != sum((baseline[item] for item in valid), Decimal(0)):
-                raise ContractError("pool normalization denominator differs from baseline")
-            if missing != Decimal(1) - denominator:
-                raise ContractError("pool missing mass differs from baseline")
-            if valid and sum(effective.values(), Decimal(0)) != 1:
-                raise ContractError("pool effective weights must sum exactly to one")
+        _canonical_decimal(self.normalization_denominator, "normalization_denominator")
+        _canonical_decimal(self.missing_mass, "missing_mass")
+        baseline_strings = dict(self.baseline_weights)
+        denominator = Fraction(self.normalization_denominator)
+        if denominator != sum(
+            (Fraction(baseline_strings[item]) for item in valid), Fraction()
+        ):
+            raise ContractError("pool normalization denominator differs from baseline")
+        if Fraction(self.missing_mass) != 1 - denominator:
+            raise ContractError("pool missing mass differs from baseline")
+        if (
+            valid
+            and sum(
+                (Fraction(value) for _, value in self.effective_weights), Fraction()
+            )
+            != 1
+        ):
+            raise ContractError("pool effective weights must sum exactly to one")
         if self.capability_operator_version != CAPABILITY_OPERATOR_VERSION:
             raise ContractError("pool capability operator version differs")
         _require_digest(self.capability_state_digest, "capability_state_digest")
         has_output = self.mode is not PoolMode.MANUAL_REQUIRED
         if has_output != (
-            self.pooled_distribution is not None and self.pooled_samples_digest is not None
+            self.pooled_distribution is not None
+            and self.pooled_samples_digest is not None
         ):
             raise ContractError("pool output presence is inconsistent with mode")
         if self.pooled_distribution is not None and not isinstance(
@@ -543,32 +649,47 @@ class PoolReceipt:
         ):
             raise ContractError("pool distribution authority is invalid")
         if has_output != isinstance(self.pooled_summary, PositiveTimeDistribution):
-            raise ContractError("pool summary presence or type is inconsistent with mode")
+            raise ContractError(
+                "pool summary presence or type is inconsistent with mode"
+            )
         if self.pooled_samples_digest is not None:
             _require_digest(self.pooled_samples_digest, "pooled_samples_digest")
         if has_output != (self.pooled_samples_ms is not None):
-            raise ContractError("pool sample authority presence is inconsistent with mode")
+            raise ContractError(
+                "pool sample authority presence is inconsistent with mode"
+            )
         if (
             not isinstance(self.common_uniforms, tuple)
             or len(self.common_uniforms) != self.draw_count
         ):
             raise ContractError("pool common uniforms must cover every draw")
         if self.source_common_random_map_digest is not None:
-            _require_digest(self.source_common_random_map_digest, "source_common_random_map_digest")
-        if self.algorithm != _algorithm(self.mode) or self.dependency_version != "stdlib-only-v1":
+            _require_digest(
+                self.source_common_random_map_digest, "source_common_random_map_digest"
+            )
+        if (
+            self.algorithm != _algorithm(self.mode)
+            or self.dependency_version != "stdlib-only-v1"
+        ):
             raise ContractError("pool algorithm or dependency version differs")
         if self.time_quantum_ms != 1:
             raise ContractError("pool time quantum differs")
         SamplingSpec(self.seed, self.draw_count)
         _require_digest(self.common_random_map_digest, "common_random_map_digest")
         available_components = tuple(
-            item for item in self.components if item.availability is AvailabilityState.VALID
+            item
+            for item in self.components
+            if item.availability is AvailabilityState.VALID
         )
         for item in self.components:
             if item.baseline_weight != dict(self.baseline_weights)[
                 item.assessor
-            ] or item.effective_weight != dict(self.effective_weights).get(item.assessor, "0"):
-                raise ContractError("pool component weights differ from top-level authority")
+            ] or item.effective_weight != dict(self.effective_weights).get(
+                item.assessor, "0"
+            ):
+                raise ContractError(
+                    "pool component weights differ from top-level authority"
+                )
         if self.mode in {PoolMode.NORMAL, PoolMode.DEGRADED_TWO}:
             if not isinstance(self.pooled_distribution, LinearPooledDistribution):
                 raise ContractError("ensemble mode requires a sealed linear mixture")
@@ -580,19 +701,26 @@ class PoolReceipt:
                 if item.adjusted_distribution is not None
             )
             if self.pooled_distribution.components != expected_components:
-                raise ContractError("sealed mixture differs from component receipt authority")
+                raise ContractError(
+                    "sealed mixture differs from component receipt authority"
+                )
         elif (
             self.mode is PoolMode.MANUAL_SINGLE
-            and self.pooled_distribution != available_components[0].adjusted_distribution
+            and self.pooled_distribution
+            != available_components[0].adjusted_distribution
         ):
-            raise ContractError("manual single output must equal the exact adjusted survivor")
+            raise ContractError(
+                "manual single output must equal the exact adjusted survivor"
+            )
         expected_summary = (
             self.pooled_distribution.quantile_summary()
             if isinstance(self.pooled_distribution, LinearPooledDistribution)
             else self.pooled_distribution
         )
         if self.pooled_summary != expected_summary:
-            raise ContractError("pooled summary differs from sealed distribution authority")
+            raise ContractError(
+                "pooled summary differs from sealed distribution authority"
+            )
         expected_map = canonical_digest(
             {
                 "schema_version": "strathmark-v3-linear-pool-crn-map-v1",
@@ -600,7 +728,9 @@ class PoolReceipt:
                 "draw_count": self.draw_count,
                 "provided_common_map_digest": self.source_common_random_map_digest,
                 "uniforms_digest": canonical_digest(self.common_uniforms),
-                "component_order": [item.assessor.value for item in available_components],
+                "component_order": [
+                    item.assessor.value for item in available_components
+                ],
             }
         )
         if self.common_random_map_digest != expected_map:
@@ -613,8 +743,13 @@ class PoolReceipt:
         )
         for item in available_components:
             assert item.adjusted_distribution is not None
-            if item.adjusted_distribution.sample(replay_spec).samples_digest != item.samples_digest:
-                raise ContractError("component samples digest differs from standalone replay")
+            if (
+                item.adjusted_distribution.sample(replay_spec).samples_digest
+                != item.samples_digest
+            ):
+                raise ContractError(
+                    "component samples digest differs from standalone replay"
+                )
         if self.pooled_distribution is not None:
             replay = self.pooled_distribution.sample(replay_spec)
             if (
@@ -632,9 +767,13 @@ class PoolReceipt:
             "mode": self.mode.value,
             "available_count": self.available_count,
             "is_ensemble": self.is_ensemble,
-            "baseline_weights": [[kind.value, value] for kind, value in self.baseline_weights],
+            "baseline_weights": [
+                [kind.value, value] for kind, value in self.baseline_weights
+            ],
             "weight_authority": self.weight_authority.to_dict(),
-            "effective_weights": [[kind.value, value] for kind, value in self.effective_weights],
+            "effective_weights": [
+                [kind.value, value] for kind, value in self.effective_weights
+            ],
             "normalization_denominator": self.normalization_denominator,
             "missing_mass": self.missing_mass,
             "capability_operator_version": self.capability_operator_version,
@@ -643,7 +782,9 @@ class PoolReceipt:
             "pooled_distribution": (
                 self.pooled_distribution.to_dict() if self.pooled_distribution else None
             ),
-            "pooled_summary": self.pooled_summary.to_dict() if self.pooled_summary else None,
+            "pooled_summary": (
+                self.pooled_summary.to_dict() if self.pooled_summary else None
+            ),
             "pooled_samples_authority_digest": (
                 canonical_digest(self.pooled_samples_ms)
                 if self.pooled_samples_ms is not None
@@ -664,7 +805,9 @@ class PoolReceipt:
         return {
             **self.content_value(),
             "pooled_samples_ms": (
-                list(self.pooled_samples_ms) if self.pooled_samples_ms is not None else None
+                list(self.pooled_samples_ms)
+                if self.pooled_samples_ms is not None
+                else None
             ),
             "common_uniforms": list(self.common_uniforms),
             "receipt_digest": self.receipt_digest,
@@ -701,7 +844,10 @@ class PoolReceipt:
             "source_common_random_map_digest",
             "receipt_digest",
         }
-        if set(value) != expected or value["schema_version"] != "strathmark-v3-pool-receipt-v1":
+        if (
+            set(value) != expected
+            or value["schema_version"] != "strathmark-v3-pool-receipt-v1"
+        ):
             raise ContractError("pool receipt fields or schema differ")
         try:
             mode = PoolMode(value["mode"])
@@ -719,14 +865,22 @@ class PoolReceipt:
         if not isinstance(serialized_uniforms, list):
             raise ContractError("pool receipt common uniforms are invalid")
         if value["pooled_samples_authority_digest"] != (
-            canonical_digest(tuple(serialized_samples)) if serialized_samples is not None else None
-        ) or value["common_uniforms_digest"] != canonical_digest(tuple(serialized_uniforms)):
-            raise ContractError("pool receipt serialized sample authority digest mismatch")
+            canonical_digest(tuple(serialized_samples))
+            if serialized_samples is not None
+            else None
+        ) or value["common_uniforms_digest"] != canonical_digest(
+            tuple(serialized_uniforms)
+        ):
+            raise ContractError(
+                "pool receipt serialized sample authority digest mismatch"
+            )
         decoded_distribution = _decode_distribution(distribution)
         if summary is not None and not isinstance(summary, Mapping):
             raise ContractError("serialized pooled summary is invalid")
         decoded_summary = (
-            PositiveTimeDistribution.from_dict(summary) if isinstance(summary, Mapping) else None
+            PositiveTimeDistribution.from_dict(summary)
+            if isinstance(summary, Mapping)
+            else None
         )
         authority = value["weight_authority"]
         if not isinstance(authority, Mapping):
@@ -742,7 +896,9 @@ class PoolReceipt:
             missing_mass=value["missing_mass"],
             capability_operator_version=value["capability_operator_version"],
             capability_state_digest=value["capability_state_digest"],
-            components=tuple(PoolComponentReceipt.from_dict(item) for item in components),
+            components=tuple(
+                PoolComponentReceipt.from_dict(item) for item in components
+            ),
             pooled_distribution=decoded_distribution,
             pooled_summary=decoded_summary,
             pooled_samples_ms=(
@@ -784,7 +940,9 @@ def pool_forecasts(
         isinstance(item, AssessorForecast) for item in forecasts
     ):
         raise ContractError("forecasts must be immutable AssessorForecast values")
-    if not isinstance(baseline, WeightReceipt) or not isinstance(capability_state, CapabilityState):
+    if not isinstance(baseline, WeightReceipt) or not isinstance(
+        capability_state, CapabilityState
+    ):
         raise ContractError("pooling requires typed weight and capability authority")
     if not isinstance(sampling, SamplingSpec):
         raise ContractError("pooling requires a frozen SamplingSpec")
@@ -793,10 +951,13 @@ def pool_forecasts(
         or weight_authority.weights != baseline.weights
         or weight_authority.weight_receipt_digest != baseline.receipt_digest
         or weight_authority.context != baseline.context
-        or weight_authority.calibration_cutoff_at_utc != baseline.calibration_cutoff_at_utc
+        or weight_authority.calibration_cutoff_at_utc
+        != baseline.calibration_cutoff_at_utc
         or weight_authority.policy_digest != baseline.policy_digest
     ):
-        raise ContractError("weight authority does not bind the supplied baseline receipt")
+        raise ContractError(
+            "weight authority does not bind the supplied baseline receipt"
+        )
     assessors = tuple(item.assessor for item in forecasts)
     if len(assessors) != len(set(assessors)):
         raise ContractError("assessor forecasts must be unique")
@@ -804,20 +965,22 @@ def pool_forecasts(
         raise ContractError("pooling accepts outer assessor forecasts only")
     baseline_values = _weight_values(baseline.weights, require_all=True)
     by_assessor = {item.assessor: item for item in forecasts}
-    availability = {assessor: _availability(by_assessor.get(assessor)) for assessor in _OUTER}
+    availability = {
+        assessor: _availability(by_assessor.get(assessor)) for assessor in _OUTER
+    }
     available = tuple(
-        assessor for assessor in _OUTER if availability[assessor] is AvailabilityState.VALID
+        assessor
+        for assessor in _OUTER
+        if availability[assessor] is AvailabilityState.VALID
     )
     with localcontext() as context:
-        context.prec = 96
+        context.prec = 512
         denominator = sum((baseline_values[item] for item in available), Decimal(0))
         missing_mass = Decimal(1) - denominator
-        effective = (
-            tuple(
-                (item, _decimal_string(baseline_values[item] / denominator)) for item in available
-            )
-            if denominator
-            else ()
+        effective = _apportioned_effective_weights(
+            available,
+            baseline_values,
+            denominator,
         )
     effective_values = {item: Decimal(value) for item, value in effective}
     mode = _mode(len(available), accept_single_survivor)
@@ -846,7 +1009,9 @@ def pool_forecasts(
     for assessor in available:
         forecast = by_assessor[assessor]
         assert forecast.distribution is not None
-        adjustment = apply_capability_operator(assessor, forecast.distribution, capability_state)
+        adjustment = apply_capability_operator(
+            assessor, forecast.distribution, capability_state
+        )
         adjusted[assessor] = adjustment.adjusted_distribution
         adjustment_digests[assessor] = adjustment.adjustment_digest
         sampled[assessor] = adjustment.adjusted_distribution.sample(pool_sampling)
@@ -925,17 +1090,17 @@ def _weight_values(
     if not isinstance(values, tuple):
         raise ContractError("pool weights must be immutable")
     assessors = tuple(item for item, _ in values)
-    expected = _OUTER if require_all else tuple(item for item in _OUTER if item in assessors)
+    expected = (
+        _OUTER if require_all else tuple(item for item in _OUTER if item in assessors)
+    )
     if assessors != expected:
         raise ContractError("pool weights must be unique and canonically ordered")
     result = {item: _canonical_decimal(value, "pool weight") for item, value in values}
     if any(value < 0 for value in result.values()):
         raise ContractError("pool weights must be nonnegative")
     if require_all:
-        with localcontext() as context:
-            context.prec = 96
-            if sum(result.values(), Decimal(0)) != 1:
-                raise ContractError("baseline weights must sum exactly to one")
+        if sum((Fraction(value) for _, value in values), Fraction()) != 1:
+            raise ContractError("baseline weights must sum exactly to one")
     return result
 
 
@@ -973,9 +1138,13 @@ def _pool_receipt_content(values: Mapping[str, Any]) -> dict[str, Any]:
         "mode": values["mode"].value,
         "available_count": values["available_count"],
         "is_ensemble": values["is_ensemble"],
-        "baseline_weights": [[kind.value, value] for kind, value in values["baseline_weights"]],
+        "baseline_weights": [
+            [kind.value, value] for kind, value in values["baseline_weights"]
+        ],
         "weight_authority": values["weight_authority"].to_dict(),
-        "effective_weights": [[kind.value, value] for kind, value in values["effective_weights"]],
+        "effective_weights": [
+            [kind.value, value] for kind, value in values["effective_weights"]
+        ],
         "normalization_denominator": values["normalization_denominator"],
         "missing_mass": values["missing_mass"],
         "capability_operator_version": values["capability_operator_version"],
@@ -1046,7 +1215,9 @@ def _component_receipt(
         availability_reason=(
             "available"
             if availability is AvailabilityState.VALID
-            else (forecast.abstention_code if forecast is not None else "missing_forecast")
+            else (
+                forecast.abstention_code if forecast is not None else "missing_forecast"
+            )
         ),
         baseline_weight=_decimal_string(baseline_weight),
         effective_weight=_decimal_string(effective_weight),
@@ -1060,9 +1231,76 @@ def _component_receipt(
 
 
 def _decimal_string(value: Decimal) -> str:
-    with localcontext() as context:
-        context.prec = 96
-        return canonical_decimal_string(+value)
+    return canonical_decimal_string(value)
+
+
+def _apportioned_effective_weights(
+    available: tuple[AssessorKind, ...],
+    baseline_values: Mapping[AssessorKind, Decimal],
+    denominator: Decimal,
+) -> tuple[tuple[AssessorKind, str], ...]:
+    """Return positive bounded decimals that sum exactly to one.
+
+    When every assessor is available there is no normalization, so retaining
+    the authoritative baseline bytes is both exact and maximally auditable.
+    Degraded pools use deterministic largest-remainder apportionment over a
+    fixed decimal lattice; this avoids independent rounding producing a
+    negative residual component at the 128-character numeric boundary.
+    """
+
+    if not available:
+        return ()
+    if denominator <= 0:
+        raise ContractError("available assessor weight denominator must be positive")
+    if len(available) == len(_OUTER) and denominator == 1:
+        return tuple(
+            (assessor, canonical_decimal_string(baseline_values[assessor]))
+            for assessor in available
+        )
+    if len(available) == 1:
+        return ((available[0], "1"),)
+
+    normalized = tuple(
+        Fraction(baseline_values[assessor]) / Fraction(denominator)
+        for assessor in available
+    )
+    for decimal_places in (MAX_DECIMAL_CHARACTERS - 8, MAX_DECIMAL_CHARACTERS - 2):
+        scale = 10**decimal_places
+        floors: list[int] = []
+        remainders: list[Fraction] = []
+        for value in normalized:
+            quotient, remainder = divmod(value.numerator * scale, value.denominator)
+            floors.append(quotient)
+            remainders.append(Fraction(remainder, value.denominator))
+        if all(value > 0 for value in floors):
+            break
+    else:  # pragma: no cover - canonical positive inputs are at least 1e-126
+        raise ContractError("normalized positive weight exceeds canonical precision")
+
+    unassigned = scale - sum(floors)
+    order = sorted(
+        range(len(available)),
+        key=lambda index: (-remainders[index], index),
+    )
+    for index in order[:unassigned]:
+        floors[index] += 1
+    if sum(floors) != scale or any(value <= 0 for value in floors):
+        raise ContractError("normalized weights cannot be apportioned exactly")
+    return tuple(
+        (
+            assessor,
+            _scaled_decimal_string(floors[index], decimal_places),
+        )
+        for index, assessor in enumerate(available)
+    )
+
+
+def _scaled_decimal_string(units: int, decimal_places: int) -> str:
+    scale = 10**decimal_places
+    if units == scale:
+        return "1"
+    rendered = f"0.{units:0{decimal_places}d}"
+    return canonical_decimal_string(rendered)
 
 
 def _canonical_decimal(value: str, label: str) -> Decimal:
@@ -1081,18 +1319,23 @@ def _require_digest(value: str, label: str) -> None:
 
 
 def _distribution_cdf(distribution: PositiveTimeDistribution, time_ms: int) -> Decimal:
-    points = [(Decimal(item.probability), item.time_ms) for item in distribution.quantiles]
-    if time_ms < points[0][1]:
+    probabilities = distribution._probabilities
+    times = distribution._times_ms
+    if time_ms < times[0]:
         return Decimal(0)
-    if time_ms >= points[-1][1]:
+    if time_ms >= times[-1]:
         return Decimal(1)
-    equal = [probability for probability, value in points if value == time_ms]
+    equal = [
+        probability
+        for probability, value in zip(probabilities, times)
+        if value == time_ms
+    ]
     if equal:
         return max(equal)
     left_probability, left_time, right_probability, right_time = next(
         (left_probability, left_time, right_probability, right_time)
         for (left_probability, left_time), (right_probability, right_time) in zip(
-            points, points[1:]
+            zip(probabilities, times), zip(probabilities[1:], times[1:])
         )
         if left_time <= time_ms <= right_time
     )

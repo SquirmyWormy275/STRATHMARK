@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from bisect import bisect_left
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
 from typing import Any, Mapping, Protocol
 
 from strathmark.v3.contracts.canonical import canonical_decimal_string, canonical_digest
 from strathmark.v3.contracts.errors import ContractError
-from strathmark.v3.contracts.evidence import _require_digest, _require_id, _require_version
+from strathmark.v3.contracts.evidence import (
+    _require_digest,
+    _require_id,
+    _require_version,
+)
 from strathmark.v3.contracts.identifiers import StableIdentifier, require_identifier
 from strathmark.v3.contracts.statuses import (
     _require_fields,
@@ -79,7 +83,9 @@ class QuantilePoint:
     def __post_init__(self) -> None:
         probability = _require_probability(self.probability)
         if not (Decimal("0") < probability < Decimal("1")):
-            raise ContractError("quantile probability must be strictly between zero and one")
+            raise ContractError(
+                "quantile probability must be strictly between zero and one"
+            )
         _require_positive_int(self.time_ms, "quantile time_ms")
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,11 +118,15 @@ class SamplingSpec:
         for value in self.common_uniforms:
             probability = _require_probability(value)
             if not (Decimal("0") < probability < Decimal("1")):
-                raise ContractError("common uniforms must be strictly between zero and one")
+                raise ContractError(
+                    "common uniforms must be strictly between zero and one"
+                )
         if self.common_random_map_digest is not None:
             _require_digest(self.common_random_map_digest, "common_random_map_digest")
         if self.common_uniforms and self.common_random_map_digest is None:
-            raise ContractError("injected common uniforms require a common_random_map_digest")
+            raise ContractError(
+                "injected common uniforms require a common_random_map_digest"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,27 +223,37 @@ class PositiveTimeDistribution:
 
     quantiles: tuple[QuantilePoint, ...]
     schema_version: str = DISTRIBUTION_SCHEMA_VERSION
+    _probabilities: tuple[Decimal, ...] = field(init=False, repr=False, compare=False)
+    _times_ms: tuple[int, ...] = field(init=False, repr=False, compare=False)
+    _digest_cache: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _require_schema(self.schema_version, DISTRIBUTION_SCHEMA_VERSION)
         if not isinstance(self.quantiles, tuple) or len(self.quantiles) < 3:
-            raise ContractError("distribution requires at least three immutable quantiles")
+            raise ContractError(
+                "distribution requires at least three immutable quantiles"
+            )
         if not all(isinstance(item, QuantilePoint) for item in self.quantiles):
             raise ContractError("distribution quantiles must be QuantilePoint values")
         probabilities = tuple(Decimal(item.probability) for item in self.quantiles)
         times = tuple(item.time_ms for item in self.quantiles)
-        if probabilities != tuple(sorted(probabilities)) or len(set(probabilities)) != len(
-            probabilities
-        ):
-            raise ContractError("quantile probabilities must be unique and strictly ordered")
+        if probabilities != tuple(sorted(probabilities)) or len(
+            set(probabilities)
+        ) != len(probabilities):
+            raise ContractError(
+                "quantile probabilities must be unique and strictly ordered"
+            )
         if Decimal("0.5") not in probabilities:
             raise ContractError("distribution must include the median quantile 0.5")
         if times != tuple(sorted(times)):
             raise ContractError("quantile times must be nondecreasing")
+        object.__setattr__(self, "_probabilities", probabilities)
+        object.__setattr__(self, "_times_ms", times)
+        object.__setattr__(self, "_digest_cache", canonical_digest(self.to_dict()))
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self.to_dict())
+        return self._digest_cache
 
     @property
     def median_ms(self) -> int:
@@ -249,8 +269,11 @@ class PositiveTimeDistribution:
     def sample(self, spec: SamplingSpec) -> DistributionSamples:
         if not isinstance(spec, SamplingSpec):
             raise ContractError("sampling requires a SamplingSpec")
-        uniforms = spec.common_uniforms or _splitmix_uniforms(spec.seed, spec.draw_count)
-        samples = tuple(self._at_probability(Decimal(item)) for item in uniforms)
+        uniforms = spec.common_uniforms or _splitmix_uniforms(
+            spec.seed, spec.draw_count
+        )
+        samples = self._sample_probabilities(tuple(Decimal(item) for item in uniforms))
+        distribution_digest = self.digest
         return DistributionSamples(
             samples_ms=samples,
             algorithm=SAMPLING_ALGORITHM,
@@ -258,32 +281,48 @@ class PositiveTimeDistribution:
             seed=spec.seed,
             draw_count=spec.draw_count,
             time_quantum_ms=1,
-            distribution_digest=self.digest,
+            distribution_digest=distribution_digest,
             samples_digest=_samples_digest(
                 samples_ms=samples,
                 seed=spec.seed,
-                distribution_digest=self.digest,
+                distribution_digest=distribution_digest,
                 common_random_map_digest=spec.common_random_map_digest,
             ),
             common_random_map_digest=spec.common_random_map_digest,
         )
 
     def _at_probability(self, probability: Decimal) -> int:
-        points = [(Decimal(item.probability), item.time_ms) for item in self.quantiles]
-        probabilities = [item[0] for item in points]
-        index = bisect_left(probabilities, probability)
-        if index == 0:
-            return points[0][1]
-        if index == len(points):
-            return points[-1][1]
-        left_p, left_t = points[index - 1]
-        right_p, right_t = points[index]
         with localcontext() as context:
             context.prec = 256
             context.rounding = ROUND_HALF_EVEN
-            ratio = (probability - left_p) / (right_p - left_p)
-            interpolated = Decimal(left_t) + ratio * Decimal(right_t - left_t)
-            return int(interpolated.quantize(Decimal("1")))
+            return self._at_probability_compiled(probability)
+
+    def _sample_probabilities(
+        self, probabilities: tuple[Decimal, ...]
+    ) -> tuple[int, ...]:
+        """Evaluate a batch under one frozen Decimal context."""
+
+        with localcontext() as context:
+            context.prec = 256
+            context.rounding = ROUND_HALF_EVEN
+            return tuple(
+                self._at_probability_compiled(probability)
+                for probability in probabilities
+            )
+
+    def _at_probability_compiled(self, probability: Decimal) -> int:
+        index = bisect_left(self._probabilities, probability)
+        if index == 0:
+            return self._times_ms[0]
+        if index == len(self._probabilities):
+            return self._times_ms[-1]
+        left_p = self._probabilities[index - 1]
+        right_p = self._probabilities[index]
+        left_t = self._times_ms[index - 1]
+        right_t = self._times_ms[index]
+        ratio = (probability - left_p) / (right_p - left_p)
+        interpolated = Decimal(left_t) + ratio * Decimal(right_t - left_t)
+        return int(interpolated.quantize(Decimal("1")))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -320,7 +359,9 @@ class DependenceInputs:
             raise ContractError("dependence mode must be a DependenceMode value")
         _require_version(self.version, "dependence version")
         SamplingSpec(self.seed, self.draw_count)
-        _require_nonnegative_decimal(self.effective_sample_size, "effective_sample_size")
+        _require_nonnegative_decimal(
+            self.effective_sample_size, "effective_sample_size"
+        )
         if self.parameters_digest is not None:
             _require_digest(self.parameters_digest, "parameters_digest")
         if self.mode in {
@@ -412,7 +453,9 @@ class EvidenceSupport:
             raise ContractError("exact_context_count cannot exceed eligible_count")
         if self.max_historical_key is not None:
             require_identifier(self.max_historical_key, expected_namespace="history")
-        _require_nonnegative_int(self.tournament_event_sequence, "tournament_event_sequence")
+        _require_nonnegative_int(
+            self.tournament_event_sequence, "tournament_event_sequence"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -497,14 +540,22 @@ class AssessorForecast:
             raise ContractError("artifacts must be immutable ArtifactIdentity values")
         if self.state is ForecastState.COMMITTED:
             if not isinstance(self.distribution, PositiveTimeDistribution):
-                raise ContractError("committed forecast requires a positive distribution")
+                raise ContractError(
+                    "committed forecast requires a positive distribution"
+                )
             if self.abstention_code is not None:
-                raise ContractError("committed forecast cannot carry an abstention code")
+                raise ContractError(
+                    "committed forecast cannot carry an abstention code"
+                )
         else:
             if self.distribution is not None:
-                raise ContractError("distribution must be absent for non-committed forecasts")
+                raise ContractError(
+                    "distribution must be absent for non-committed forecasts"
+                )
             if not isinstance(self.abstention_code, str) or not self.abstention_code:
-                raise ContractError("non-committed forecast requires an abstention code")
+                raise ContractError(
+                    "non-committed forecast requires an abstention code"
+                )
         _require_digest(self.commit_digest, "commit_digest")
         if self.commit_digest != self.recompute_digest():
             raise ContractError("forecast commit digest mismatch")
@@ -555,19 +606,27 @@ class AssessorForecast:
             state = ForecastState(value["state"])
             warnings = tuple(ForecastWarning(item) for item in value["warnings"])
         except (TypeError, ValueError) as exc:
-            raise ContractError("unknown assessor, forecast state, or warning code") from exc
+            raise ContractError(
+                "unknown assessor, forecast state, or warning code"
+            ) from exc
         distribution = value["distribution"]
         return cls(
-            forecast_id=require_identifier(value["forecast_id"], expected_namespace="forecast"),
+            forecast_id=require_identifier(
+                value["forecast_id"], expected_namespace="forecast"
+            ),
             assessor=assessor,
             state=state,
             evidence_digest=value["evidence_digest"],
             distribution=(
-                None if distribution is None else PositiveTimeDistribution.from_dict(distribution)
+                None
+                if distribution is None
+                else PositiveTimeDistribution.from_dict(distribution)
             ),
             support=EvidenceSupport.from_dict(value["support"]),
             warnings=warnings,
-            artifacts=tuple(ArtifactIdentity.from_dict(item) for item in value["artifacts"]),
+            artifacts=tuple(
+                ArtifactIdentity.from_dict(item) for item in value["artifacts"]
+            ),
             abstention_code=value["abstention_code"],
             commit_digest=value["commit_digest"],
         )
@@ -667,7 +726,9 @@ def _forecast_content_value(**arguments: Any) -> dict[str, Any]:
         "state": arguments["state"].value,
         "evidence_digest": arguments["evidence_digest"],
         "distribution": (
-            None if arguments["distribution"] is None else arguments["distribution"].to_dict()
+            None
+            if arguments["distribution"] is None
+            else arguments["distribution"].to_dict()
         ),
         "support": arguments["support"].to_dict(),
         "warnings": [item.value for item in arguments["warnings"]],
