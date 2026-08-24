@@ -135,7 +135,7 @@ def test_rolling_delta_and_job_spec_schema_is_forward_only_and_immutable(
     database = tmp_path / "rolling-delta" / "authority.sqlite3"
     with open_v3_connection(database) as connection:
         migrate_connection(connection)
-        assert current_schema_version(connection) == 13
+        assert current_schema_version(connection) == 14
         tables = {
             row[0]
             for row in connection.execute(

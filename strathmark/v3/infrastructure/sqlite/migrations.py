@@ -53,6 +53,7 @@ _PINNED_CHECKSUMS: Final[dict[str, str]] = {
     "0011_rolling_card_publications.sql": "b7ffa42aa46b86d051fb074c2b7291e89a01fec3401bceba85020e77b7d53089",
     "0012_rolling_restart_checkpoints.sql": "b11d1629fce282456d8bab3394037001bd4587c4274e37229cafa5154a59c942",
     "0013_rolling_delta_and_job_spec_authority.sql": "3ff5f1ba0465752d0e85930394b1763c9fa48dc5c71179e1813b20116bed01f5",
+    "0014_manual_action_requirements.sql": "ba6933de10edfe427412eb1404e5cb66f316880af244fce4046ac8d1e3e3c2be",
 }
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<label>[a-z0-9_]+)\.sql$")
 _MIGRATION_ROOT = Path(__file__).resolve().parents[2] / "migrations"
@@ -113,7 +114,7 @@ _METADATA_COLUMNS = (
     ("checksum", "TEXT", 1, 0),
     ("applied_at", "TEXT", 1, 0),
 )
-EXPECTED_SCHEMA_DIGEST = "0ae48cb5307aa4fc21202912f78c27e6bf4572b1b841cd141306a79f7361e53f"
+EXPECTED_SCHEMA_DIGEST = "2e646117f540bbc7eeeac473b7f122e935e11e68fb837844a360f9d7835bf25a"
 
 
 def _ensure_metadata_table(connection: sqlite3.Connection) -> None:
