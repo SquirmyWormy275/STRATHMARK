@@ -136,6 +136,23 @@ class MisboundEvaluator:
         )
 
 
+class PendingEvaluator:
+    calls = 0
+    bundle_digest = Evaluator.bundle_digest
+    implementation_digest = "4" * 64
+    evaluator_port = Evaluator.evaluator_port
+
+    def evaluate(self, *, forecast, scoring_input):
+        type(self).calls += 1
+        return OptimizerConsequenceReceipt.pending(
+            forecast_digest=forecast.commit_digest,
+            result_revision_digest=scoring_input.result_revision_digest,
+            field_receipt_digest=scoring_input.field_receipt_digest,
+            scoring_input_digest=scoring_input.scoring_input_digest,
+            optimizer_bundle_digest=self.bundle_digest,
+        )
+
+
 def _policy(signer):
     return seal_credibility_policy(
         CredibilityPolicy(),
@@ -826,6 +843,53 @@ def test_raw_evaluator_claims_cannot_change_operational_consequence_health(tmp_p
     assert ledger.active_scores[0].consequence.status is ConsequenceStatus.PENDING
     formula = next(row for row in weights.components if row.assessor is AssessorKind.FORMULA)
     assert formula.health != "consequence_breach"
+
+
+def test_trusted_pending_consequence_completes_reaction_without_health_mutation(tmp_path):
+    PendingEvaluator.calls = 0
+    lifecycle, credibility, signer, field_id, issue, epoch = _authority(
+        tmp_path, PendingEvaluator()
+    )
+    _commit(credibility, signer, field_id, issue, epoch, AssessorKind.FORMULA)
+    result_id, source = _settle(lifecycle, field_id)
+
+    ledger, weights = credibility.react_result(
+        result_id, actor_id=ACTOR, occurred_at_utc=NOW, monotonic_elapsed_ms=7
+    )
+    assert PendingEvaluator.calls == 1
+    assert len(ledger.active_scores) == 1
+    consequence = ledger.active_scores[0].consequence
+    assert consequence.status is ConsequenceStatus.PENDING
+    assert consequence.metrics is None
+    assert consequence.authority_manifest_digest is None
+    formula = next(row for row in weights.components if row.assessor is AssessorKind.FORMULA)
+    assert formula.health != "consequence_breach"
+    with open_v3_connection(lifecycle.projections.database_path, read_only=True) as connection:
+        reaction = connection.execute(
+            "SELECT state FROM v3_derivation_reactions WHERE source_global_sequence=? "
+            "AND reaction_type=?",
+            (source, MandatoryReaction.CREDIBILITY.value),
+        ).fetchone()
+    assert reaction is not None and reaction[0] == "completed"
+
+    event_count = credibility._events.event_count()
+    retry, retry_weights = credibility.react_result(
+        result_id, actor_id=ACTOR, occurred_at_utc=NOW, monotonic_elapsed_ms=7
+    )
+    assert PendingEvaluator.calls == 1
+    assert credibility._events.event_count() == event_count
+    assert retry.current_projection_digest == ledger.current_projection_digest
+    assert retry_weights.receipt_digest == weights.receipt_digest
+
+    restarted = SQLiteCredibilityReactionService(
+        lifecycle.projections.database_path,
+        trust_store=IntegrityTrustStore((signer.identity,)),
+        consequence_evaluator=_installed(PendingEvaluator(), signer),
+        policy_manifest=_policy(signer),
+    )
+    assert restarted.load_ledger().current_projection_digest == ledger.current_projection_digest
+    restarted.react_result(result_id, actor_id=ACTOR, occurred_at_utc=NOW, monotonic_elapsed_ms=7)
+    assert PendingEvaluator.calls == 1
 
 
 def test_optimizer_installation_manifest_rejects_untrusted_and_substituted_code(tmp_path):

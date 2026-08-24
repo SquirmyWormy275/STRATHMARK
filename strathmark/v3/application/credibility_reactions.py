@@ -2119,7 +2119,7 @@ class SQLiteCredibilityReactionService:
                 diagnostic.receipt_digest,
             )
             if (
-                diagnostic.status is not ConsequenceStatus.DIAGNOSTIC
+                diagnostic.status not in {ConsequenceStatus.DIAGNOSTIC, ConsequenceStatus.PENDING}
                 or diagnostic.forecast_digest != forecast.commit_digest
                 or diagnostic.result_revision_digest != result_revision_digest
                 or diagnostic.field_receipt_digest != issue_event.event_digest
@@ -2129,7 +2129,7 @@ class SQLiteCredibilityReactionService:
                 raise CredibilityReactionError("optimizer receipt differs from exact scoring input")
             if scope is ScoreScope.CANDIDATE:
                 consequence = diagnostic
-            else:
+            elif diagnostic.status is ConsequenceStatus.DIAGNOSTIC:
                 consequence = OptimizerConsequenceReceipt.verified(
                     forecast_digest=diagnostic.forecast_digest,
                     result_revision_digest=diagnostic.result_revision_digest,
@@ -2139,6 +2139,8 @@ class SQLiteCredibilityReactionService:
                     metrics=diagnostic.metrics,
                     authority_manifest_digest=self._optimizer_authority_digest,
                 )
+            else:
+                consequence = diagnostic
         raw_time = cast(int, observation.result.raw_time_ms)
         score = PredictiveScore.create(
             score_id=str(
