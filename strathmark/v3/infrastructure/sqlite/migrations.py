@@ -47,6 +47,12 @@ _PINNED_CHECKSUMS: Final[dict[str, str]] = {
     "0005_durable_jobs.sql": "8df9584e7961afb96eb7d87e28d4180864ede7bb195d96a1535b9304823cbcb4",
     "0006_signed_historical_cutover.sql": "2694b757596ccce399b67057bfce4d93fed42819dfece0d01573f62f658e5121",
     "0007_provider_execution_audit.sql": "1cc0aa52c2625b58d3a2975d3913286ab637358fa104d8c9c3c1ec11d8aa6fa5",
+    "0008_field_assembly_projection.sql": "347d5ebd91dc8efea7944b3289c4627360352c7f8f71968739f8154e0cd0c1a9",
+    "0009_approval_projection.sql": "7fca0aabe3f26f4d422523179779eebe0407c8924310388e27eba1e0cdaadf88",
+    "0010_field_capacity_and_disagreement_authority.sql": "610f8c85f421208982ba6af6796efa80d728a979cfec273db2685bcce1b2fc26",
+    "0011_rolling_card_publications.sql": "b7ffa42aa46b86d051fb074c2b7291e89a01fec3401bceba85020e77b7d53089",
+    "0012_rolling_restart_checkpoints.sql": "b11d1629fce282456d8bab3394037001bd4587c4274e37229cafa5154a59c942",
+    "0013_rolling_delta_and_job_spec_authority.sql": "3ff5f1ba0465752d0e85930394b1763c9fa48dc5c71179e1813b20116bed01f5",
 }
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<label>[a-z0-9_]+)\.sql$")
 _MIGRATION_ROOT = Path(__file__).resolve().parents[2] / "migrations"
@@ -107,7 +113,7 @@ _METADATA_COLUMNS = (
     ("checksum", "TEXT", 1, 0),
     ("applied_at", "TEXT", 1, 0),
 )
-EXPECTED_SCHEMA_DIGEST = "88ce75372bcf8a8ba81269a7d7d32d0fa43b39b4a679e25e20d308e88dc0d65f"
+EXPECTED_SCHEMA_DIGEST = "0ae48cb5307aa4fc21202912f78c27e6bf4572b1b841cd141306a79f7361e53f"
 
 
 def _ensure_metadata_table(connection: sqlite3.Connection) -> None:

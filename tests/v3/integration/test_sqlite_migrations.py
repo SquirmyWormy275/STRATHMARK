@@ -31,7 +31,9 @@ from strathmark.v3.infrastructure.sqlite.migrations import (
 )
 
 
-def test_connection_policy_is_explicit_and_write_transactions_are_short(tmp_path: Path) -> None:
+def test_connection_policy_is_explicit_and_write_transactions_are_short(
+    tmp_path: Path,
+) -> None:
     database = tmp_path / "v3" / "authority.sqlite3"
     with open_v3_connection(database) as connection:
         observed = {
@@ -40,7 +42,9 @@ def test_connection_policy_is_explicit_and_write_transactions_are_short(tmp_path
             "synchronous": connection.execute("PRAGMA synchronous").fetchone()[0],
             "busy_timeout": connection.execute("PRAGMA busy_timeout").fetchone()[0],
             "trusted_schema": connection.execute("PRAGMA trusted_schema").fetchone()[0],
-            "wal_autocheckpoint": connection.execute("PRAGMA wal_autocheckpoint").fetchone()[0],
+            "wal_autocheckpoint": connection.execute(
+                "PRAGMA wal_autocheckpoint"
+            ).fetchone()[0],
         }
         assert observed == {
             "journal_mode": "wal",
@@ -73,7 +77,9 @@ def test_deadline_and_checkpoint_are_bounded(tmp_path: Path) -> None:
         assert result.checkpointed_frames >= 0
 
 
-def test_migrations_are_repeatable_checksum_pinned_and_canonical(tmp_path: Path) -> None:
+def test_migrations_are_repeatable_checksum_pinned_and_canonical(
+    tmp_path: Path,
+) -> None:
     fresh = tmp_path / "fresh" / "authority.sqlite3"
     prior = tmp_path / "prior" / "authority.sqlite3"
     with open_v3_connection(fresh) as connection:
@@ -85,7 +91,10 @@ def test_migrations_are_repeatable_checksum_pinned_and_canonical(tmp_path: Path)
         assert migrate_connection(connection, migrations=DEFAULT_MIGRATIONS[:1]) == 1
         assert migrate_connection(connection) == len(DEFAULT_MIGRATIONS) - 1
         assert canonical_schema_digest(connection) == fresh_digest
-        assert [row[1] for row in connection.execute("PRAGMA table_info(v3_aggregate_heads)")] == [
+        assert [
+            row[1]
+            for row in connection.execute("PRAGMA table_info(v3_aggregate_heads)")
+        ] == [
             "aggregate_kind",
             "aggregate_id",
             "aggregate_version",
@@ -93,13 +102,76 @@ def test_migrations_are_repeatable_checksum_pinned_and_canonical(tmp_path: Path)
         ]
 
 
-def test_migrations_reject_drift_partial_state_and_future_schema(tmp_path: Path) -> None:
+def test_rolling_card_publication_schema_is_forward_only_and_restart_safe(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "rolling" / "authority.sqlite3"
+    with open_v3_connection(database) as connection:
+        migrate_connection(connection, migrations=DEFAULT_MIGRATIONS[:12])
+        assert current_schema_version(connection) == 12
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'v3_rolling_%'"
+            )
+        }
+        assert tables == {
+            "v3_rolling_council_authorities",
+            "v3_rolling_card_publications",
+            "v3_rolling_card_status_history",
+            "v3_rolling_card_current",
+            "v3_rolling_epoch_closures",
+            "v3_rolling_reaction_obligations",
+            "v3_rolling_reaction_completions",
+            "v3_rolling_restart_checkpoints",
+            "v3_rolling_restart_tip",
+            "v3_rolling_reaction_cursor",
+        }
+
+
+def test_rolling_delta_and_job_spec_schema_is_forward_only_and_immutable(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "rolling-delta" / "authority.sqlite3"
+    with open_v3_connection(database) as connection:
+        migrate_connection(connection)
+        assert current_schema_version(connection) == 13
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('v3_job_specs','v3_rolling_restart_deltas',"
+                "'v3_rolling_restart_delta_tip')"
+            )
+        }
+        assert tables == {
+            "v3_job_specs",
+            "v3_rolling_restart_deltas",
+            "v3_rolling_restart_delta_tip",
+        }
+        for table in ("v3_job_specs", "v3_rolling_restart_deltas"):
+            row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+                (f"{table}_no_update",),
+            ).fetchone()
+            assert row is not None
+            row = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+                (f"{table}_no_delete",),
+            ).fetchone()
+            assert row is not None
+
+
+def test_migrations_reject_drift_partial_state_and_future_schema(
+    tmp_path: Path,
+) -> None:
     drift = tmp_path / "drift.sqlite3"
     with open_v3_connection(drift) as connection:
         migrate_connection(connection)
         connection.execute("PRAGMA writable_schema = ON")
         connection.execute(
-            "UPDATE v3_schema_migrations SET checksum = ? WHERE version = 1", ("0" * 64,)
+            "UPDATE v3_schema_migrations SET checksum = ? WHERE version = 1",
+            ("0" * 64,),
         )
         connection.execute("PRAGMA writable_schema = OFF")
         with pytest.raises(MigrationChecksumError):
@@ -149,10 +221,14 @@ def test_connection_policy_rejects_memory_bool_and_coerced_controls(
         SQLiteConnectionPolicy(busy_timeout_ms=True)  # type: ignore[arg-type]
 
 
-def test_migrations_reject_superficial_metadata_and_catalog_tamper(tmp_path: Path) -> None:
+def test_migrations_reject_superficial_metadata_and_catalog_tamper(
+    tmp_path: Path,
+) -> None:
     wrong_shape = tmp_path / "wrong-shape.sqlite3"
     with open_v3_connection(wrong_shape) as connection:
-        connection.execute("CREATE TABLE v3_schema_migrations(version INTEGER PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE v3_schema_migrations(version INTEGER PRIMARY KEY)"
+        )
         with pytest.raises(MigrationStateError, match="shape"):
             migrate_connection(connection)
 
@@ -173,7 +249,9 @@ def test_migrations_reject_superficial_metadata_and_catalog_tamper(tmp_path: Pat
             migrate_connection(connection)
 
 
-def test_migration_object_collision_rolls_back_all_trusted_objects(tmp_path: Path) -> None:
+def test_migration_object_collision_rolls_back_all_trusted_objects(
+    tmp_path: Path,
+) -> None:
     database = tmp_path / "collision.sqlite3"
     with open_v3_connection(database) as connection:
         connection.execute("CREATE TABLE decoy(value INTEGER)")
@@ -252,15 +330,21 @@ def test_connection_rejects_bad_types_missing_read_target_and_closes_on_policy_f
             self.closed = True
 
     refused = RefusingConnection()
-    monkeypatch.setattr(sqlite_connection.sqlite3, "connect", lambda *args, **kwargs: refused)
+    monkeypatch.setattr(
+        sqlite_connection.sqlite3, "connect", lambda *args, **kwargs: refused
+    )
     with pytest.raises(SQLitePolicyError, match="refused"):
         open_v3_connection(tmp_path / "refused.sqlite3")
     assert refused.closed is True
 
 
-def test_deadline_connection_nested_transaction_and_checkpoint_guards(tmp_path: Path) -> None:
+def test_deadline_connection_nested_transaction_and_checkpoint_guards(
+    tmp_path: Path,
+) -> None:
     deadline = SQLiteDeadline(timeout_seconds=1)
-    with open_v3_connection(tmp_path / "deadline.sqlite3", deadline=deadline) as connection:
+    with open_v3_connection(
+        tmp_path / "deadline.sqlite3", deadline=deadline
+    ) as connection:
         assert connection.execute("PRAGMA busy_timeout").fetchone()[0] <= 1000
         connection.execute("BEGIN")
         with pytest.raises(SQLitePolicyError, match="nested"):
@@ -300,7 +384,9 @@ def test_migration_catalog_loader_and_value_validation_fail_closed(
         migration_module._load_default_migrations()
 
     malformed.rename(tmp_path / "0001_valid.sql")
-    monkeypatch.setattr(migration_module, "_PINNED_CHECKSUMS", {"0001_valid.sql": "0" * 64})
+    monkeypatch.setattr(
+        migration_module, "_PINNED_CHECKSUMS", {"0001_valid.sql": "0" * 64}
+    )
     with pytest.raises(MigrationChecksumError, match="checksum drift"):
         migration_module._load_default_migrations()
 
@@ -308,9 +394,13 @@ def test_migration_catalog_loader_and_value_validation_fail_closed(
     checksum = hashlib.sha256(sql.encode()).hexdigest()
     valid = Migration(1, "0001_valid.sql", checksum, sql)
     with pytest.raises(MigrationStateError, match="consecutive"):
-        migration_module._validate_catalog((Migration(2, "0002_gap.sql", checksum, sql),))
+        migration_module._validate_catalog(
+            (Migration(2, "0002_gap.sql", checksum, sql),)
+        )
     with pytest.raises(MigrationStateError, match="unique"):
-        migration_module._validate_catalog((valid, Migration(2, valid.name, checksum, sql)))
+        migration_module._validate_catalog(
+            (valid, Migration(2, valid.name, checksum, sql))
+        )
     with pytest.raises(MigrationChecksumError, match="bytes"):
         migration_module._validate_catalog((Migration(1, valid.name, "f" * 64, sql),))
 
