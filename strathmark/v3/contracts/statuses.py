@@ -39,6 +39,9 @@ class LifecycleAggregateKind(str, Enum):
     BUNDLE = "bundle"
     ISSUE_BATCH = "issue_batch"
     COMPETITOR = "competitor"
+    FORECAST = "forecast"
+    SCORE = "score"
+    WEIGHTS = "weights"
 
 
 class LifecycleStatus(str, Enum):
@@ -74,6 +77,10 @@ class LifecycleStatus(str, Enum):
     BUNDLE_ROLLED_BACK = "bundle_rolled_back"
     ISSUE_BATCH_ISSUED = "issue_batch_issued"
     COMPETITOR_CAPABILITY_CURRENT = "competitor_capability_current"
+    FORECAST_CURRENT = "forecast_current"
+    SCORE_CURRENT = "score_current"
+    SCORE_REVERSED = "score_reversed"
+    WEIGHTS_CURRENT = "weights_current"
 
 
 _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
@@ -125,6 +132,10 @@ _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
     LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT: frozenset(
         {LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT}
     ),
+    LifecycleStatus.FORECAST_CURRENT: frozenset(),
+    LifecycleStatus.SCORE_CURRENT: frozenset({LifecycleStatus.SCORE_REVERSED}),
+    LifecycleStatus.SCORE_REVERSED: frozenset(),
+    LifecycleStatus.WEIGHTS_CURRENT: frozenset({LifecycleStatus.WEIGHTS_CURRENT}),
 }
 
 

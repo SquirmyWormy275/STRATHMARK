@@ -83,6 +83,10 @@ _COMMAND_EVENT: dict[CommandKind, tuple[AggregateKind, EventKind]] = {
         AggregateKind.COMPETITOR,
         EventKind.CAPABILITY_STATE_REBASED,
     ),
+    CommandKind.CHANGE_WEIGHTS: (AggregateKind.WEIGHTS, EventKind.WEIGHTS_CHANGED),
+    CommandKind.SUSPEND_LIVE: (AggregateKind.WEIGHTS, EventKind.LIVE_SUSPENDED),
+    CommandKind.RESUME_LIVE: (AggregateKind.WEIGHTS, EventKind.LIVE_RESUMED),
+    CommandKind.EMERGENCY_STOP: (AggregateKind.WEIGHTS, EventKind.EMERGENCY_STOPPED),
 }
 
 
@@ -157,6 +161,28 @@ def validate_command_event_intents(
 ) -> None:
     """Bind a closed command kind to its exact aggregate/event intent set."""
 
+    if command.kind is CommandKind.COMMIT_FORECAST:
+        if (
+            len(events) != 1
+            or events[0].aggregate_kind is not AggregateKind.FORECAST
+            or events[0].event_kind
+            not in {
+                EventKind.COMPONENT_FORECAST_COMMITTED,
+                EventKind.COMPONENT_FORECAST_REJECTED,
+            }
+            or events[0].aggregate_id != command.target_aggregate
+        ):
+            raise ContractError("forecast commit requires one sealed forecast event")
+        return
+    if command.kind is CommandKind.RECORD_SCORE:
+        if (
+            len(events) != 1
+            or events[0].aggregate_kind is not AggregateKind.SCORE
+            or events[0].event_kind not in {EventKind.SCORE_RECORDED, EventKind.SCORE_REVERSED}
+            or events[0].aggregate_id != command.target_aggregate
+        ):
+            raise ContractError("score command requires one append-only score event")
+        return
     if command.kind is CommandKind.FREEZE_EVIDENCE_EPOCH:
         epochs = [item for item in events if item.aggregate_kind is AggregateKind.EPOCH]
         rounds = [item for item in events if item.aggregate_kind is AggregateKind.ROUND]

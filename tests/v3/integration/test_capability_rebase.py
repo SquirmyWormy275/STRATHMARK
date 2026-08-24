@@ -992,7 +992,7 @@ def test_service_computes_and_admits_exact_256_128_512_capacity_boundary(
     assert receipt.after_state is not None and receipt.after_state.observation_count == 255
 
 
-def _real_reaction_capacity_fixture(tmp_path: Path, completed_reactions: int):
+def _real_reaction_capacity_fixture(tmp_path: Path):
     from tests.v3.integration.test_derivation_barrier import (
         ACTOR,
         NOW,
@@ -1029,6 +1029,9 @@ def _real_reaction_capacity_fixture(tmp_path: Path, completed_reactions: int):
         occurred_at_utc=NOW,
         monotonic_elapsed_ms=5,
     )
+    reaction_count = len(tuple(capability_module.MandatoryReaction))
+    completed_reactions = (-513) % reaction_count
+    total_revisions = (513 + completed_reactions) // reaction_count
     signer = P256EphemeralSigner.generate(f"u9-real-capacity-{completed_reactions}")
     trust = IntegrityTrustStore((signer.identity,))
     capacity = seal_capability_capacity(
@@ -1077,7 +1080,7 @@ def _real_reaction_capacity_fixture(tmp_path: Path, completed_reactions: int):
     first_source = _result_source(lifecycle, field, "a", 1)
     sources.append(first_source)
     _react(service, sealed_result(first_source), "u9-real-capacity-r1")
-    for revision in range(2, 86):
+    for revision in range(2, total_revisions):
         lifecycle.record_live_result(
             _submission(field, "a", ResultStatus.COMPLETION, revision=revision),
             field_revision=1,
@@ -1101,15 +1104,15 @@ def _real_reaction_capacity_fixture(tmp_path: Path, completed_reactions: int):
             monotonic_elapsed_ms=100,
         )
     lifecycle.record_live_result(
-        _submission(field, "a", ResultStatus.COMPLETION, revision=86),
+        _submission(field, "a", ResultStatus.COMPLETION, revision=total_revisions),
         field_revision=1,
         claimed_receipt_id=StableIdentifier("receipt:heat-a"),
-        command_id=IdempotencyKey("command:u9-capacity-result-a-r86"),
+        command_id=IdempotencyKey(f"command:u9-capacity-result-a-r{total_revisions}"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,
         monotonic_elapsed_ms=101,
     )
-    final_source = _result_source(lifecycle, field, "a", 86)
+    final_source = _result_source(lifecycle, field, "a", total_revisions)
     sources.append(final_source)
     return lifecycle, service, capacity, trust, sealed_result(final_source), tuple(sources)
 
@@ -1117,9 +1120,7 @@ def _real_reaction_capacity_fixture(tmp_path: Path, completed_reactions: int):
 def test_real_durable_reaction_capacity_is_causally_scoped_and_restart_safe(
     tmp_path: Path,
 ) -> None:
-    lifecycle, service, capacity, trust, sealed, sources = _real_reaction_capacity_fixture(
-        tmp_path, 3
-    )
+    lifecycle, service, capacity, trust, sealed, sources = _real_reaction_capacity_fixture(tmp_path)
     evidence = CapabilityAdmissionVerifier(trust).verify(sealed)
     authority = SQLiteCapabilityAuthority(lifecycle.projections.database_path)
     assert authority.mandatory_reaction_count(evidence, sources, ()) == 513
@@ -1167,12 +1168,13 @@ def test_real_durable_reaction_capacity_is_causally_scoped_and_restart_safe(
         ).fetchone()[0]
     assert rejected_events == before_events
 
-    fourth = tuple(capability_module.MandatoryReaction)[3]
+    completed_reactions = (-513) % len(tuple(capability_module.MandatoryReaction))
+    next_reaction = tuple(capability_module.MandatoryReaction)[completed_reactions]
     lifecycle.complete_derivation_reaction(
         sources[0],
-        fourth,
-        canonical_digest({"source": sources[0], "reaction": fourth.value}),
-        command_id=IdempotencyKey(f"command:u9-capacity-complete-{fourth.value}"),
+        next_reaction,
+        canonical_digest({"source": sources[0], "reaction": next_reaction.value}),
+        command_id=IdempotencyKey(f"command:u9-capacity-complete-{next_reaction.value}"),
         actor_id=StableIdentifier("actor:system"),
         occurred_at_utc="2026-04-01T00:00:00.000Z",
         monotonic_elapsed_ms=103,

@@ -48,6 +48,33 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
     AggregateKind.DERIVATION: {
         (None, EventKind.DERIVATION_SEQUENCE_COMPLETED): LifecycleStatus.DERIVATION_COMPLETED,
     },
+    AggregateKind.FORECAST: {
+        (None, EventKind.COMPONENT_FORECAST_COMMITTED): LifecycleStatus.FORECAST_CURRENT,
+        (None, EventKind.COMPONENT_FORECAST_REJECTED): LifecycleStatus.FORECAST_CURRENT,
+    },
+    AggregateKind.SCORE: {
+        (None, EventKind.SCORE_RECORDED): LifecycleStatus.SCORE_CURRENT,
+        (LifecycleStatus.SCORE_CURRENT, EventKind.SCORE_REVERSED): LifecycleStatus.SCORE_REVERSED,
+    },
+    AggregateKind.WEIGHTS: {
+        (None, EventKind.WEIGHTS_CHANGED): LifecycleStatus.WEIGHTS_CURRENT,
+        (None, EventKind.LIVE_SUSPENDED): LifecycleStatus.WEIGHTS_CURRENT,
+        (None, EventKind.LIVE_RESUMED): LifecycleStatus.WEIGHTS_CURRENT,
+        (None, EventKind.EMERGENCY_STOPPED): LifecycleStatus.WEIGHTS_CURRENT,
+        (
+            LifecycleStatus.WEIGHTS_CURRENT,
+            EventKind.WEIGHTS_CHANGED,
+        ): LifecycleStatus.WEIGHTS_CURRENT,
+        (
+            LifecycleStatus.WEIGHTS_CURRENT,
+            EventKind.LIVE_SUSPENDED,
+        ): LifecycleStatus.WEIGHTS_CURRENT,
+        (LifecycleStatus.WEIGHTS_CURRENT, EventKind.LIVE_RESUMED): LifecycleStatus.WEIGHTS_CURRENT,
+        (
+            LifecycleStatus.WEIGHTS_CURRENT,
+            EventKind.EMERGENCY_STOPPED,
+        ): LifecycleStatus.WEIGHTS_CURRENT,
+    },
     AggregateKind.TOURNAMENT: {
         (None, EventKind.TOURNAMENT_CONFIGURED): LifecycleStatus.TOURNAMENT_CONFIGURED,
         (

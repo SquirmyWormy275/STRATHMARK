@@ -21,6 +21,7 @@ class MandatoryReaction(str, Enum):
     WEIGHTS = "weights"
     INVALIDATION = "invalidation"
     READINESS = "readiness"
+    CREDIBILITY = "credibility"
 
 
 @dataclass(frozen=True, slots=True, order=True)

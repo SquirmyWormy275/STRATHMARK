@@ -680,6 +680,9 @@ class SQLiteEventStore:
                 AggregateKind.BUNDLE,
                 AggregateKind.ISSUE_BATCH,
                 AggregateKind.COMPETITOR,
+                AggregateKind.FORECAST,
+                AggregateKind.SCORE,
+                AggregateKind.WEIGHTS,
             }:
                 try:
                     transition(
