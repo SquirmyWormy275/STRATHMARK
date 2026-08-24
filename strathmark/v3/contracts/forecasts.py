@@ -32,6 +32,7 @@ _UINT64_MAX = 2**64 - 1
 class DependenceMode(str, Enum):
     INDEPENDENCE = "independence"
     GAUSSIAN_COPULA = "gaussian_copula"
+    SHARED_RANK_COPULA = "shared_rank_copula"
 
 
 class AssessorKind(str, Enum):
@@ -322,9 +323,12 @@ class DependenceInputs:
         _require_nonnegative_decimal(self.effective_sample_size, "effective_sample_size")
         if self.parameters_digest is not None:
             _require_digest(self.parameters_digest, "parameters_digest")
-        if self.mode is DependenceMode.GAUSSIAN_COPULA:
+        if self.mode in {
+            DependenceMode.GAUSSIAN_COPULA,
+            DependenceMode.SHARED_RANK_COPULA,
+        }:
             if self.parameters_digest is None:
-                raise ContractError("gaussian_copula requires parameters_digest")
+                raise ContractError("learned dependence requires parameters_digest")
             if self.fallback_code is not None:
                 raise ContractError("learned dependence cannot carry a fallback code")
         else:
