@@ -52,7 +52,8 @@ def _receipt() -> FieldReceipt:
         caller_namespace="tournament-manager",
         request_identity=IdempotencyKey("request:field-final-v1"),
         field_id=StableIdentifier("field:grand-final"),
-        field_revision=1,
+        upstream_field_revision=1,
+        receipt_revision=1,
         supersedes_receipt_id=None,
         ordered_competitor_ids=(
             StableIdentifier("competitor:opaque-a"),
@@ -86,6 +87,24 @@ def test_atomic_field_receipt_is_content_addressed_and_round_trips() -> None:
     assert receipt.receipt_id == receipt.recompute_receipt_id()
     assert receipt.target_context.event_code == "underhand"
     assert receipt.target_context_digest == receipt.target_context.digest
+
+
+def test_fresh_receipt_creation_reuses_its_same_call_content_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = _receipt().creation_arguments()
+
+    def reject_recomputation(_receipt: FieldReceipt) -> str:
+        raise AssertionError("fresh receipt content was recomputed")
+
+    monkeypatch.setattr(FieldReceipt, "recompute_content_digest", reject_recomputation)
+    receipt = FieldReceipt.create(**arguments)
+
+    assert receipt.canonical_payload == receipt_contracts.canonical_bytes(
+        receipt.to_dict(), max_bytes=receipt_contracts.MAX_RECEIPT_CANONICAL_BYTES
+    )
+    with pytest.raises(AssertionError, match="recomputed"):
+        FieldReceipt.from_dict(receipt.to_dict())
 
 
 def test_receipt_section_round_trips_authoritative_v2_blob_and_rejects_nonobject() -> None:
@@ -160,7 +179,7 @@ def test_ordered_roster_packet_and_marks_must_match_exactly() -> None:
 def test_receipt_revision_requires_explicit_supersession() -> None:
     receipt = _receipt()
     arguments = receipt.creation_arguments()
-    arguments["field_revision"] = 2
+    arguments["receipt_revision"] = 2
     with pytest.raises(ContractError, match="supersedes"):
         FieldReceipt.create(**arguments)
 
@@ -206,7 +225,10 @@ def test_field_receipt_constructor_closes_every_collection_and_identity_boundary
     receipt = _receipt()
     for changes, message in (
         ({"caller_namespace": "Bad Caller"}, "caller_namespace"),
-        ({"request_identity": StableIdentifier("request:not-idempotency")}, "IdempotencyKey"),
+        (
+            {"request_identity": StableIdentifier("request:not-idempotency")},
+            "IdempotencyKey",
+        ),
         ({"ordered_competitor_ids": []}, "ordered roster"),
         (
             {
@@ -223,7 +245,10 @@ def test_field_receipt_constructor_closes_every_collection_and_identity_boundary
         ({"sections": list(receipt.sections)}, "sections"),
         ({"warning_codes": ["sparse_evidence"]}, "immutable tuple"),
         ({"warning_codes": ("Bad Warning",)}, "lower-case"),
-        ({"warning_codes": ("sparse_evidence", "sparse_evidence")}, "unique and sorted"),
+        (
+            {"warning_codes": ("sparse_evidence", "sparse_evidence")},
+            "unique and sorted",
+        ),
         ({"bundles": ()}, "at least one"),
         (
             {
@@ -242,7 +267,7 @@ def test_field_receipt_constructor_closes_every_collection_and_identity_boundary
 def test_superseding_receipt_and_decoder_array_boundaries_round_trip() -> None:
     first = _receipt()
     arguments = first.creation_arguments()
-    arguments["field_revision"] = 2
+    arguments["receipt_revision"] = 2
     arguments["supersedes_receipt_id"] = first.receipt_id
     second = FieldReceipt.create(**arguments)
     assert FieldReceipt.from_dict(second.to_dict()) == second

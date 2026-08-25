@@ -46,6 +46,7 @@ class AggregateKind(str, Enum):
     WEIGHTS = "weights"
     SYSTEM = "system"
     ISSUE_BATCH = "issue_batch"
+    APPROVAL_DECISION = "approval_decision"
 
 
 class EventKind(str, Enum):
@@ -78,6 +79,7 @@ class EventKind(str, Enum):
     FORECASTS_POOLED = "forecasts_pooled"
     DISAGREEMENT_CLASSIFIED = "disagreement_classified"
     OVERRIDE_RECORDED = "override_recorded"
+    APPROVAL_DECISION_RECORDED = "approval_decision_recorded"
     FIELD_OPTIMIZED = "field_optimized"
     FIELD_RECEIPT_PREPARED = "field_receipt_prepared"
     FIELD_SUPERSEDED = "field_superseded"

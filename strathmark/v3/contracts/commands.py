@@ -59,6 +59,7 @@ class CommandKind(str, Enum):
     POOL_FORECASTS = "pool_forecasts"
     CLASSIFY_DISAGREEMENT = "classify_disagreement"
     APPLY_OVERRIDE = "apply_override"
+    RECORD_APPROVAL_DECISION = "record_approval_decision"
     OPTIMIZE_FIELD = "optimize_field"
     ACKNOWLEDGE_ISSUE = "acknowledge_issue"
     ACKNOWLEDGE_BATCH_ISSUE = "acknowledge_batch_issue"

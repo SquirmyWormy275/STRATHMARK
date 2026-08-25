@@ -106,6 +106,10 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
             LifecycleStatus.FIELD_SUPERSEDED,
             EventKind.FIELD_REGENERATED,
         ): LifecycleStatus.FIELD_PREPARED,
+        (
+            LifecycleStatus.FIELD_PREPARED,
+            EventKind.FIELD_REGENERATED,
+        ): LifecycleStatus.FIELD_PREPARED,
         (LifecycleStatus.FIELD_PREPARED, EventKind.FIELD_ISSUED): LifecycleStatus.FIELD_ISSUED,
         (LifecycleStatus.FIELD_ISSUED, EventKind.FIELD_SETTLED): LifecycleStatus.FIELD_SETTLED,
     },
@@ -142,6 +146,9 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
     },
     AggregateKind.ISSUE_BATCH: {
         (None, EventKind.ISSUE_BATCH_ISSUED): LifecycleStatus.ISSUE_BATCH_ISSUED,
+    },
+    AggregateKind.APPROVAL_DECISION: {
+        (None, EventKind.APPROVAL_DECISION_RECORDED): (LifecycleStatus.APPROVAL_DECISION_RECORDED),
     },
     AggregateKind.COMPETITOR: {
         (None, EventKind.CAPABILITY_UPDATED): LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT,

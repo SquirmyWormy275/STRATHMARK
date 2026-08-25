@@ -320,22 +320,37 @@ def test_raw_integer_objectives_and_frontier_equal_canonical_decimal_oracle() ->
 
 def test_checked_in_windows_capacity_manifest_binds_artifact_and_worst_radius() -> None:
     manifest = json.loads(Path("benchmarks/v3/optimizer_manifest.json").read_text("utf-8"))
+    field_manifest = json.loads(
+        Path("benchmarks/v3/field_assembly_manifest.json").read_text("utf-8")
+    )
     body = {key: value for key, value in manifest.items() if key != "manifest_digest"}
+    field_body = {key: value for key, value in field_manifest.items() if key != "manifest_digest"}
     assert manifest["manifest_digest"] == canonical_digest(body)
+    assert field_manifest["manifest_digest"] == canonical_digest(field_body)
     assert manifest["implementation_artifact_digest"] == implementation_artifact_digest()
     assert manifest["policy_digest"] == DEFAULT_OPTIMIZER_POLICY.digest
     assert manifest["policy"] == DEFAULT_OPTIMIZER_POLICY.to_dict()
     gate = manifest["capacity_gate"]
-    assert manifest["status"] == "release_blocked_pending_u15_assembly"
+    assert manifest["status"] == "passed"
     assert gate == {
-        "passed": False,
+        "passed": True,
         "optimizer_passed": True,
+        "field_assembly_passed": True,
         "required_repetitions": 100,
         "optimizer_p99_limit_ms": 1500,
         "rss_delta_limit_mib": 256,
         "field_assembly_p99_limit_ms": 2000,
-        "field_assembly_p99_ms": None,
+        "field_assembly_p99_ms": field_manifest["complete_confirmed_field_assembly"][
+            "observed_p99_ms"
+        ],
+        "field_assembly_manifest_digest": field_manifest["manifest_digest"],
+        "field_assembly_artifact_identity_digest": canonical_digest(
+            field_manifest["artifact_identity"]
+        ),
     }
+    assert field_manifest["status"] == "passed"
+    assert all(field_manifest["gates"].values())
+    assert manifest["release_blocker"] is None
     fixtures = manifest["windows_capacity_fixtures"]
     assert {item["candidate_search_strategy"] for item in fixtures} == {
         "exhaustive_radius_v1",

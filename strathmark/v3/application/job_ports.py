@@ -56,18 +56,14 @@ class RollingRestartTrust:
                     "externally anchored restart requires an expected rolling head"
                 )
         elif self.expected_head is not None:
-            raise DurableJobError(
-                "local corruption verification cannot claim an external head"
-            )
+            raise DurableJobError("local corruption verification cannot claim an external head")
 
     @classmethod
     def local_corruption_only(cls) -> RollingRestartTrust:
         return cls(RollingRestartTrustMode.LOCAL_CORRUPTION_ONLY, None)
 
     @classmethod
-    def externally_anchored(
-        cls, expected_head: RollingRestartExpectedHead
-    ) -> RollingRestartTrust:
+    def externally_anchored(cls, expected_head: RollingRestartExpectedHead) -> RollingRestartTrust:
         return cls(RollingRestartTrustMode.EXTERNALLY_ANCHORED, expected_head)
 
 
@@ -126,10 +122,7 @@ class RollingRestartSuffixStatus:
     def __post_init__(self) -> None:
         _positive(self.checkpoint_sequence, "rolling restart checkpoint sequence")
         _digest(self.checkpoint_digest, "rolling restart checkpoint")
-        if (
-            not isinstance(self.checkpoint_created_at, str)
-            or not self.checkpoint_created_at
-        ):
+        if not isinstance(self.checkpoint_created_at, str) or not self.checkpoint_created_at:
             raise DurableJobError("rolling restart checkpoint time is invalid")
         _nonnegative(self.absorbed_delta_sequence, "absorbed delta sequence")
         _digest(self.absorbed_delta_digest, "absorbed delta")
@@ -138,10 +131,7 @@ class RollingRestartSuffixStatus:
         _digest(self.delta_tip_digest, "rolling restart delta tip")
         if self.delta_tip_sequence < self.absorbed_delta_sequence:
             raise DurableJobError("rolling restart delta tip precedes checkpoint")
-        if (
-            self.delta_tip_sequence - self.absorbed_delta_sequence
-            != self.delta_suffix_count
-        ):
+        if self.delta_tip_sequence - self.absorbed_delta_sequence != self.delta_suffix_count:
             raise DurableJobError("rolling restart delta suffix count differs")
 
 
@@ -164,9 +154,7 @@ class ProviderStorageAudit:
     def create(cls, reference: Any) -> ProviderStorageAudit:
         to_dict = getattr(reference, "to_dict", None)
         if not callable(to_dict):
-            raise DurableJobError(
-                "provider storage audit requires a canonical reference"
-            )
+            raise DurableJobError("provider storage audit requires a canonical reference")
         value = to_dict()
         encoded = canonical_bytes(value)
         return cls(
@@ -184,9 +172,7 @@ class ProviderStorageAudit:
             or self.byte_count < 0
         ):
             raise DurableJobError("provider storage byte count must be non-negative")
-        _canonical_json(
-            self.reference_json, self.reference_digest, "provider storage reference"
-        )
+        _canonical_json(self.reference_json, self.reference_digest, "provider storage reference")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,15 +190,11 @@ class ProviderAttemptAudit:
             not isinstance(self.validator_code, str)
             or _TOKEN.fullmatch(self.validator_code) is None
         ):
-            raise DurableJobError(
-                "provider attempt validator code must be a machine token"
-            )
+            raise DurableJobError("provider attempt validator code must be a machine token")
         if not isinstance(self.accepted, bool):
             raise DurableJobError("provider attempt acceptance must be explicit")
         if not isinstance(self.storage_reference, ProviderStorageAudit):
-            raise DurableJobError(
-                "provider attempt requires one durable storage reference"
-            )
+            raise DurableJobError("provider attempt requires one durable storage reference")
         if self.storage_reference.raw_digest != self.raw_digest:
             raise DurableJobError("provider attempt storage digest differs")
 
@@ -241,23 +223,15 @@ class ProviderExecutionAudit:
             raise DurableJobError("provider execution reason differs from status")
         if self.reason is not None and _TOKEN.fullmatch(self.reason) is None:
             raise DurableJobError("provider execution reason must be a machine token")
-        _canonical_json(
-            self.member_pin_json, self.member_pin_digest, "provider member pin"
-        )
+        _canonical_json(self.member_pin_json, self.member_pin_digest, "provider member pin")
         if not isinstance(self.attempts, tuple):
             raise DurableJobError("provider execution attempts must be immutable")
         if self.status == "succeeded" and not self.attempts:
-            raise DurableJobError(
-                "successful provider execution requires a retained attempt"
-            )
+            raise DurableJobError("successful provider execution requires a retained attempt")
         if any(not isinstance(item, ProviderAttemptAudit) for item in self.attempts):
             raise DurableJobError("provider execution attempts must be typed")
-        if tuple(item.ordinal for item in self.attempts) != tuple(
-            range(1, len(self.attempts) + 1)
-        ):
-            raise DurableJobError(
-                "provider execution attempt ordinals must be consecutive"
-            )
+        if tuple(item.ordinal for item in self.attempts) != tuple(range(1, len(self.attempts) + 1)):
+            raise DurableJobError("provider execution attempt ordinals must be consecutive")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -273,9 +247,7 @@ class ProviderExecutionAudit:
                     "raw_digest": item.raw_digest,
                     "validator_code": item.validator_code,
                     "accepted": item.accepted,
-                    "storage_reference": json.loads(
-                        item.storage_reference.reference_json
-                    ),
+                    "storage_reference": json.loads(item.storage_reference.reference_json),
                 }
                 for item in self.attempts
             ],
@@ -352,9 +324,7 @@ class RetryPolicy:
 
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or _TOKEN.fullmatch(self.version) is None:
-            raise DurableJobError(
-                "retry policy version must be a bounded machine token"
-            )
+            raise DurableJobError("retry policy version must be a bounded machine token")
         _positive(self.base_delay_ms, "base delay")
         _positive(self.maximum_delay_ms, "maximum delay")
         if self.maximum_delay_ms < self.base_delay_ms:
@@ -414,9 +384,7 @@ class ReadinessDependencySnapshot:
         if any(not isinstance(getattr(self, name), bool) for name in scalar_names):
             raise DurableJobError("readiness dimensions must be explicit booleans")
         if not isinstance(self.llm_members, tuple) or not self.llm_members:
-            raise DurableJobError(
-                "readiness requires a nonempty immutable LLM member set"
-            )
+            raise DurableJobError("readiness requires a nonempty immutable LLM member set")
         names: list[str] = []
         for item in self.llm_members:
             if (
@@ -426,19 +394,12 @@ class ReadinessDependencySnapshot:
                 or _TOKEN.fullmatch(item[0]) is None
                 or not isinstance(item[1], bool)
             ):
-                raise DurableJobError(
-                    "LLM readiness members must be typed name/boolean pairs"
-                )
+                raise DurableJobError("LLM readiness members must be typed name/boolean pairs")
             names.append(item[0])
         if len(names) != len(set(names)):
             raise DurableJobError("LLM readiness member names must be unique")
-        if (
-            not isinstance(self.required_for_field, tuple)
-            or not self.required_for_field
-        ):
-            raise DurableJobError(
-                "field readiness requires a nonempty immutable dependency set"
-            )
+        if not isinstance(self.required_for_field, tuple) or not self.required_for_field:
+            raise DurableJobError("field readiness requires a nonempty immutable dependency set")
         if any(not isinstance(name, str) for name in self.required_for_field):
             raise DurableJobError("field readiness dependency names must be strings")
         if len(self.required_for_field) != len(set(self.required_for_field)):
@@ -446,12 +407,8 @@ class ReadinessDependencySnapshot:
         known = {name for name, _ready in self.dimensions()}
         if not set(self.required_for_field) <= known:
             raise DurableJobError("field readiness contains an unknown dependency")
-        if not set(MANDATORY_EXTERNAL_FIELD_DEPENDENCIES) <= set(
-            self.required_for_field
-        ):
-            raise DurableJobError(
-                "field readiness cannot omit mandatory integrity dependencies"
-            )
+        if not set(MANDATORY_EXTERNAL_FIELD_DEPENDENCIES) <= set(self.required_for_field):
+            raise DurableJobError("field readiness cannot omit mandatory integrity dependencies")
 
     @classmethod
     def all_ready(
@@ -524,17 +481,11 @@ class JobRepositoryPort(Protocol):
 
     def claim(self, lane: JobLane, **kwargs: Any) -> JobRecordPort | None: ...
 
-    def record_failure(
-        self, job_id: str, job_revision: int, **kwargs: Any
-    ) -> JobRecordPort: ...
+    def record_failure(self, job_id: str, job_revision: int, **kwargs: Any) -> JobRecordPort: ...
 
-    def mark_stale(
-        self, job_id: str, job_revision: int, **kwargs: Any
-    ) -> JobRecordPort: ...
+    def mark_stale(self, job_id: str, job_revision: int, **kwargs: Any) -> JobRecordPort: ...
 
-    def commit_success(
-        self, job_id: str, job_revision: int, **kwargs: Any
-    ) -> JobRecordPort: ...
+    def commit_success(self, job_id: str, job_revision: int, **kwargs: Any) -> JobRecordPort: ...
 
     def health(self, **kwargs: Any) -> QueueHealthPort: ...
 
@@ -570,9 +521,7 @@ class RollingJobRepositoryPort(Protocol):
         self, competitor_id: str, target_context_digest: str
     ) -> dict[str, Any] | None: ...
 
-    def rolling_card_keys_for_epoch(
-        self, epoch_id: str
-    ) -> tuple[dict[str, Any], ...]: ...
+    def rolling_card_keys_for_epoch(self, epoch_id: str) -> tuple[dict[str, Any], ...]: ...
 
     def rolling_epoch_closed(self, epoch_id: str) -> bool: ...
 
@@ -606,9 +555,7 @@ class RollingJobRepositoryPort(Protocol):
 
     def close_rolling_epoch(self, epoch_id: str, event: Any) -> None: ...
 
-    def pending_rolling_reactions(
-        self, *, limit: int
-    ) -> tuple[dict[str, Any], ...]: ...
+    def pending_rolling_reactions(self, *, limit: int) -> tuple[dict[str, Any], ...]: ...
 
     def complete_rolling_reaction(
         self,
@@ -618,9 +565,7 @@ class RollingJobRepositoryPort(Protocol):
         completed_at: str,
     ) -> None: ...
 
-    def cancel(
-        self, job_id: str, job_revision: int, **values: Any
-    ) -> JobRecordPort: ...
+    def cancel(self, job_id: str, job_revision: int, **values: Any) -> JobRecordPort: ...
 
     def get(self, job_id: str, job_revision: int) -> JobRecordPort: ...
 
@@ -661,10 +606,7 @@ def _canonical_json(value: object, digest: object, label: str) -> None:
         decoded = json.loads(value)
     except (TypeError, ValueError) as exc:
         raise DurableJobError(f"{label} must be canonical JSON") from exc
-    if (
-        canonical_bytes(decoded).decode("utf-8") != value
-        or canonical_digest(decoded) != digest
-    ):
+    if canonical_bytes(decoded).decode("utf-8") != value or canonical_digest(decoded) != digest:
         raise DurableJobError(f"{label} canonical identity differs")
 
 

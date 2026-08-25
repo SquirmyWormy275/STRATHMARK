@@ -122,9 +122,7 @@ def _job_request(ordinal: int = 1) -> JobRequest:
     )
 
 
-def _install_populated_v12_job(
-    database: Path, signer: P256EphemeralSigner
-) -> JobRecord:
+def _install_populated_v12_job(database: Path, signer: P256EphemeralSigner) -> JobRecord:
     with open_v3_connection(database) as connection:
         migrate_connection(connection, migrations=DEFAULT_MIGRATIONS[:12])
         request = _job_request()
@@ -224,9 +222,7 @@ def _append_test_checkpoints(
             second = repository._append_rolling_restart_checkpoint(connection, NOW)
             third = repository._append_rolling_restart_checkpoint(connection, NOW)
     return (
-        RollingRestartExpectedHead(
-            second.checkpoint_sequence, second.checkpoint_digest
-        ),
+        RollingRestartExpectedHead(second.checkpoint_sequence, second.checkpoint_digest),
         RollingRestartExpectedHead(third.checkpoint_sequence, third.checkpoint_digest),
     )
 
@@ -355,12 +351,16 @@ def test_populated_upgrade_requires_projection_cutover_before_job_repository(
             trust_store=trust,
         )
     with open_v3_connection(database, read_only=True) as connection:
-        assert connection.execute(
-            "SELECT through_global_sequence FROM v3_rolling_reaction_cursor"
-        ).fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT COUNT(*) FROM v3_rolling_restart_checkpoints"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT through_global_sequence FROM v3_rolling_reaction_cursor"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_rolling_restart_checkpoints").fetchone()[0]
+            == 0
+        )
 
     projections = SQLiteProjectionStore(database)
     assert projections.bootstrap_rolling_reaction_cursor_cutover() == 1
@@ -384,8 +384,7 @@ def test_populated_upgrade_requires_projection_cutover_before_job_repository(
             "BEGIN SELECT RAISE(ABORT, 'append-only authority'); END",
         ),
         (
-            "UPDATE v3_events SET prior_global_digest='" + "f" * 64 + "' "
-            "WHERE global_sequence=1",
+            "UPDATE v3_events SET prior_global_digest='" + "f" * 64 + "' WHERE global_sequence=1",
             "DROP TRIGGER v3_events_no_update",
             "CREATE TRIGGER v3_events_no_update BEFORE UPDATE ON v3_events "
             "BEGIN SELECT RAISE(ABORT, 'append-only authority'); END",
@@ -421,9 +420,7 @@ def test_first_populated_checkpoint_requires_verified_event_authority(
         )
     with open_v3_connection(database, read_only=True) as connection:
         assert (
-            connection.execute(
-                "SELECT COUNT(*) FROM v3_rolling_restart_checkpoints"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM v3_rolling_restart_checkpoints").fetchone()[0]
             == 0
         )
 
@@ -446,9 +443,7 @@ def test_coordinator_restart_uses_bounded_checkpoint_not_full_history(
         signer=signer,
         trust_store=IntegrityTrustStore((signer.identity,)),
         restart_trust=RollingRestartTrust.externally_anchored(
-            RollingRestartExpectedHead(
-                receipt.checkpoint_sequence, receipt.checkpoint_digest
-            )
+            RollingRestartExpectedHead(receipt.checkpoint_sequence, receipt.checkpoint_digest)
         ),
     )
     for name in (
@@ -508,9 +503,7 @@ def test_local_corruption_deep_audit_rejects_deleted_checkpoint_prefix(
     _append_test_checkpoints(repository, database)
     with open_v3_connection(database) as connection:
         connection.execute("DROP TRIGGER v3_rolling_restart_checkpoints_no_delete")
-        connection.execute(
-            "DELETE FROM v3_rolling_restart_checkpoints WHERE checkpoint_sequence=1"
-        )
+        connection.execute("DELETE FROM v3_rolling_restart_checkpoints WHERE checkpoint_sequence=1")
         connection.execute(
             "CREATE TRIGGER v3_rolling_restart_checkpoints_no_delete "
             "BEFORE DELETE ON v3_rolling_restart_checkpoints BEGIN "
@@ -582,9 +575,7 @@ def test_event_tail_over_signed_capacity_requires_explicit_deep_audit(
         signer=signer,
         trust_store=IntegrityTrustStore((signer.identity,)),
     )
-    assert restarted.recover_rolling_restart().checkpoint_digest == (
-        recovered.checkpoint_digest
-    )
+    assert restarted.recover_rolling_restart().checkpoint_digest == (recovered.checkpoint_digest)
 
 
 def test_deep_recovery_rejects_concurrent_event_head_change(
@@ -614,9 +605,7 @@ def test_deep_recovery_rejects_concurrent_event_head_change(
     )
     with pytest.raises(DurableJobError, match="authority changed before commit"):
         repository.recover_rolling_restart_deep_audit()
-    monkeypatch.setattr(
-        repository, "_before_deep_rolling_recovery_commit", lambda: None
-    )
+    monkeypatch.setattr(repository, "_before_deep_rolling_recovery_commit", lambda: None)
     recovered = repository.recover_rolling_restart_deep_audit()
     assert recovered.source_global_sequence == 23
 
@@ -636,9 +625,7 @@ def test_deep_recovery_rejects_u5_projection_change_after_offline_verification(
     )
     with open_v3_connection(database, read_only=True) as connection:
         checkpoint_count = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM v3_rolling_restart_checkpoints"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM v3_rolling_restart_checkpoints").fetchone()[0]
         )
 
     def forge_current_field_projection() -> None:
@@ -727,18 +714,14 @@ def test_deep_recovery_rejects_each_u5_projection_family_changed_after_verificat
     with open_v3_connection(database, read_only=True) as connection:
         assert int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) > 0
         checkpoint_count = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM v3_rolling_restart_checkpoints"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM v3_rolling_restart_checkpoints").fetchone()[0]
         )
 
     def forge_projection() -> None:
         with open_v3_connection(database) as connection:
             connection.execute(mutation)
 
-    monkeypatch.setattr(
-        repository, "_before_deep_rolling_recovery_commit", forge_projection
-    )
+    monkeypatch.setattr(repository, "_before_deep_rolling_recovery_commit", forge_projection)
     with pytest.raises(DurableJobError, match="projection material changed"):
         repository.recover_rolling_restart_deep_audit()
     with open_v3_connection(database, read_only=True) as connection:
@@ -828,9 +811,7 @@ def _windows_rss_bytes() -> int:
     )
     psapi.GetProcessMemoryInfo.restype = ctypes.c_int
     process = kernel32.GetCurrentProcess()
-    if not psapi.GetProcessMemoryInfo(
-        process, ctypes.byref(counters), counters.cb
-    ):
+    if not psapi.GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):
         raise OSError("GetProcessMemoryInfo failed")
     return int(counters.working_set_size)
 
@@ -899,9 +880,7 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
                     max_attempts=2,
                 )
             )
-    monkeypatch.setattr(
-        repository, "_append_rolling_restart_checkpoint", original_checkpoint
-    )
+    monkeypatch.setattr(repository, "_append_rolling_restart_checkpoint", original_checkpoint)
     monkeypatch.setattr(repository, "_append_rolling_restart_delta", original_delta)
     event_store = SQLiteEventStore(database)
     for event_ordinal in range(1, 1_025):
@@ -938,9 +917,7 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
             with original_transaction(connection):
                 yield
         finally:
-            writer_service_ms.append(
-                (time.thread_time_ns() - service_started) / 1_000_000
-            )
+            writer_service_ms.append((time.thread_time_ns() - service_started) / 1_000_000)
             writer_ms.append((time.perf_counter_ns() - started) / 1_000_000)
 
     monkeypatch.setattr(jobs_module, "immediate_transaction", measured_transaction)
@@ -949,9 +926,7 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
     compacted = None
     for sample in range(200):
         offset = sample + 2
-        observed_at = (
-            f"2026-08-24T18:{offset // 60:02d}:{offset % 60:02d}.000Z"
-        )
+        observed_at = f"2026-08-24T18:{offset // 60:02d}:{offset % 60:02d}.000Z"
         started = time.perf_counter_ns()
         service_started = time.thread_time_ns()
         repository.heartbeat(
@@ -962,9 +937,7 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
             observed_at=observed_at,
             extend_ms=300_000,
         )
-        end_to_end_service_ms.append(
-            (time.thread_time_ns() - service_started) / 1_000_000
-        )
+        end_to_end_service_ms.append((time.thread_time_ns() - service_started) / 1_000_000)
         end_to_end_ms.append((time.perf_counter_ns() - started) / 1_000_000)
         hot_writer_ms.append(writer_ms[-1])
         hot_writer_service_ms.append(writer_service_ms[-1])
@@ -990,10 +963,12 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
                 "ORDER BY checkpoint_sequence DESC LIMIT 1"
             ).fetchone()[0]
         )
-        assert connection.execute(
-            "SELECT COUNT(*) FROM v3_jobs WHERE state IN "
-            "('queued','leased','retryable-failed')"
-        ).fetchone()[0] == 384
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_jobs WHERE state IN ('queued','leased','retryable-failed')"
+            ).fetchone()[0]
+            == 384
+        )
     ordered_writer = sorted(hot_writer_ms)
     ordered_writer_service = sorted(hot_writer_service_ms)
     ordered_total = sorted(end_to_end_ms)
@@ -1014,15 +989,12 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
     assert compacted is not None
     with open_v3_connection(database) as connection:
         connection.execute(
-            "UPDATE v3_jobs SET base_priority=base_priority+1 "
-            "WHERE job_id=? AND job_revision=?",
+            "UPDATE v3_jobs SET base_priority=base_priority+1 WHERE job_id=? AND job_revision=?",
             (claimed.job_id, claimed.job_revision),
         )
     rebuild_started = time.perf_counter()
     assert repository.rebuild_job_projection() == 1
-    metrics["job_projection_rebuild_seconds"] = round(
-        time.perf_counter() - rebuild_started, 3
-    )
+    metrics["job_projection_rebuild_seconds"] = round(time.perf_counter() - rebuild_started, 3)
     restart_started = time.perf_counter()
     restarted = DurableJobRepository(
         database,
@@ -1030,20 +1002,15 @@ def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
         signer=signer,
         trust_store=IntegrityTrustStore((signer.identity,)),
         restart_trust=RollingRestartTrust.externally_anchored(
-            RollingRestartExpectedHead(
-                compacted.checkpoint_sequence, compacted.checkpoint_digest
-            )
+            RollingRestartExpectedHead(compacted.checkpoint_sequence, compacted.checkpoint_digest)
         ),
     )
     restarted.recover_rolling_restart()
-    metrics["critical_restart_seconds"] = round(
-        time.perf_counter() - restart_started, 3
-    )
+    metrics["critical_restart_seconds"] = round(time.perf_counter() - restart_started, 3)
     controlled_profile = os.environ.get("STRATHMARK_V3_CONTROLLED_PERF_GATE") == "1"
     metrics["controlled_profile_wall_limit_ms"] = 100
     controlled_wall_passed = (
-        metrics["writer_wall_p99_ms"] <= 100
-        and metrics["caller_wall_p99_ms"] <= 100
+        metrics["writer_wall_p99_ms"] <= 100 and metrics["caller_wall_p99_ms"] <= 100
     )
     metrics["controlled_profile_wall_gate"] = (
         "passed"
@@ -1244,8 +1211,7 @@ def test_job_projection_rebuild_rejects_damaged_immutable_authority(
         else:
             connection.execute("DROP TRIGGER v3_job_history_no_update")
             connection.execute(
-                "UPDATE v3_job_history SET history_digest=? WHERE job_id=? "
-                "AND job_revision=?",
+                "UPDATE v3_job_history SET history_digest=? WHERE job_id=? AND job_revision=?",
                 ("f" * 64, expected.job_id, expected.job_revision),
             )
             connection.execute(
@@ -1323,9 +1289,7 @@ def test_populated_job_spec_cutover_rejects_partial_state(tmp_path: Path) -> Non
     with open_v3_connection(database) as connection:
         migrate_connection(connection)
         value = jobs_module._job_spec_value(expected)
-        manifest = sign_manifest(
-            "job_spec", value, signer=signer, created_at=expected.created_at
-        )
+        manifest = sign_manifest("job_spec", value, signer=signer, created_at=expected.created_at)
         connection.execute(
             "INSERT INTO v3_job_specs VALUES (?,?,?,?,?,?)",
             (
@@ -1378,13 +1342,12 @@ def test_hot_job_transitions_append_bounded_deltas_not_full_checkpoints(
         extend_ms=60_000,
     )
     with open_v3_connection(database, read_only=True) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM v3_rolling_restart_checkpoints"
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_rolling_restart_checkpoints").fetchone()[0]
+            == 1
+        )
         deltas = tuple(
-            connection.execute(
-                "SELECT * FROM v3_rolling_restart_deltas ORDER BY delta_sequence"
-            )
+            connection.execute("SELECT * FROM v3_rolling_restart_deltas ORDER BY delta_sequence")
         )
         assert len(deltas) == 3
         assert all(len(str(row["delta_manifest_json"]).encode("utf-8")) < 16_384 for row in deltas)
@@ -1498,25 +1461,22 @@ def test_periodic_refresh_cas_rejects_concurrent_job_and_delta_mutation(
             extend_ms=60_000,
         )
 
-    monkeypatch.setattr(
-        repository, "_before_rolling_restart_refresh_commit", concurrent_mutation
-    )
+    monkeypatch.setattr(repository, "_before_rolling_restart_refresh_commit", concurrent_mutation)
     with pytest.raises(DurableJobError, match="authority changed before commit"):
         repository.refresh_rolling_restart_checkpoint_if_due(
             observed_at="2026-08-24T18:00:03.000Z",
             delta_threshold=2,
         )
     with open_v3_connection(database, read_only=True) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM v3_rolling_restart_checkpoints"
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_rolling_restart_checkpoints").fetchone()[0]
+            == 1
+        )
 
 
 def test_periodic_refresh_rejects_time_before_latest_checkpoint(tmp_path: Path) -> None:
     repository, _signer = _repository(tmp_path / "refresh-time.sqlite3")
-    with pytest.raises(
-        DurableJobError, match="refresh time precedes checkpoint"
-    ):
+    with pytest.raises(DurableJobError, match="refresh time precedes checkpoint"):
         repository.refresh_rolling_restart_checkpoint_if_due(
             observed_at="1969-12-31T23:59:59.999Z",
             delta_threshold=3,
@@ -1544,16 +1504,12 @@ def test_external_anchor_seeds_absorbed_delta_lineage_and_deep_audit_keeps_histo
                 queued.job_revision,
                 worker_id="worker:anchor",
                 fencing_token=leased.fencing_token,
-                observed_at=(
-                    f"2026-08-24T18:{ordinal // 60:02d}:{ordinal % 60:02d}.000Z"
-                ),
+                observed_at=(f"2026-08-24T18:{ordinal // 60:02d}:{ordinal % 60:02d}.000Z"),
                 extend_ms=60_000,
             )
             ordinal += 1
         refreshed = repository.refresh_rolling_restart_checkpoint_if_due(
-            observed_at=(
-                f"2026-08-24T18:{ordinal // 60:02d}:{ordinal % 60:02d}.000Z"
-            ),
+            observed_at=(f"2026-08-24T18:{ordinal // 60:02d}:{ordinal % 60:02d}.000Z"),
             delta_threshold=40,
         )
         ordinal += 1
@@ -1565,8 +1521,7 @@ def test_external_anchor_seeds_absorbed_delta_lineage_and_deep_audit_keeps_histo
     with open_v3_connection(database) as connection:
         connection.execute("DROP TRIGGER v3_rolling_restart_deltas_no_update")
         connection.execute(
-            "UPDATE v3_rolling_restart_deltas SET delta_digest=? "
-            "WHERE delta_sequence=1",
+            "UPDATE v3_rolling_restart_deltas SET delta_digest=? WHERE delta_sequence=1",
             ("f" * 64,),
         )
         connection.execute(
@@ -1583,9 +1538,7 @@ def test_external_anchor_seeds_absorbed_delta_lineage_and_deep_audit_keeps_histo
         signer=signer,
         trust_store=IntegrityTrustStore((signer.identity,)),
         restart_trust=RollingRestartTrust.externally_anchored(
-            RollingRestartExpectedHead(
-                anchor.checkpoint_sequence, anchor.checkpoint_digest
-            )
+            RollingRestartExpectedHead(anchor.checkpoint_sequence, anchor.checkpoint_digest)
         ),
     )
     assert externally_anchored.recover_rolling_restart() == replace(

@@ -1323,8 +1323,9 @@ class SQLiteCredibilityReactionService:
                 and payload.get("context") == context.to_dict()
             ):
                 return _decode_weight_receipt(payload["receipt"])
+        finalized_ledger = self._finalized_ledger(before_sequence=int(opened[0]))
         receipt = calibrate_baseline(
-            self._finalized_ledger(before_sequence=int(opened[0])),
+            finalized_ledger,
             context,
             self._policy,
             calibration_cutoff_at_utc=str(opened[2]),
@@ -1334,6 +1335,7 @@ class SQLiteCredibilityReactionService:
             "tournament_id": str(tournament_id),
             "tournament_open_sequence": int(opened[0]),
             "tournament_open_event_digest": str(opened[1]),
+            "baseline_ledger_projection_digest": (finalized_ledger.current_projection_digest),
             "context": context.to_dict(),
             "receipt": _encode_weight_receipt(receipt),
         }

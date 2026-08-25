@@ -45,12 +45,8 @@ def test_specialist_eligibility_uses_all_three_exact_context_thresholds() -> Non
         assert not candidate.available
 
 
-def test_gate_is_exact_zero_without_eligible_specialist_and_bounded_when_available() -> (
-    None
-):
-    gate = SpecialistGate(
-        "-20", (("log_history_depth", "4"), ("missing_fraction", "0"))
-    )
+def test_gate_is_exact_zero_without_eligible_specialist_and_bounded_when_available() -> None:
+    gate = SpecialistGate("-20", (("log_history_depth", "4"), ("missing_fraction", "0")))
     assert gate.weight({}, specialist_available=False) == 0.0
     assert (
         gate.weight(
@@ -72,9 +68,7 @@ def test_gate_is_exact_zero_without_eligible_specialist_and_bounded_when_availab
     assert 0.1 <= middle <= 0.9
 
 
-def test_bounded_logistic_gate_training_is_deterministic_and_rewards_oof_advantage() -> (
-    None
-):
+def test_bounded_logistic_gate_training_is_deterministic_and_rewards_oof_advantage() -> None:
     examples = tuple(
         GateExample(
             pinball_advantage=value,
@@ -149,9 +143,7 @@ def test_pinball_advantage_is_derived_from_component_oof_predictions() -> None:
     assert examples[0].pinball_advantage > 0
     assert mean_pinball_loss(2.0, (2.0,) * 7) == 0.0
     with pytest.raises(ValueError, match="exactly cover"):
-        _gate_examples_values(
-            (replace(predictions[0], row_id="evidence:missing"),), (target,)
-        )
+        _gate_examples_values((replace(predictions[0], row_id="evidence:missing"),), (target,))
 
 
 class _FakeCatBoost:
@@ -159,9 +151,7 @@ class _FakeCatBoost:
         self.settings = settings
         self.fitted = False
 
-    def fit(
-        self, features: list[list[object]], targets: list[float], **kwargs: object
-    ) -> None:
+    def fit(self, features: list[list[object]], targets: list[float], **kwargs: object) -> None:
         assert len(features) == len(targets)
         assert kwargs["cat_features"] == ["event_family", "species"]
         self.fitted = True
@@ -206,9 +196,7 @@ def _training_row(index: int) -> CausalTrainingRow:
     )
 
 
-def test_catboost_hierarchy_uses_only_frozen_multiquantile_and_eligible_specialist() -> (
-    None
-):
+def test_catboost_hierarchy_uses_only_frozen_multiquantile_and_eligible_specialist() -> None:
     models: list[_FakeCatBoost] = []
 
     def factory(**settings: object) -> _FakeCatBoost:
@@ -226,8 +214,7 @@ def test_catboost_hierarchy_uses_only_frozen_multiquantile_and_eligible_speciali
     assert len(models) == 2
     assert all(model.fitted for model in models)
     assert all(
-        model.settings["loss_function"]
-        == "MultiQuantile:alpha=0.05,0.1,0.25,0.5,0.75,0.9,0.95"
+        model.settings["loss_function"] == "MultiQuantile:alpha=0.05,0.1,0.25,0.5,0.75,0.9,0.95"
         for model in models
     )
     assert all(model.settings["allow_writing_files"] is False for model in models)
@@ -302,9 +289,7 @@ def test_quantile_combination_rejects_invalid_weights(weight: float) -> None:
         ),
     ],
 )
-def test_gate_contract_rejects_malformed_values(
-    changes: dict[str, object], message: str
-) -> None:
+def test_gate_contract_rejects_malformed_values(changes: dict[str, object], message: str) -> None:
     values: dict[str, object] = {
         "intercept": "0",
         "coefficients": (("log_history_depth", "0"), ("missing_fraction", "0")),
@@ -385,16 +370,12 @@ def test_numeric_helpers_cover_interpolation_prediction_and_positive_bounds() ->
         2.6666666666666665
     )
     with pytest.raises(ValueError, match="seven"):
-        build_positive_distribution(
-            (1.0,), PITCalibrator.identity(source_digest="a" * 64)
-        )
+        build_positive_distribution((1.0,), PITCalibrator.identity(source_digest="a" * 64))
     values = (1.0,) * 7
     with pytest.raises(ValueError, match="finite"):
         combine_quantiles((math.nan, *values[1:]), values, 0.5)
     for predicted in ([1.0], [math.nan] * 7):
-        model = type(
-            "Model", (), {"predict": lambda self, rows, value=predicted: value}
-        )()
+        model = type("Model", (), {"predict": lambda self, rows, value=predicted: value})()
         with pytest.raises(ValueError, match="seven|finite"):
             _predict_log_quantiles(model, [[]])
     assert _prediction_values([[1.0] * 7]) == (1.0,) * 7
@@ -420,8 +401,6 @@ def test_numeric_helpers_cover_interpolation_prediction_and_positive_bounds() ->
 
 
 def test_calibrator_fit_collapses_observed_probability_boundaries() -> None:
-    calibrator = PITCalibrator._fit_authorized_values(
-        (0.0, 0.5, 1.0), source_digest="a" * 64
-    )
+    calibrator = PITCalibrator._fit_authorized_values((0.0, 0.5, 1.0), source_digest="a" * 64)
     assert calibrator.points[0] == ("0", "0")
     assert calibrator.points[-1] == ("1", "1")

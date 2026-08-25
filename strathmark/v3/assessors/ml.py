@@ -52,18 +52,12 @@ class SpecialistGate:
             raise ValueError("ML gate coefficients must be immutable")
         names = tuple(name for name, _ in self.coefficients)
         if names != GATE_FEATURE_NAMES:
-            raise ValueError(
-                "ML gate coefficient names must exactly match the closed schema"
-            )
+            raise ValueError("ML gate coefficient names must exactly match the closed schema")
         for name, value in self.coefficients:
             if not name or canonical_decimal_string(value) != value:
-                raise ValueError(
-                    "ML gate coefficients must be named canonical decimals"
-                )
+                raise ValueError("ML gate coefficients must be named canonical decimals")
 
-    def weight(
-        self, features: Mapping[str, float], *, specialist_available: bool
-    ) -> float:
+    def weight(self, features: Mapping[str, float], *, specialist_available: bool) -> float:
         if not specialist_available:
             return 0.0
         if set(features) != set(GATE_FEATURE_NAMES):
@@ -90,8 +84,7 @@ class SpecialistGate:
             raise ValueError("ML gate fields do not match the closed schema")
         coefficients = value["coefficients"]
         if not isinstance(coefficients, Mapping) or not all(
-            isinstance(name, str) and isinstance(item, str)
-            for name, item in coefficients.items()
+            isinstance(name, str) and isinstance(item, str) for name, item in coefficients.items()
         ):
             raise ValueError("ML gate coefficients must be a string object")
         return cls(
@@ -127,22 +120,16 @@ class PITCalibrator:
             raise ValueError("PIT calibrator outputs must be monotone isotonic values")
 
     @classmethod
-    def _fit_authorized_values(
-        cls, pits: Sequence[float], *, source_digest: str
-    ) -> PITCalibrator:
-        if not pits or any(
-            not math.isfinite(item) or not 0 <= item <= 1 for item in pits
-        ):
+    def _fit_authorized_values(cls, pits: Sequence[float], *, source_digest: str) -> PITCalibrator:
+        if not pits or any(not math.isfinite(item) or not 0 <= item <= 1 for item in pits):
             raise ValueError("PIT inputs must be finite probabilities")
         ordered = sorted(float(item) for item in pits)
         grouped: list[tuple[float, float]] = []
         for value in sorted(set(ordered)):
-            positions = [
-                index + 1 for index, item in enumerate(ordered) if item == value
-            ]
-            empirical = sum(
-                position / (len(ordered) + 1) for position in positions
-            ) / len(positions)
+            positions = [index + 1 for index, item in enumerate(ordered) if item == value]
+            empirical = sum(position / (len(ordered) + 1) for position in positions) / len(
+                positions
+            )
             grouped.append((value, empirical))
         points = [(0.0, 0.0), *grouped, (1.0, 1.0)]
         collapsed: list[tuple[float, float]] = []
@@ -176,9 +163,7 @@ class PITCalibrator:
         return {
             "schema_version": self.schema_version,
             "role": self.role,
-            "points": [
-                {"raw": left, "calibrated": right} for left, right in self.points
-            ],
+            "points": [{"raw": left, "calibrated": right} for left, right in self.points],
             "source_digest": self.source_digest,
         }
 
@@ -188,8 +173,7 @@ class PITCalibrator:
             raise ValueError("ML PIT calibrator fields do not match the closed schema")
         points = value["points"]
         if not isinstance(points, list) or any(
-            not isinstance(item, Mapping) or set(item) != {"raw", "calibrated"}
-            for item in points
+            not isinstance(item, Mapping) or set(item) != {"raw", "calibrated"} for item in points
         ):
             raise ValueError("ML PIT calibrator points do not match the closed schema")
         return cls(
@@ -222,9 +206,7 @@ class MLAssessment:
             "schema_version": "strathmark-v3-ml-assessment-v1",
             "forecast": arguments["forecast"].to_dict(),
             "specialist_key": arguments["specialist_key"],
-            "specialist_weight": canonical_decimal_string(
-                arguments["specialist_weight"]
-            ),
+            "specialist_weight": canonical_decimal_string(arguments["specialist_weight"]),
             "universal_quantiles_ms": list(arguments["universal_quantiles_ms"]),
             "specialist_quantiles_ms": list(arguments["specialist_quantiles_ms"]),
             "unseen_categories": list(arguments["unseen_categories"]),
@@ -261,12 +243,9 @@ class MLAssessor:
 
         if (
             self.bundle.metadata.get("taxonomy_version") != packet.taxonomy_version
-            or self.bundle.metadata.get("conversion_version")
-            != packet.conversion_version
+            or self.bundle.metadata.get("conversion_version") != packet.conversion_version
         ):
-            raise ValueError(
-                "ML bundle taxonomy or conversion metadata is incompatible"
-            )
+            raise ValueError("ML bundle taxonomy or conversion metadata is incompatible")
         features = build_inference_features(packet)
         normalized, unseen = self.bundle.normalize_features(features)
         ordered = [[normalized[name] for name in self.bundle.feature_names]]
@@ -277,9 +256,7 @@ class MLAssessor:
         available = specialist_model is not None and bool(
             eligibility is not None and eligibility.available
         )
-        missing_flags = tuple(
-            int(features[name]) for name in features if name.endswith("_missing")
-        )
+        missing_flags = tuple(int(features[name]) for name in features if name.endswith("_missing"))
         weight = self.bundle.gate.weight(
             canonical_gate_features(
                 history_depth=float(features["history_depth"]),
@@ -287,20 +264,14 @@ class MLAssessor:
             ),
             specialist_available=available,
         )
-        specialist = (
-            _predict_log_quantiles(specialist_model, ordered)
-            if available
-            else universal
-        )
+        specialist = _predict_log_quantiles(specialist_model, ordered) if available else universal
         combined = combine_quantiles(universal, specialist, weight)
         distribution = build_positive_distribution(combined, self.bundle.calibrator)
         warnings = ((ForecastWarning.MISSING_CONTEXT,) if unseen else ()) + (
             (ForecastWarning.SPARSE_EVIDENCE,) if not available else ()
         )
         warnings = tuple(sorted(set(warnings), key=lambda item: item.value))
-        artifact = ArtifactIdentity(
-            "ml_bundle", self.bundle.version, self.bundle.digest
-        )
+        artifact = ArtifactIdentity("ml_bundle", self.bundle.version, self.bundle.digest)
         forecast = AssessorForecast.create(
             forecast_id=deterministic_identifier(
                 "forecast",
@@ -316,9 +287,7 @@ class MLAssessor:
             distribution=distribution,
             support=EvidenceSupport(
                 eligible_count=len(packet.eligible_raw_times_ms),
-                effective_weight=canonical_decimal_string(
-                    len(packet.eligible_raw_times_ms)
-                ),
+                effective_weight=canonical_decimal_string(len(packet.eligible_raw_times_ms)),
                 exact_context_count=sum(
                     item.context.digest == packet.target_context.digest
                     for item in packet.observations
@@ -332,9 +301,7 @@ class MLAssessor:
             abstention_code=None,
         )
         universal_ms = tuple(_log_seconds_to_ms(item) for item in universal)
-        specialist_ms = (
-            tuple(_log_seconds_to_ms(item) for item in specialist) if available else ()
-        )
+        specialist_ms = tuple(_log_seconds_to_ms(item) for item in specialist) if available else ()
         return MLAssessment.create(
             forecast=forecast,
             specialist_key=key if available else None,
@@ -359,11 +326,8 @@ def combine_quantiles(
     ):
         raise ValueError("ML specialist weight or quantile dimensions are invalid")
     values = [
-        (1 - specialist_weight) * float(universal)
-        + specialist_weight * float(specialist)
-        for universal, specialist in zip(
-            universal_log_quantiles, specialist_log_quantiles
-        )
+        (1 - specialist_weight) * float(universal) + specialist_weight * float(specialist)
+        for universal, specialist in zip(universal_log_quantiles, specialist_log_quantiles)
     ]
     if any(not math.isfinite(item) for item in values):
         raise ValueError("ML log quantiles must be finite")
@@ -407,9 +371,7 @@ def _predict_log_quantiles(model: Any, rows: list[list[object]]) -> tuple[float,
     if hasattr(predicted, "tolist"):
         predicted = predicted.tolist()
     values: Any = (
-        predicted[0]
-        if isinstance(predicted, (list, tuple)) and len(predicted) == 1
-        else predicted
+        predicted[0] if isinstance(predicted, (list, tuple)) and len(predicted) == 1 else predicted
     )
     if not isinstance(values, (list, tuple)) or len(values) != len(MODEL_LEVELS):
         raise ValueError("CatBoost MultiQuantile prediction must contain seven values")
@@ -448,9 +410,7 @@ def _quantile_log_at(probability: float, values: Sequence[float]) -> float:
     if index < len(MODEL_LEVELS) and MODEL_LEVELS[index] == probability:
         return values[index]
     left = index - 1
-    ratio = (probability - MODEL_LEVELS[left]) / (
-        MODEL_LEVELS[index] - MODEL_LEVELS[left]
-    )
+    ratio = (probability - MODEL_LEVELS[left]) / (MODEL_LEVELS[index] - MODEL_LEVELS[left])
     return values[left] + ratio * (values[index] - values[left])
 
 
@@ -480,9 +440,7 @@ def _seconds_to_ms(value: float) -> int:
         raise ValueError("ML time predictions must be finite and positive")
     return max(
         1,
-        int(
-            Decimal(str(value * 1000)).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
-        ),
+        int(Decimal(str(value * 1000)).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)),
     )
 
 
@@ -496,9 +454,7 @@ def _validate_log_bounds(values: Sequence[float]) -> None:
         not math.isfinite(item) or item < MIN_LOG_SECONDS or item > MAX_LOG_SECONDS
         for item in values
     ):
-        raise ValueError(
-            "ML log-time prediction is outside the frozen positive-time bounds"
-        )
+        raise ValueError("ML log-time prediction is outside the frozen positive-time bounds")
 
 
 __all__ = [

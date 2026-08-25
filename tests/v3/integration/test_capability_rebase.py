@@ -162,6 +162,41 @@ def test_signed_admission_advances_and_exact_retry_returns_identical_receipt(
     assert first.after_state.last_transition.source_authority_digest == "e" * 64
 
 
+def test_sqlite_pipeline_capability_resolver_replays_one_atomic_head_binding(
+    tmp_path: Path,
+) -> None:
+    from strathmark.v3.application.pipeline_builder import (
+        SQLiteCapabilityStateResolver,
+    )
+
+    service, signer = _service(tmp_path, {1, 2})
+    sealed = _seal(_admitted(40_000, 1), 1, signer)
+    _react(service, sealed, "resolver-current-1")
+    corrected = _seal(_admitted(41_000, 2), 2, signer)
+    receipt = _react(service, corrected, "resolver-current-2")
+    assert receipt.after_state is not None
+    resolver = SQLiteCapabilityStateResolver(
+        service._events.database_path,
+        trust_store=IntegrityTrustStore((signer.identity,)),
+    )
+
+    authority = resolver.resolve_current(receipt.competitor_id, receipt.context_digest)
+
+    assert authority is not None
+    assert authority.state == receipt.after_state
+    assert authority.binding.aggregate_version == 2
+    resolver.verify_current((authority.binding,))
+
+    with open_v3_connection(service._events.database_path) as connection:
+        connection.execute(
+            "UPDATE v3_aggregate_heads SET event_digest=? "
+            "WHERE aggregate_kind='competitor' AND aggregate_id=?",
+            ("f" * 64, str(authority.binding.aggregate_id)),
+        )
+    with pytest.raises(Exception, match="capability"):
+        resolver.verify_current((authority.binding,))
+
+
 def test_retry_verifies_signature_then_binds_the_complete_original_manifest(tmp_path: Path) -> None:
     service, signer = _service(tmp_path, {1})
     original = _seal(_admitted(40_000, 1), 1, signer)

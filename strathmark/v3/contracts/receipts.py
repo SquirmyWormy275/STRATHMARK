@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
@@ -65,7 +65,10 @@ class PacketIdentity:
         _require_digest(self.packet_digest, "packet_digest")
 
     def to_dict(self) -> dict[str, str]:
-        return {"competitor_id": str(self.competitor_id), "packet_digest": self.packet_digest}
+        return {
+            "competitor_id": str(self.competitor_id),
+            "packet_digest": self.packet_digest,
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PacketIdentity:
@@ -137,7 +140,7 @@ class ReceiptSection:
         return {
             "schema_version": self.schema_version,
             "kind": self.kind.value,
-            "payload_type": "inline" if isinstance(self.payload, InlinePayload) else "blob",
+            "payload_type": ("inline" if isinstance(self.payload, InlinePayload) else "blob"),
             "payload": self.payload.to_dict(),
         }
 
@@ -165,12 +168,24 @@ class ReceiptSection:
 
 
 @dataclass(frozen=True, slots=True)
+class _GeneratedFieldReceiptProof:
+    token: object
+    receipt_id: StableIdentifier
+    content_digest: str
+    canonical_payload: bytes
+
+
+_GENERATED_FIELD_RECEIPT_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
 class FieldReceipt:
     receipt_id: StableIdentifier
     caller_namespace: str
     request_identity: IdempotencyKey
     field_id: StableIdentifier
-    field_revision: int
+    upstream_field_revision: int
+    receipt_revision: int
     supersedes_receipt_id: StableIdentifier | None
     ordered_competitor_ids: tuple[StableIdentifier, ...]
     target_context: TargetContext
@@ -186,8 +201,10 @@ class FieldReceipt:
     bundles: tuple[BundleIdentity, ...]
     content_digest: str
     schema_version: str = FIELD_RECEIPT_SCHEMA_VERSION
+    _generated_proof: InitVar[_GeneratedFieldReceiptProof | None] = None
+    _canonical_payload_cache: bytes = field(init=False, repr=False, compare=False, default=b"")
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _generated_proof: _GeneratedFieldReceiptProof | None) -> None:
         _require_schema(self.schema_version, FIELD_RECEIPT_SCHEMA_VERSION)
         _require_id(self.receipt_id, "receipt")
         if not isinstance(self.caller_namespace, str) or not _CALLER_NAMESPACE.fullmatch(
@@ -197,11 +214,12 @@ class FieldReceipt:
         if not isinstance(self.request_identity, IdempotencyKey):
             raise ContractError("request_identity must be an IdempotencyKey")
         _require_id(self.field_id, "field")
-        _require_positive_int(self.field_revision, "field_revision")
-        if self.field_revision == 1 and self.supersedes_receipt_id is not None:
-            raise ContractError("field revision 1 cannot supersede a receipt")
-        if self.field_revision > 1 and self.supersedes_receipt_id is None:
-            raise ContractError("later field revisions require supersedes_receipt_id")
+        _require_positive_int(self.upstream_field_revision, "upstream_field_revision")
+        _require_positive_int(self.receipt_revision, "receipt_revision")
+        if self.receipt_revision == 1 and self.supersedes_receipt_id is not None:
+            raise ContractError("receipt revision 1 cannot supersede a receipt")
+        if self.receipt_revision > 1 and self.supersedes_receipt_id is None:
+            raise ContractError("later receipt revisions require supersedes_receipt_id")
         if self.supersedes_receipt_id is not None:
             _require_id(self.supersedes_receipt_id, "receipt")
         if not isinstance(self.ordered_competitor_ids, tuple) or not self.ordered_competitor_ids:
@@ -253,14 +271,27 @@ class FieldReceipt:
             raise ContractError("bundle identities must have unique sorted roles")
 
         _require_digest(self.content_digest, "content_digest")
-        if self.content_digest != self.recompute_content_digest():
-            raise ContractError("receipt content digest mismatch")
-        if self.receipt_id != self.recompute_receipt_id():
-            raise ContractError("receipt identity is not bound to content and caller request")
-        try:
-            canonical_bytes(self.to_dict(), max_bytes=MAX_RECEIPT_CANONICAL_BYTES)
-        except Exception as exc:
-            raise ContractError("receipt exceeds the maximum canonical size") from exc
+        generated = (
+            isinstance(_generated_proof, _GeneratedFieldReceiptProof)
+            and _generated_proof.token is _GENERATED_FIELD_RECEIPT_TOKEN
+            and _generated_proof.receipt_id == self.receipt_id
+            and _generated_proof.content_digest == self.content_digest
+        )
+        if generated:
+            assert _generated_proof is not None
+            canonical_payload = _generated_proof.canonical_payload
+        else:
+            if self.content_digest != self.recompute_content_digest():
+                raise ContractError("receipt content digest mismatch")
+            if self.receipt_id != self.recompute_receipt_id():
+                raise ContractError("receipt identity is not bound to content and caller request")
+            try:
+                canonical_payload = canonical_bytes(
+                    self.to_dict(), max_bytes=MAX_RECEIPT_CANONICAL_BYTES
+                )
+            except Exception as exc:
+                raise ContractError("receipt exceeds the maximum canonical size") from exc
+        object.__setattr__(self, "_canonical_payload_cache", canonical_payload)
 
     @classmethod
     def create(
@@ -269,7 +300,8 @@ class FieldReceipt:
         caller_namespace: str,
         request_identity: IdempotencyKey,
         field_id: StableIdentifier,
-        field_revision: int,
+        upstream_field_revision: int,
+        receipt_revision: int,
         supersedes_receipt_id: StableIdentifier | None,
         ordered_competitor_ids: tuple[StableIdentifier, ...],
         target_context: TargetContext,
@@ -286,7 +318,8 @@ class FieldReceipt:
     ) -> FieldReceipt:
         arguments = locals().copy()
         arguments.pop("cls")
-        content_digest = canonical_digest(_receipt_content_value(**arguments))
+        content_value = _receipt_content_value(**arguments)
+        content_digest = canonical_digest(content_value)
         receipt_id = deterministic_identifier(
             "receipt",
             {
@@ -295,14 +328,45 @@ class FieldReceipt:
                 "content_digest": content_digest,
             },
         )
-        return cls(receipt_id=receipt_id, content_digest=content_digest, **arguments)
+        try:
+            canonical_payload = canonical_bytes(
+                {
+                    "schema_version": FIELD_RECEIPT_SCHEMA_VERSION,
+                    "receipt_id": str(receipt_id),
+                    "caller_namespace": caller_namespace,
+                    "request_identity": str(request_identity),
+                    **content_value,
+                    "content_digest": content_digest,
+                },
+                max_bytes=MAX_RECEIPT_CANONICAL_BYTES,
+            )
+        except Exception as exc:
+            raise ContractError("receipt exceeds the maximum canonical size") from exc
+        return cls(
+            receipt_id=receipt_id,
+            content_digest=content_digest,
+            **arguments,
+            _generated_proof=_GeneratedFieldReceiptProof(
+                _GENERATED_FIELD_RECEIPT_TOKEN,
+                receipt_id,
+                content_digest,
+                canonical_payload,
+            ),
+        )
+
+    @property
+    def canonical_payload(self) -> bytes:
+        """Return exact validated bytes, cached only after complete construction."""
+
+        return self._canonical_payload_cache
 
     def creation_arguments(self) -> dict[str, Any]:
         return {
             "caller_namespace": self.caller_namespace,
             "request_identity": self.request_identity,
             "field_id": self.field_id,
-            "field_revision": self.field_revision,
+            "upstream_field_revision": self.upstream_field_revision,
+            "receipt_revision": self.receipt_revision,
             "supersedes_receipt_id": self.supersedes_receipt_id,
             "ordered_competitor_ids": self.ordered_competitor_ids,
             "target_context": self.target_context,
@@ -349,7 +413,8 @@ class FieldReceipt:
             "caller_namespace",
             "request_identity",
             "field_id",
-            "field_revision",
+            "upstream_field_revision",
+            "receipt_revision",
             "supersedes_receipt_id",
             "ordered_competitor_ids",
             "target_context",
@@ -383,7 +448,8 @@ class FieldReceipt:
             caller_namespace=value["caller_namespace"],
             request_identity=require_idempotency_key(value["request_identity"]),
             field_id=require_identifier(value["field_id"], expected_namespace="field"),
-            field_revision=value["field_revision"],
+            upstream_field_revision=value["upstream_field_revision"],
+            receipt_revision=value["receipt_revision"],
             supersedes_receipt_id=(
                 None
                 if supersedes is None
@@ -417,7 +483,8 @@ def _receipt_content_value(**arguments: Any) -> dict[str, Any]:
     return {
         "schema_version": FIELD_RECEIPT_SCHEMA_VERSION,
         "field_id": str(arguments["field_id"]),
-        "field_revision": arguments["field_revision"],
+        "upstream_field_revision": arguments["upstream_field_revision"],
+        "receipt_revision": arguments["receipt_revision"],
         "supersedes_receipt_id": None if supersedes is None else str(supersedes),
         "ordered_competitor_ids": [str(item) for item in arguments["ordered_competitor_ids"]],
         "target_context": arguments["target_context"].to_dict(),

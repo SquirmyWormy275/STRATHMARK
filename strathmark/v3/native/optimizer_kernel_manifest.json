@@ -1,0 +1,16 @@
+{
+  "schema_version": "strathmark-v3-native-optimizer-kernel-v1",
+  "manifest_digest": "f8856e11ffd1ef56d0924d59bbb8155fe9caed087ecebf09976cd114b0ca86bb",
+  "algorithm": "exact-winner-spread-v1",
+  "sampling_algorithm": "exact-quantile-linear-pool-and-rank-uniform-u256-v4",
+  "abi_version": 1,
+  "platform": "windows-x86_64",
+  "source_sha256": "842b434563f134f92bac8a0cf505c404b82b77760abfaba33faf387336d36b10",
+  "binary_sha256": "b784fb57f85865edcc015294882ec7700ecb3836a17dd4f02e9ddd6cb9dad161",
+  "compiler": "rustc-1.94.1",
+  "target_cpu": "x86-64-v2",
+  "panic_strategy": "abort",
+  "thread_limit": 8,
+  "required_draw_count": 4096,
+  "maximum_entrants": 12
+}

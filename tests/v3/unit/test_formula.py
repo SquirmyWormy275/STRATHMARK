@@ -32,6 +32,7 @@ from strathmark.v3.assessors.formula import (
     ContextPrior,
     DisciplinePrior,
     FormulaManifest,
+    FormulaZeroHistoryPrior,
     _closed_mapping,
     _huber_weight,
     _irls,
@@ -39,6 +40,7 @@ from strathmark.v3.assessors.formula import (
     _validate_table,
     _weighted_median,
     assess_formula,
+    resolve_zero_history_prior,
 )
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.evidence import (
@@ -517,6 +519,22 @@ def test_zero_history_prior_hierarchy_is_target_specific_and_visible() -> None:
     assert (
         len({item.uncertainty_ms for item in (exact, another_exact, discipline, population)}) == 4
     )
+
+
+def test_zero_history_prior_resolver_reproduces_formula_authority_exactly() -> None:
+    manifest = FormulaManifest.load(MANIFEST_PATH)
+    target = context()
+    resolved = resolve_zero_history_prior(target, manifest)
+    assessed = run(target=target)
+
+    assert isinstance(resolved, FormulaZeroHistoryPrior)
+    assert resolved.distribution == assessed.forecast.distribution
+    assert resolved.prior_tier == "exact_context"
+    assert resolved.prior_key == "underhand|300|eucalyptus"
+    assert resolved.prior_lineage_digest == next(
+        item.lineage_digest for item in manifest.context_priors if item.key == resolved.prior_key
+    )
+    assert resolved.manifest_digest == manifest.digest
 
 
 def test_governor_derives_age_quality_and_tournament_relevance_without_caller_labels() -> None:

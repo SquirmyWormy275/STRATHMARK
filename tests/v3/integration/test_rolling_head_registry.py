@@ -236,22 +236,19 @@ def test_registry_rejects_local_checkpoint_fork_at_retained_sequence(
     repository_b = _open(registry, database_b, signer)
     _advance_local(repository_a, 1)
     _advance_local(repository_b, 2)
-    repository_a.refresh_rolling_restart_checkpoint_if_due(
-        observed_at=NOW, delta_threshold=1
+    repository_a.refresh_rolling_restart_checkpoint_if_due(observed_at=NOW, delta_threshold=1)
+    repository_b.refresh_rolling_restart_checkpoint_if_due(observed_at=NOW, delta_threshold=1)
+    assert (
+        registry.refresh_if_due(
+            database_a,
+            capacity=_capacity(),
+            signer=signer,
+            trust_store=IntegrityTrustStore((signer.identity,)),
+            published_at=NOW,
+        )
+        is not None
     )
-    repository_b.refresh_rolling_restart_checkpoint_if_due(
-        observed_at=NOW, delta_threshold=1
-    )
-    assert registry.refresh_if_due(
-        database_a,
-        capacity=_capacity(),
-        signer=signer,
-        trust_store=IntegrityTrustStore((signer.identity,)),
-        published_at=NOW,
-    ) is not None
-    with pytest.raises(
-        RollingHeadRegistryError, match="cannot reconcile to the retained head"
-    ):
+    with pytest.raises(RollingHeadRegistryError, match="cannot reconcile to the retained head"):
         _open(registry, database_b, signer)
 
 
@@ -321,9 +318,10 @@ def test_registry_no_clobber_publish_rejects_stale_conflicting_writer(
         trust_store=IntegrityTrustStore((signer.identity,)),
     )
     _advance_local(repository_b, 1)
-    assert repository_b.refresh_rolling_restart_checkpoint_if_due(
-        observed_at=NOW, delta_threshold=1
-    ) is not None
+    assert (
+        repository_b.refresh_rolling_restart_checkpoint_if_due(observed_at=NOW, delta_threshold=1)
+        is not None
+    )
 
     import strathmark.v3.infrastructure.rolling_head_registry as registry_module
 
@@ -334,9 +332,7 @@ def test_registry_no_clobber_publish_rejects_stale_conflicting_writer(
             AssertionError("overwrite-capable rename must not publish anchors")
         ),
     )
-    with pytest.raises(
-        RollingHeadRegistryError, match="sequence already binds different material"
-    ):
+    with pytest.raises(RollingHeadRegistryError, match="sequence already binds different material"):
         _open(stale, database_b, signer)
     reloaded = _registry(root, signer, refresh_threshold=1)
     assert reloaded.record_count == 1
@@ -368,9 +364,7 @@ def test_registry_bootstrap_identity_no_clobber_rejects_conflicting_writer(
     tmp_path: Path,
 ) -> None:
     first = P256EphemeralSigner.generate("integrity-key:rolling-bootstrap-first")
-    conflict = P256EphemeralSigner.generate(
-        "integrity-key:rolling-bootstrap-conflict"
-    )
+    conflict = P256EphemeralSigner.generate("integrity-key:rolling-bootstrap-conflict")
     root = tmp_path / "external"
     _registry(root, first)
     with pytest.raises(RollingHeadRegistryError, match="bootstrap key mismatch"):
@@ -414,13 +408,16 @@ def test_registry_append_and_startup_latency_remain_bounded(tmp_path: Path) -> N
     for _ in range(8):
         _advance_local(repository, 1)
         started = time.perf_counter()
-        assert registry.refresh_if_due(
-            database,
-            capacity=_capacity(),
-            signer=signer,
-            trust_store=IntegrityTrustStore((signer.identity,)),
-            published_at=NOW,
-        ) is not None
+        assert (
+            registry.refresh_if_due(
+                database,
+                capacity=_capacity(),
+                signer=signer,
+                trust_store=IntegrityTrustStore((signer.identity,)),
+                published_at=NOW,
+            )
+            is not None
+        )
         append_seconds.append(time.perf_counter() - started)
     started = time.perf_counter()
     reloaded = _registry(root, signer, refresh_threshold=1)

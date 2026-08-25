@@ -11,6 +11,7 @@ from typing import Callable
 import pytest
 
 import strathmark.v3.infrastructure.sqlite.event_store as event_store_module
+import strathmark.v3.infrastructure.sqlite.rolling_restart as rolling_restart_module
 from strathmark.v3.application.commands import CommandRequest, EventIntent
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.commands import (
@@ -27,7 +28,9 @@ from strathmark.v3.contracts.identifiers import (
     StableIdentifier,
     deterministic_identifier,
 )
-from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
+from strathmark.v3.infrastructure.sqlite.connection import (
+    open_v3_connection,
+)
 from strathmark.v3.infrastructure.sqlite.event_store import (
     AuthorityAnchor,
     EventStoreConflict,
@@ -36,6 +39,11 @@ from strathmark.v3.infrastructure.sqlite.event_store import (
     SQLiteEventStore,
     StoredCommandResult,
 )
+from strathmark.v3.infrastructure.sqlite.migrations import (
+    DEFAULT_MIGRATIONS,
+    migrate_connection,
+)
+from strathmark.v3.infrastructure.sqlite.projections import SQLiteProjectionStore
 from strathmark.v3.infrastructure.v2_import import import_v2_snapshot
 
 NOW = "2026-08-22T18:00:00.000Z"
@@ -142,6 +150,98 @@ def test_exact_retry_returns_original_bytes_and_changed_command_conflicts(tmp_pa
     )
     with pytest.raises(EventStoreConflict, match="claimed by another principal"):
         store.execute(other_actor)
+
+
+def test_populated_0011_upgrade_requires_explicit_cursor_cutover_before_next_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "populated-0011.sqlite3"
+    with open_v3_connection(database) as connection:
+        migrate_connection(connection, migrations=DEFAULT_MIGRATIONS[:11])
+    original_migrate = event_store_module.migrate_connection
+    original_advance = rolling_restart_module.advance_rolling_reaction_cursor
+    original_require = rolling_restart_module.require_rolling_reaction_cursor_at_event_head
+    monkeypatch.setattr(event_store_module, "migrate_connection", lambda _connection: 0)
+    monkeypatch.setattr(
+        rolling_restart_module,
+        "advance_rolling_reaction_cursor",
+        lambda _connection, _events: None,
+    )
+    monkeypatch.setattr(
+        rolling_restart_module,
+        "require_rolling_reaction_cursor_at_event_head",
+        lambda _connection: None,
+    )
+    SQLiteEventStore(database).execute(_request())
+    monkeypatch.setattr(event_store_module, "migrate_connection", original_migrate)
+    monkeypatch.setattr(
+        rolling_restart_module,
+        "advance_rolling_reaction_cursor",
+        original_advance,
+    )
+    monkeypatch.setattr(
+        rolling_restart_module,
+        "require_rolling_reaction_cursor_at_event_head",
+        original_require,
+    )
+    with open_v3_connection(database) as connection:
+        migrate_connection(connection)
+
+    next_request = _request(
+        command_id="command:open-after-cutover",
+        command_kind=CommandKind.OPEN_TOURNAMENT,
+        expected=1,
+        event_kind=EventKind.TOURNAMENT_OPENED,
+    )
+    with pytest.raises(EventStoreIntegrityError, match="cursor cutover"):
+        SQLiteEventStore(database).execute(next_request)
+
+    projections = SQLiteProjectionStore(database)
+    assert projections.bootstrap_rolling_reaction_cursor_cutover() == 1
+    stored = SQLiteEventStore(database).execute(next_request)
+    assert stored.first_global_sequence == 2
+
+    def forbidden_deep_verify(*_args, **_kwargs):
+        raise AssertionError("aligned cursor cutover no-op performed a genesis replay")
+
+    monkeypatch.setattr(SQLiteEventStore, "__init__", forbidden_deep_verify)
+    assert projections.bootstrap_rolling_reaction_cursor_cutover() == 0
+
+
+def test_offline_rolling_projection_rebuild_conflicts_if_event_head_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import strathmark.v3.infrastructure.sqlite.projections as projection_module
+    from strathmark.v3.infrastructure.sqlite.projections import ProjectionError
+
+    database = tmp_path / "offline-rebuild-head-race.sqlite3"
+    projections = SQLiteProjectionStore(database)
+    store = SQLiteEventStore(database)
+    store.execute(_request())
+    anchor = store.current_anchor()
+    original_transaction = projection_module.immediate_transaction
+    advanced = False
+
+    def advance_head_before_writer(connection):
+        nonlocal advanced
+        if not advanced:
+            advanced = True
+            store.execute(
+                _request(
+                    command_id="command:open-during-offline-rebuild",
+                    command_kind=CommandKind.OPEN_TOURNAMENT,
+                    expected=1,
+                    event_kind=EventKind.TOURNAMENT_OPENED,
+                )
+            )
+        return original_transaction(connection)
+
+    monkeypatch.setattr(projection_module, "immediate_transaction", advance_head_before_writer)
+    with pytest.raises(ProjectionError, match="changed during offline rebuild"):
+        projections.rebuild_rolling_reaction_projection_offline(
+            anchor.global_sequence, anchor.event_digest
+        )
+    assert store.current_anchor().global_sequence == 2
 
 
 def test_nested_result_snapshot_cannot_drift_before_execute(tmp_path: Path) -> None:
@@ -398,6 +498,7 @@ def test_exact_issue_retry_replays_both_chains_before_returning_stored_bytes(
         "before_event:2",
         "after_event:2",
         "after_head:2",
+        "after_projection",
         "before_result",
         "after_result",
     ],
@@ -409,6 +510,13 @@ def test_injected_failure_at_each_append_head_and_result_point_rolls_back_everyt
     _prepare_field(store, "field:a")
     _prepare_field(store, "field:b")
     before = store.event_count()
+    with open_v3_connection(store.database_path, read_only=True) as connection:
+        cursor_before = tuple(
+            connection.execute(
+                "SELECT cursor_revision,through_global_sequence,through_event_digest,"
+                "cursor_digest FROM v3_rolling_reaction_cursor WHERE singleton=1"
+            ).fetchone()
+        )
 
     def fail(observed: str) -> None:
         if observed == point:
@@ -420,6 +528,16 @@ def test_injected_failure_at_each_append_head_and_result_point_rolls_back_everyt
     assert store.aggregate_head("field:a")[0] == 1
     assert store.aggregate_head("field:b")[0] == 1
     assert store.aggregate_head("issue_batch:round-1") is None
+    with open_v3_connection(store.database_path, read_only=True) as connection:
+        assert (
+            tuple(
+                connection.execute(
+                    "SELECT cursor_revision,through_global_sequence,through_event_digest,"
+                    "cursor_digest FROM v3_rolling_reaction_cursor WHERE singleton=1"
+                ).fetchone()
+            )
+            == cursor_before
+        )
 
 
 def _mutate_event(database: Path, operation: Callable[[sqlite3.Connection], None]) -> None:

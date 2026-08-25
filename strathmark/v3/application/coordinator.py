@@ -66,9 +66,7 @@ class ClockPort(Protocol):
 class FieldAuthorityVerifierPort(Protocol):
     def verify_current_field(self, field: FrozenFieldRevision) -> None: ...
 
-    def verify_weight_authority(
-        self, authority: OperationalWeightAuthority
-    ) -> None: ...
+    def verify_weight_authority(self, authority: OperationalWeightAuthority) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,15 +113,11 @@ class ProviderFailure(RuntimeError):
                 for character in reason
             )
         ):
-            raise DurableJobError(
-                "provider failure reason must be a bounded machine token"
-            )
+            raise DurableJobError("provider failure reason must be a bounded machine token")
         super().__init__(reason)
         self.kind = kind
         self.reason = reason
-        if provider_audit is not None and not isinstance(
-            provider_audit, ProviderExecutionAudit
-        ):
+        if provider_audit is not None and not isinstance(provider_audit, ProviderExecutionAudit):
             raise DurableJobError("provider failure audit must be typed")
         self.provider_audit = provider_audit
 
@@ -155,9 +149,7 @@ class RunOutcome:
 class DurableCoordinator:
     """Claims durably, calls one provider, then publishes through the current fence."""
 
-    def __init__(
-        self, repository: JobRepositoryPort, *, retry_policy: RetryPolicy
-    ) -> None:
+    def __init__(self, repository: JobRepositoryPort, *, retry_policy: RetryPolicy) -> None:
         required = ("claim", "record_failure", "mark_stale", "commit_success", "health")
         if any(not callable(getattr(repository, name, None)) for name in required):
             raise DurableJobError("coordinator requires a durable job repository port")
@@ -233,9 +225,7 @@ class DurableCoordinator:
         try:
             response = provider.execute(lease)
             if not isinstance(response, ProviderResponse):
-                raise ProviderFailure(
-                    FailureKind.VALIDATION, "invalid_provider_response"
-                )
+                raise ProviderFailure(FailureKind.VALIDATION, "invalid_provider_response")
         except ProviderFailure as exc:
             failed = self._repository.record_failure(
                 lease.job_id,
@@ -369,9 +359,7 @@ class CardKey:
         dependency_revision: int,
     ) -> CardKey:
         values = {
-            "competitor_id": require_identifier(
-                competitor_id, expected_namespace="competitor"
-            ),
+            "competitor_id": require_identifier(competitor_id, expected_namespace="competitor"),
             "target_context_digest": target_context_digest,
             "historical_cutoff_key": require_identifier(
                 historical_cutoff_key, expected_namespace="history"
@@ -433,14 +421,11 @@ class PreparationCandidate:
                 not isinstance(packet, EvidencePacket)
                 or str(packet.competitor_id) != str(self.key.competitor_id)
                 or packet.target_context.digest != self.key.target_context_digest
-                or str(packet.historical_cutoff_key)
-                != str(self.key.historical_cutoff_key)
+                or str(packet.historical_cutoff_key) != str(self.key.historical_cutoff_key)
                 or str(packet.tournament_epoch_id) != str(self.key.tournament_epoch_id)
                 or packet.content_digest != self.key.evidence_digest
             ):
-                raise DurableJobError(
-                    "preparation evidence packet differs from card key"
-                )
+                raise DurableJobError("preparation evidence packet differs from card key")
 
     @classmethod
     def create(cls, **values: object) -> PreparationCandidate:
@@ -496,9 +481,7 @@ class RollingPreparationPlanner:
         if not isinstance(candidates, tuple) or not all(
             isinstance(item, PreparationCandidate) for item in candidates
         ):
-            raise DurableJobError(
-                "preparation plan requires immutable typed candidates"
-            )
+            raise DurableJobError("preparation plan requires immutable typed candidates")
         exact: dict[str, PreparationCandidate] = {}
         for item in candidates:
             prior = exact.get(item.key.card_digest)
@@ -522,9 +505,7 @@ class RollingPreparationPlanner:
         unique: dict[str, PreparationCandidate] = {}
         for subject, rows in by_subject.items():
             maximum = max(item.key.dependency_revision for item in rows)
-            current = tuple(
-                item for item in rows if item.key.dependency_revision == maximum
-            )
+            current = tuple(item for item in rows if item.key.dependency_revision == maximum)
             if len({item.key.card_digest for item in current}) != 1:
                 raise DurableJobError(
                     "one logical card revision contains conflicting causal material"
@@ -540,9 +521,7 @@ class RollingPreparationPlanner:
                     maximum == active.dependency_revision
                     and selected.key.card_digest != active.card_digest
                 ):
-                    raise DurableJobError(
-                        "card revision conflicts with current durable authority"
-                    )
+                    raise DurableJobError("card revision conflicts with current durable authority")
             unique[selected.key.card_digest] = selected
         invalidated: dict[str, CardKey] = {}
         for candidate in unique.values():
@@ -562,11 +541,7 @@ class RollingPreparationPlanner:
         )
         pending = tuple(
             sorted(
-                (
-                    item
-                    for item in unique.values()
-                    if item.key.card_digest not in self._completed
-                ),
+                (item for item in unique.values() if item.key.card_digest not in self._completed),
                 key=lambda item: (
                     -item.preparation_class.rank,
                     item.hard_deadline_at,
@@ -625,9 +600,7 @@ class RollingPreparationPlanner:
             or record.bundle_digest != key.bundle_digest
             or record.fencing_token <= 0
         ):
-            raise DurableJobError(
-                "job publication does not bind a current successful card"
-            )
+            raise DurableJobError("job publication does not bind a current successful card")
         raise DurableJobError(
             "one job is not a durable whole-card publication; use the rolling coordinator"
         )
@@ -638,15 +611,11 @@ class RollingPreparationPlanner:
                 "key": item.key.to_dict(),
                 "result_digest": item.result_digest,
             }
-            for item in sorted(
-                self._completed.values(), key=lambda row: row.key.card_digest
-            )
+            for item in sorted(self._completed.values(), key=lambda row: row.key.card_digest)
         )
 
     @classmethod
-    def from_snapshot(
-        cls, value: tuple[dict[str, object], ...]
-    ) -> RollingPreparationPlanner:
+    def from_snapshot(cls, value: tuple[dict[str, object], ...]) -> RollingPreparationPlanner:
         # Exported snapshots are diagnostic only. Operational cache authority is rebuilt
         # from signed/fenced durable job publications through record_completed_from_job.
         for item in value:
@@ -722,9 +691,7 @@ class RollingComponentReceipt:
             if self.fencing_token <= 0:
                 raise DurableJobError("successful rolling component lacks a fence")
             if self.terminal_reason_code is not None:
-                raise DurableJobError(
-                    "successful rolling component carries a terminal reason"
-                )
+                raise DurableJobError("successful rolling component carries a terminal reason")
         else:
             if self.result_digest is not None:
                 raise DurableJobError("unsuccessful rolling component carries a result")
@@ -734,9 +701,7 @@ class RollingComponentReceipt:
                 or len(self.terminal_reason_code) > 128
                 or not self.terminal_reason_code[0].isalpha()
                 or any(
-                    not (
-                        character.islower() or character.isdigit() or character in "_.-"
-                    )
+                    not (character.islower() or character.isdigit() or character in "_.-")
                     for character in self.terminal_reason_code
                 )
             ):
@@ -783,9 +748,7 @@ class RollingComponentReceipt:
             raise DurableJobError("rolling component receipt fields differ")
         for name in ("component_ordinal", "job_revision", "fencing_token"):
             if isinstance(value[name], bool) or not isinstance(value[name], int):
-                raise DurableJobError(
-                    "rolling component numeric fields must be integers"
-                )
+                raise DurableJobError("rolling component numeric fields must be integers")
         try:
             return cls(
                 str(value["component_id"]),
@@ -830,15 +793,10 @@ class RollingCardPublication:
         if (
             not isinstance(self.components, tuple)
             or len(self.components) != 5
-            or not all(
-                isinstance(item, RollingComponentReceipt) for item in self.components
-            )
-            or tuple(item.component_ordinal for item in self.components)
-            != (1, 2, 3, 4, 5)
+            or not all(isinstance(item, RollingComponentReceipt) for item in self.components)
+            or tuple(item.component_ordinal for item in self.components) != (1, 2, 3, 4, 5)
         ):
-            raise DurableJobError(
-                "rolling publication requires five ordered components"
-            )
+            raise DurableJobError("rolling publication requires five ordered components")
         if not isinstance(self.availability, tuple) or tuple(
             item[0] for item in self.availability
         ) != ("formula", "ml", "llm_council"):
@@ -846,12 +804,9 @@ class RollingCardPublication:
         _require_digest(self.council_manifest_digest, "rolling council manifest")
         if (
             not isinstance(self.council_aggregate_manifest, SignedManifest)
-            or self.council_aggregate_manifest.kind
-            != "rolling_council_aggregate_authority"
+            or self.council_aggregate_manifest.kind != "rolling_council_aggregate_authority"
         ):
-            raise DurableJobError(
-                "rolling publication lacks council aggregate authority"
-            )
+            raise DurableJobError("rolling publication lacks council aggregate authority")
         # Deadline sealing is deliberately allowed after the deadline: terminal
         # component receipts preserve the timeout reasons and the immutable
         # sealed_at records the actual recovery instant.
@@ -870,9 +825,7 @@ class RollingCardPublication:
             "schema_version": "strathmark-v3-rolling-card-publication-v1",
             "card_key": self.key.to_dict(),
             "card_authority_digest": canonical_digest(self.authority.to_dict()),
-            "component_refs_digest": canonical_digest(
-                [item.to_dict() for item in self.components]
-            ),
+            "component_refs_digest": canonical_digest([item.to_dict() for item in self.components]),
             "availability": [list(item) for item in self.availability],
             "council_manifest_digest": self.council_manifest_digest,
             "council_aggregate_manifest_digest": self.council_aggregate_manifest.body_digest,
@@ -901,16 +854,11 @@ class RollingReadiness:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise DurableJobError("rolling readiness counts must be non-negative")
-        if (
-            self.ready_count + self.pending_count + self.failed_count
-            != self.total_cards
-        ):
+        if self.ready_count + self.pending_count + self.failed_count != self.total_cards:
             raise DurableJobError("rolling readiness counts do not reconcile")
         if self.earliest_deadline_at is not None:
             require_utc_milliseconds(self.earliest_deadline_at)
-        if self.all_ready != (
-            self.total_cards > 0 and self.ready_count == self.total_cards
-        ):
+        if self.all_ready != (self.total_cards > 0 and self.ready_count == self.total_cards):
             raise DurableJobError("rolling readiness flag differs from counts")
 
 
@@ -931,15 +879,12 @@ class RollingLifecycleReactionPlan:
         if not isinstance(self.capacity_use, CapacityUse):
             raise DurableJobError("rolling lifecycle capacity must be typed")
         if len(self.candidates) > self.capacity_use.context_cards:
-            raise DurableJobError(
-                "rolling lifecycle candidates exceed declared capacity"
-            )
+            raise DurableJobError("rolling lifecycle candidates exceed declared capacity")
         _require_digest(self.council_manifest_digest, "rolling council manifest")
         if not isinstance(self.closed_epoch_ids, tuple):
             raise DurableJobError("rolling lifecycle closed epochs must be immutable")
         closed = tuple(
-            require_identifier(item, expected_namespace="epoch")
-            for item in self.closed_epoch_ids
+            require_identifier(item, expected_namespace="epoch") for item in self.closed_epoch_ids
         )
         if len(closed) != len(set(closed)):
             raise DurableJobError("rolling lifecycle closed epochs cannot repeat")
@@ -967,9 +912,7 @@ class RollingLifecycleReactionPlan:
 
 
 class RollingLifecycleResolverPort(Protocol):
-    def resolve(
-        self, events: tuple[EventEnvelope, ...]
-    ) -> RollingLifecycleReactionPlan: ...
+    def resolve(self, events: tuple[EventEnvelope, ...]) -> RollingLifecycleReactionPlan: ...
 
 
 class RollingEventAuthorityPort(Protocol):
@@ -1002,9 +945,7 @@ class DurableRollingPreparationCoordinator:
             or not callable(getattr(signer, "sign", None))
             or not isinstance(trust_store, IntegrityTrustStore)
         ):
-            raise DurableJobError(
-                "rolling coordinator requires durable typed authorities"
-            )
+            raise DurableJobError("rolling coordinator requires durable typed authorities")
         trust_store.identity(signer.identity.key_id)
         self._repository = repository
         self._signer = signer
@@ -1018,9 +959,7 @@ class DurableRollingPreparationCoordinator:
         self._repository.recover_rolling_restart()
         self._recover_current()
 
-    def install_council_authority(
-        self, manifest: SignedManifest, *, installed_at: str
-    ) -> str:
+    def install_council_authority(self, manifest: SignedManifest, *, installed_at: str) -> str:
         timestamp = require_utc_milliseconds(installed_at)
         payload = self._verify_council_manifest(manifest)
         return self._repository.install_rolling_council_authority(
@@ -1047,26 +986,18 @@ class DurableRollingPreparationCoordinator:
                 self._supersede_current(invalidated, now, "dependency_superseded")
             scheduled: list[Any] = []
             for candidate in plan.pending:
-                if self._repository.rolling_epoch_closed(
-                    str(candidate.key.tournament_epoch_id)
-                ):
+                if self._repository.rolling_epoch_closed(str(candidate.key.tournament_epoch_id)):
                     raise DurableJobError("rolling epoch is closed")
                 if council["bundle_digest"] != candidate.key.bundle_digest:
-                    raise DurableJobError(
-                        "rolling council bundle differs from card bundle"
-                    )
+                    raise DurableJobError("rolling council bundle differs from card bundle")
                 if candidate.evidence_packet is None:
-                    raise DurableJobError(
-                        "durable rolling work requires its evidence packet"
-                    )
+                    raise DurableJobError("durable rolling work requires its evidence packet")
                 existing = self._repository.records_for_card(candidate.key.card_digest)
                 existing_by_ordinal = {
                     item.payload()["component_ordinal"]: item for item in existing
                 }
                 if len(existing_by_ordinal) != len(existing):
-                    raise DurableJobError(
-                        "rolling card has duplicate component ordinals"
-                    )
+                    raise DurableJobError("rolling card has duplicate component ordinals")
                 component_plan = self._component_plan(council)
                 payloads = tuple(
                     {
@@ -1082,9 +1013,7 @@ class DurableRollingPreparationCoordinator:
                         component_plan, start=1
                     )
                 )
-                actual_blob_bytes = sum(
-                    len(canonical_bytes(payload)) for payload in payloads
-                )
+                actual_blob_bytes = sum(len(canonical_bytes(payload)) for payload in payloads)
                 effective_capacity = CapacityUse(
                     capacity_use.open_tournaments,
                     capacity_use.round_entrants,
@@ -1104,10 +1033,8 @@ class DurableRollingPreparationCoordinator:
                         if (
                             existing_item.payload() != payload
                             or existing_item.job_kind is not kind
-                            or existing_item.evidence_digest
-                            != candidate.key.evidence_digest
-                            or existing_item.bundle_digest
-                            != candidate.key.bundle_digest
+                            or existing_item.evidence_digest != candidate.key.evidence_digest
+                            or existing_item.bundle_digest != candidate.key.bundle_digest
                         ):
                             raise DurableJobError(
                                 "partial rolling component differs from canonical work"
@@ -1132,9 +1059,7 @@ class DurableRollingPreparationCoordinator:
                         hard_deadline_at=candidate.hard_deadline_at,
                         max_attempts=3,
                     )
-                    scheduled.append(
-                        self._repository.enqueue_rolling_job(**request_values)
-                    )
+                    scheduled.append(self._repository.enqueue_rolling_job(**request_values))
             return tuple(scheduled)
         except Exception:
             self._planner._restore(checkpoint)
@@ -1152,23 +1077,17 @@ class DurableRollingPreparationCoordinator:
         from strathmark.v3.application.field_assembly import CompetitorCardAuthority
         from strathmark.v3.contracts.forecasts import AssessorKind, ForecastState
 
-        if not isinstance(key, CardKey) or not isinstance(
-            authority, CompetitorCardAuthority
-        ):
+        if not isinstance(key, CardKey) or not isinstance(authority, CompetitorCardAuthority):
             raise DurableJobError("rolling seal requires a typed card and authority")
         now = require_utc_milliseconds(observed_at)
         council = self._load_council(council_manifest_digest)
         self._verify_card_binding(key, authority)
         jobs = list(self._repository.records_for_card(key.card_digest))
         if len(jobs) != 5:
-            raise DurableJobError(
-                "rolling card cannot seal before all component jobs exist"
-            )
+            raise DurableJobError("rolling card cannot seal before all component jobs exist")
         if any(item.state.value in self._ACTIVE_STATES for item in jobs):
             if now < min(item.hard_deadline_at for item in jobs):
-                raise DurableJobError(
-                    "rolling card components are not terminal before deadline"
-                )
+                raise DurableJobError("rolling card components are not terminal before deadline")
             for item in jobs:
                 if item.state.value in self._ACTIVE_STATES:
                     self._repository.cancel(
@@ -1196,11 +1115,7 @@ class DurableRollingPreparationCoordinator:
             != forecast_by_kind[AssessorKind.FORMULA].commit_digest
         ):
             raise DurableJobError("formula job publication differs from signed card")
-        if (
-            ml
-            and by_id["ml"].result_digest
-            != forecast_by_kind[AssessorKind.ML].commit_digest
-        ):
+        if ml and by_id["ml"].result_digest != forecast_by_kind[AssessorKind.ML].commit_digest:
             raise DurableJobError("ML job publication differs from signed card")
         expected_committed = {
             AssessorKind.FORMULA: formula,
@@ -1211,9 +1126,7 @@ class DurableRollingPreparationCoordinator:
             (forecast.state is ForecastState.COMMITTED) != expected_committed[kind]
             for kind, forecast in forecast_by_kind.items()
         ):
-            raise DurableJobError(
-                "card availability differs from terminal component receipts"
-            )
+            raise DurableJobError("card availability differs from terminal component receipts")
         self._verify_council_aggregate(
             council_aggregate_authority,
             key=key,
@@ -1304,19 +1217,15 @@ class DurableRollingPreparationCoordinator:
             "authority_digest": canonical_digest(authority_value),
             "component_refs_json": canonical_bytes(components_value).decode("utf-8"),
             "component_refs_digest": canonical_digest(components_value),
-            "availability_json": canonical_bytes(
-                [list(item) for item in availability]
-            ).decode("utf-8"),
-            "availability_digest": canonical_digest(
-                [list(item) for item in availability]
+            "availability_json": canonical_bytes([list(item) for item in availability]).decode(
+                "utf-8"
             ),
+            "availability_digest": canonical_digest([list(item) for item in availability]),
             "council_manifest_digest": council_manifest_digest,
             "council_aggregate_manifest_json": canonical_bytes(
                 council_aggregate_authority.to_dict()
             ).decode("utf-8"),
-            "publication_manifest_json": canonical_bytes(manifest.to_dict()).decode(
-                "utf-8"
-            ),
+            "publication_manifest_json": canonical_bytes(manifest.to_dict()).decode("utf-8"),
         }
         stored = self._repository.commit_rolling_publication(
             storage_row, expected_jobs=tuple(jobs), observed_at=now
@@ -1325,8 +1234,7 @@ class DurableRollingPreparationCoordinator:
         self._current[(str(key.competitor_id), key.target_context_digest)] = publication
         self._planner = RollingPreparationPlanner(
             tuple(
-                CompletedCard(item.key, item.publication_digest)
-                for item in self._current.values()
+                CompletedCard(item.key, item.publication_digest) for item in self._current.values()
             )
         )
         return publication
@@ -1334,20 +1242,48 @@ class DurableRollingPreparationCoordinator:
     def cached(self, key: CardKey) -> RollingCardPublication:
         if not isinstance(key, CardKey):
             raise DurableJobError("rolling cache lookup requires a CardKey")
-        publication = self._current.get(
-            (str(key.competitor_id), key.target_context_digest)
-        )
+        publication = self._current.get((str(key.competitor_id), key.target_context_digest))
         if publication is None or publication.key != key:
             raise KeyError(key.card_digest)
         return publication
 
-    def readiness(
-        self, keys: tuple[CardKey, ...], *, observed_at: str
-    ) -> RollingReadiness:
+    def current_publications_for_field(
+        self, field: FrozenFieldRevision
+    ) -> tuple[RollingCardPublication, ...]:
+        """Return the exact ordered rolling authority for one frozen field."""
+
+        from strathmark.v3.application.field_assembly import FrozenFieldRevision
+
+        if not isinstance(field, FrozenFieldRevision):
+            raise DurableJobError("rolling field lookup requires frozen authority")
+        publications = []
+        for assignment in field.ordered_assignments:
+            publication = self._current.get(
+                (str(assignment.competitor_id), field.target_context.digest)
+            )
+            if publication is None:
+                raise DurableJobError("rolling field publication is missing")
+            key = publication.key
+            packet = publication.authority.evidence_packet
+            if (
+                key.competitor_id != assignment.competitor_id
+                or key.target_context_digest != field.target_context.digest
+                or key.historical_cutoff_key != field.historical_cutoff_key
+                or key.tournament_epoch_id != field.tournament_epoch_id
+                or key.bundle_digest != field.bundle_digest
+                or key.evidence_digest != packet.content_digest
+                or packet.target_context != field.target_context
+                or str(packet.historical_cutoff_key) != str(field.historical_cutoff_key)
+                or str(packet.tournament_epoch_id) != str(field.tournament_epoch_id)
+                or packet.tournament_event_sequence != field.tournament_event_sequence
+            ):
+                raise DurableJobError("rolling field publication differs from frozen authority")
+            publications.append(publication)
+        return tuple(publications)
+
+    def readiness(self, keys: tuple[CardKey, ...], *, observed_at: str) -> RollingReadiness:
         now = require_utc_milliseconds(observed_at)
-        if not isinstance(keys, tuple) or not all(
-            isinstance(item, CardKey) for item in keys
-        ):
+        if not isinstance(keys, tuple) or not all(isinstance(item, CardKey) for item in keys):
             raise DurableJobError("rolling readiness requires typed card keys")
         if len({item.card_digest for item in keys}) != len(keys):
             raise DurableJobError("rolling readiness cannot repeat cards")
@@ -1356,9 +1292,7 @@ class DurableRollingPreparationCoordinator:
         failed = 0
         deadlines: list[str] = []
         for key in keys:
-            current = self._current.get(
-                (str(key.competitor_id), key.target_context_digest)
-            )
+            current = self._current.get((str(key.competitor_id), key.target_context_digest))
             if current is not None and current.key == key:
                 ready += 1
                 deadlines.append(current.hard_deadline_at)
@@ -1390,13 +1324,10 @@ class DurableRollingPreparationCoordinator:
         now = require_utc_milliseconds(observed_at)
         if (
             not isinstance(source_event, EventEnvelope)
-            or source_event.kind
-            not in {EventKind.ROUND_CLOSED, EventKind.TOURNAMENT_CLOSED}
+            or source_event.kind not in {EventKind.ROUND_CLOSED, EventKind.TOURNAMENT_CLOSED}
             or now < source_event.occurred_at_utc
         ):
-            raise DurableJobError(
-                "epoch close requires exact canonical lifecycle event"
-            )
+            raise DurableJobError("epoch close requires exact canonical lifecycle event")
         self._repository.close_rolling_epoch(str(epoch), source_event)
         cancelled = list(self._repository.cancel_closed_rolling_jobs())
         for value in self._repository.rolling_card_keys_for_epoch(str(epoch)):
@@ -1404,8 +1335,7 @@ class DurableRollingPreparationCoordinator:
             self._supersede_current(key, now, "epoch_closed")
         self._planner = RollingPreparationPlanner(
             tuple(
-                CompletedCard(item.key, item.publication_digest)
-                for item in self._current.values()
+                CompletedCard(item.key, item.publication_digest) for item in self._current.values()
             )
         )
         return tuple(cancelled)
@@ -1430,9 +1360,9 @@ class DurableRollingPreparationCoordinator:
             weight_authority, OperationalWeightAuthority
         ):
             raise DurableJobError("weight recombination requires typed field authority")
-        if not callable(
-            getattr(authority_store, "verify_current_field", None)
-        ) or not callable(getattr(authority_store, "verify_weight_authority", None)):
+        if not callable(getattr(authority_store, "verify_current_field", None)) or not callable(
+            getattr(authority_store, "verify_weight_authority", None)
+        ):
             raise DurableJobError("weight recombination requires an authority verifier")
         authority_store.verify_current_field(field)
         authority_store.verify_weight_authority(weight_authority)
@@ -1443,15 +1373,10 @@ class DurableRollingPreparationCoordinator:
         if not keys or len({item.card_digest for item in keys}) != len(keys):
             raise DurableJobError("weight recombination requires unique sealed cards")
         publications = tuple(self.cached(item) for item in keys)
-        publication_by_competitor = {
-            str(item.key.competitor_id): item for item in publications
-        }
-        expected_competitors = {
-            str(item.competitor_id) for item in field.ordered_assignments
-        }
+        publication_by_competitor = {str(item.key.competitor_id): item for item in publications}
+        expected_competitors = {str(item.competitor_id) for item in field.ordered_assignments}
         if (
-            {str(item.key.competitor_id) for item in publications}
-            != expected_competitors
+            {str(item.key.competitor_id) for item in publications} != expected_competitors
             or len(publications) != len(field.ordered_assignments)
             or any(
                 item.key.target_context_digest != field.target_context.digest
@@ -1464,8 +1389,7 @@ class DurableRollingPreparationCoordinator:
             or weight_authority.round_id != field.round_id
             or weight_authority.epoch_id != field.tournament_epoch_id
             or weight_authority.epoch_digest != field.evidence_digest
-            or weight_authority.frozen_tournament_sequence
-            != field.tournament_event_sequence
+            or weight_authority.frozen_tournament_sequence != field.tournament_event_sequence
         ):
             raise DurableJobError("recombination authority differs from current field")
         from strathmark.v3.domain.pooling import ContextNode
@@ -1482,8 +1406,7 @@ class DurableRollingPreparationCoordinator:
         ):
             raise DurableJobError("recombination weight context differs from field")
         publications = tuple(
-            publication_by_competitor[str(item.competitor_id)]
-            for item in field.ordered_assignments
+            publication_by_competitor[str(item.competitor_id)] for item in field.ordered_assignments
         )
         payload = {
             "schema_version": "strathmark-v3-weight-only-recombination-v1",
@@ -1497,9 +1420,7 @@ class DurableRollingPreparationCoordinator:
                 **field.content_value(),
                 "revision_digest": field.revision_digest,
             },
-            "card_publication_digests": [
-                item.publication_digest for item in publications
-            ],
+            "card_publication_digests": [item.publication_digest for item in publications],
             "weight_authority_digest": weight_authority.authority_digest,
             "weight_authority": weight_authority.to_dict(),
             "provider_recall": False,
@@ -1514,9 +1435,7 @@ class DurableRollingPreparationCoordinator:
             priority=JobPriority.IMMINENT_FIELD,
             capacity_use=capacity_use,
             payload=payload,
-            evidence_digest=canonical_digest(
-                [item.key.evidence_digest for item in publications]
-            ),
+            evidence_digest=canonical_digest([item.key.evidence_digest for item in publications]),
             bundle_digest=publications[0].key.bundle_digest,
             retry_policy_version="rolling-recombination-v1",
             created_at=now,
@@ -1547,9 +1466,7 @@ class DurableRollingPreparationCoordinator:
             for item in recovered
         }
         self._planner = RollingPreparationPlanner(
-            tuple(
-                CompletedCard(item.key, item.publication_digest) for item in recovered
-            )
+            tuple(CompletedCard(item.key, item.publication_digest) for item in recovered)
         )
 
     def _load_council(self, digest: str) -> dict[str, Any]:
@@ -1561,10 +1478,7 @@ class DurableRollingPreparationCoordinator:
         return payload
 
     def _verify_council_manifest(self, manifest: SignedManifest) -> dict[str, Any]:
-        if (
-            not isinstance(manifest, SignedManifest)
-            or manifest.kind != self._COUNCIL_KIND
-        ):
+        if not isinstance(manifest, SignedManifest) or manifest.kind != self._COUNCIL_KIND:
             raise DurableJobError("rolling council authority kind differs")
         payload = verify_manifest(manifest, self._trust_store)
         if set(payload) != {
@@ -1599,11 +1513,7 @@ class DurableRollingPreparationCoordinator:
                     or not candidate
                     or len(candidate) > 128
                     or any(
-                        not (
-                            character.islower()
-                            or character.isdigit()
-                            or character in "_.:-"
-                        )
+                        not (character.islower() or character.isdigit() or character in "_.:-")
                         for character in candidate
                     )
                 ):
@@ -1623,9 +1533,7 @@ class DurableRollingPreparationCoordinator:
             or kinds.count("cloud") != 1
             or any(kind not in {"local", "cloud"} for kind in kinds)
         ):
-            raise DurableJobError(
-                "rolling council roster lacks independent 2-local/1-cloud pins"
-            )
+            raise DurableJobError("rolling council roster lacks independent 2-local/1-cloud pins")
         return payload
 
     @staticmethod
@@ -1670,8 +1578,7 @@ class DurableRollingPreparationCoordinator:
             or str(packet.tournament_epoch_id) != str(key.tournament_epoch_id)
             or packet.content_digest != key.evidence_digest
             or authority.bundle_digest != key.bundle_digest
-            or verify_manifest(authority.manifest, self._trust_store)
-            != authority.content_value()
+            or verify_manifest(authority.manifest, self._trust_store) != authority.content_value()
         ):
             raise DurableJobError("signed card authority differs from causal card key")
 
@@ -1715,16 +1622,12 @@ class DurableRollingPreparationCoordinator:
         if tuple((item.component_id, item.job_kind) for item in receipts) != tuple(
             (component, kind) for component, kind, _digest in expected
         ):
-            raise DurableJobError(
-                "rolling component set differs from installed council roster"
-            )
+            raise DurableJobError("rolling component set differs from installed council roster")
         records = self._repository.records_for_card(key.card_digest)
         by_ordinal = {item.payload()["component_ordinal"]: item for item in records}
         if len(by_ordinal) != 5:
             raise DurableJobError("rolling component receipts differ from durable jobs")
-        for ordinal, (component_id, kind, member_digest) in enumerate(
-            expected, start=1
-        ):
+        for ordinal, (component_id, kind, member_digest) in enumerate(expected, start=1):
             record = by_ordinal[ordinal]
             from strathmark.v3.contracts.evidence import EvidencePacket
 
@@ -1736,9 +1639,7 @@ class DurableRollingPreparationCoordinator:
                 or str(packet.historical_cutoff_key) != str(key.historical_cutoff_key)
                 or str(packet.tournament_epoch_id) != str(key.tournament_epoch_id)
             ):
-                raise DurableJobError(
-                    "rolling job evidence packet differs from card key"
-                )
+                raise DurableJobError("rolling job evidence packet differs from card key")
             expected_payload = {
                 "schema_version": "strathmark-v3-rolling-component-job-v1",
                 "card_key": key.to_dict(),
@@ -1797,9 +1698,7 @@ class DurableRollingPreparationCoordinator:
                 }
             )
         council_forecast = next(
-            item
-            for item in authority.forecasts
-            if item.assessor is AssessorKind.LLM_COUNCIL
+            item for item in authority.forecasts if item.assessor is AssessorKind.LLM_COUNCIL
         )
         expected = {
             "schema_version": "strathmark-v3-rolling-council-aggregate-v1",
@@ -1853,9 +1752,7 @@ class DurableRollingPreparationCoordinator:
         aggregate_manifest = SignedManifest.from_dict(
             json.loads(str(row["council_aggregate_manifest_json"]))
         )
-        manifest = SignedManifest.from_dict(
-            json.loads(str(row["publication_manifest_json"]))
-        )
+        manifest = SignedManifest.from_dict(json.loads(str(row["publication_manifest_json"])))
         authority = CompetitorCardAuthority.from_dict(authority_value)
         key_value = manifest.body()["payload"]["card_key"]
         key = _card_key_from_dict(key_value)
@@ -1968,9 +1865,7 @@ class RollingLifecycleReactionService:
         completed_at = require_utc_milliseconds(self._clock())
         source_at = max(item.occurred_at_utc for item in events)
         if completed_at < source_at:
-            raise DurableJobError(
-                "rolling reaction completion predates its source event"
-            )
+            raise DurableJobError("rolling reaction completion predates its source event")
         plan = self._resolver.resolve(events)
         if not isinstance(plan, RollingLifecycleReactionPlan):
             raise DurableJobError("rolling lifecycle resolver must return a typed plan")
@@ -1990,9 +1885,7 @@ class RollingLifecycleReactionService:
                     observed_at=completed_at,
                 )
         timely_candidates = tuple(
-            candidate
-            for candidate in plan.candidates
-            if completed_at < candidate.hard_deadline_at
+            candidate for candidate in plan.candidates if completed_at < candidate.hard_deadline_at
         )
         expired_card_digests = tuple(
             candidate.key.card_digest
@@ -2009,9 +1902,7 @@ class RollingLifecycleReactionService:
         execution_value = {
             "schema_version": "strathmark-v3-rolling-lifecycle-execution-v1",
             "plan": plan.content_value(),
-            "scheduled_card_digests": [
-                item.key.card_digest for item in timely_candidates
-            ],
+            "scheduled_card_digests": [item.key.card_digest for item in timely_candidates],
             "deadline_expired_card_digests": list(expired_card_digests),
         }
         self._reaction_store.complete_rolling_reaction(

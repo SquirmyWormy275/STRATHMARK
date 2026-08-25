@@ -104,9 +104,7 @@ class LoadedMLBundle:
     ) -> tuple[dict[str, object], tuple[str, ...]]:
         missing = set(self.feature_names) - set(features)
         if missing:
-            raise MLArtifactError(
-                f"inference features missing schema fields: {sorted(missing)}"
-            )
+            raise MLArtifactError(f"inference features missing schema fields: {sorted(missing)}")
         normalized = {name: features[name] for name in self.feature_names}
         unseen: list[str] = []
         for name in self.categorical_features:
@@ -141,9 +139,7 @@ def write_ml_bundle(
     _parse_catboost_json(universal_model_json)
     for key, raw in sorted(specialist_model_json.items()):
         if not isinstance(key, str) or not key or not isinstance(raw, bytes):
-            raise MLArtifactError(
-                "specialist models require bounded key and JSON bytes"
-            )
+            raise MLArtifactError("specialist models require bounded key and JSON bytes")
         _parse_catboost_json(raw)
         filename = f"specialists/{canonical_digest({'specialist_key': key})}.json"
         models[key] = (filename, raw)
@@ -159,13 +155,9 @@ def write_ml_bundle(
         else specialist_eligibility
     )
     if set(eligibility) != set(models):
-        raise MLArtifactError(
-            "specialist eligibility must exactly cover specialist models"
-        )
+        raise MLArtifactError("specialist eligibility must exactly cover specialist models")
     if any(not item.available for item in eligibility.values()):
-        raise MLArtifactError(
-            "ineligible specialist models cannot enter a trusted bundle"
-        )
+        raise MLArtifactError("ineligible specialist models cannot enter a trusted bundle")
     payloads: dict[str, bytes] = {
         "universal.json": universal_model_json,
         "gate.json": canonical_bytes(gate_value),
@@ -177,9 +169,7 @@ def write_ml_bundle(
     }
     payloads.update({filename: raw for filename, raw in models.values()})
     total = sum(len(raw) for raw in payloads.values())
-    if total > MAX_BUNDLE_BYTES or any(
-        len(raw) > MAX_JSON_FILE_BYTES for raw in payloads.values()
-    ):
+    if total > MAX_BUNDLE_BYTES or any(len(raw) > MAX_JSON_FILE_BYTES for raw in payloads.values()):
         raise MLArtifactError("ML bundle exceeds the maximum safe byte bounds")
     body = {
         "schema_version": MANIFEST_SCHEMA,
@@ -223,11 +213,7 @@ def load_ml_bundle(
     directory = Path(root)
     manifest_path = directory / "manifest.json"
     try:
-        if (
-            not directory.is_dir()
-            or not manifest_path.is_file()
-            or manifest_path.is_symlink()
-        ):
+        if not directory.is_dir() or not manifest_path.is_file() or manifest_path.is_symlink():
             raise MLArtifactError("ML bundle manifest is missing")
         raw_manifest = _read_bounded(manifest_path, MAX_MANIFEST_BYTES, "manifest")
         manifest = _parse_json(raw_manifest, "manifest")
@@ -243,9 +229,7 @@ def load_ml_bundle(
             raise MLArtifactError("ML manifest fields do not match the closed schema")
         if manifest["schema_version"] != MANIFEST_SCHEMA:
             raise MLArtifactError("ML manifest schema is unsupported")
-        body = {
-            key: value for key, value in manifest.items() if key != "manifest_digest"
-        }
+        body = {key: value for key, value in manifest.items() if key != "manifest_digest"}
         if manifest["manifest_digest"] != canonical_digest(body):
             raise MLArtifactError("ML manifest digest mismatch")
         files = _validate_file_manifest(manifest["files"])
@@ -260,22 +244,15 @@ def load_ml_bundle(
             "bundle_metadata.json",
             *(item[0] for item in specialists.values()),
         }
-        if (
-            manifest["universal_model"] != "universal.json"
-            or set(files) != expected_paths
-        ):
-            raise MLArtifactError(
-                "ML manifest file coverage does not match the closed schema"
-            )
+        if manifest["universal_model"] != "universal.json" or set(files) != expected_paths:
+            raise MLArtifactError("ML manifest file coverage does not match the closed schema")
         actual_paths = {
             path.relative_to(directory).as_posix()
             for path in directory.rglob("*")
             if path.is_file() and path.name != "manifest.json"
         }
         if actual_paths != expected_paths:
-            raise MLArtifactError(
-                "ML bundle contains missing or prohibited extra files"
-            )
+            raise MLArtifactError("ML bundle contains missing or prohibited extra files")
         verified: dict[str, bytes] = {}
         total = 0
         for relative, identity in sorted(files.items()):
@@ -284,21 +261,14 @@ def load_ml_bundle(
             total += len(raw)
             if total > MAX_BUNDLE_BYTES:
                 raise MLArtifactError("ML bundle exceeds the maximum safe byte bound")
-            if (
-                len(raw) != identity[0]
-                or hashlib.sha256(raw).hexdigest() != identity[1]
-            ):
-                raise MLArtifactError(
-                    f"ML artifact digest or size mismatch: {relative}"
-                )
+            if len(raw) != identity[0] or hashlib.sha256(raw).hexdigest() != identity[1]:
+                raise MLArtifactError(f"ML artifact digest or size mismatch: {relative}")
             verified[relative] = raw
         _parse_catboost_json(verified["universal.json"])
         for path, _eligibility in specialists.values():
             _parse_catboost_json(verified[path])
         gate = SpecialistGate.from_dict(_parse_json(verified["gate.json"], "gate"))
-        calibrator = PITCalibrator.from_dict(
-            _parse_json(verified["calibrator.json"], "calibrator")
-        )
+        calibrator = PITCalibrator.from_dict(_parse_json(verified["calibrator.json"], "calibrator"))
         schema = _validate_feature_schema(
             _parse_json(verified["feature_schema.json"], "feature schema")
         )
@@ -323,13 +293,9 @@ def load_ml_bundle(
         raise MLArtifactError("ML artifact is invalid before activation") from exc
 
     loader = model_loader or _default_model_loader
-    universal, specialist_models = _activate_verified_models(
-        verified, specialists, loader
-    )
+    universal, specialist_models = _activate_verified_models(verified, specialists, loader)
     eligibility_map = {key: value[1] for key, value in specialists.items()}
-    vocabulary = {
-        name: tuple(values) for name, values in vocabulary_value["values"].items()
-    }
+    vocabulary = {name: tuple(values) for name, values in vocabulary_value["values"].items()}
     return LoadedMLBundle(
         digest=hashlib.sha256(raw_manifest).hexdigest(),
         version=manifest["bundle_version"],
@@ -373,23 +339,18 @@ def _activate_verified_models(
 
     model_paths = ("universal.json", *(item[0] for item in specialists.values()))
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="strathmark-v3-ml-activate-"
-        ) as temporary:
+        with tempfile.TemporaryDirectory(prefix="strathmark-v3-ml-activate-") as temporary:
             root = Path(temporary)
             copies: dict[str, Path] = {}
             for index, relative in enumerate(model_paths):
                 copy = root / f"model-{index}.json"
                 copy.write_bytes(verified[relative])
                 if copy.read_bytes() != verified[relative]:
-                    raise MLArtifactError(
-                        "verified ML activation copy differs before load"
-                    )
+                    raise MLArtifactError("verified ML activation copy differs before load")
                 copies[relative] = copy
             universal = loader(copies["universal.json"])
             specialist_models = {
-                key: loader(copies[path])
-                for key, (path, _eligibility) in specialists.items()
+                key: loader(copies[path]) for key, (path, _eligibility) in specialists.items()
             }
             if any(copies[path].read_bytes() != verified[path] for path in model_paths):
                 raise MLArtifactError("verified ML activation copy changed during load")
@@ -438,9 +399,7 @@ def _validate_bundle_metadata(
         "conversion_version",
     }
     if not isinstance(value, Mapping) or set(value) != expected:
-        raise MLArtifactError(
-            "ML bundle metadata fields do not match the closed schema"
-        )
+        raise MLArtifactError("ML bundle metadata fields do not match the closed schema")
     if value["schema_version"] != BUNDLE_METADATA_SCHEMA:
         raise MLArtifactError("ML bundle metadata schema is unsupported")
     if not all(
@@ -468,14 +427,10 @@ def _validate_vocabulary(
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {"schema_version", "values"}:
         raise MLArtifactError("ML category vocabulary fields are invalid")
-    if value["schema_version"] != VOCABULARY_SCHEMA or not isinstance(
-        value["values"], Mapping
-    ):
+    if value["schema_version"] != VOCABULARY_SCHEMA or not isinstance(value["values"], Mapping):
         raise MLArtifactError("ML category vocabulary schema is unsupported")
     if set(value["values"]) != set(feature_schema["categorical"]):
-        raise MLArtifactError(
-            "ML category vocabulary does not cover categorical features"
-        )
+        raise MLArtifactError("ML category vocabulary does not cover categorical features")
     for values in value["values"].values():
         if (
             not isinstance(values, list)
@@ -495,8 +450,7 @@ def _validate_dependency_lock(value: Mapping[str, Any]) -> dict[str, str]:
     }:
         raise MLArtifactError("ML dependency lock fields are invalid")
     if value["schema_version"] != DEPENDENCY_SCHEMA or not all(
-        isinstance(value[key], str) and value[key]
-        for key in ("catboost_version", "python_abi")
+        isinstance(value[key], str) and value[key] for key in ("catboost_version", "python_abi")
     ):
         raise MLArtifactError("ML dependency lock schema is unsupported")
     return dict(value)
@@ -518,9 +472,7 @@ def _validate_file_manifest(value: Any) -> dict[str, tuple[int, str]]:
             or identity["bytes"] > MAX_JSON_FILE_BYTES
             or not _is_digest(identity["sha256"])
         ):
-            raise MLArtifactError(
-                "ML file manifest contains an invalid bounded identity"
-            )
+            raise MLArtifactError("ML file manifest contains an invalid bounded identity")
         result[path] = (identity["bytes"], identity["sha256"])
     return result
 
@@ -555,10 +507,7 @@ def _validate_specialist_manifest(
             eligibility_value["competitors"],
             eligibility_value["tournaments"],
         )
-        if (
-            eligibility_value["available"] is not eligibility.available
-            or not eligibility.available
-        ):
+        if eligibility_value["available"] is not eligibility.available or not eligibility.available:
             raise MLArtifactError("ML specialist eligibility is inconsistent")
         result[key] = (item["path"], eligibility)
     return result
@@ -594,9 +543,7 @@ def _parse_catboost_json(raw: bytes) -> dict[str, Any]:
                 or not isinstance(feature.get("feature_id"), str)
             ):
                 raise MLArtifactError("CatBoost JSON feature identity is invalid")
-            declared.append(
-                (feature["flat_feature_index"], feature["feature_id"], kind)
-            )
+            declared.append((feature["flat_feature_index"], feature["feature_id"], kind))
     declared.sort()
     expected = [
         (
@@ -645,9 +592,7 @@ def _reject_executable_shapes(value: Any, *, depth: int = 0) -> None:
         for key, item in value.items():
             lowered = str(key).lower()
             if any(fragment in lowered for fragment in _PROHIBITED_FRAGMENTS):
-                raise MLArtifactError(
-                    "CatBoost JSON contains a prohibited executable shape"
-                )
+                raise MLArtifactError("CatBoost JSON contains a prohibited executable shape")
             _reject_executable_shapes(item, depth=depth + 1)
     elif isinstance(value, list):
         for item in value:

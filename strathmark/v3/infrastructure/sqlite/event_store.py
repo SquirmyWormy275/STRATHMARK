@@ -202,6 +202,15 @@ class SQLiteEventStore:
         try:
             with open_v3_connection(self._database_path) as connection:
                 with immediate_transaction(connection):
+                    from strathmark.v3.infrastructure.sqlite.rolling_restart import (
+                        RollingRestartIntegrityError,
+                        require_rolling_reaction_cursor_at_event_head,
+                    )
+
+                    try:
+                        require_rolling_reaction_cursor_at_event_head(connection)
+                    except RollingRestartIntegrityError as exc:
+                        raise EventStoreIntegrityError(str(exc)) from exc
                     if request.command.kind in {
                         CommandKind.ACKNOWLEDGE_ISSUE,
                         CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
@@ -228,6 +237,11 @@ class SQLiteEventStore:
                     )
                     if projection_hook is not None:
                         projection_hook(connection, events)
+                    from strathmark.v3.infrastructure.sqlite.rolling_restart import (
+                        advance_rolling_reaction_cursor,
+                    )
+
+                    advance_rolling_reaction_cursor(connection, events)
                     _fault(fault_hook, "after_projection")
                     _fault(fault_hook, "before_result")
                     event_set_digest = _event_set_digest(events)
@@ -339,6 +353,24 @@ class SQLiteEventStore:
     def event_count(self) -> int:
         with open_v3_connection(self._database_path, read_only=True) as connection:
             return int(connection.execute("SELECT COUNT(*) FROM v3_events").fetchone()[0])
+
+    def event_at(self, global_sequence: int) -> EventEnvelope:
+        if (
+            isinstance(global_sequence, bool)
+            or not isinstance(global_sequence, int)
+            or global_sequence <= 0
+        ):
+            raise EventStoreError("event sequence must be a positive integer")
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            self._verify_connection(connection)
+            row = connection.execute(
+                "SELECT envelope_json FROM v3_events WHERE global_sequence=?",
+                (global_sequence,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(global_sequence)
+            value = json.loads(str(row[0]))
+            return EventEnvelope.from_dict(value)
 
     def lookup_exact_retry(
         self,
@@ -683,6 +715,7 @@ class SQLiteEventStore:
                 AggregateKind.FORECAST,
                 AggregateKind.SCORE,
                 AggregateKind.WEIGHTS,
+                AggregateKind.APPROVAL_DECISION,
             }:
                 try:
                     transition(

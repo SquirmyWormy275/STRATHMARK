@@ -5,6 +5,8 @@ from decimal import ROUND_DOWN, localcontext
 
 import pytest
 
+import strathmark.v3.contracts.forecasts as forecast_contracts
+from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.forecasts import (
     ArtifactIdentity,
@@ -20,6 +22,8 @@ from strathmark.v3.contracts.forecasts import (
     PositiveTimeDistribution,
     QuantilePoint,
     SamplingSpec,
+    _samples_digest,
+    sample_aligned_positive_distributions,
 )
 from strathmark.v3.contracts.identifiers import StableIdentifier
 
@@ -61,8 +65,16 @@ def test_positive_distribution_round_trip_and_digest_are_exact() -> None:
     "points",
     [
         (QuantilePoint("0.1", 24000), QuantilePoint("0.9", 42000)),
-        (QuantilePoint("0.5", 30000), QuantilePoint("0.1", 24000), QuantilePoint("0.9", 42000)),
-        (QuantilePoint("0.1", 30000), QuantilePoint("0.5", 29000), QuantilePoint("0.9", 42000)),
+        (
+            QuantilePoint("0.5", 30000),
+            QuantilePoint("0.1", 24000),
+            QuantilePoint("0.9", 42000),
+        ),
+        (
+            QuantilePoint("0.1", 30000),
+            QuantilePoint("0.5", 29000),
+            QuantilePoint("0.9", 42000),
+        ),
     ],
 )
 def test_distribution_requires_median_and_ordered_quantiles(
@@ -107,6 +119,62 @@ def test_sampler_is_seed_injected_positive_and_runtime_independent() -> None:
     assert distribution.sample(SamplingSpec(seed=20260823, draw_count=32)) != first
 
 
+def test_fresh_distribution_samples_reuse_same_call_numeric_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distribution = _distribution()
+    spec = SamplingSpec(seed=20260822, draw_count=32)
+
+    def reject_revalidation(*_args, **_kwargs) -> None:
+        raise AssertionError("fresh generated samples were revalidated")
+
+    monkeypatch.setattr(forecast_contracts, "_require_positive_int", reject_revalidation)
+    samples = distribution.sample(spec)
+
+    assert samples.samples_authority_digest == canonical_digest(samples.samples_ms)
+    with pytest.raises(AssertionError, match="revalidated"):
+        DistributionSamples.from_dict(samples.to_dict())
+
+
+@pytest.mark.parametrize(
+    ("samples_ms", "seed", "distribution_digest", "common_random_map_digest"),
+    (
+        ((1,), 0, "0" * 64, None),
+        ((1, 20_000, 2_000_000_000), 2**63 - 1, "f" * 64, "a" * 64),
+        (tuple(range(1, 4_097)), 20260824, "d" * 64, "c" * 64),
+    ),
+)
+def test_sample_digest_matches_the_canonical_receipt_oracle(
+    samples_ms: tuple[int, ...],
+    seed: int,
+    distribution_digest: str,
+    common_random_map_digest: str | None,
+) -> None:
+    expected = canonical_digest(
+        {
+            "schema_version": "strathmark-v3-distribution-sampling-v1",
+            "algorithm": "splitmix64-inverse-quantile-v1",
+            "dependency_version": "stdlib-only-v1",
+            "seed": seed,
+            "draw_count": len(samples_ms),
+            "time_quantum_ms": 1,
+            "distribution_digest": distribution_digest,
+            "samples_ms": list(samples_ms),
+            "common_random_map_digest": common_random_map_digest,
+        }
+    )
+
+    assert (
+        _samples_digest(
+            samples_ms=samples_ms,
+            seed=seed,
+            distribution_digest=distribution_digest,
+            common_random_map_digest=common_random_map_digest,
+        )
+        == expected
+    )
+
+
 def test_common_uniforms_control_sampling_without_ambient_rng() -> None:
     distribution = _distribution()
     samples = distribution.sample(
@@ -123,6 +191,47 @@ def test_common_uniforms_control_sampling_without_ambient_rng() -> None:
         SamplingSpec(seed=1, draw_count=2, common_uniforms=("0.1",))
 
 
+def test_common_uniform_sampling_preserves_frozen_decimal_edge_bytes() -> None:
+    distribution = PositiveTimeDistribution(
+        (
+            QuantilePoint("0.01", 1),
+            QuantilePoint("0.5", 10_001),
+            QuantilePoint("0.99", 2_000_000_000),
+        )
+    )
+    uniforms = (
+        "0.0000000000000000000000000001",
+        "0.01",
+        "0.0100000000000000000000000001",
+        "0.123456789012345678901234567890123456789",
+        "0.4999999999999999999999999999",
+        "0.5",
+        "0.5000000000000000000000000001",
+        "0.876543210987654321098765432109876543211",
+        "0.9899999999999999999999999999",
+        "0.99",
+        "0.9999999999999999999999999999",
+    )
+    sample = distribution.sample(SamplingSpec(7, len(uniforms), uniforms, "a" * 64))
+
+    assert sample.samples_ms == (
+        1,
+        1,
+        1,
+        2_316,
+        10_001,
+        10_001,
+        10_001,
+        1_536_913_381,
+        2_000_000_000,
+        2_000_000_000,
+        2_000_000_000,
+    )
+    assert sample.samples_digest == (
+        "36494dd9ccee23623d3a29df6e4226a99f56ca876eb776e2720ff881d4c6ce5a"
+    )
+
+
 def test_sampling_is_invariant_to_ambient_decimal_context() -> None:
     distribution = _distribution()
     spec = SamplingSpec(seed=20260822, draw_count=64)
@@ -132,6 +241,119 @@ def test_sampling_is_invariant_to_ambient_decimal_context() -> None:
         hostile.prec = 6
         hostile.rounding = ROUND_DOWN
         actual = distribution.sample(spec)
+
+    assert actual == expected
+
+
+def test_aligned_distribution_batch_sampling_is_byte_exact_to_individual_oracle() -> None:
+    distributions = tuple(
+        PositiveTimeDistribution(
+            (
+                QuantilePoint("0.01", median - 8_000),
+                QuantilePoint("0.5", median),
+                QuantilePoint("0.99", median + width),
+            )
+        )
+        for median, width in ((40_000, 8_000), (55_000, 12_000), (80_000, 20_000))
+    )
+    uniforms = tuple(f"0.{index:096d}".rstrip("0") for index in range(1, 130)) + (
+        "0.5",
+        "0.99",
+    )
+    spec = SamplingSpec(
+        seed=41,
+        draw_count=len(uniforms),
+        common_uniforms=uniforms,
+        common_random_map_digest="a" * 64,
+    )
+
+    expected = tuple(distribution.sample(spec) for distribution in distributions)
+    assert sample_aligned_positive_distributions(distributions, spec) == expected
+
+    mismatched = (
+        distributions[0],
+        PositiveTimeDistribution(
+            (
+                QuantilePoint("0.1", 30_000),
+                QuantilePoint("0.5", 55_000),
+                QuantilePoint("0.9", 90_000),
+            )
+        ),
+    )
+    assert sample_aligned_positive_distributions(mismatched, spec) == tuple(
+        distribution.sample(spec) for distribution in mismatched
+    )
+
+
+def test_standard_production_grid_routes_through_sealed_sampler(monkeypatch) -> None:
+    distributions = (
+        _distribution(),
+        PositiveTimeDistribution(
+            (
+                QuantilePoint("0.1", 30_000),
+                QuantilePoint("0.5", 45_000),
+                QuantilePoint("0.9", 75_000),
+            )
+        ),
+    )
+    uniforms = tuple(("0.2", "0.6")[index % 2] for index in range(4096))
+    spec = SamplingSpec(17, 4096, uniforms, "a" * 64)
+    expected = tuple(
+        distribution._sample_scaled_probabilities(
+            spec._scaled_common_uniforms,
+            spec._common_uniform_exponent,
+        )
+        for distribution in distributions
+    )
+    calls = []
+
+    class RecordingSampler:
+        def sample_three_quantiles(self, probability_words_le, time_rows, *, draw_count):
+            calls.append((probability_words_le, time_rows, draw_count))
+            return expected
+
+    monkeypatch.setattr(forecast_contracts, "_NATIVE_STANDARD_SAMPLER", RecordingSampler())
+    monkeypatch.setattr(forecast_contracts, "_NATIVE_STANDARD_SAMPLER_INITIALIZED", True)
+
+    actual = sample_aligned_positive_distributions(distributions, spec)
+
+    assert tuple(row.samples_ms for row in actual) == expected
+    assert calls == [
+        (
+            spec._standard_probability_words_le,
+            tuple(distribution._times_ms for distribution in distributions),
+            4096,
+        )
+    ]
+
+
+@pytest.mark.parametrize("seed", (0, 2**63 - 1))
+def test_aligned_distribution_batch_sampling_matches_oracle_under_hostile_context(
+    seed: int,
+) -> None:
+    distributions = (
+        PositiveTimeDistribution(
+            (
+                QuantilePoint("0.01", 1),
+                QuantilePoint("0.5", 1),
+                QuantilePoint("0.99", 2_000_000_000),
+            )
+        ),
+        PositiveTimeDistribution(
+            (
+                QuantilePoint("0.01", 10_000),
+                QuantilePoint("0.5", 10_001),
+                QuantilePoint("0.99", 10_001),
+            )
+        ),
+    )
+    spec = SamplingSpec(seed=seed, draw_count=257)
+    expected = tuple(item.sample(spec) for item in distributions)
+
+    with localcontext() as hostile:
+        hostile.prec = 6
+        hostile.rounding = ROUND_DOWN
+        actual = sample_aligned_positive_distributions(distributions, spec)
 
     assert actual == expected
 
@@ -176,6 +398,25 @@ def test_distribution_sample_record_is_closed_and_self_verifying() -> None:
     encoded["samples_ms"] = "not-an-array"
     with pytest.raises(ContractError, match="JSON array"):
         DistributionSamples.from_dict(encoded)
+
+
+def test_fresh_distribution_samples_hash_the_generated_vector_once(monkeypatch) -> None:
+    import strathmark.v3.contracts.forecasts as forecast_contracts
+
+    calls = 0
+    original = forecast_contracts._samples_digest
+
+    def counted(**arguments):
+        nonlocal calls
+        calls += 1
+        return original(**arguments)
+
+    monkeypatch.setattr(forecast_contracts, "_samples_digest", counted)
+
+    sample = _distribution().sample(SamplingSpec(seed=7, draw_count=128))
+
+    assert sample.samples_digest
+    assert calls == 1
 
 
 def test_distribution_decoder_and_interval_boundaries_fail_closed() -> None:

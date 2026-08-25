@@ -86,9 +86,7 @@ class ExternalRollingHeadRegistry:
             raise RollingHeadRegistryError("rolling-head trust store is invalid")
         if not isinstance(active_identity, IntegrityKeyIdentity):
             raise RollingHeadRegistryError("rolling-head active identity is invalid")
-        if not callable(getattr(signer, "sign", None)) or not hasattr(
-            signer, "identity"
-        ):
+        if not callable(getattr(signer, "sign", None)) or not hasattr(signer, "identity"):
             raise RollingHeadRegistryError("rolling-head signer is invalid")
         if signer.identity != active_identity:
             raise RollingHeadRegistryError("active signer identity differs")
@@ -96,9 +94,7 @@ class ExternalRollingHeadRegistry:
             trust_store.identity(bootstrap_identity.key_id)
             trust_store.identity(active_identity.key_id)
         except IntegrityError as exc:
-            raise RollingHeadRegistryError(
-                "rolling-head authority key is not trusted"
-            ) from exc
+            raise RollingHeadRegistryError("rolling-head authority key is not trusted") from exc
         if (
             isinstance(refresh_threshold, bool)
             or not isinstance(refresh_threshold, int)
@@ -156,9 +152,7 @@ class ExternalRollingHeadRegistry:
                 signer=signer,
                 trust_store=trust_store,
                 restart_trust=(
-                    None
-                    if expected is None
-                    else RollingRestartTrust.externally_anchored(expected)
+                    None if expected is None else RollingRestartTrust.externally_anchored(expected)
                 ),
             )
             receipt = repository.recover_rolling_restart()
@@ -166,9 +160,7 @@ class ExternalRollingHeadRegistry:
         except DurableJobError as exc:
             message = str(exc)
             if "external rolling head rolled back" in message:
-                raise RollingHeadRegistryError(
-                    "local rolling head rolled back"
-                ) from exc
+                raise RollingHeadRegistryError("local rolling head rolled back") from exc
             raise RollingHeadRegistryError(
                 "local rolling restart cannot reconcile to the retained head"
             ) from exc
@@ -183,9 +175,7 @@ class ExternalRollingHeadRegistry:
         if expected is None:
             anchored = self.latest_expected_head
             if anchored is None:
-                raise RollingHeadRegistryError(
-                    "rolling-head bootstrap publication failed"
-                )
+                raise RollingHeadRegistryError("rolling-head bootstrap publication failed")
             repository = DurableJobRepository(
                 database_path,
                 capacity=capacity,
@@ -232,9 +222,7 @@ class ExternalRollingHeadRegistry:
         except DurableJobError as exc:
             message = str(exc)
             if "external rolling head rolled back" in message:
-                raise RollingHeadRegistryError(
-                    "local rolling head rolled back"
-                ) from exc
+                raise RollingHeadRegistryError("local rolling head rolled back") from exc
             raise RollingHeadRegistryError(
                 "local rolling restart cannot reconcile to the retained head"
             ) from exc
@@ -246,9 +234,7 @@ class ExternalRollingHeadRegistry:
                 "local rolling restart status changed during reconciliation"
             )
         if status.checkpoint_sequence > expected.checkpoint_sequence:
-            return self._publish_verified_receipt(
-                receipt, published_at=timestamp, force=True
-            )
+            return self._publish_verified_receipt(receipt, published_at=timestamp, force=True)
         try:
             compacted = repository.refresh_rolling_restart_checkpoint_if_due(
                 observed_at=timestamp,
@@ -269,9 +255,7 @@ class ExternalRollingHeadRegistry:
             raise RollingHeadRegistryError(
                 "local rolling checkpoint changed before external publication"
             )
-        return self._publish_verified_receipt(
-            verified, published_at=timestamp, force=True
-        )
+        return self._publish_verified_receipt(verified, published_at=timestamp, force=True)
 
     def _publish_verified_receipt(
         self,
@@ -325,9 +309,7 @@ class ExternalRollingHeadRegistry:
         self._records = self._load_records()
         winner = self._records[-1]
         if winner != record:
-            raise RollingHeadRegistryError(
-                "rolling-head sequence already binds different material"
-            )
+            raise RollingHeadRegistryError("rolling-head sequence already binds different material")
         return winner
 
     def _install_bootstrap_identity(self, identity: IntegrityKeyIdentity) -> None:
@@ -354,9 +336,7 @@ class ExternalRollingHeadRegistry:
         try:
             created = _publish_bytes_no_clobber(self.heads_root, target, encoded)
         except OSError as exc:
-            raise RollingHeadRegistryError(
-                "rolling-head record cannot be published"
-            ) from exc
+            raise RollingHeadRegistryError("rolling-head record cannot be published") from exc
         if not created:
             winner = self._read_record(target)
             if winner != record:
@@ -372,18 +352,12 @@ class ExternalRollingHeadRegistry:
         prior_source_sequence = 0
         for expected_sequence, path in enumerate(paths, start=1):
             if path.name != f"{expected_sequence:016d}.json":
-                raise RollingHeadRegistryError(
-                    "external rolling-head registry has a sequence gap"
-                )
+                raise RollingHeadRegistryError("external rolling-head registry has a sequence gap")
             record = self._read_record(path)
             if record.registry_sequence != expected_sequence:
-                raise RollingHeadRegistryError(
-                    "external rolling-head registry has a sequence gap"
-                )
+                raise RollingHeadRegistryError("external rolling-head registry has a sequence gap")
             if record.prior_registry_digest != prior_digest:
-                raise RollingHeadRegistryError(
-                    "external rolling-head registry lineage differs"
-                )
+                raise RollingHeadRegistryError("external rolling-head registry lineage differs")
             if (
                 record.rolling_checkpoint_sequence <= prior_checkpoint_sequence
                 or record.source_global_sequence < prior_source_sequence
@@ -423,24 +397,16 @@ class ExternalRollingHeadRegistry:
             }
             or payload.get("schema_version") != RECORD_SCHEMA_VERSION
         ):
-            raise RollingHeadRegistryError(
-                "external rolling-head record schema differs"
-            )
+            raise RollingHeadRegistryError("external rolling-head record schema differs")
         try:
-            registry_sequence = _positive(
-                payload["registry_sequence"], "registry sequence"
-            )
+            registry_sequence = _positive(payload["registry_sequence"], "registry sequence")
             rolling_sequence = _positive(
                 payload["rolling_checkpoint_sequence"],
                 "rolling checkpoint sequence",
             )
-            source_sequence = _nonnegative(
-                payload["source_global_sequence"], "source sequence"
-            )
+            source_sequence = _nonnegative(payload["source_global_sequence"], "source sequence")
             prior_digest = _digest(payload["prior_registry_digest"], "prior registry")
-            rolling_digest = _digest(
-                payload["rolling_checkpoint_digest"], "rolling checkpoint"
-            )
+            rolling_digest = _digest(payload["rolling_checkpoint_digest"], "rolling checkpoint")
         except RollingHeadRegistryError:
             raise
         return ExternalRollingHeadRecord(

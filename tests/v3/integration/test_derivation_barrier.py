@@ -574,6 +574,16 @@ def test_projection_wipe_and_genesis_rebuild_are_digest_identical(tmp_path: Path
     with open_v3_connection(service.projections.database_path) as connection:
         connection.execute("DELETE FROM v3_ingress_snapshots WHERE entity_kind='field'")
     assert service.projections.rebuild_reaction_projection() == incremental
+    with open_v3_connection(service.projections.database_path, read_only=True) as connection:
+        event_head = connection.execute(
+            "SELECT global_sequence,event_digest FROM v3_events "
+            "ORDER BY global_sequence DESC LIMIT 1"
+        ).fetchone()
+        cursor = connection.execute(
+            "SELECT through_global_sequence,through_event_digest "
+            "FROM v3_rolling_reaction_cursor WHERE singleton=1"
+        ).fetchone()
+    assert tuple(cursor) == tuple(event_head)
 
 
 def test_concurrent_exact_retry_commits_once_and_returns_same_bytes(tmp_path: Path):

@@ -743,7 +743,7 @@ def _resign_history(database: Path, signer: P256EphemeralSigner) -> None:
 @pytest.mark.parametrize(
     "statements",
     [
-        ("DROP TRIGGER v3_jobs_spec_immutable", "UPDATE v3_jobs SET payload_json='{}'"),
+        ("UPDATE v3_jobs SET payload_json='{}'",),
         ("DROP TRIGGER v3_job_history_no_update", "UPDATE v3_job_history SET history_sequence=2"),
         (
             "DROP TRIGGER v3_job_history_no_update",
@@ -755,7 +755,7 @@ def _resign_history(database: Path, signer: P256EphemeralSigner) -> None:
             "UPDATE v3_job_history SET operation_kind='leased', from_state='queued'",
         ),
         ("DROP TRIGGER v3_job_history_no_delete", "DELETE FROM v3_job_history"),
-        ("DROP TRIGGER v3_jobs_spec_immutable", "UPDATE v3_jobs SET terminal_reason='tampered'"),
+        ("UPDATE v3_jobs SET terminal_reason='tampered'",),
     ],
 )
 def test_restart_verification_rejects_corrupt_job_authority(
@@ -957,7 +957,7 @@ def test_restart_rejects_persisted_mapping_or_capacity_bypass(
     signer = P256EphemeralSigner.generate("integrity-key:u7-persisted-bypass")
     repository = open_repository(database, capacity(), signer)
     repository.enqueue(job())
-    _corrupt(database, ("DROP TRIGGER v3_jobs_spec_immutable", update_sql))
+    _corrupt(database, (update_sql,))
     with pytest.raises(DurableJobError, match=message):
         open_repository(database, capacity(), signer)
 

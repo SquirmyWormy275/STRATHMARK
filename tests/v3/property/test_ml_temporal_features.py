@@ -186,9 +186,7 @@ class _AuthorizedCase:
         return self.rows[index]
 
 
-def _authorized_rows(
-    packets: tuple[EvidencePacket, ...], role: MLDataRole = MLDataRole.TRAINING
-):
+def _authorized_rows(packets: tuple[EvidencePacket, ...], role: MLDataRole = MLDataRole.TRAINING):
     tournaments = sorted(
         {
             str(observation.tournament_id)
@@ -205,9 +203,7 @@ def _authorized_rows(
         if filler_role is not role:
             assignments.append((f"tournament:filler-{filler_role.value}", filler_role))
     authority = _verified_authority(tuple(assignments))
-    rows = authority.build_causal_training_matrix(
-        authority.authorize_packets(role, packets)
-    )
+    rows = authority.build_causal_training_matrix(authority.authorize_packets(role, packets))
     return _AuthorizedCase(authority, rows)
 
 
@@ -228,9 +224,7 @@ def test_role_authority_is_signed_non_relabelable_and_raw_inputs_fail_closed() -
     )
     training_rows = authority.build_causal_training_matrix(training)
     assert training_rows.role is MLDataRole.TRAINING
-    assert tuple(authority.build_causal_training_matrix(copy(training))) == tuple(
-        training_rows
-    )
+    assert tuple(authority.build_causal_training_matrix(copy(training))) == tuple(training_rows)
     with pytest.raises(ValueError, match="authorized signed scope"):
         authority.build_causal_training_matrix(training.packets)  # type: ignore[arg-type]
 
@@ -259,9 +253,7 @@ def test_role_authority_is_signed_non_relabelable_and_raw_inputs_fail_closed() -
         compose_test_ml_candidate_authority(forged, signer=signer)
 
 
-def test_candidate_role_scope_has_no_importable_or_replaceable_audit_capability() -> (
-    None
-):
+def test_candidate_role_scope_has_no_importable_or_replaceable_audit_capability() -> None:
     assert not hasattr(ml_training_module, "_ROLE_AUTHORITY_SEAL")
     assert not hasattr(ml_training_module, "verify_ml_role_authority")
     assert not hasattr(ml_training_module, "verify_ml_audit_authority")
@@ -278,18 +270,14 @@ def test_candidate_role_scope_has_no_importable_or_replaceable_audit_capability(
     )
     with pytest.raises(TypeError):
         replace(training, role=MLDataRole.LOCKED_AUDIT)
-    with pytest.raises(
-        ValueError, match="candidate authority cannot access locked audit"
-    ):
+    with pytest.raises(ValueError, match="candidate authority cannot access locked audit"):
         authority.authorize_packets(MLDataRole.LOCKED_AUDIT, ())
     object.__setattr__(training, "_members", ())
     with pytest.raises(ValueError, match="members differ"):
         authority.build_causal_training_matrix(training)
 
     v2_context = _context(taxonomy="taxonomy:v2")
-    v2_observation = replace(
-        _observation(2, 41_000, day=2, tournament="a"), context=v2_context
-    )
+    v2_observation = replace(_observation(2, 41_000, day=2, tournament="a"), context=v2_context)
     with pytest.raises(ValueError, match="one taxonomy and conversion"):
         authority.authorize_packets(
             MLDataRole.TRAINING,
@@ -343,12 +331,8 @@ def test_copied_candidate_scope_cannot_be_mutated_into_locked_audit(copier) -> N
         audit.build_locked_audit_replay_matrix(attacked)
 
 
-def test_attacker_self_signed_and_self_trusted_scope_fails_pinned_audit_factory() -> (
-    None
-):
-    packet = _packet(
-        (_observation(1, 40_000, day=1, tournament=MLDataRole.LOCKED_AUDIT.value),)
-    )
+def test_attacker_self_signed_and_self_trusted_scope_fails_pinned_audit_factory() -> None:
+    packet = _packet((_observation(1, 40_000, day=1, tournament=MLDataRole.LOCKED_AUDIT.value),))
     attacker = P256EphemeralSigner.generate("ml-self-trust-attacker")
     attacker_manifest = sign_manifest(
         "ml_audit_role_manifest",
@@ -365,9 +349,7 @@ def test_attacker_self_signed_and_self_trusted_scope_fails_pinned_audit_factory(
         signer=attacker,
         created_at="2026-01-01T00:00:00.000Z",
     )
-    attacker_authority = compose_test_ml_audit_authority(
-        attacker_manifest, signer=attacker
-    )
+    attacker_authority = compose_test_ml_audit_authority(attacker_manifest, signer=attacker)
     attacker_scope = attacker_authority.authorize_packets((packet,))
     pinned_authority = _verified_audit_authority(("tournament:locked_audit",))
 
@@ -419,9 +401,7 @@ def test_pinned_factory_revalidates_every_signed_envelope_field() -> None:
             authority.build_causal_training_matrix(attacked)
 
 
-def test_candidate_and_audit_interfaces_reject_own_signer_opposite_role_envelopes() -> (
-    None
-):
+def test_candidate_and_audit_interfaces_reject_own_signer_opposite_role_envelopes() -> None:
     candidate_signer = P256EphemeralSigner.generate("ml-candidate-disjoint-test")
     candidate_manifest = sign_manifest(
         "ml_role_manifest",
@@ -437,9 +417,7 @@ def test_candidate_and_audit_interfaces_reject_own_signer_opposite_role_envelope
         signer=candidate_signer,
         created_at="2026-01-01T00:00:00.000Z",
     )
-    candidate = compose_test_ml_candidate_authority(
-        candidate_manifest, signer=candidate_signer
-    )
+    candidate = compose_test_ml_candidate_authority(candidate_manifest, signer=candidate_signer)
     candidate_scope = candidate.authorize_packets(
         MLDataRole.TRAINING,
         (_packet((_observation(1, 40_000, day=1, tournament="training"),)),),
@@ -490,15 +468,7 @@ def test_candidate_and_audit_interfaces_reject_own_signer_opposite_role_envelope
     )
     audit = compose_test_ml_audit_authority(audit_manifest, signer=audit_signer)
     audit_scope = audit.authorize_packets(
-        (
-            _packet(
-                (
-                    _observation(
-                        1, 40_000, day=1, tournament=MLDataRole.LOCKED_AUDIT.value
-                    ),
-                )
-            ),
-        )
+        (_packet((_observation(1, 40_000, day=1, tournament=MLDataRole.LOCKED_AUDIT.value),)),)
     )
     attacked_audit_scope = copy(audit_scope)
     audit_payload = dict(audit_scope._payload())
@@ -563,9 +533,7 @@ def test_derived_scopes_must_bind_the_exact_parent_scope() -> None:
         authority.fit_pit_calibrator(
             cal_b,
             calibration_predictions,
-            SpecialistGate(
-                "0", (("log_history_depth", "0"), ("missing_fraction", "0"))
-            ),
+            SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
         )
 
 
@@ -595,9 +563,7 @@ def test_role_authority_contract_rejects_untrusted_or_malformed_construction() -
             for role in (MLDataRole.TRAINING, MLDataRole.TUNING, MLDataRole.CALIBRATION)
         )
     )
-    packet = _packet(
-        (_observation(1, 40_000, day=1, tournament=MLDataRole.TRAINING.value),)
-    )
+    packet = _packet((_observation(1, 40_000, day=1, tournament=MLDataRole.TRAINING.value),))
     with pytest.raises(ValueError, match="exclusively"):
         authority.authorize_packets(MLDataRole.TUNING, (packet,))
     assert authority.manifest.assignments
@@ -665,7 +631,8 @@ def test_test_composition_is_explicitly_ephemeral_and_not_production_ready() -> 
 
     with pytest.raises(ValueError, match="explicit ephemeral test signer"):
         compose_test_ml_candidate_authority(
-            signed, signer=WrappedSigner()  # type: ignore[arg-type]
+            signed,
+            signer=WrappedSigner(),  # type: ignore[arg-type]
         )
 
 
@@ -760,12 +727,8 @@ def _write_candidate_production_material(
         created_at="2026-01-01T00:00:00.000Z",
     )
     root = config.integrity_key_root
-    (root / "ml-candidate-public-identity.json").write_bytes(
-        canonical_bytes(identity.to_dict())
-    )
-    (root / "ml-candidate-role-manifest.json").write_bytes(
-        canonical_bytes(manifest.to_dict())
-    )
+    (root / "ml-candidate-public-identity.json").write_bytes(canonical_bytes(identity.to_dict()))
+    (root / "ml-candidate-role-manifest.json").write_bytes(canonical_bytes(manifest.to_dict()))
     (root / "ml-candidate-cng-key-name.txt").write_text(
         "strathmark-candidate-test", encoding="utf-8"
     )
@@ -803,9 +766,7 @@ def test_production_composition_rejects_bad_manifest_open_key_and_live_identity(
     monkeypatch.setattr(
         P256WindowsCNGSigner,
         "open",
-        classmethod(
-            lambda _cls, _key_name: SimpleNamespace(identity=other_identity)
-        ),
+        classmethod(lambda _cls, _key_name: SimpleNamespace(identity=other_identity)),
     )
     with pytest.raises(ConfigurationError, match="differs from the live Windows CNG"):
         compose_production_ml_authorities(config)
@@ -877,9 +838,7 @@ def test_production_composition_loads_separate_installed_cng_authorities(
             ),
         }
         manifest = sign_manifest(
-            "ml_role_manifest"
-            if role_set == "candidate"
-            else "ml_audit_role_manifest",
+            "ml_role_manifest" if role_set == "candidate" else "ml_audit_role_manifest",
             payload,
             signer=ManifestSigner(identity, ephemeral),
             created_at="2026-01-01T00:00:00.000Z",
@@ -892,9 +851,7 @@ def test_production_composition_loads_separate_installed_cng_authorities(
             canonical_bytes(manifest.to_dict())
         )
         key_name = f"strathmark-ml-{role_set}-test"
-        (root / f"ml-{role_set}-cng-key-name.txt").write_text(
-            key_name, encoding="utf-8"
-        )
+        (root / f"ml-{role_set}-cng-key-name.txt").write_text(key_name, encoding="utf-8")
 
         class FakeBackend:
             def __init__(self, identity, delegate):
@@ -952,9 +909,7 @@ def test_production_composition_loads_separate_installed_cng_authorities(
         {
             "schema_version": "strathmark-v3-ml-role-manifest-v3",
             "generation_digest": "d" * 64,
-            "assignments": [
-                {"tournament_id": "tournament:a", "role": "training", "extra": True}
-            ],
+            "assignments": [{"tournament_id": "tournament:a", "role": "training", "extra": True}],
         },
         {
             "schema_version": "strathmark-v3-ml-role-manifest-v3",
@@ -1037,9 +992,7 @@ def test_locked_audit_matrix_has_one_evaluator_only_entrypoint() -> None:
     assert rows[0].row_id
 
 
-@given(
-    st.lists(st.integers(min_value=10_000, max_value=120_000), min_size=1, max_size=12)
-)
+@given(st.lists(st.integers(min_value=10_000, max_value=120_000), min_size=1, max_size=12))
 def test_each_training_row_uses_only_strictly_prior_history(
     raw_times: list[int],
 ) -> None:
@@ -1058,8 +1011,7 @@ def test_each_training_row_uses_only_strictly_prior_history(
         assert row.training_max_occurred_at_utc < row.occurred_at_utc or index == 0
         assert set(features) == set(FEATURE_NAMES)
         assert not any(
-            "formula" in name or "artifact" in name or "weight" in name
-            for name in features
+            "formula" in name or "artifact" in name or "weight" in name for name in features
         )
 
 
@@ -1095,14 +1047,11 @@ def test_grouped_splits_exclude_same_date_and_every_future_group() -> None:
             item.occurred_at_utc[:10] for item in validation
         )
         assert not (
-            {item.tournament_id for item in train}
-            & {item.tournament_id for item in validation}
+            {item.tournament_id for item in train} & {item.tournament_id for item in validation}
         )
 
 
-def test_grouped_splits_exclude_the_validation_tournament_across_all_prior_dates() -> (
-    None
-):
+def test_grouped_splits_exclude_the_validation_tournament_across_all_prior_dates() -> None:
     rows = _authorized_rows(
         (
             _packet(
@@ -1122,8 +1071,7 @@ def test_grouped_splits_exclude_the_validation_tournament_across_all_prior_dates
         and split.validation_date == "2026-07-03"
     )
     assert all(
-        rows[index].tournament_id != "tournament:repeat"
-        for index in repeat_split.train_indices
+        rows[index].tournament_id != "tournament:repeat" for index in repeat_split.train_indices
     )
 
 
@@ -1135,14 +1083,10 @@ def test_canonical_gate_transform_rejects_nonfinite_or_out_of_range_inputs(
     history_depth: float, missing_fraction: float
 ) -> None:
     with pytest.raises(ValueError, match="finite bounds"):
-        canonical_gate_features(
-            history_depth=history_depth, missing_fraction=missing_fraction
-        )
+        canonical_gate_features(history_depth=history_depth, missing_fraction=missing_fraction)
 
 
-def test_inference_uses_target_context_and_sealed_history_with_unseen_safe_values() -> (
-    None
-):
+def test_inference_uses_target_context_and_sealed_history_with_unseen_safe_values() -> None:
     unseen = _packet(
         (_observation(1, 40_000, day=1),),
         target=_context("invented_event", 375, "invented_species"),
@@ -1187,9 +1131,7 @@ def test_noncompletion_is_not_a_target_and_duplicate_evidence_is_rejected() -> N
         result=OfficialResult(ResultStatus.DNF, None, None, 1, None),
     )
     packet = _packet((completion, dnf))
-    assert [row.row_id for row in _authorized_rows((packet,))] == [
-        str(completion.evidence_id)
-    ]
+    assert [row.row_id for row in _authorized_rows((packet,))] == [str(completion.evidence_id)]
     authority = _verified_authority(
         (
             ("tournament:a", MLDataRole.TRAINING),
@@ -1254,9 +1196,7 @@ def test_specialist_eligibility_rejects_invalid_counts(
         ({"fold_id": ""}, "identity"),
     ],
 )
-def test_gate_example_rejects_untrusted_shapes(
-    changes: dict[str, object], message: str
-) -> None:
+def test_gate_example_rejects_untrusted_shapes(changes: dict[str, object], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         replace(GateExample(0.1, 1, 0.0, True, "fold:a"), **changes)
 
@@ -1288,9 +1228,7 @@ def test_gate_and_hierarchy_reject_empty_or_non_oof_training() -> None:
 
 def test_every_ml_training_entrypoint_enforces_its_signed_role_and_coverage() -> None:
     training = _authorized_rows((_packet((_observation(1, 40_000, day=1),)),))
-    tuning = _authorized_rows(
-        (_packet((_observation(1, 40_000, day=1),)),), MLDataRole.TUNING
-    )
+    tuning = _authorized_rows((_packet((_observation(1, 40_000, day=1),)),), MLDataRole.TUNING)
     calibration = _authorized_rows(
         (_packet((_observation(1, 40_000, day=1),)),), MLDataRole.CALIBRATION
     )
@@ -1318,9 +1256,7 @@ def test_every_ml_training_entrypoint_enforces_its_signed_role_and_coverage() ->
         (
             _packet(
                 tuple(
-                    _observation(
-                        index, 40_000 + index * 1_000, day=index, tournament=f"g{index}"
-                    )
+                    _observation(index, 40_000 + index * 1_000, day=index, tournament=f"g{index}")
                     for index in range(1, 4)
                 )
             ),
@@ -1332,16 +1268,12 @@ def test_every_ml_training_entrypoint_enforces_its_signed_role_and_coverage() ->
         gate_rows.rows, model_factory=lambda **kwargs: _OOFModel()
     )
     assert (
-        gate_rows.authority.gate_examples_from_oof(
-            authorized_controlled, gate_rows.rows
-        ).examples
+        gate_rows.authority.gate_examples_from_oof(authorized_controlled, gate_rows.rows).examples
         == ()
     )
 
-    missing_calibration_predictions = (
-        calibration.authority.grouped_oof_component_predictions(
-            calibration.rows, model_factory=lambda **kwargs: _OOFModel()
-        )
+    missing_calibration_predictions = calibration.authority.grouped_oof_component_predictions(
+        calibration.rows, model_factory=lambda **kwargs: _OOFModel()
     )
     with pytest.raises(ValueError, match="trusted calibration-role authority"):
         calibration.authority.fit_pit_calibrator(
@@ -1353,17 +1285,13 @@ def test_every_ml_training_entrypoint_enforces_its_signed_role_and_coverage() ->
         calibration.authority.fit_pit_calibrator(
             calibration.rows,
             missing_calibration_predictions,
-            SpecialistGate(
-                "0", (("log_history_depth", "0"), ("missing_fraction", "0"))
-            ),
+            SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
         )
     with pytest.raises(ValueError, match="signature|authorized"):
         calibration.authority.fit_pit_calibrator(
             training.rows,
             tuning_predictions,
-            SpecialistGate(
-                "0", (("log_history_depth", "0"), ("missing_fraction", "0"))
-            ),
+            SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
         )
 
     assert training.authority.specialist_eligibility(training.rows)
@@ -1372,9 +1300,7 @@ def test_every_ml_training_entrypoint_enforces_its_signed_role_and_coverage() ->
 
 
 class _OOFModel:
-    def fit(
-        self, features: list[list[object]], targets: list[float], **kwargs: object
-    ) -> None:
+    def fit(self, features: list[list[object]], targets: list[float], **kwargs: object) -> None:
         self.value = sum(targets) / len(targets)
 
     def predict(self, features: list[list[object]]) -> list[list[float]]:
@@ -1406,9 +1332,7 @@ def test_calibration_role_fits_only_from_grouped_oof_prediction_subset() -> None
         (
             _packet(
                 tuple(
-                    _observation(
-                        index, 39_000 + index * 1_000, day=index, tournament=f"c{index}"
-                    )
+                    _observation(index, 39_000 + index * 1_000, day=index, tournament=f"c{index}")
                     for index in range(1, 4)
                 )
             ),
@@ -1438,9 +1362,7 @@ def test_default_catboost_factory_and_array_prediction_adapter(
         sys.modules, "catboost", SimpleNamespace(CatBoostRegressor=CatBoostRegressor)
     )
     rows = _authorized_rows((_packet((_observation(1, 40_000, day=1),)),))
-    universal, specialists, _eligibility = rows.authority.train_catboost_hierarchy(
-        rows.rows
-    )
+    universal, specialists, _eligibility = rows.authority.train_catboost_hierarchy(rows.rows)
     assert universal.settings["loss_function"].startswith("MultiQuantile")
     assert specialists == {}
     array_like = type("ArrayLike", (), {"tolist": lambda self: [[1.0] * 7]})()

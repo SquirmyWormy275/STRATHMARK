@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -106,6 +107,85 @@ def test_identical_content_supports_distinct_reference_metadata(tmp_path: Path) 
     assert first != second
     assert store.verify(first) == first
     assert store.verify(second) == second
+
+
+def test_verified_blob_lease_hashes_once_and_blocks_mutation_until_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import strathmark.v3.infrastructure.blobs as module
+
+    store = ContentAddressedBlobStore(tmp_path / "blobs")
+    reference = store.publish(_blob_payload(b"leased"), metadata=_metadata())
+    path = store.path_for(reference.digest)
+    original_digest = module._file_digest
+    digest_calls = 0
+
+    def counted_digest(value: Path) -> str:
+        nonlocal digest_calls
+        digest_calls += 1
+        return original_digest(value)
+
+    monkeypatch.setattr(module, "_file_digest", counted_digest)
+    with store.verified_lease(reference) as lease:
+        assert digest_calls == 1
+        assert lease.verify_current() == reference
+        assert digest_calls == 1
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                path.write_bytes(b"y" * reference.byte_count)
+            with pytest.raises(OSError):
+                path.unlink()
+    path.write_bytes(b"y" * reference.byte_count)
+
+
+def test_verified_blob_lease_closes_every_handle_after_lock_or_unlock_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import strathmark.v3.infrastructure.blobs as module
+
+    store = ContentAddressedBlobStore(tmp_path / "blobs")
+    first = store.publish(_blob_payload(b"lock-failure"), metadata=_metadata())
+    first_path = store.path_for(first.digest)
+    original_open = Path.open
+    opened = []
+
+    def tracked_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        opened.append(handle)
+        return handle
+
+    def fail_lock(_handle, _length):
+        raise OSError("busy")
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(module, "_lock_blob_handle", fail_lock)
+    with pytest.raises(BlobIntegrityError, match="leased immutably"):
+        with store.verified_lease(first):
+            pass
+    assert opened and all(handle.closed for handle in opened)
+    first_path.unlink()
+
+    monkeypatch.undo()
+    second = store.publish(_blob_payload(b"unlock-failure"), metadata=_metadata())
+    second_path = store.path_for(second.digest)
+    second_metadata = store._metadata_path(second)
+    original_unlock = module._unlock_blob_handle
+    calls = 0
+
+    def fail_first_unlock(handle, length):
+        nonlocal calls
+        calls += 1
+        original_unlock(handle, length)
+        if calls == 1:
+            raise OSError("unlock failed")
+
+    monkeypatch.setattr(module, "_unlock_blob_handle", fail_first_unlock)
+    lease = store.verified_lease(second)
+    with pytest.raises(OSError, match="unlock failed"):
+        with lease:
+            pass
+    second_path.unlink()
+    second_metadata.unlink()
 
 
 def test_referenced_missing_corrupt_or_metadata_mismatch_blob_fails_closed(tmp_path: Path) -> None:

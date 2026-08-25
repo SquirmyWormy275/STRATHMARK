@@ -212,14 +212,10 @@ def _load_production_ml_authority(
         raise ConfigurationError(
             "production ML composition rejects non-CNG or test-ephemeral identity"
         )
-    manifest_value = _read_installation_mapping(
-        root / f"ml-{role_set}-role-manifest.json", config
-    )
+    manifest_value = _read_installation_mapping(root / f"ml-{role_set}-role-manifest.json", config)
     try:
         manifest = SignedManifest.from_dict(manifest_value)
-        key_name = _read_installation_key_name(
-            root / f"ml-{role_set}-cng-key-name.txt"
-        )
+        key_name = _read_installation_key_name(root / f"ml-{role_set}-cng-key-name.txt")
         signer = P256WindowsCNGSigner.open(key_name)
     except IntegrityError as exc:
         raise ConfigurationError("installed ML CNG authority material is invalid") from exc
@@ -228,9 +224,7 @@ def _load_production_ml_authority(
             "installed ML public identity differs from the live Windows CNG key"
         )
     compose = (
-        _compose_ml_audit_authority
-        if role_set == "audit"
-        else _compose_ml_candidate_authority
+        _compose_ml_audit_authority if role_set == "audit" else _compose_ml_candidate_authority
     )
     return compose(
         manifest,
@@ -240,9 +234,7 @@ def _load_production_ml_authority(
     )
 
 
-def _read_installation_mapping(
-    path: Path, config: V3RuntimeConfig
-) -> Mapping[str, object]:
+def _read_installation_mapping(path: Path, config: V3RuntimeConfig) -> Mapping[str, object]:
     try:
         raw = path.read_bytes()
     except OSError as exc:

@@ -141,10 +141,15 @@ def test_requirement_tamper_or_untrusted_signature_fails_closed() -> None:
     with pytest.raises(Exception, match="trusted"):
         requirement.verify(IntegrityTrustStore((other.identity,)))
     with pytest.raises(Exception, match="digest"):
-        replace(requirement, manifest=requirement.manifest.__class__.from_dict({
-            **requirement.manifest.to_dict(),
-            "body_digest": "0" * 64,
-        }))
+        replace(
+            requirement,
+            manifest=requirement.manifest.__class__.from_dict(
+                {
+                    **requirement.manifest.to_dict(),
+                    "body_digest": "0" * 64,
+                }
+            ),
+        )
 
 
 def test_sqlite_requirement_is_idempotent_restart_safe_and_revision_monotonic(
@@ -152,9 +157,7 @@ def test_sqlite_requirement_is_idempotent_restart_safe_and_revision_monotonic(
 ) -> None:
     signer, trust = _integrity()
     database = tmp_path / "manual-actions.sqlite3"
-    store = SQLiteManualActionRequirementStore(
-        database, signer=signer, trust_store=trust
-    )
+    store = SQLiteManualActionRequirementStore(database, signer=signer, trust_store=trust)
     first = _requirement(signer)
     assert store.publish(first) == first
     assert store.publish(first) == first
@@ -162,9 +165,7 @@ def test_sqlite_requirement_is_idempotent_restart_safe_and_revision_monotonic(
     assert re_signed.manifest.signature_der_b64 != first.manifest.signature_der_b64
     assert store.publish(re_signed) == first
     assert store.current(first.field_id) == first
-    restarted = SQLiteManualActionRequirementStore(
-        database, signer=signer, trust_store=trust
-    )
+    restarted = SQLiteManualActionRequirementStore(database, signer=signer, trust_store=trust)
     assert restarted.require_current(first.binding) == first
 
     changed_same_revision = _requirement(
@@ -191,9 +192,10 @@ def test_sqlite_requirement_is_idempotent_restart_safe_and_revision_monotonic(
     with pytest.raises(ManualActionConflict, match="current"):
         store.require_current(first.binding)
     with open_v3_connection(database, read_only=True) as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM v3_manual_action_requirements"
-        ).fetchone()[0] == 2
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_manual_action_requirements").fetchone()[0]
+            == 2
+        )
 
 
 def test_resolution_is_atomic_exact_and_removes_only_the_current_requirement(
@@ -201,9 +203,7 @@ def test_resolution_is_atomic_exact_and_removes_only_the_current_requirement(
 ) -> None:
     signer, trust = _integrity()
     database = tmp_path / "manual-resolution.sqlite3"
-    store = SQLiteManualActionRequirementStore(
-        database, signer=signer, trust_store=trust
-    )
+    store = SQLiteManualActionRequirementStore(database, signer=signer, trust_store=trust)
     requirement = store.publish(_requirement(signer))
     resolution = store.resolve(
         requirement.binding,
@@ -215,13 +215,16 @@ def test_resolution_is_atomic_exact_and_removes_only_the_current_requirement(
     assert resolution.requirement_digest == requirement.requirement_digest
     assert resolution.verify(trust) == resolution.content_value()
     assert store.current(requirement.field_id) is None
-    assert store.resolve(
-        requirement.binding,
-        receipt_id=StableIdentifier("receipt:manual-final"),
-        receipt_digest=canonical_digest({"receipt": "manual-final"}),
-        actor_id=StableIdentifier("actor:judge"),
-        resolved_at="2026-08-24T22:00:01.000Z",
-    ) == resolution
+    assert (
+        store.resolve(
+            requirement.binding,
+            receipt_id=StableIdentifier("receipt:manual-final"),
+            receipt_digest=canonical_digest({"receipt": "manual-final"}),
+            actor_id=StableIdentifier("actor:judge"),
+            resolved_at="2026-08-24T22:00:01.000Z",
+        )
+        == resolution
+    )
     re_signed_resolution = resolution.__class__.from_dict(
         {
             **resolution.to_dict(),
@@ -237,9 +240,7 @@ def test_resolution_is_atomic_exact_and_removes_only_the_current_requirement(
     )
     with open_v3_connection(database) as connection:
         with immediate_transaction(connection):
-            store.resolve_connection(
-                connection, requirement.binding, re_signed_resolution
-            )
+            store.resolve_connection(connection, requirement.binding, re_signed_resolution)
     with pytest.raises(ManualActionConflict, match="different resolution"):
         store.resolve(
             requirement.binding,
@@ -255,9 +256,7 @@ def test_current_pointer_tamper_and_cross_field_retarget_fail_closed(
 ) -> None:
     signer, trust = _integrity()
     database = tmp_path / "manual-pointer-tamper.sqlite3"
-    store = SQLiteManualActionRequirementStore(
-        database, signer=signer, trust_store=trust
-    )
+    store = SQLiteManualActionRequirementStore(database, signer=signer, trust_store=trust)
     requirement = store.publish(_requirement(signer))
     forged_time = "2026-08-24T22:00:03.000Z"
     forged_digest = canonical_digest(
@@ -271,8 +270,7 @@ def test_current_pointer_tamper_and_cross_field_retarget_fail_closed(
     )
     with open_v3_connection(database) as connection:
         connection.execute(
-            "UPDATE v3_manual_action_current SET updated_at=?,current_digest=? "
-            "WHERE field_id=?",
+            "UPDATE v3_manual_action_current SET updated_at=?,current_digest=? WHERE field_id=?",
             (forged_time, forged_digest, str(requirement.field_id)),
         )
         connection.commit()
@@ -311,9 +309,7 @@ def test_connection_operations_roll_back_with_the_callers_writer_transaction(
 ) -> None:
     signer, trust = _integrity()
     database = tmp_path / "manual-transaction-rollback.sqlite3"
-    store = SQLiteManualActionRequirementStore(
-        database, signer=signer, trust_store=trust
-    )
+    store = SQLiteManualActionRequirementStore(database, signer=signer, trust_store=trust)
     requirement = _requirement(signer)
     with pytest.raises(RuntimeError, match="abort publication"):
         with open_v3_connection(database) as connection:

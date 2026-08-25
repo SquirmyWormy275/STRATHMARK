@@ -116,22 +116,15 @@ class CausalTrainingRow:
 
     def __post_init__(self) -> None:
         if tuple(name for name, _ in self.features) != FEATURE_NAMES:
-            raise ValueError(
-                "ML row features must exactly match the frozen ordered schema"
-            )
+            raise ValueError("ML row features must exactly match the frozen ordered schema")
         if self.training_max_sequence >= self.observation_sequence:
             raise ValueError("ML row history must be strictly prior by sequence")
-        if (
-            self.training_max_sequence
-            and self.training_max_occurred_at_utc >= self.occurred_at_utc
-        ):
+        if self.training_max_sequence and self.training_max_occurred_at_utc >= self.occurred_at_utc:
             raise ValueError("ML row history must be strictly prior in time")
         if canonical_decimal_string(self.target_log_seconds) != self.target_log_seconds:
             raise ValueError("ML target must be a canonical log-seconds decimal")
         if not self.taxonomy_version or not self.conversion_version:
-            raise ValueError(
-                "ML rows require explicit taxonomy and conversion versions"
-            )
+            raise ValueError("ML rows require explicit taxonomy and conversion versions")
 
     @property
     def feature_dict(self) -> dict[str, object]:
@@ -216,9 +209,7 @@ class OOFComponentPrediction:
                 len(values) != len(QUANTILE_LEVELS)
                 or any(not math.isfinite(item) for item in values)
             ):
-                raise ValueError(
-                    "OOF component predictions require seven finite log quantiles"
-                )
+                raise ValueError("OOF component predictions require seven finite log quantiles")
         if self.history_depth < 0 or not 0 <= self.missing_fraction <= 1:
             raise ValueError("OOF support features are invalid")
 
@@ -258,9 +249,7 @@ def _oof_value(item: OOFComponentPrediction) -> dict[str, object]:
         "fold_id": item.fold_id,
         "universal": list(item.universal_log_quantiles),
         "specialist": (
-            None
-            if item.specialist_log_quantiles is None
-            else list(item.specialist_log_quantiles)
+            None if item.specialist_log_quantiles is None else list(item.specialist_log_quantiles)
         ),
         "specialist_key": item.specialist_key,
         "history_depth": item.history_depth,
@@ -308,9 +297,7 @@ def _parse_role_manifest(
         raise ValueError("ML role assignments are invalid") from exc
     if len(assignments) != len(raw_assignments):
         raise ValueError("ML role assignments contain unknown fields")
-    if not assignments or len({item.tournament_id for item in assignments}) != len(
-        assignments
-    ):
+    if not assignments or len({item.tournament_id for item in assignments}) != len(assignments):
         raise ValueError("each whole tournament must have exactly one ML data role")
     _require_digest(value["generation_digest"], "ML role generation_digest")
     authority_digest = canonical_digest(
@@ -487,17 +474,13 @@ def _compose_ml_authority(
     roles = {item.role for item in assignments}
     if audit:
         if roles != {MLDataRole.LOCKED_AUDIT}:
-            raise ValueError(
-                "audit ML manifest may contain locked-audit tournaments only"
-            )
+            raise ValueError("audit ML manifest may contain locked-audit tournaments only")
     elif roles != {
         MLDataRole.TRAINING,
         MLDataRole.TUNING,
         MLDataRole.CALIBRATION,
     }:
-        raise ValueError(
-            "candidate ML manifest requires training, tuning, and calibration only"
-        )
+        raise ValueError("candidate ML manifest requires training, tuning, and calibration only")
     assignment_map = {item.tournament_id: item.role for item in assignments}
     signer_identity = pinned_identity.to_dict()
     created_at = signed_manifest.body()["created_at"]
@@ -525,9 +508,7 @@ def _compose_ml_authority(
             "schema_version": "strathmark-v3-ml-scope-authorization-v1",
             "role": role.value,
             "purpose": purpose,
-            "member_digest": _member_digest(
-                purpose, _scope_member_values(scope_type, members)
-            ),
+            "member_digest": _member_digest(purpose, _scope_member_values(scope_type, members)),
             "taxonomy_version": taxonomy_version,
             "conversion_version": conversion_version,
             "authority_manifest_digest": authority_digest,
@@ -570,24 +551,18 @@ def _compose_ml_authority(
                         MLDataRole.CALIBRATION,
                     }
                 ),
-                "oof_predictions": frozenset(
-                    {MLDataRole.TUNING, MLDataRole.CALIBRATION}
-                ),
+                "oof_predictions": frozenset({MLDataRole.TUNING, MLDataRole.CALIBRATION}),
                 "gate_examples": frozenset({MLDataRole.TUNING}),
             }
         )
         if purpose not in allowed or not frozenset(roles) <= allowed[purpose]:
-            raise ValueError(
-                "ML scope role and purpose are forbidden for this authority type"
-            )
+            raise ValueError("ML scope role and purpose are forbidden for this authority type")
         if type(scope) is not scope_type:
             raise ValueError("ML entrypoint requires an authorized signed scope")
         try:
             payload = verify_manifest(scope._authorization_envelope, trust_store)
         except (AttributeError, IntegrityError, TypeError, ValueError) as exc:
-            raise ValueError(
-                "ML scope signature is invalid or not composition-authorized"
-            ) from exc
+            raise ValueError("ML scope signature is invalid or not composition-authorized") from exc
         required = {
             "schema_version",
             "role",
@@ -613,24 +588,19 @@ def _compose_ml_authority(
             or payload["member_digest"]
             != _member_digest(purpose, _scope_member_values(scope_type, scope._members))
         ):
-            raise ValueError(
-                "ML scope signature, authority, role, purpose, or members differ"
-            )
+            raise ValueError("ML scope signature, authority, role, purpose, or members differ")
         _require_digest(payload["source_digest"], "ML scope source_digest")
         if not isinstance(payload["taxonomy_version"], str) or not isinstance(
             payload["conversion_version"], str
         ):
             raise ValueError("ML scope taxonomy or conversion binding is invalid")
         if scope_type in (AuthorizedMLPackets, AuthorizedMLRows) and scope._members:
-            if (
-                {item.taxonomy_version for item in scope._members}
-                != {payload["taxonomy_version"]}
-                or {item.conversion_version for item in scope._members}
-                != {payload["conversion_version"]}
-            ):
-                raise ValueError(
-                    "ML scope taxonomy or conversion differs from its signed members"
-                )
+            if {item.taxonomy_version for item in scope._members} != {
+                payload["taxonomy_version"]
+            } or {item.conversion_version for item in scope._members} != {
+                payload["conversion_version"]
+            }:
+                raise ValueError("ML scope taxonomy or conversion differs from its signed members")
         return payload
 
     def authorize_packets(role: MLDataRole, packets: tuple[EvidencePacket, ...]):
@@ -649,29 +619,17 @@ def _compose_ml_authority(
                 if not audit
                 else "audit authority accepts locked audit only"
             )
-        if (
-            not isinstance(role, MLDataRole)
-            or not isinstance(packets, tuple)
-            or not packets
-        ):
-            raise ValueError(
-                "ML role scope requires a closed role and immutable nonempty packets"
-            )
+        if not isinstance(role, MLDataRole) or not isinstance(packets, tuple) or not packets:
+            raise ValueError("ML role scope requires a closed role and immutable nonempty packets")
         for packet in packets:
             _verify_packet(packet)
             tournaments = {str(item.tournament_id) for item in packet.observations}
-            if not tournaments or any(
-                assignment_map.get(item) is not role for item in tournaments
-            ):
-                raise ValueError(
-                    "ML packets do not belong exclusively to the authorized role"
-                )
+            if not tournaments or any(assignment_map.get(item) is not role for item in tournaments):
+                raise ValueError("ML packets do not belong exclusively to the authorized role")
         taxonomies = {item.taxonomy_version for item in packets}
         conversions = {item.conversion_version for item in packets}
         if len(taxonomies) != 1 or len(conversions) != 1:
-            raise ValueError(
-                "authorized ML packets require one taxonomy and conversion version"
-            )
+            raise ValueError("authorized ML packets require one taxonomy and conversion version")
         return sign_scope(
             AuthorizedMLPackets,
             packets,
@@ -709,14 +667,10 @@ def _compose_ml_authority(
 
         def require_production_ready(self) -> None:
             if not self.production_ready:
-                raise ValueError(
-                    "test-ephemeral ML authority is not production-authoritative"
-                )
+                raise ValueError("test-ephemeral ML authority is not production-authoritative")
 
         def authorize_packets(self, *args):
-            role, packets = (
-                (MLDataRole.LOCKED_AUDIT, args[0]) if audit else (args[0], args[1])
-            )
+            role, packets = (MLDataRole.LOCKED_AUDIT, args[0]) if audit else (args[0], args[1])
             return authorize_packets(role, packets)
 
         def build_causal_training_matrix(self, scoped_packets):
@@ -756,11 +710,7 @@ def _compose_ml_authority(
             )
 
         def _verify_rows(self, rows, roles):
-            purpose = (
-                "audit_rows"
-                if roles == (MLDataRole.LOCKED_AUDIT,)
-                else "candidate_rows"
-            )
+            purpose = "audit_rows" if roles == (MLDataRole.LOCKED_AUDIT,) else "candidate_rows"
             return verify_scope(rows, AuthorizedMLRows, purpose=purpose, roles=roles)
 
         def grouped_rolling_origin_splits(self, rows):
@@ -776,9 +726,7 @@ def _compose_ml_authority(
             return _train_catboost_hierarchy(rows, **kwargs)
 
         def grouped_oof_component_predictions(self, rows, *, model_factory):
-            payload = self._verify_rows(
-                rows, (MLDataRole.TUNING, MLDataRole.CALIBRATION)
-            )
+            payload = self._verify_rows(rows, (MLDataRole.TUNING, MLDataRole.CALIBRATION))
             predictions = _grouped_oof_component_prediction_values(
                 rows, model_factory=model_factory
             )
@@ -800,13 +748,8 @@ def _compose_ml_authority(
                 purpose="oof_predictions",
                 roles=(MLDataRole.TUNING,),
             )
-            if (
-                prediction_payload["source_digest"]
-                != rows._authorization_envelope.body_digest
-            ):
-                raise ValueError(
-                    "gate examples do not share the authorized tuning rows"
-                )
+            if prediction_payload["source_digest"] != rows._authorization_envelope.body_digest:
+                raise ValueError("gate examples do not share the authorized tuning rows")
             examples = _gate_examples_values(predictions, rows)
             return sign_scope(
                 AuthorizedGateExamples,
@@ -835,13 +778,8 @@ def _compose_ml_authority(
                 purpose="oof_predictions",
                 roles=(MLDataRole.CALIBRATION,),
             )
-            if (
-                prediction_payload["source_digest"]
-                != rows._authorization_envelope.body_digest
-            ):
-                raise ValueError(
-                    "PIT fitting requires one trusted calibration-role authority"
-                )
+            if prediction_payload["source_digest"] != rows._authorization_envelope.body_digest:
+                raise ValueError("PIT fitting requires one trusted calibration-role authority")
             return _fit_pit_calibrator_values(rows, predictions, gate)
 
         def evaluate_frozen_replay(self, rows, bundle, consequence_evaluator):
@@ -941,20 +879,14 @@ class MarkConsequenceOutcome:
         )
         canonical = tuple(canonical_decimal_string(value) for value in nonnegative)
         if not self.row_id or canonical != nonnegative:
-            raise ValueError(
-                "mark consequence outcomes require canonical decimal metrics"
-            )
+            raise ValueError("mark consequence outcomes require canonical decimal metrics")
         if any(float(value) < 0 for value in canonical):
-            raise ValueError(
-                "mark consequence outcomes require canonical nonnegative metrics"
-            )
+            raise ValueError("mark consequence outcomes require canonical nonnegative metrics")
         if (
             canonical_decimal_string(self.class_context_bias_seconds)
             != self.class_context_bias_seconds
         ):
-            raise ValueError(
-                "mark consequence outcomes require canonical decimal metrics"
-            )
+            raise ValueError("mark consequence outcomes require canonical decimal metrics")
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -995,9 +927,7 @@ class MarkConsequenceFieldInput:
             and isinstance(item[1], PositiveTimeDistribution)
             for item in forecasts
         ):
-            raise ValueError(
-                "mark consequence forecasts require immutable typed distributions"
-            )
+            raise ValueError("mark consequence forecasts require immutable typed distributions")
         if not isinstance(actual_raw_times_ms, tuple) or not all(
             isinstance(item, tuple)
             and len(item) == 2
@@ -1008,9 +938,7 @@ class MarkConsequenceFieldInput:
             and item[1] > 0
             for item in actual_raw_times_ms
         ):
-            raise ValueError(
-                "mark consequence actual times require a positive integer millisecond"
-            )
+            raise ValueError("mark consequence actual times require a positive integer millisecond")
         forecast_ids = tuple(item[0] for item in forecasts)
         actual_ids = tuple(item[0] for item in actual_raw_times_ms)
         if (
@@ -1018,9 +946,7 @@ class MarkConsequenceFieldInput:
             or actual_ids != forecast_ids
             or len(set(forecast_ids)) != len(forecast_ids)
         ):
-            raise ValueError(
-                "mark consequence forecasts and actuals require the same exact rows"
-            )
+            raise ValueError("mark consequence forecasts and actuals require the same exact rows")
         forecast_value = [
             {"row_id": row_id, "distribution": distribution.to_dict()}
             for row_id, distribution in forecasts
@@ -1060,9 +986,7 @@ def _validate_consequence_receipt_fields(
         raise ValueError("mark consequence receipt requires typed outcomes")
     row_ids = tuple(item.row_id for item in outcomes)
     if row_ids != tuple(sorted(row_ids)) or len(set(row_ids)) != len(row_ids):
-        raise ValueError(
-            "mark consequence receipt outcomes must be unique nonempty ordered rows"
-        )
+        raise ValueError("mark consequence receipt outcomes must be unique nonempty ordered rows")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,9 +1014,7 @@ class MarkConsequenceReceipt:
         return cls(field_id, input_digest, outcomes, canonical_digest(body))
 
     def __post_init__(self) -> None:
-        _validate_consequence_receipt_fields(
-            self.field_id, self.input_digest, self.outcomes
-        )
+        _validate_consequence_receipt_fields(self.field_id, self.input_digest, self.outcomes)
         body = {
             "schema_version": "strathmark-v3-ml-mark-consequence-receipt-v1",
             "field_id": self.field_id,
@@ -1104,9 +1026,7 @@ class MarkConsequenceReceipt:
 
 
 class MarkConsequenceEvaluator(Protocol):
-    def evaluate(
-        self, field_input: MarkConsequenceFieldInput
-    ) -> MarkConsequenceReceipt: ...
+    def evaluate(self, field_input: MarkConsequenceFieldInput) -> MarkConsequenceReceipt: ...
 
 
 def _revalidate_consequence_receipt(
@@ -1126,18 +1046,14 @@ def _revalidate_consequence_receipt(
             actual_raw_times_ms=field_input.actual_raw_times_ms,
         )
     except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError(
-            "mark consequence receipt is not bound to the exact field input"
-        ) from exc
+        raise ValueError("mark consequence receipt is not bound to the exact field input") from exc
     if (
         rebuilt_input != field_input
         or rebuilt_input.input_digest != expected_input_digest
         or rebuilt_input.field_distribution_digest != expected_distribution_digest
         or not isinstance(receipt, MarkConsequenceReceipt)
     ):
-        raise ValueError(
-            "mark consequence receipt is not bound to the exact field input"
-        )
+        raise ValueError("mark consequence receipt is not bound to the exact field input")
     try:
         rebuilt_outcomes = tuple(
             MarkConsequenceOutcome(**item.to_dict()) for item in receipt.outcomes
@@ -1155,9 +1071,7 @@ def _revalidate_consequence_receipt(
         or receipt.input_digest != expected_input_digest
         or tuple(item.row_id for item in rebuilt_outcomes) != expected_row_ids
     ):
-        raise ValueError(
-            "mark consequence receipt digest or exact field input binding differs"
-        )
+        raise ValueError("mark consequence receipt digest or exact field input binding differs")
     return rebuilt_receipt
 
 
@@ -1225,9 +1139,7 @@ def _build_causal_matrix_values(
                 continue
             evidence_id = str(observation.evidence_id)
             if evidence_id in seen_evidence:
-                raise ValueError(
-                    "duplicate evidence cannot be multiplied across ML packets"
-                )
+                raise ValueError("duplicate evidence cannot be multiplied across ML packets")
             seen_evidence.add(evidence_id)
             history = tuple(
                 candidate
@@ -1272,9 +1184,7 @@ def _build_causal_matrix_values(
 def build_inference_features(packet: EvidencePacket) -> dict[str, object]:
     _verify_packet(packet)
     history = tuple(
-        item
-        for item in packet.observations
-        if admit_raw_completion(item.result) is not None
+        item for item in packet.observations if admit_raw_completion(item.result) is not None
     )
     return _features(
         packet.target_context,
@@ -1290,17 +1200,14 @@ def _grouped_rolling_origin_splits_values(
 
     groups: dict[tuple[str, str], list[int]] = {}
     for index, row in enumerate(rows):
-        groups.setdefault((row.occurred_at_utc[:10], row.tournament_id), []).append(
-            index
-        )
+        groups.setdefault((row.occurred_at_utc[:10], row.tournament_id), []).append(index)
     splits: list[RollingOriginSplit] = []
     for date_key, tournament_id in sorted(groups):
         validation = tuple(groups[(date_key, tournament_id)])
         training = tuple(
             index
             for index, row in enumerate(rows)
-            if row.occurred_at_utc[:10] < date_key
-            and row.tournament_id != tournament_id
+            if row.occurred_at_utc[:10] < date_key and row.tournament_id != tournament_id
         )
         if not training:
             continue
@@ -1350,9 +1257,7 @@ def _fit_specialist_gate_values(
                 missing_fraction=item.missing_fraction,
             )
             values = (1.0, *(transformed[name] for name in GATE_FEATURE_NAMES))
-            score = max(
-                -40.0, min(40.0, sum(c * x for c, x in zip(coefficients, values)))
-            )
+            score = max(-40.0, min(40.0, sum(c * x for c, x in zip(coefficients, values))))
             error = 1.0 / (1.0 + math.exp(-score)) - float(item.specialist_better)
             importance = max(1e-6, min(1.0, abs(item.pinball_advantage)))
             for index, value in enumerate(values):
@@ -1410,9 +1315,7 @@ def _grouped_oof_component_prediction_values(
             universal_values = _prediction_values(universal.predict(feature_row))
             specialist = specialists.get(row.specialist_key)
             specialist_values = (
-                None
-                if specialist is None
-                else _prediction_values(specialist.predict(feature_row))
+                None if specialist is None else _prediction_values(specialist.predict(feature_row))
             )
             missing_flags = tuple(
                 int(row.feature_dict[name])
@@ -1442,9 +1345,7 @@ def _gate_examples_values(
         if item.specialist_log_quantiles is None:
             continue
         if item.row_id not in actual_log_seconds:
-            raise ValueError(
-                "OOF gate targets must exactly cover each specialist prediction"
-            )
+            raise ValueError("OOF gate targets must exactly cover each specialist prediction")
         actual = float(actual_log_seconds[item.row_id])
         universal_loss = mean_pinball_loss(actual, item.universal_log_quantiles)
         specialist_loss = mean_pinball_loss(actual, item.specialist_log_quantiles)
@@ -1473,9 +1374,7 @@ def _fit_pit_calibrator_values(
     by_id = {item.row_id: item for item in predictions}
     row_ids = {item.row_id for item in rows}
     if not by_id or len(by_id) != len(predictions) or not set(by_id) <= row_ids:
-        raise ValueError(
-            "PIT calibration OOF forecasts must uniquely match calibration rows"
-        )
+        raise ValueError("PIT calibration OOF forecasts must uniquely match calibration rows")
     pits: list[float] = []
     for row in rows:
         if row.row_id not in by_id:
@@ -1489,19 +1388,13 @@ def _fit_pit_calibrator_values(
             ),
             specialist_available=available,
         )
-        specialist = (
-            prediction.specialist_log_quantiles or prediction.universal_log_quantiles
-        )
-        combined = combine_quantiles(
-            prediction.universal_log_quantiles, specialist, weight
-        )
+        specialist = prediction.specialist_log_quantiles or prediction.universal_log_quantiles
+        combined = combine_quantiles(prediction.universal_log_quantiles, specialist, weight)
         pits.append(_quantile_probability(float(row.target_log_seconds), combined))
     source_digest = canonical_digest(
         {
             "schema_version": "strathmark-v3-ml-pit-fit-source-v1",
-            "rows_digest": _member_digest(
-                "calibration_rows", [_row_value(item) for item in rows]
-            ),
+            "rows_digest": _member_digest("calibration_rows", [_row_value(item) for item in rows]),
             "rows": [item.row_id for item in rows],
             "predictions": [
                 {
@@ -1538,9 +1431,7 @@ def mean_pinball_loss(actual: float, log_quantiles: Sequence[float]) -> float:
     if not math.isfinite(actual) or len(log_quantiles) != len(QUANTILE_LEVELS):
         raise ValueError("pinball loss requires one finite target and seven quantiles")
     losses = []
-    for probability, predicted in zip(
-        (float(item) for item in QUANTILE_LEVELS), log_quantiles
-    ):
+    for probability, predicted in zip((float(item) for item in QUANTILE_LEVELS), log_quantiles):
         if not math.isfinite(predicted):
             raise ValueError("pinball quantiles must be finite")
         residual = actual - predicted
@@ -1562,9 +1453,7 @@ def _evaluate_frozen_replay(
     if not isinstance(bundle, LoadedMLBundle) or not callable(
         getattr(consequence_evaluator, "evaluate", None)
     ):
-        raise ValueError(
-            "frozen replay requires a verified ML bundle and consequence evaluator"
-        )
+        raise ValueError("frozen replay requires a verified ML bundle and consequence evaluator")
     if (
         bundle.metadata["taxonomy_version"] != rows[0].taxonomy_version
         or bundle.metadata["conversion_version"] != rows[0].conversion_version
@@ -1574,9 +1463,7 @@ def _evaluate_frozen_replay(
             for row in rows
         )
     ):
-        raise ValueError(
-            "frozen replay bundle taxonomy or conversion differs from audit rows"
-        )
+        raise ValueError("frozen replay bundle taxonomy or conversion differs from audit rows")
     distribution_by_id: dict[str, Any] = {}
     for row in rows:
         features = row.feature_dict
@@ -1589,9 +1476,7 @@ def _evaluate_frozen_replay(
             eligibility is not None and eligibility.available
         )
         missing_flags = tuple(
-            int(features[name])
-            for name in NUMERIC_FEATURES
-            if name.endswith("_missing")
+            int(features[name]) for name in NUMERIC_FEATURES if name.endswith("_missing")
         )
         weight = bundle.gate.weight(
             canonical_gate_features(
@@ -1601,14 +1486,10 @@ def _evaluate_frozen_replay(
             specialist_available=available,
         )
         specialist = (
-            _prediction_values(specialist_model.predict(ordered))
-            if available
-            else universal
+            _prediction_values(specialist_model.predict(ordered)) if available else universal
         )
         combined = combine_quantiles(universal, specialist, weight)
-        distribution_by_id[row.row_id] = build_positive_distribution(
-            combined, bundle.calibrator
-        )
+        distribution_by_id[row.row_id] = build_positive_distribution(combined, bundle.calibrator)
 
     fields: dict[str, list[CausalTrainingRow]] = {}
     for row in rows:
@@ -1619,9 +1500,7 @@ def _evaluate_frozen_replay(
         ordered_rows = sorted(field_rows, key=lambda item: item.row_id)
         field_input = MarkConsequenceFieldInput.create(
             field_id=field_id,
-            forecasts=tuple(
-                (row.row_id, distribution_by_id[row.row_id]) for row in ordered_rows
-            ),
+            forecasts=tuple((row.row_id, distribution_by_id[row.row_id]) for row in ordered_rows),
             actual_raw_times_ms=tuple(
                 (row.row_id, round(math.exp(float(row.target_log_seconds)) * 1000))
                 for row in ordered_rows
@@ -1644,20 +1523,12 @@ def _evaluate_frozen_replay(
     for row in rows:
         features = row.feature_dict
         depth = int(features["history_depth"])
-        band = (
-            "0"
-            if depth == 0
-            else "1-3" if depth <= 3 else "4-9" if depth <= 9 else "10+"
-        )
+        band = "0" if depth == 0 else "1-3" if depth <= 3 else "4-9" if depth <= 9 else "10+"
         size = int(features["size_mm"])
         size_floor = (size // 25) * 25
         missing = (
             "yes"
-            if any(
-                int(features[name])
-                for name in NUMERIC_FEATURES
-                if name.endswith("_missing")
-            )
+            if any(int(features[name]) for name in NUMERIC_FEATURES if name.endswith("_missing"))
             else "no"
         )
         labels = (
@@ -1675,12 +1546,10 @@ def _evaluate_frozen_replay(
     slices = []
     for name, selected in sorted(members.items()):
         losses = [
-            _distribution_pinball_loss(row, distribution_by_id[row.row_id])
-            for row in selected
+            _distribution_pinball_loss(row, distribution_by_id[row.row_id]) for row in selected
         ]
         predictive = [
-            _predictive_replay_metrics(row, distribution_by_id[row.row_id])
-            for row in selected
+            _predictive_replay_metrics(row, distribution_by_id[row.row_id]) for row in selected
         ]
         outcome_values = [consequences[row.row_id] for row in selected]
         slices.append(
@@ -1696,27 +1565,13 @@ def _evaluate_frozen_replay(
                     (item[4] for item in predictive),
                     (item[2] for item in predictive),
                 ),
-                _canonical_mean(
-                    float(item.mark_error_seconds) for item in outcome_values
-                ),
-                _canonical_mean(
-                    float(item.spread_error_seconds) for item in outcome_values
-                ),
-                _canonical_mean(
-                    float(item.win_probability_distortion) for item in outcome_values
-                ),
-                _canonical_mean(
-                    float(item.class_context_bias_seconds) for item in outcome_values
-                ),
-                _canonical_mean(
-                    float(item.gap_error_seconds) for item in outcome_values
-                ),
-                _canonical_mean(
-                    float(item.breakout_exposure) for item in outcome_values
-                ),
-                _canonical_mean(
-                    float(item.optimizer_repair_seconds) for item in outcome_values
-                ),
+                _canonical_mean(float(item.mark_error_seconds) for item in outcome_values),
+                _canonical_mean(float(item.spread_error_seconds) for item in outcome_values),
+                _canonical_mean(float(item.win_probability_distortion) for item in outcome_values),
+                _canonical_mean(float(item.class_context_bias_seconds) for item in outcome_values),
+                _canonical_mean(float(item.gap_error_seconds) for item in outcome_values),
+                _canonical_mean(float(item.breakout_exposure) for item in outcome_values),
+                _canonical_mean(float(item.optimizer_repair_seconds) for item in outcome_values),
             )
         )
     return FrozenMLReplayReport.create(
@@ -1726,9 +1581,7 @@ def _evaluate_frozen_replay(
     )
 
 
-def _predictive_replay_metrics(
-    row: CausalTrainingRow, distribution: Any
-) -> tuple[float, ...]:
+def _predictive_replay_metrics(row: CausalTrainingRow, distribution: Any) -> tuple[float, ...]:
     actual_ms = math.exp(float(row.target_log_seconds)) * 1000
     points = {item.probability: item.time_ms for item in distribution.quantiles}
     lower, median_ms, upper = points["0.05"], points["0.5"], points["0.95"]
@@ -1762,9 +1615,7 @@ def _calibration_error(pits: Iterable[float], coverages: Iterable[float]) -> str
     ordered = tuple(sorted(float(item) for item in pits))
     coverage = tuple(float(item) for item in coverages)
     if not ordered or len(ordered) != len(coverage):
-        raise ValueError(
-            "calibration requires matched nonempty PIT and coverage observations"
-        )
+        raise ValueError("calibration requires matched nonempty PIT and coverage observations")
     count = len(ordered)
     pit_ks = max(
         max(abs((index + 1) / count - value), abs(value - index / count))
@@ -1775,10 +1626,7 @@ def _calibration_error(pits: Iterable[float], coverages: Iterable[float]) -> str
 
 
 def _distribution_probability(distribution: Any, actual_ms: float) -> float:
-    points = [
-        (float(item.time_ms), float(item.probability))
-        for item in distribution.quantiles
-    ]
+    points = [(float(item.time_ms), float(item.probability)) for item in distribution.quantiles]
     if actual_ms <= points[0][0]:
         return points[0][1]
     if actual_ms >= points[-1][0]:
@@ -1889,11 +1737,7 @@ def _features(
         for item in history
         if admit_raw_completion(item.result) is not None
     ]
-    logs = [
-        math.log(value.raw_time_ms / 1000.0)
-        for _, value in admitted
-        if value is not None
-    ]
+    logs = [math.log(value.raw_time_ms / 1000.0) for _, value in admitted if value is not None]
     exact_logs = [
         math.log(value.raw_time_ms / 1000.0)
         for item, value in admitted
@@ -1908,13 +1752,10 @@ def _features(
         trend = (logs[-1] - logs[0]) / max(1, last_sequence - first_sequence)
     else:
         trend = 0.0
-    last_sequence = (
-        admitted[-1][0].observation_sequence if admitted else eligible_sequence
-    )
+    last_sequence = admitted[-1][0].observation_sequence if admitted else eligible_sequence
     sequence_recency = max(0, eligible_sequence - last_sequence)
     context_distance = (
-        sum(_context_distance(item.context, context) for item, _value in admitted)
-        / len(admitted)
+        sum(_context_distance(item.context, context) for item, _value in admitted) / len(admitted)
         if admitted
         else 0.0
     )

@@ -151,6 +151,29 @@ class _PriorSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class FormulaZeroHistoryPrior:
+    """Exact no-observation Formula prior selected from one pinned manifest."""
+
+    target_context_digest: str
+    distribution: PositiveTimeDistribution
+    prior_tier: str
+    prior_key: str
+    prior_lineage_digest: str
+    manifest_digest: str
+
+    def __post_init__(self) -> None:
+        _require_digest(self.target_context_digest, "zero-history target context")
+        if not isinstance(self.distribution, PositiveTimeDistribution):
+            raise ValueError("zero-history Formula prior requires a distribution")
+        if self.prior_tier not in {"exact_context", "discipline", "population"}:
+            raise ValueError("zero-history Formula prior tier is invalid")
+        if not isinstance(self.prior_key, str) or not self.prior_key:
+            raise ValueError("zero-history Formula prior key is invalid")
+        _require_digest(self.prior_lineage_digest, "zero-history prior lineage")
+        _require_digest(self.manifest_digest, "zero-history Formula manifest")
+
+
+@dataclass(frozen=True, slots=True)
 class FormulaManifest:
     """Complete immutable parameter bundle for the first V3 Formula candidate."""
 
@@ -568,6 +591,28 @@ def _select_prior(target: TargetContext, manifest: FormulaManifest) -> _PriorSel
         Decimal(manifest.prior_log_variance),
         manifest.prior_pseudo_count,
         manifest.prior_lineage_digest,
+    )
+
+
+def resolve_zero_history_prior(
+    target: TargetContext, manifest: FormulaManifest
+) -> FormulaZeroHistoryPrior:
+    """Resolve the exact broad Formula basis used when no history is eligible."""
+
+    if not isinstance(target, TargetContext) or not isinstance(manifest, FormulaManifest):
+        raise ValueError("zero-history Formula prior requires typed context and manifest")
+    with localcontext() as context:
+        context.prec = 64
+        context.rounding = ROUND_HALF_EVEN
+        prior = _select_prior(target, manifest)
+        distribution = _distribution(_ln(prior.median_seconds), _sqrt(prior.log_variance), manifest)
+    return FormulaZeroHistoryPrior(
+        target.digest,
+        distribution,
+        prior.tier,
+        prior.key,
+        prior.lineage_digest,
+        manifest.digest,
     )
 
 
@@ -1172,5 +1217,7 @@ __all__ = [
     "ContextPrior",
     "DisciplinePrior",
     "FormulaManifest",
+    "FormulaZeroHistoryPrior",
     "assess_formula",
+    "resolve_zero_history_prior",
 ]

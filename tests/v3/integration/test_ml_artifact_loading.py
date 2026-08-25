@@ -86,9 +86,7 @@ def _write(root: Path) -> Path:
         root,
         universal_model_json=_catboost_json(),
         specialist_model_json={"underhand|300|gum": _catboost_json(0.1)},
-        gate=SpecialistGate(
-            "0", (("log_history_depth", "1"), ("missing_fraction", "0"))
-        ),
+        gate=SpecialistGate("0", (("log_history_depth", "1"), ("missing_fraction", "0"))),
         calibrator=PITCalibrator.identity(source_digest="c" * 64),
         feature_schema={
             "schema_version": "strathmark-v3-ml-feature-schema-v1",
@@ -156,10 +154,7 @@ def test_json_bundle_round_trip_verifies_every_digest_before_model_loading(
     assert bundle.universal_model.path.name == "model-0.json"
     assert set(bundle.specialist_models) == {"underhand|300|gum"}
     assert len(loaded_paths) == 2
-    assert (
-        bundle.digest
-        == hashlib.sha256((root / "manifest.json").read_bytes()).hexdigest()
-    )
+    assert bundle.digest == hashlib.sha256((root / "manifest.json").read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize(
@@ -194,9 +189,7 @@ def test_unsafe_artifacts_fail_before_any_model_activation(
             "bytes": len(encoded),
             "sha256": hashlib.sha256(encoded).hexdigest(),
         }
-        body = {
-            key: value for key, value in manifest.items() if key != "manifest_digest"
-        }
+        body = {key: value for key, value in manifest.items() if key != "manifest_digest"}
         manifest["manifest_digest"] = hashlib.sha256(
             json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -230,9 +223,7 @@ def test_writer_refuses_executable_or_non_json_model_payloads(tmp_path: Path) ->
             tmp_path / "bad",
             universal_model_json=b"\x80\x04pickle",
             specialist_model_json={},
-            gate=SpecialistGate(
-                "0", (("log_history_depth", "0"), ("missing_fraction", "0"))
-            ),
+            gate=SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
             calibrator=PITCalibrator.identity(source_digest="d" * 64),
             feature_schema={
                 "schema_version": "strathmark-v3-ml-feature-schema-v1",
@@ -267,9 +258,7 @@ def test_writer_rejects_invalid_models_eligibility_bounds_and_overwrite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     common = {
-        "gate": SpecialistGate(
-            "0", (("log_history_depth", "0"), ("missing_fraction", "0"))
-        ),
+        "gate": SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
         "calibrator": PITCalibrator.identity(source_digest="d" * 64),
         "feature_schema": {
             "schema_version": FEATURE_SCHEMA,
@@ -369,54 +358,40 @@ def test_loader_covers_manifest_scope_bounds_and_wrapped_validation(
     root = _write(tmp_path / "closed")
     (root / "manifest.json").write_text("[]", encoding="utf-8")
     with pytest.raises(MLArtifactError, match="closed schema"):
-        load_ml_bundle(
-            root, installed_catboost_version="1.2.8", installed_python_abi="cp313"
-        )
+        load_ml_bundle(root, installed_catboost_version="1.2.8", installed_python_abi="cp313")
 
     root = _write(tmp_path / "schema")
     _rewrite_manifest(root, lambda value: value.__setitem__("schema_version", "old"))
     with pytest.raises(MLArtifactError, match="schema"):
-        load_ml_bundle(
-            root, installed_catboost_version="1.2.8", installed_python_abi="cp313"
-        )
+        load_ml_bundle(root, installed_catboost_version="1.2.8", installed_python_abi="cp313")
 
     root = _write(tmp_path / "digest")
     manifest = json.loads((root / "manifest.json").read_text())
     manifest["manifest_digest"] = "0" * 64
     (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(MLArtifactError, match="manifest digest"):
-        load_ml_bundle(
-            root, installed_catboost_version="1.2.8", installed_python_abi="cp313"
-        )
+        load_ml_bundle(root, installed_catboost_version="1.2.8", installed_python_abi="cp313")
 
     root = _write(tmp_path / "coverage")
     _rewrite_manifest(root, lambda value: value["files"].pop("gate.json"))
     with pytest.raises(MLArtifactError, match="file coverage"):
-        load_ml_bundle(
-            root, installed_catboost_version="1.2.8", installed_python_abi="cp313"
-        )
+        load_ml_bundle(root, installed_catboost_version="1.2.8", installed_python_abi="cp313")
 
     root = _write(tmp_path / "total")
     monkeypatch.setattr("strathmark.v3.factory.ml_artifacts.MAX_BUNDLE_BYTES", 1)
     with pytest.raises(MLArtifactError, match="maximum safe byte"):
-        load_ml_bundle(
-            root, installed_catboost_version="1.2.8", installed_python_abi="cp313"
-        )
-    monkeypatch.setattr(
-        "strathmark.v3.factory.ml_artifacts.MAX_BUNDLE_BYTES", 50_000_000
-    )
+        load_ml_bundle(root, installed_catboost_version="1.2.8", installed_python_abi="cp313")
+    monkeypatch.setattr("strathmark.v3.factory.ml_artifacts.MAX_BUNDLE_BYTES", 50_000_000)
 
     root = _write(tmp_path / "wrapped")
     _rewrite_manifest(
         root,
-        lambda value: value["specialists"]["underhand|300|gum"][
-            "eligibility"
-        ].__setitem__("admitted_rows", -1),
+        lambda value: value["specialists"]["underhand|300|gum"]["eligibility"].__setitem__(
+            "admitted_rows", -1
+        ),
     )
     with pytest.raises(MLArtifactError, match="invalid before activation"):
-        load_ml_bundle(
-            root, installed_catboost_version="1.2.8", installed_python_abi="cp313"
-        )
+        load_ml_bundle(root, installed_catboost_version="1.2.8", installed_python_abi="cp313")
 
 
 def test_loaded_bundle_missing_feature_and_default_catboost_loader(
@@ -649,9 +624,7 @@ def test_activation_detects_private_copy_mismatch_before_model_load(
 
     monkeypatch.setattr(Path, "read_bytes", mismatching_read_bytes)
     with pytest.raises(MLArtifactError, match="differs before load"):
-        _activate_verified_models(
-            {"universal.json": b"{}"}, {}, loader=lambda path: object()
-        )
+        _activate_verified_models({"universal.json": b"{}"}, {}, loader=lambda path: object())
 
 
 def test_bundle_metadata_validator_rejects_each_closed_contract_breach() -> None:
@@ -688,9 +661,7 @@ def test_bundle_metadata_validator_rejects_each_closed_contract_breach() -> None
             "feature lists",
         ),
         (
-            lambda value: value["features_info"]["float_features"][0].pop(
-                "flat_feature_index"
-            ),
+            lambda value: value["features_info"]["float_features"][0].pop("flat_feature_index"),
             "feature identity",
         ),
         (lambda value: value["model_info"].pop("params"), "parameters are missing"),
@@ -707,9 +678,7 @@ def test_bundle_metadata_validator_rejects_each_closed_contract_breach() -> None
             "levels",
         ),
         (
-            lambda value: value.__setitem__(
-                "oblivious_trees", [{"leaf_values": [0.0]}]
-            ),
+            lambda value: value.__setitem__("oblivious_trees", [{"leaf_values": [0.0]}]),
             "seven outputs",
         ),
     ],
@@ -795,9 +764,7 @@ def test_real_catboost_train_export_verify_load_and_predict(tmp_path: Path) -> N
         tmp_path / "real-bundle",
         universal_model_json=raw,
         specialist_model_json={},
-        gate=SpecialistGate(
-            "0", (("log_history_depth", "0"), ("missing_fraction", "0"))
-        ),
+        gate=SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
         calibrator=calibrator,
         feature_schema={
             "schema_version": FEATURE_SCHEMA,

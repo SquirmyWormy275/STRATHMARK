@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
+from fractions import Fraction
 from itertools import combinations
 from typing import Any
 
@@ -155,7 +156,13 @@ class CounterfactualSheet:
         if self.optimizer_verification_status is not OptimizerVerificationStatus.PENDING:
             raise ContractError("U14 typed optimizer verifier is required for VERIFIED status")
         _digest(self.sheet_digest, "sheet_digest")
-        if sum((Decimal(item.win_probability) for item in self.competitors), Decimal(0)) != 1:
+        if (
+            sum(
+                (Fraction(item.win_probability) for item in self.competitors),
+                Fraction(0),
+            )
+            != 1
+        ):
             raise ContractError("field win probabilities must sum exactly to one")
         if self.sheet_digest != canonical_digest(self.content_value()):
             raise ContractError("counterfactual sheet digest mismatch")

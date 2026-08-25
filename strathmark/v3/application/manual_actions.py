@@ -99,8 +99,10 @@ class ManualActionEntrant:
             "publication_binding_digest",
             "candidate_basis_digest",
         }
-        if not isinstance(value, Mapping) or set(value) != expected or not isinstance(
-            value.get("available_assessors"), list
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected
+            or not isinstance(value.get("available_assessors"), list)
         ):
             raise ManualActionConflict("manual-action entrant fields differ")
         try:
@@ -245,9 +247,7 @@ class ManualActionRequirement:
         hard_deadline = require_utc_milliseconds(self.hard_deadline_at)
         created = require_utc_milliseconds(self.created_at)
         if created < hard_deadline:
-            raise ManualActionConflict(
-                "manual action cannot seal before the hard deadline"
-            )
+            raise ManualActionConflict("manual action cannot seal before the hard deadline")
         if (
             not isinstance(self.entrants, tuple)
             or not self.entrants
@@ -597,9 +597,10 @@ def _derive_action(entrants: tuple[ManualActionEntrant, ...]) -> ManualActionKin
     ):
         raise ManualActionConflict("manual action requires typed entrant availability")
     source_sets = tuple(item.available_assessors for item in entrants)
-    exact_single = all(len(items) == 1 for items in source_sets) and len(
-        {items[0] for items in source_sets}
-    ) == 1
+    exact_single = (
+        all(len(items) == 1 for items in source_sets)
+        and len({items[0] for items in source_sets}) == 1
+    )
     ordinary = all(len(items) >= 2 for items in source_sets) and len(set(source_sets)) == 1
     if ordinary:
         raise ManualActionConflict(

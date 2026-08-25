@@ -39,9 +39,7 @@ class SQLiteManualActionRequirementStore:
         if not isinstance(trust_store, IntegrityTrustStore) or not callable(
             getattr(signer, "sign", None)
         ):
-            raise ManualActionConflict(
-                "manual-action store requires signer and trust authority"
-            )
+            raise ManualActionConflict("manual-action store requires signer and trust authority")
         trust_store.identity(signer.identity.key_id)
         self._database_path = Path(database_path)
         self._signer = signer
@@ -67,9 +65,7 @@ class SQLiteManualActionRequirementStore:
         requirement: ManualActionRequirement,
     ) -> ManualActionRequirement:
         if not connection.in_transaction:
-            raise ManualActionConflict(
-                "manual-action publication requires a writer transaction"
-            )
+            raise ManualActionConflict("manual-action publication requires a writer transaction")
         if not isinstance(requirement, ManualActionRequirement):
             raise ManualActionConflict("manual-action publication must be typed")
         requirement.verify(self._trust_store)
@@ -96,25 +92,17 @@ class SQLiteManualActionRequirementStore:
                 or observed.requirement_digest != requirement.requirement_digest
                 or observed.manifest.body_digest != requirement.manifest.body_digest
             ):
-                raise ManualActionConflict(
-                    "stored manual-action requirement material differs"
-                )
+                raise ManualActionConflict("stored manual-action requirement material differs")
             if current is None or str(current[0]) != requirement.requirement_digest:
-                raise ManualActionConflict(
-                    "stored manual-action requirement is no longer current"
-                )
+                raise ManualActionConflict("stored manual-action requirement is no longer current")
             self._verify_current_row(requirement, requirement.field_id, current)
             return observed
         if current is not None:
             current_revision = int(current[1])
             if current_revision == requirement.upstream_field_revision:
-                raise ManualActionConflict(
-                    "manual action changed within the same field revision"
-                )
+                raise ManualActionConflict("manual action changed within the same field revision")
             if current_revision > requirement.upstream_field_revision:
-                raise ManualActionConflict(
-                    "manual action cannot replace a newer field revision"
-                )
+                raise ManualActionConflict("manual action cannot replace a newer field revision")
         requirement_bytes = canonical_bytes(
             requirement.to_dict(), max_bytes=1_048_576, max_items=100_000
         ).decode("utf-8")
@@ -164,21 +152,15 @@ class SQLiteManualActionRequirementStore:
                 ),
             ).rowcount
             if changed != 1:
-                raise ManualActionConflict(
-                    "manual-action current pointer changed concurrently"
-                )
+                raise ManualActionConflict("manual-action current pointer changed concurrently")
         return requirement
 
-    def current(
-        self, field_id: str | StableIdentifier
-    ) -> ManualActionRequirement | None:
+    def current(self, field_id: str | StableIdentifier) -> ManualActionRequirement | None:
         field = require_identifier(field_id, expected_namespace="field")
         with open_v3_connection(self._database_path, read_only=True) as connection:
             return self._current_connection(connection, field)
 
-    def require_current(
-        self, binding: ManualActionBinding
-    ) -> ManualActionRequirement:
+    def require_current(self, binding: ManualActionBinding) -> ManualActionRequirement:
         if not isinstance(binding, ManualActionBinding):
             raise ManualActionConflict("manual-action current check requires a binding")
         with open_v3_connection(self._database_path, read_only=True) as connection:
@@ -192,9 +174,7 @@ class SQLiteManualActionRequirementStore:
         """CAS one requirement from inside the caller's existing writer transaction."""
 
         if not connection.in_transaction:
-            raise ManualActionConflict(
-                "manual-action commit check requires a writer transaction"
-            )
+            raise ManualActionConflict("manual-action commit check requires a writer transaction")
         return self._require_current_connection(connection, binding)
 
     def resolve(
@@ -208,9 +188,7 @@ class SQLiteManualActionRequirementStore:
     ) -> ManualActionResolution:
         existing = self._resolution(binding.requirement_digest)
         if existing is not None:
-            candidate_requirement = self._requirement_by_digest(
-                binding.requirement_digest
-            )
+            candidate_requirement = self._requirement_by_digest(binding.requirement_digest)
             candidate = create_manual_action_resolution(
                 candidate_requirement,
                 receipt_id=receipt_id,
@@ -250,9 +228,7 @@ class SQLiteManualActionRequirementStore:
         """Resolve the action atomically with the caller's receipt event commit."""
 
         if not connection.in_transaction:
-            raise ManualActionConflict(
-                "manual-action resolution requires a writer transaction"
-            )
+            raise ManualActionConflict("manual-action resolution requires a writer transaction")
         if not isinstance(resolution, ManualActionResolution):
             raise ManualActionConflict("manual-action resolution must be typed")
         resolution.verify(self._trust_store)
@@ -279,9 +255,7 @@ class SQLiteManualActionRequirementStore:
             or resolution.field_id != requirement.field_id
             or resolution.resolved_at < requirement.created_at
         ):
-            raise ManualActionConflict(
-                "manual-action resolution differs from current requirement"
-            )
+            raise ManualActionConflict("manual-action resolution differs from current requirement")
         resolution_bytes = canonical_bytes(
             resolution.to_dict(), max_bytes=1_048_576, max_items=100_000
         ).decode("utf-8")
@@ -311,9 +285,7 @@ class SQLiteManualActionRequirementStore:
             ),
         ).rowcount
         if changed != 1:
-            raise ManualActionConflict(
-                "manual-action requirement changed before resolution"
-            )
+            raise ManualActionConflict("manual-action requirement changed before resolution")
 
     def _current_connection(
         self, connection: sqlite3.Connection, field_id: StableIdentifier
@@ -325,17 +297,13 @@ class SQLiteManualActionRequirementStore:
         ).fetchone()
         if row is None:
             return None
-        requirement = self._requirement_by_digest_connection(
-            connection, str(row[0])
-        )
+        requirement = self._requirement_by_digest_connection(connection, str(row[0]))
         self._verify_current_row(requirement, field_id, row)
         if connection.execute(
             "SELECT 1 FROM v3_manual_action_resolutions WHERE requirement_digest=?",
             (requirement.requirement_digest,),
         ).fetchone():
-            raise ManualActionConflict(
-                "resolved manual-action requirement remains current"
-            )
+            raise ManualActionConflict("resolved manual-action requirement remains current")
         return requirement
 
     def _require_current_connection(
@@ -348,9 +316,7 @@ class SQLiteManualActionRequirementStore:
         ).fetchone()
         if row is None:
             raise ManualActionConflict("manual-action requirement is no longer current")
-        requirement = self._requirement_by_digest_connection(
-            connection, str(row[0])
-        )
+        requirement = self._requirement_by_digest_connection(connection, str(row[0]))
         self._verify_current_row(requirement, binding.field_id, row)
         if requirement.binding != binding:
             raise ManualActionConflict("manual-action current binding differs")
@@ -414,13 +380,9 @@ class SQLiteManualActionRequirementStore:
             manifest = json.loads(str(manifest_json))
             requirement = ManualActionRequirement.from_dict(value)
         except Exception as exc:
-            raise ManualActionConflict(
-                "stored manual-action requirement is malformed"
-            ) from exc
+            raise ManualActionConflict("stored manual-action requirement is malformed") from exc
         if requirement.manifest.to_dict() != manifest:
-            raise ManualActionConflict(
-                "stored manual-action requirement manifest differs"
-            )
+            raise ManualActionConflict("stored manual-action requirement manifest differs")
         requirement.verify(self._trust_store)
         return requirement
 
@@ -432,13 +394,9 @@ class SQLiteManualActionRequirementStore:
             manifest = json.loads(str(manifest_json))
             resolution = ManualActionResolution.from_dict(value)
         except Exception as exc:
-            raise ManualActionConflict(
-                "stored manual-action resolution is malformed"
-            ) from exc
+            raise ManualActionConflict("stored manual-action resolution is malformed") from exc
         if resolution.manifest.to_dict() != manifest:
-            raise ManualActionConflict(
-                "stored manual-action resolution manifest differs"
-            )
+            raise ManualActionConflict("stored manual-action resolution manifest differs")
         resolution.verify(self._trust_store)
         return resolution
 

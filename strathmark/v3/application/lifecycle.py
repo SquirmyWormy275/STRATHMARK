@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Protocol, cast
 
 from strathmark.v3.application.commands import CommandRequest, EventIntent
 from strathmark.v3.contracts.canonical import canonical_digest
@@ -51,6 +51,12 @@ class SnapshotKind(str, Enum):
     TOURNAMENT = "tournament"
     ROUND = "round"
     FIELD = "field"
+
+
+class LifecycleReactionPort(Protocol):
+    """Post-commit durable reaction; exact command retries replay it safely."""
+
+    def react(self, result: StoredCommandResult) -> None: ...
 
 
 _SNAPSHOT_VOCABULARY = {
@@ -111,9 +117,21 @@ class UpstreamSnapshot:
                 "predecessor_round_ids",
                 "successor_round_ids",
             },
-            SnapshotKind.FIELD: {"competitor_ids", "target_context", "stand_ids"},
+            SnapshotKind.FIELD: {
+                "competitor_ids",
+                "target_context",
+                "stand_ids",
+                "capacity_authority_digest",
+                "max_field_entrants",
+                "call_order",
+                "scheduled_at",
+                "deadline_at",
+            },
         }[self.kind]
-        if set(canonical) != allowed:
+        legacy_field = {"competitor_ids", "target_context", "stand_ids"}
+        if set(canonical) != allowed and not (
+            self.kind is SnapshotKind.FIELD and set(canonical) == legacy_field
+        ):
             raise ContractError("snapshot contains unknown, narrative, or PII fields")
         if self.kind is SnapshotKind.TOURNAMENT:
             require_identifier(canonical["bundle_id"], expected_namespace="bundle")
@@ -147,6 +165,33 @@ class UpstreamSnapshot:
             )
             if len(stand_ids) != len(set(stand_ids)):
                 raise ContractError("field stands cannot repeat")
+            if "call_order" in canonical:
+                capacity_digest = canonical["capacity_authority_digest"]
+                if (
+                    not isinstance(capacity_digest, str)
+                    or len(capacity_digest) != 64
+                    or any(character not in "0123456789abcdef" for character in capacity_digest)
+                ):
+                    raise ContractError("field capacity authority digest is invalid")
+                max_field_entrants = canonical["max_field_entrants"]
+                if (
+                    isinstance(max_field_entrants, bool)
+                    or not isinstance(max_field_entrants, int)
+                    or max_field_entrants <= 0
+                    or len(roster) > max_field_entrants
+                ):
+                    raise ContractError("field roster exceeds its declared capacity authority")
+                call_order = canonical["call_order"]
+                if (
+                    isinstance(call_order, bool)
+                    or not isinstance(call_order, int)
+                    or call_order < 0
+                ):
+                    raise ContractError("field call order must be a nonnegative integer")
+                require_utc_milliseconds(canonical["scheduled_at"])
+                require_utc_milliseconds(canonical["deadline_at"])
+                if canonical["deadline_at"] <= canonical["scheduled_at"]:
+                    raise ContractError("field deadline must follow its scheduled instant")
         object.__setattr__(self, "content", _deep_freeze(canonical))
 
     def payload(self) -> dict[str, Any]:
@@ -165,9 +210,18 @@ class UpstreamSnapshot:
 class LifecycleService:
     """Execute typed U5 events and their disposable projection atomically."""
 
-    def __init__(self, database_path: Path | str) -> None:
-        self._events = SQLiteEventStore(database_path)
+    def __init__(
+        self,
+        database_path: Path | str,
+        *,
+        reaction_port: LifecycleReactionPort | None = None,
+    ) -> None:
+        if reaction_port is not None and not callable(getattr(reaction_port, "react", None)):
+            raise ContractError("lifecycle reaction port must be callable")
         self._views = SQLiteProjectionStore(database_path)
+        self._views.bootstrap_rolling_reaction_cursor_cutover()
+        self._events = SQLiteEventStore(database_path)
+        self._reaction_port = reaction_port
 
     @property
     def projections(self) -> SQLiteProjectionStore:
@@ -732,7 +786,7 @@ class LifecycleService:
             payload_digest=inline_payload.digest,
         )
         if retry is not None:
-            return retry
+            return self._after_commit(retry)
         head = self._events.aggregate_head(str(target))
         version = 0 if head is None else head[0]
         command = CommandEnvelope(
@@ -753,7 +807,9 @@ class LifecycleService:
             monotonic_elapsed_ms,
         )
         try:
-            return self._events.execute(request, projection_hook=self._views.apply_events)
+            return self._after_commit(
+                self._events.execute(request, projection_hook=self._views.apply_events)
+            )
         except EventStoreConflict:
             raced_retry = self._events.lookup_exact_retry(
                 principal_id=str(actor_id),
@@ -763,7 +819,7 @@ class LifecycleService:
                 payload_digest=inline_payload.digest,
             )
             if raced_retry is not None:
-                return raced_retry
+                return self._after_commit(raced_retry)
             raise
 
     def _execute_multi(
@@ -786,7 +842,7 @@ class LifecycleService:
             payload_digest=inline.digest,
         )
         if retry is not None:
-            return retry
+            return self._after_commit(retry)
         expected = []
         for intent in intents:
             head = self._events.aggregate_head(str(intent.aggregate_id))
@@ -809,7 +865,9 @@ class LifecycleService:
             monotonic_elapsed_ms,
         )
         try:
-            return self._events.execute(request, projection_hook=self._views.apply_events)
+            return self._after_commit(
+                self._events.execute(request, projection_hook=self._views.apply_events)
+            )
         except EventStoreConflict:
             raced = self._events.lookup_exact_retry(
                 principal_id=str(actor_id),
@@ -819,8 +877,13 @@ class LifecycleService:
                 payload_digest=inline.digest,
             )
             if raced is not None:
-                return raced
+                return self._after_commit(raced)
             raise
+
+    def _after_commit(self, result: StoredCommandResult) -> StoredCommandResult:
+        if self._reaction_port is not None:
+            self._reaction_port.react(result)
+        return result
 
     def _issued_field(self, field_id: StableIdentifier) -> IssuedFieldFact | None:
         require_identifier(field_id, expected_namespace="field")
@@ -943,7 +1006,12 @@ class LifecycleService:
         return tuple(require_identifier(str(row[0]), expected_namespace="field") for row in rows)
 
 
-__all__ = ["LifecycleService", "SnapshotKind", "UpstreamSnapshot"]
+__all__ = [
+    "LifecycleReactionPort",
+    "LifecycleService",
+    "SnapshotKind",
+    "UpstreamSnapshot",
+]
 
 
 def _deep_freeze(value: Any) -> Any:

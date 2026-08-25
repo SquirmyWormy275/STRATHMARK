@@ -52,6 +52,10 @@ _COMMAND_EVENT: dict[CommandKind, tuple[AggregateKind, EventKind]] = {
     CommandKind.OPTIMIZE_FIELD: (AggregateKind.FIELD, EventKind.FIELD_OPTIMIZED),
     CommandKind.SUPERSEDE_FIELD: (AggregateKind.FIELD, EventKind.FIELD_SUPERSEDED),
     CommandKind.REGENERATE_FIELD: (AggregateKind.FIELD, EventKind.FIELD_REGENERATED),
+    CommandKind.RECORD_APPROVAL_DECISION: (
+        AggregateKind.APPROVAL_DECISION,
+        EventKind.APPROVAL_DECISION_RECORDED,
+    ),
     CommandKind.ACKNOWLEDGE_ISSUE: (AggregateKind.FIELD, EventKind.FIELD_ISSUED),
     CommandKind.SETTLE_FIELD: (AggregateKind.FIELD, EventKind.FIELD_SETTLED),
     CommandKind.QUEUE_JOB: (AggregateKind.JOB, EventKind.JOB_QUEUED),

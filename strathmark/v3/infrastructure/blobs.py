@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.commands import (
@@ -107,6 +108,94 @@ StoredBlobReference = BlobReferenceV2
 
 
 FaultHook = Callable[[str], None]
+
+
+class VerifiedBlobLease:
+    """A fully verified blob held immutable across a short authority commit."""
+
+    def __init__(self, store: ContentAddressedBlobStore, reference: StoredBlobReference) -> None:
+        self._store = store
+        self._reference = reference
+        self._handles: list[tuple[BinaryIO, int]] = []
+        self._snapshots: tuple[tuple[int, int, int, int], ...] = ()
+
+    def __enter__(self) -> VerifiedBlobLease:
+        if self._handles:
+            raise BlobStoreError("verified blob lease cannot be re-entered")
+        content_path = self._store.path_for(self._reference.digest)
+        metadata_path = self._store._metadata_path(self._reference)
+        try:
+            for path in (content_path, metadata_path):
+                handle = path.open("rb")
+                try:
+                    length = max(1, os.fstat(handle.fileno()).st_size)
+                    _lock_blob_handle(handle, length)
+                except BaseException:
+                    handle.close()
+                    raise
+                self._handles.append((handle, length))
+            content_handle = self._handles[0][0]
+            metadata_handle = self._handles[1][0]
+            if os.fstat(content_handle.fileno()).st_size != self._reference.byte_count:
+                raise BlobIntegrityError("required blob length differs from its reference")
+            if _file_digest(content_handle) != self._reference.digest:
+                raise BlobIntegrityError("required blob digest differs from its reference")
+            metadata_handle.seek(0)
+            observed_metadata = metadata_handle.read()
+            metadata_handle.seek(0)
+            if observed_metadata != canonical_bytes(self._reference.to_dict()):
+                raise BlobIntegrityError("required blob metadata differs from its reference")
+            self._snapshots = tuple(
+                _lease_snapshot(handle, path)
+                for (handle, _length), path in zip(
+                    self._handles, (content_path, metadata_path), strict=True
+                )
+            )
+            return self
+        except (OSError, BlobStoreError) as exc:
+            self._release()
+            if isinstance(exc, BlobStoreError):
+                raise
+            raise BlobIntegrityError("required blob cannot be leased immutably") from exc
+
+    def __exit__(self, *_exc: object) -> None:
+        self._release()
+
+    def verify_current(self) -> StoredBlobReference:
+        if len(self._handles) != 2 or len(self._snapshots) != 2:
+            raise BlobIntegrityError("verified blob lease is not active")
+        paths = (
+            self._store.path_for(self._reference.digest),
+            self._store._metadata_path(self._reference),
+        )
+        try:
+            observed = tuple(
+                _lease_snapshot(handle, path)
+                for (handle, _length), path in zip(self._handles, paths, strict=True)
+            )
+        except OSError as exc:
+            raise BlobIntegrityError("leased blob identity cannot be verified") from exc
+        if observed != self._snapshots:
+            raise BlobIntegrityError("leased blob identity changed during commit")
+        return self._reference
+
+    def _release(self) -> None:
+        first_error: BaseException | None = None
+        while self._handles:
+            handle, length = self._handles.pop()
+            try:
+                _unlock_blob_handle(handle, length)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+            try:
+                handle.close()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        self._snapshots = ()
+        if first_error is not None:
+            raise first_error
 
 
 class ContentAddressedBlobStore:
@@ -231,6 +320,11 @@ class ContentAddressedBlobStore:
             raise BlobStoreError("required blob references must be an immutable tuple")
         return tuple(self.verify(reference) for reference in references)
 
+    def verified_lease(self, reference: StoredBlobReference) -> VerifiedBlobLease:
+        if not isinstance(reference, StoredBlobReference):
+            raise BlobStoreError("verified lease requires a StoredBlobReference")
+        return VerifiedBlobLease(self, reference)
+
     def read(self, reference: StoredBlobReference) -> bytes:
         self.verify(reference)
         return self.path_for(reference.digest).read_bytes()
@@ -272,15 +366,70 @@ class ContentAddressedBlobStore:
             _fault(fault_hook, fsync_stage)
 
 
-def _file_digest(path: Path) -> str:
+def _file_digest(path: Path | BinaryIO) -> str:
     digest = hashlib.sha256()
+    handle: BinaryIO | None = None
+    close_handle = False
     try:
-        with path.open("rb") as handle:
-            while chunk := handle.read(1_048_576):
-                digest.update(chunk)
+        if isinstance(path, Path):
+            handle = path.open("rb")
+            close_handle = True
+        else:
+            handle = path
+        handle.seek(0)
+        while chunk := handle.read(1_048_576):
+            digest.update(chunk)
+        handle.seek(0)
     except OSError as exc:
         raise BlobIntegrityError("required blob cannot be read") from exc
+    finally:
+        if close_handle and handle is not None:
+            handle.close()
     return digest.hexdigest()
+
+
+def _lease_snapshot(handle: BinaryIO, path: Path) -> tuple[int, int, int, int]:
+    handle_stat = os.fstat(handle.fileno())
+    path_stat = path.stat()
+    handle_identity = (
+        handle_stat.st_dev,
+        handle_stat.st_ino,
+        handle_stat.st_size,
+        handle_stat.st_mtime_ns,
+    )
+    path_identity = (
+        path_stat.st_dev,
+        path_stat.st_ino,
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+    )
+    if path_identity != handle_identity:
+        raise BlobIntegrityError("leased blob path no longer names verified content")
+    return handle_identity
+
+
+def _lock_blob_handle(handle: BinaryIO, length: int) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, length)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+
+def _unlock_blob_handle(handle: BinaryIO, length: int) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, length)
+        return
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -342,4 +491,5 @@ __all__ = [
     "InjectedBlobFailure",
     "MAX_BLOB_BYTES",
     "StoredBlobReference",
+    "VerifiedBlobLease",
 ]

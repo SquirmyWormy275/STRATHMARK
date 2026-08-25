@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 
 import pytest
 
@@ -566,6 +566,27 @@ def test_disagreement_public_contracts_reject_adversarial_construction_and_decod
         {**sheet_encoded, "optimizer_verification_status": "unknown"},
         {**sheet_encoded, "optimizer_verification_status": []},
     )
+
+    with localcontext() as context:
+        context.prec = 28
+        context.rounding = ROUND_HALF_EVEN
+        with pytest.raises(ContractError, match="sum exactly to one"):
+            CounterfactualSheet.create(
+                source=AssessorKind.FORMULA,
+                competitors=(
+                    _competitor("alice", 40_000, 3, "0.5"),
+                    _competitor(
+                        "bob",
+                        36_000,
+                        7,
+                        "0.50000000000000000000000000001",
+                    ),
+                ),
+                expected_spread_ms=1_000,
+                joint_draw_digest="a" * 64,
+                optimizer_digest="b" * 64,
+                optimizer_verification_status=OptimizerVerificationStatus.PENDING,
+            )
 
     council_sheet = _sheet(AssessorKind.LLM_COUNCIL)
     audit = _council_audit(council_sheet)

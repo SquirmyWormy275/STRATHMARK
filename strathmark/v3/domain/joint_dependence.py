@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import InitVar, dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from hashlib import sha256
 from itertools import combinations
+from json import dumps
 from typing import Any
 
 from strathmark.v3.contracts.canonical import (
@@ -17,18 +19,25 @@ from strathmark.v3.contracts.errors import ContractError
 from strathmark.v3.contracts.forecasts import (
     DependenceInputs,
     DependenceMode,
+    DistributionSamples,
     PositiveTimeDistribution,
     SamplingSpec,
+    _build_generated_sampling_spec,
     _samples_digest,
+    sample_aligned_positive_distributions,
 )
 from strathmark.v3.contracts.identifiers import StableIdentifier, require_identifier
 from strathmark.v3.domain.credibility import ContextNode
-from strathmark.v3.domain.pooling import LinearPooledDistribution
+from strathmark.v3.domain.pooling import LinearPooledDistribution, PoolResult
 
 JOINT_SAMPLING_ALGORITHM = "sha256-u64-shared-rank-copula-v1"
 JOINT_DEPENDENCY_VERSION = "stdlib-integer-v1"
 MAX_JOINT_DRAW_ARTIFACT_BYTES = 16_777_216
 MAX_JOINT_DRAW_ARTIFACT_ITEMS = 500_000
+_RANK_UNIFORM_DENOMINATOR = 2**64 + 1
+_DECIMAL_POWERS = tuple(10**power for power in range(48))
+_NATIVE_RANK_UNIFORM_GENERATOR: Any | None = None
+_NATIVE_RANK_UNIFORM_GENERATOR_INITIALIZED = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +61,7 @@ class DependencePolicy:
         ):
             raise ContractError("minimum_pair_count must be positive")
         if not Decimal("-1") < floor < 0 < cap < Decimal("1"):
-            raise ContractError(
-                "rho bounds must straddle zero inside the valid interval"
-            )
+            raise ContractError("rho bounds must straddle zero inside the valid interval")
         if self.version != "dependence:v1":
             raise ContractError("dependence policy version is not supported")
 
@@ -161,9 +168,7 @@ class DependenceArtifact:
             raise ContractError("dependence artifact mode must be typed")
         rho = _decimal(self.rho, "artifact rho")
         if not Decimal("-1") < rho < Decimal("1"):
-            raise ContractError(
-                "dependence artifact rho must be inside the valid interval"
-            )
+            raise ContractError("dependence artifact rho must be inside the valid interval")
         if (
             isinstance(self.effective_pair_count, bool)
             or not isinstance(self.effective_pair_count, int)
@@ -263,8 +268,7 @@ class DependenceArtifact:
                 "active_projection_digest",
                 "observation_set_digest",
             }
-            or parameters.get("schema_version")
-            != "strathmark-v3-dependence-parameters-v1"
+            or parameters.get("schema_version") != "strathmark-v3-dependence-parameters-v1"
         ):
             raise ContractError("dependence artifact parameters differ")
         context = parameters["target_context"]
@@ -276,9 +280,7 @@ class DependenceArtifact:
         except (TypeError, ValueError) as exc:
             raise ContractError("dependence artifact mode is unknown") from exc
         return cls(
-            artifact_id=require_identifier(
-                value["artifact_id"], expected_namespace="artifact"
-            ),
+            artifact_id=require_identifier(value["artifact_id"], expected_namespace="artifact"),
             version=value["version"],
             target_context=ContextNode(
                 context.get("event_code"),
@@ -290,9 +292,7 @@ class DependenceArtifact:
             mode=mode,
             rho=parameters["rho"],
             effective_pair_count=parameters["effective_pair_count"],
-            context_pair_counts=tuple(
-                tuple(item) for item in parameters["context_pair_counts"]
-            ),
+            context_pair_counts=tuple(tuple(item) for item in parameters["context_pair_counts"]),
             shrinkage_path=tuple(parameters["shrinkage_path"]),
             policy=DependencePolicy.from_dict(policy),
             training_evidence_digest=parameters["training_evidence_digest"],
@@ -350,9 +350,7 @@ class DependenceModel:
         _digest(self.policy_digest, "policy_digest")
         if self.mode is DependenceMode.SHARED_RANK_COPULA:
             if self.parameters_digest is None or self.fallback_code is not None:
-                raise ContractError(
-                    "learned dependence parameters/fallback are inconsistent"
-                )
+                raise ContractError("learned dependence parameters/fallback are inconsistent")
         elif self.mode is DependenceMode.INDEPENDENCE:
             if self.parameters_digest is not None or not self.fallback_code:
                 raise ContractError("independence parameters/fallback are inconsistent")
@@ -402,10 +400,7 @@ class DependenceModel:
             "fallback_code",
             "model_digest",
         }
-        if (
-            set(value) != expected
-            or value["schema_version"] != "strathmark-v3-dependence-model-v1"
-        ):
+        if set(value) != expected or value["schema_version"] != "strathmark-v3-dependence-model-v1":
             raise ContractError("dependence model fields or schema differ")
         context = value["target_context"]
         if not isinstance(context, dict):
@@ -427,9 +422,7 @@ class DependenceModel:
             mode=mode,
             rho=value["rho"],
             effective_pair_count=value["effective_pair_count"],
-            context_pair_counts=tuple(
-                tuple(item) for item in value["context_pair_counts"]
-            ),
+            context_pair_counts=tuple(tuple(item) for item in value["context_pair_counts"]),
             shrinkage_path=tuple(value["shrinkage_path"]),
             policy_digest=value["policy_digest"],
             parameters_digest=value["parameters_digest"],
@@ -447,28 +440,16 @@ class FieldCompetitorForecast:
 
     def __post_init__(self) -> None:
         require_identifier(self.competitor_id, expected_namespace="competitor")
-        if (
-            not isinstance(self.draw_slot, str)
-            or not self.draw_slot
-            or len(self.draw_slot) > 96
-        ):
-            raise ContractError(
-                "draw_slot must be a nonempty bounded stable field slot"
-            )
-        if not isinstance(
-            self.distribution, (PositiveTimeDistribution, LinearPooledDistribution)
-        ):
-            raise ContractError(
-                "joint competitor requires a sealed predictive distribution"
-            )
+        if not isinstance(self.draw_slot, str) or not self.draw_slot or len(self.draw_slot) > 96:
+            raise ContractError("draw_slot must be a nonempty bounded stable field slot")
+        if not isinstance(self.distribution, (PositiveTimeDistribution, LinearPooledDistribution)):
+            raise ContractError("joint competitor requires a sealed predictive distribution")
         if (
             isinstance(self.crn_index, bool)
             or not isinstance(self.crn_index, int)
             or self.crn_index < 0
         ):
-            raise ContractError(
-                "joint competitor crn_index must be a nonnegative integer"
-            )
+            raise ContractError("joint competitor crn_index must be a nonnegative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,10 +475,11 @@ class GeneratedJointUniforms:
     uniforms: tuple[tuple[str, tuple[str, ...]], ...]
     common_random_map_digest: str
     _generated_proof: InitVar[_GeneratedJointUniformsProof | None] = None
+    _sampling_specs: tuple[tuple[str, SamplingSpec], ...] = field(
+        init=False, repr=False, compare=False
+    )
 
-    def __post_init__(
-        self, _generated_proof: _GeneratedJointUniformsProof | None
-    ) -> None:
+    def __post_init__(self, _generated_proof: _GeneratedJointUniformsProof | None) -> None:
         require_identifier(self.field_id, expected_namespace="field")
         _digest(self.artifact_digest, "joint uniform artifact_digest")
         if not isinstance(self.mode, DependenceMode):
@@ -523,16 +505,10 @@ class GeneratedJointUniforms:
             raise ContractError("joint uniform slots must be immutable bounded pairs")
         slot_names = tuple(item[0] for item in self.slots)
         indices = tuple(item[1] for item in self.slots)
-        if len(slot_names) != len(set(slot_names)) or indices != tuple(
-            sorted(set(indices))
-        ):
-            raise ContractError(
-                "joint uniform slots and crn indices must be unique and sorted"
-            )
+        if len(slot_names) != len(set(slot_names)) or indices != tuple(sorted(set(indices))):
+            raise ContractError("joint uniform slots and crn indices must be unique and sorted")
         if effective_rho != _effective_rank_correlation(rho, len(self.slots)):
-            raise ContractError(
-                "joint uniform effective rank correlation is misreported"
-            )
+            raise ContractError("joint uniform effective rank correlation is misreported")
         if (
             not isinstance(self.uniforms, tuple)
             or tuple(item[0] for item in self.uniforms) != slot_names
@@ -569,10 +545,30 @@ class GeneratedJointUniforms:
                 self.draw_count,
                 rho,
             )
-            if self.uniforms != tuple(
-                (slot, expected_uniforms[slot]) for slot in slot_names
-            ):
+            if self.uniforms != tuple((slot, expected_uniforms[slot]) for slot in slot_names):
                 raise ContractError("joint uniform arrays differ from frozen algorithm")
+        object.__setattr__(
+            self,
+            "_sampling_specs",
+            tuple(
+                (
+                    slot,
+                    _build_generated_sampling_spec(
+                        seed=self.seed,
+                        draw_count=self.draw_count,
+                        common_uniforms=values,
+                        common_random_map_digest=self.common_random_map_digest,
+                    ),
+                )
+                for slot, values in self.uniforms
+            ),
+        )
+
+    def sampling_spec(self, draw_slot: str) -> SamplingSpec:
+        for slot, spec in self._sampling_specs:
+            if slot == draw_slot:
+                return spec
+        raise ContractError("joint uniform sampling slot is absent")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -607,8 +603,7 @@ class GeneratedJointUniforms:
         if (
             not isinstance(value, dict)
             or set(value) != expected
-            or value.get("schema_version")
-            != "strathmark-v3-generated-joint-uniforms-v1"
+            or value.get("schema_version") != "strathmark-v3-generated-joint-uniforms-v1"
             or not isinstance(value.get("slots"), list)
             or not isinstance(value.get("uniforms"), list)
         ):
@@ -617,18 +612,11 @@ class GeneratedJointUniforms:
             sampling = SamplingSpec(seed=value["seed"], draw_count=value["draw_count"])
             if len(value["slots"]) != len(value["uniforms"]):
                 raise ContractError("generated joint uniform rows differ")
-            minimum_artifact_items = 20 + len(value["slots"]) * (
-                8 + 2 * sampling.draw_count
-            )
+            minimum_artifact_items = 20 + len(value["slots"]) * (8 + 2 * sampling.draw_count)
             if minimum_artifact_items > MAX_JOINT_DRAW_ARTIFACT_ITEMS:
-                raise ContractError(
-                    "generated joint uniforms exceed the artifact item bound"
-                )
-            if any(
-                not isinstance(item, list) or len(item) != 2 for item in value["slots"]
-            ) or any(
-                not isinstance(item, list) or len(item) != 2
-                for item in value["uniforms"]
+                raise ContractError("generated joint uniforms exceed the artifact item bound")
+            if any(not isinstance(item, list) or len(item) != 2 for item in value["slots"]) or any(
+                not isinstance(item, list) or len(item) != 2 for item in value["uniforms"]
             ):
                 raise ContractError("generated joint uniform rows differ")
             if any(
@@ -640,9 +628,7 @@ class GeneratedJointUniforms:
                 or item[1] < 0
                 for item in value["slots"]
             ):
-                raise ContractError(
-                    "joint uniform slots require a bounded stable field slot"
-                )
+                raise ContractError("joint uniform slots require a bounded stable field slot")
             if any(
                 not isinstance(item[0], str)
                 or not item[0]
@@ -651,6 +637,8 @@ class GeneratedJointUniforms:
                 for item in value["uniforms"]
             ):
                 raise ContractError("generated joint uniform rows differ")
+            if any(len(item[1]) != sampling.draw_count for item in value["uniforms"]):
+                raise ContractError("generated joint uniform rows differ from declared draw count")
             canonical_bytes(
                 value,
                 max_bytes=MAX_JOINT_DRAW_ARTIFACT_BYTES,
@@ -677,6 +665,19 @@ class GeneratedJointUniforms:
 
 
 @dataclass(frozen=True, slots=True)
+class _GeneratedJointCompetitorProof:
+    token: object
+    competitor_id: StableIdentifier
+    draw_slot: str
+    crn_index: int
+    distribution_digest: str
+    common_uniforms: tuple[str, ...]
+    samples_ms: tuple[int, ...]
+    samples_digest: str
+    samples_authority_digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class JointCompetitorDraws:
     competitor_id: StableIdentifier
     draw_slot: str
@@ -685,14 +686,12 @@ class JointCompetitorDraws:
     common_uniforms: tuple[str, ...]
     samples_ms: tuple[int, ...]
     samples_digest: str
+    _generated_proof: InitVar[_GeneratedJointCompetitorProof | None] = None
+    _samples_authority_digest_cache: str = field(init=False, repr=False, compare=False, default="")
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _generated_proof: _GeneratedJointCompetitorProof | None) -> None:
         require_identifier(self.competitor_id, expected_namespace="competitor")
-        if (
-            not isinstance(self.draw_slot, str)
-            or not self.draw_slot
-            or len(self.draw_slot) > 96
-        ):
+        if not isinstance(self.draw_slot, str) or not self.draw_slot or len(self.draw_slot) > 96:
             raise ContractError("joint draw slot must be a bounded stable field slot")
         if (
             isinstance(self.crn_index, bool)
@@ -702,25 +701,39 @@ class JointCompetitorDraws:
             raise ContractError("joint draw crn_index must be nonnegative")
         _digest(self.distribution_digest, "distribution_digest")
         _digest(self.samples_digest, "samples_digest")
-        if not isinstance(self.common_uniforms, tuple) or not isinstance(
-            self.samples_ms, tuple
-        ):
+        if not isinstance(self.common_uniforms, tuple) or not isinstance(self.samples_ms, tuple):
             raise ContractError("joint uniforms and samples must be immutable")
         if len(self.common_uniforms) != len(self.samples_ms) or not self.samples_ms:
-            raise ContractError(
-                "joint uniforms and samples must have equal nonzero length"
-            )
-        for value in self.common_uniforms:
-            number = _decimal(value, "joint common uniform")
-            if not 0 < number < 1:
-                raise ContractError(
-                    "joint common uniforms must be inside the unit interval"
-                )
-        if any(
-            isinstance(item, bool) or not isinstance(item, int) or item <= 0
-            for item in self.samples_ms
-        ):
-            raise ContractError("joint samples must be positive integer milliseconds")
+            raise ContractError("joint uniforms and samples must have equal nonzero length")
+        trusted_generation = _accepts_generated_competitor_proof(
+            _generated_proof,
+            self.competitor_id,
+            self.draw_slot,
+            self.crn_index,
+            self.distribution_digest,
+            self.common_uniforms,
+            self.samples_ms,
+            self.samples_digest,
+        )
+        if not trusted_generation:
+            for value in self.common_uniforms:
+                number = _decimal(value, "joint common uniform")
+                if not 0 < number < 1:
+                    raise ContractError("joint common uniforms must be inside the unit interval")
+            if any(
+                isinstance(item, bool) or not isinstance(item, int) or item <= 0
+                for item in self.samples_ms
+            ):
+                raise ContractError("joint samples must be positive integer milliseconds")
+            samples_authority_digest = canonical_digest(self.samples_ms)
+        else:
+            assert _generated_proof is not None
+            samples_authority_digest = _generated_proof.samples_authority_digest
+        object.__setattr__(self, "_samples_authority_digest_cache", samples_authority_digest)
+
+    @property
+    def samples_authority_digest(self) -> str:
+        return self._samples_authority_digest_cache
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -811,19 +824,13 @@ class JointDraws:
         if (
             not isinstance(self.competitors, tuple)
             or not self.competitors
-            or not all(
-                isinstance(item, JointCompetitorDraws) for item in self.competitors
-            )
+            or not all(isinstance(item, JointCompetitorDraws) for item in self.competitors)
         ):
-            raise ContractError(
-                "joint receipt competitors must be immutable typed values"
-            )
+            raise ContractError("joint receipt competitors must be immutable typed values")
         indices = tuple(item.crn_index for item in self.competitors)
         if indices != tuple(sorted(set(indices))):
             raise ContractError("joint receipt crn indices must be unique and sorted")
-        if any(
-            len(item.samples_ms) != self.inputs.draw_count for item in self.competitors
-        ):
+        if any(len(item.samples_ms) != self.inputs.draw_count for item in self.competitors):
             raise ContractError("joint receipt sample counts differ from inputs")
         _digest(self.common_random_map_digest, "common_random_map_digest")
         if (
@@ -851,9 +858,7 @@ class JointDraws:
             }
         )
         if self.common_random_map_digest != expected_map:
-            raise ContractError(
-                "joint common-random map differs from receipt authority"
-            )
+            raise ContractError("joint common-random map differs from receipt authority")
         _digest(self.joint_samples_digest, "joint_samples_digest")
         trusted_generation = _accepts_generated_joint_proof(
             _generated_proof,
@@ -879,9 +884,7 @@ class JointDraws:
             )
             for item in self.competitors:
                 if item.common_uniforms != expected_uniforms[item.draw_slot]:
-                    raise ContractError(
-                        "joint common uniforms differ from frozen algorithm"
-                    )
+                    raise ContractError("joint common uniforms differ from frozen algorithm")
                 expected = _samples_digest(
                     samples_ms=item.samples_ms,
                     seed=self.inputs.seed,
@@ -943,12 +946,8 @@ class JointDraws:
         ):
             raise ContractError("joint draws nested values are invalid")
         inputs = value["inputs"]
-        sampling = SamplingSpec(
-            seed=inputs.get("seed"), draw_count=inputs.get("draw_count")
-        )
-        minimum_artifact_items = 20 + len(value["competitors"]) * (
-            8 + 2 * sampling.draw_count
-        )
+        sampling = SamplingSpec(seed=inputs.get("seed"), draw_count=inputs.get("draw_count"))
+        minimum_artifact_items = 20 + len(value["competitors"]) * (8 + 2 * sampling.draw_count)
         if minimum_artifact_items > MAX_JOINT_DRAW_ARTIFACT_ITEMS:
             raise ContractError("joint draws exceed the artifact item bound")
         competitor_fields = {
@@ -970,9 +969,13 @@ class JointDraws:
             or not isinstance(item.get("samples_ms"), list)
             for item in value["competitors"]
         ):
-            raise ContractError(
-                "joint draw rows require a bounded stable field slot and arrays"
-            )
+            raise ContractError("joint draw rows require a bounded stable field slot and arrays")
+        if any(
+            len(item["common_uniforms"]) != sampling.draw_count
+            or len(item["samples_ms"]) != sampling.draw_count
+            for item in value["competitors"]
+        ):
+            raise ContractError("joint draw row arrays differ from the declared draw count")
         canonical_bytes(
             value,
             max_bytes=MAX_JOINT_DRAW_ARTIFACT_BYTES,
@@ -983,9 +986,7 @@ class JointDraws:
             value["artifact_digest"],
             value["rho"],
             value["effective_rho"],
-            tuple(
-                JointCompetitorDraws.from_dict(item) for item in value["competitors"]
-            ),
+            tuple(JointCompetitorDraws.from_dict(item) for item in value["competitors"]),
             value["common_random_map_digest"],
             value["algorithm"],
             value["dependency_version"],
@@ -1011,9 +1012,7 @@ def train_dependence_artifact(
         isinstance(item, ResidualObservation) for item in observations
     ):
         raise ContractError("residual evidence must be an immutable typed tuple")
-    if not isinstance(target_context, ContextNode) or not isinstance(
-        policy, DependencePolicy
-    ):
+    if not isinstance(target_context, ContextNode) or not isinstance(policy, DependencePolicy):
         raise ContractError("dependence fit requires typed context and policy")
     require_identifier(artifact_id, expected_namespace="artifact")
     _digest(training_evidence_digest, "training_evidence_digest")
@@ -1025,23 +1024,12 @@ def train_dependence_artifact(
         or cutoff_sequence <= 0
     ):
         raise ValueError("cutoff_sequence must be positive")
-    identities = tuple(
-        (str(item.field_id), str(item.competitor_id)) for item in observations
-    )
+    identities = tuple((str(item.field_id), str(item.competitor_id)) for item in observations)
     if len(identities) != len(set(identities)):
-        raise ValueError(
-            "residual evidence requires one active revision per field competitor"
-        )
-    if any(
-        item.active_projection_digest != active_projection_digest
-        for item in observations
-    ):
-        raise ValueError(
-            "residual evidence differs from the verified active projection"
-        )
-    eligible = tuple(
-        item for item in observations if item.source_sequence < cutoff_sequence
-    )
+        raise ValueError("residual evidence requires one active revision per field competitor")
+    if any(item.active_projection_digest != active_projection_digest for item in observations):
+        raise ValueError("residual evidence differs from the verified active projection")
+    eligible = tuple(item for item in observations if item.source_sequence < cutoff_sequence)
     eligible = tuple(
         sorted(
             eligible,
@@ -1069,25 +1057,17 @@ def train_dependence_artifact(
         if count:
             raw = sum(products, Decimal(0)) / Decimal(count)
             strength = Decimal(policy.prior_strength)
-            current = (Decimal(count) * raw + strength * current) / (
-                Decimal(count) + strength
-            )
-            current = min(
-                max(current, Decimal(policy.rho_floor)), Decimal(policy.rho_cap)
-            )
+            current = (Decimal(count) * raw + strength * current) / (Decimal(count) + strength)
+            current = min(max(current, Decimal(policy.rho_floor)), Decimal(policy.rho_cap))
         path.append(_decimal_string(current))
     supported = effective_pairs >= policy.minimum_pair_count and current != 0
-    mode = (
-        DependenceMode.SHARED_RANK_COPULA if supported else DependenceMode.INDEPENDENCE
-    )
+    mode = DependenceMode.SHARED_RANK_COPULA if supported else DependenceMode.INDEPENDENCE
     rho = _decimal_string(current if supported else Decimal(0))
     fallback = (
         None
         if supported
         else (
-            "unsupported_context_independence"
-            if not effective_pairs
-            else "shrunk_to_independence"
+            "unsupported_context_independence" if not effective_pairs else "shrunk_to_independence"
         )
     )
     observation_set_digest = canonical_digest(
@@ -1164,10 +1144,7 @@ def bind_field_dependence(
 
     if not isinstance(artifact, DependenceArtifact):
         raise ContractError("field dependence requires an installed frozen artifact")
-    if (
-        not isinstance(target_context, ContextNode)
-        or target_context != artifact.target_context
-    ):
+    if not isinstance(target_context, ContextNode) or target_context != artifact.target_context:
         raise ContractError("field context differs from installed dependence artifact")
     require_identifier(field_id, expected_namespace="field")
     values = {
@@ -1217,9 +1194,7 @@ def _generate_joint_uniforms(
         installed_artifact, model.target_context, field_id=model.field_id
     )
     if expected_model != model:
-        raise ContractError(
-            "joint uniform field binding differs from installed artifact"
-        )
+        raise ContractError("joint uniform field binding differs from installed artifact")
     SamplingSpec(seed=seed, draw_count=draw_count)
     minimum_artifact_items = 20 + len(competitors) * (8 + 2 * draw_count)
     if minimum_artifact_items > MAX_JOINT_DRAW_ARTIFACT_ITEMS:
@@ -1235,9 +1210,7 @@ def _generate_joint_uniforms(
         raise ValueError("competitor crn_index values must be unique")
     ordered = tuple(sorted(competitors, key=lambda item: item.crn_index))
     slots = tuple((item.draw_slot, item.crn_index) for item in ordered)
-    effective_rho = _decimal_string(
-        _effective_rank_correlation(Decimal(model.rho), len(ordered))
-    )
+    effective_rho = _decimal_string(_effective_rank_correlation(Decimal(model.rho), len(ordered)))
     common_map_digest = _joint_common_map_digest(
         field_id=model.field_id,
         artifact_digest=installed_artifact.artifact_digest,
@@ -1321,6 +1294,8 @@ def _generate_joint_draws(
     draw_count: int,
     _generation_token: object,
     uniform_plan: GeneratedJointUniforms | None,
+    pooled_results: tuple[PoolResult, ...] | None = None,
+    precomputed_samples: dict[StableIdentifier, DistributionSamples] | None = None,
 ) -> JointDraws:
     """Generate roster-order-independent common-random field draws."""
 
@@ -1381,15 +1356,75 @@ def _generate_joint_draws(
         raise ContractError("joint uniform plan differs from the requested field")
     common_map_digest = uniform_plan.common_random_map_digest
     uniforms = dict(uniform_plan.uniforms)
+    pooled_by_id: dict[StableIdentifier, PoolResult] = {}
+    if pooled_results is not None and precomputed_samples is not None:
+        raise ContractError("joint draws accept only one generated sample authority")
+    if pooled_results is not None:
+        if (
+            not isinstance(pooled_results, tuple)
+            or len(pooled_results) != len(ordered)
+            or not all(isinstance(item, PoolResult) for item in pooled_results)
+        ):
+            raise ContractError("receipt-bound pool results must match the field roster")
+        pooled_by_id = {
+            forecast.competitor_id: result
+            for forecast, result in zip(competitors, pooled_results, strict=True)
+        }
+        if len(pooled_by_id) != len(ordered):
+            raise ContractError("receipt-bound pool results must match unique competitors")
     rows = []
     for item in ordered:
-        samples = item.distribution.sample(
-            SamplingSpec(
-                seed=seed,
-                draw_count=draw_count,
-                common_uniforms=uniforms[item.draw_slot],
-                common_random_map_digest=common_map_digest,
-            )
+        pooled = pooled_by_id.get(item.competitor_id)
+        precomputed = (
+            None if precomputed_samples is None else precomputed_samples.get(item.competitor_id)
+        )
+        if precomputed is not None:
+            if (
+                len(precomputed_samples or ()) != len(ordered)
+                or precomputed.seed != seed
+                or precomputed.draw_count != draw_count
+                or precomputed.distribution_digest != item.distribution.digest
+                or precomputed.common_random_map_digest != common_map_digest
+            ):
+                raise ContractError(
+                    "generated aligned samples differ from the exact field uniform slot"
+                )
+            samples_ms = precomputed.samples_ms
+            samples_authority_digest = precomputed.samples_authority_digest
+        elif precomputed_samples is not None:
+            raise ContractError("generated aligned samples differ from the exact field roster")
+        elif pooled is None:
+            samples = item.distribution.sample(uniform_plan.sampling_spec(item.draw_slot))
+            samples_ms = samples.samples_ms
+            samples_authority_digest = samples.samples_authority_digest
+        else:
+            receipt = pooled.receipt
+            samples = pooled.samples
+            if (
+                samples is None
+                or pooled.distribution != item.distribution
+                or receipt.pooled_distribution != item.distribution
+                or receipt.pooled_samples_ms != samples.samples_ms
+                or receipt.pooled_samples_digest != samples.samples_digest
+                or receipt.seed != seed
+                or receipt.draw_count != draw_count
+                or receipt.common_uniforms != uniforms[item.draw_slot]
+                or receipt.source_common_random_map_digest != common_map_digest
+                or samples.seed != seed
+                or samples.draw_count != draw_count
+                or samples.distribution_digest != item.distribution.digest
+                or samples.common_random_map_digest != receipt.common_random_map_digest
+            ):
+                raise ContractError(
+                    "receipt-bound pool samples differ from the exact field uniform slot"
+                )
+            samples_ms = samples.samples_ms
+            samples_authority_digest = samples.samples_authority_digest
+        joint_samples_digest = _samples_digest(
+            samples_ms=samples_ms,
+            seed=seed,
+            distribution_digest=item.distribution.digest,
+            common_random_map_digest=common_map_digest,
         )
         rows.append(
             JointCompetitorDraws(
@@ -1398,8 +1433,19 @@ def _generate_joint_draws(
                 item.crn_index,
                 item.distribution.digest,
                 uniforms[item.draw_slot],
-                samples.samples_ms,
-                samples.samples_digest,
+                samples_ms,
+                joint_samples_digest,
+                _GeneratedJointCompetitorProof(
+                    _generation_token,
+                    item.competitor_id,
+                    item.draw_slot,
+                    item.crn_index,
+                    item.distribution.digest,
+                    uniforms[item.draw_slot],
+                    samples_ms,
+                    joint_samples_digest,
+                    samples_authority_digest,
+                ),
             )
         )
     inputs = DependenceInputs(
@@ -1424,11 +1470,7 @@ def _generate_joint_draws(
         "dependency_version": JOINT_DEPENDENCY_VERSION,
         "time_quantum_ms": 1,
     }
-    joint_samples_digest = canonical_digest(
-        _joint_draw_content(values),
-        max_bytes=MAX_JOINT_DRAW_ARTIFACT_BYTES,
-        max_items=MAX_JOINT_DRAW_ARTIFACT_ITEMS,
-    )
+    joint_samples_digest = _generated_joint_draw_content_digest(values)
     return JointDraws(
         **values,
         joint_samples_digest=joint_samples_digest,
@@ -1481,6 +1523,29 @@ def _install_joint_generation_capability():
             and proof.joint_samples_digest == joint_samples_digest
         )
 
+    def accepts_competitor(
+        proof: _GeneratedJointCompetitorProof | None,
+        competitor_id: StableIdentifier,
+        draw_slot: str,
+        crn_index: int,
+        distribution_digest: str,
+        common_uniforms: tuple[str, ...],
+        samples_ms: tuple[int, ...],
+        samples_digest: str,
+    ) -> bool:
+        return (
+            isinstance(proof, _GeneratedJointCompetitorProof)
+            and proof.token is token
+            and proof.competitor_id == competitor_id
+            and proof.draw_slot == draw_slot
+            and proof.crn_index == crn_index
+            and proof.distribution_digest == distribution_digest
+            and proof.common_uniforms is common_uniforms
+            and proof.samples_ms is samples_ms
+            and proof.samples_digest == samples_digest
+            and bool(proof.samples_authority_digest)
+        )
+
     def generate(
         competitors: tuple[FieldCompetitorForecast, ...],
         model: DependenceModel,
@@ -1500,12 +1565,99 @@ def _install_joint_generation_capability():
             uniform_plan=uniform_plan,
         )
 
-    return generate, accepts
+    def generate_from_pool_results(
+        competitors: tuple[FieldCompetitorForecast, ...],
+        pooled_results: tuple[PoolResult, ...],
+        model: DependenceModel,
+        *,
+        installed_artifact: DependenceArtifact,
+        seed: int,
+        draw_count: int,
+        uniform_plan: GeneratedJointUniforms,
+    ) -> JointDraws:
+        return _generate_joint_draws(
+            competitors,
+            model,
+            installed_artifact=installed_artifact,
+            seed=seed,
+            draw_count=draw_count,
+            _generation_token=token,
+            uniform_plan=uniform_plan,
+            pooled_results=pooled_results,
+        )
+
+    def generate_aligned_components(
+        component_fields: tuple[tuple[FieldCompetitorForecast, ...], ...],
+        model: DependenceModel,
+        *,
+        installed_artifact: DependenceArtifact,
+        seed: int,
+        draw_count: int,
+        uniform_plan: GeneratedJointUniforms,
+    ) -> tuple[JointDraws, ...]:
+        if (
+            not isinstance(component_fields, tuple)
+            or not 2 <= len(component_fields) <= 3
+            or not all(
+                isinstance(field, tuple)
+                and field
+                and all(isinstance(item, FieldCompetitorForecast) for item in field)
+                for field in component_fields
+            )
+        ):
+            raise ContractError("aligned component generation requires two or three typed fields")
+        ordered_fields = tuple(
+            tuple(sorted(field, key=lambda item: item.crn_index)) for field in component_fields
+        )
+        roster = tuple(
+            (item.competitor_id, item.draw_slot, item.crn_index) for item in ordered_fields[0]
+        )
+        if any(
+            tuple((item.competitor_id, item.draw_slot, item.crn_index) for item in field) != roster
+            for field in ordered_fields[1:]
+        ):
+            raise ContractError("aligned component field rosters differ")
+
+        sample_maps: tuple[dict[StableIdentifier, DistributionSamples], ...] = tuple(
+            {} for _field in ordered_fields
+        )
+        for rows in zip(*ordered_fields, strict=True):
+            samples = sample_aligned_positive_distributions(
+                tuple(item.distribution for item in rows),
+                uniform_plan.sampling_spec(rows[0].draw_slot),
+            )
+            for sample_map, item, sample in zip(sample_maps, rows, samples, strict=True):
+                sample_map[item.competitor_id] = sample
+        return tuple(
+            _generate_joint_draws(
+                field,
+                model,
+                installed_artifact=installed_artifact,
+                seed=seed,
+                draw_count=draw_count,
+                _generation_token=token,
+                uniform_plan=uniform_plan,
+                precomputed_samples=sample_map,
+            )
+            for field, sample_map in zip(component_fields, sample_maps, strict=True)
+        )
+
+    return (
+        generate,
+        generate_from_pool_results,
+        generate_aligned_components,
+        accepts,
+        accepts_competitor,
+    )
 
 
-generate_joint_draws, _accepts_generated_joint_proof = (
-    _install_joint_generation_capability()
-)
+(
+    generate_joint_draws,
+    generate_joint_draws_from_pool_results,
+    generate_aligned_component_joint_draws,
+    _accepts_generated_joint_proof,
+    _accepts_generated_competitor_proof,
+) = _install_joint_generation_capability()
 del _install_joint_generation_capability
 
 
@@ -1545,8 +1697,7 @@ def _same_field_products(
         rows = sorted(by_field[field_id], key=lambda item: str(item.competitor_id))
         for left, right in combinations(rows, 2):
             products.append(
-                Decimal(left.standardized_residual)
-                * Decimal(right.standardized_residual)
+                Decimal(left.standardized_residual) * Decimal(right.standardized_residual)
             )
     return tuple(products)
 
@@ -1565,6 +1716,42 @@ def _joint_uniforms(
     )
 
 
+def regenerate_joint_uniforms_for_replay(
+    slots: tuple[tuple[str, int], ...],
+    *,
+    seed: int,
+    draw_count: int,
+    rho: str,
+) -> dict[str, tuple[str, ...]]:
+    """Recreate a serialized authority's frozen CRN matrix for verification."""
+
+    if (
+        not isinstance(slots, tuple)
+        or not 1 <= len(slots) <= 12
+        or not all(
+            isinstance(item, tuple)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and bool(item[0])
+            and len(item[0]) <= 96
+            and not isinstance(item[1], bool)
+            and isinstance(item[1], int)
+            and item[1] >= 0
+            for item in slots
+        )
+    ):
+        raise ContractError("joint replay slots must be unique and canonically ordered")
+    if len({slot for slot, _crn_index in slots}) != len(slots) or tuple(
+        crn_index for _slot, crn_index in slots
+    ) != tuple(sorted({crn_index for _slot, crn_index in slots})):
+        raise ContractError("joint replay slots must be unique and canonically ordered")
+    SamplingSpec(seed=seed, draw_count=draw_count)
+    decoded_rho = _decimal(rho, "joint replay rho")
+    if not Decimal("-1") < decoded_rho < Decimal("1"):
+        raise ContractError("joint replay rho must remain inside the open unit interval")
+    return _joint_uniforms_from_slots(slots, seed, draw_count, decoded_rho)
+
+
 def _joint_uniforms_from_slots(
     slots: tuple[tuple[str, int], ...],
     seed: int,
@@ -1575,6 +1762,20 @@ def _joint_uniforms_from_slots(
     ordinal = {crn_index: index for index, (_slot, crn_index) in enumerate(slots)}
     strength = rho.copy_abs()
     if strength == 0:
+        global _NATIVE_RANK_UNIFORM_GENERATOR
+        global _NATIVE_RANK_UNIFORM_GENERATOR_INITIALIZED
+        if draw_count == 4096 and not _NATIVE_RANK_UNIFORM_GENERATOR_INITIALIZED:
+            from strathmark.v3.domain.optimizer_kernel import load_bundled_kernel
+
+            _NATIVE_RANK_UNIFORM_GENERATOR = load_bundled_kernel(required=sys.platform == "win32")
+            _NATIVE_RANK_UNIFORM_GENERATOR_INITIALIZED = True
+        if draw_count == 4096 and _NATIVE_RANK_UNIFORM_GENERATOR is not None:
+            rows = _NATIVE_RANK_UNIFORM_GENERATOR.generate_independent_rank_uniforms(
+                seed=seed,
+                draw_count=draw_count,
+                stream_count=len(slots),
+            )
+            return {slot: rows[ordinal[crn_index]] for slot, crn_index in slots}
         for draw in range(draw_count):
             for slot, crn_index in slots:
                 stream_index = ordinal[crn_index]
@@ -1599,9 +1800,7 @@ def _joint_uniforms_from_slots(
             if not use_shared:
                 for slot, crn_index in slots:
                     stream_index = ordinal[crn_index]
-                    values[slot].append(
-                        _rank_uniform(seed, draw, f"crn:{stream_index}")
-                    )
+                    values[slot].append(_rank_uniform(seed, draw, f"crn:{stream_index}"))
                 continue
 
             negative_ranks = {
@@ -1618,9 +1817,7 @@ def _joint_uniforms_from_slots(
             field_size = Decimal(len(slots))
             for slot, crn_index in slots:
                 stream_index = ordinal[crn_index]
-                jitter = Decimal(
-                    _rank_uniform(seed, draw, f"negative-jitter:{stream_index}")
-                )
+                jitter = Decimal(_rank_uniform(seed, draw, f"negative-jitter:{stream_index}"))
                 probability = (Decimal(negative_ranks[crn_index]) + jitter) / field_size
                 values[slot].append(_decimal_string(probability))
     return {slot: tuple(items) for slot, items in values.items()}
@@ -1656,10 +1853,25 @@ def _joint_common_map_digest(
 def _rank_uniform(seed: int, draw: int, stream: str) -> str:
     payload = f"field-crn-v1:{seed}:{draw}:{stream}".encode()
     numerator = int.from_bytes(sha256(payload).digest()[:8], "big") + 1
-    with localcontext() as context:
-        context.prec = 28
-        context.rounding = ROUND_HALF_EVEN
-        return _decimal_string(Decimal(numerator) / Decimal(2**64 + 1))
+    # Reproduce Decimal precision=28 division exactly with integer arithmetic.
+    # This hot path runs once per draw/entrant and the denominator is frozen by
+    # the sampling algorithm, so avoiding Decimal object construction materially
+    # shortens confirmed-field assembly without changing a single receipt byte.
+    exponent = len(str(numerator)) - 20
+    if exponent >= 0:
+        exponent = -1
+    if numerator * _DECIMAL_POWERS[-exponent] < _RANK_UNIFORM_DENOMINATOR:
+        exponent -= 1
+    scale = 27 - exponent
+    quotient, remainder = divmod(numerator * _DECIMAL_POWERS[scale], _RANK_UNIFORM_DENOMINATOR)
+    doubled = remainder * 2
+    if doubled > _RANK_UNIFORM_DENOMINATOR or (
+        doubled == _RANK_UNIFORM_DENOMINATOR and quotient % 2
+    ):
+        quotient += 1
+    if quotient >= _DECIMAL_POWERS[scale]:
+        return "1"
+    return ("0." + str(quotient).rjust(scale, "0")).rstrip("0").rstrip(".")
 
 
 def _effective_rank_correlation(rho: Decimal, field_size: int) -> Decimal:
@@ -1765,6 +1977,29 @@ def _joint_draw_content(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _generated_joint_draw_content_digest(values: dict[str, Any]) -> str:
+    """Hash one already-validated generated authority without renormalizing it.
+
+    Every leaf in ``values`` has passed its typed contract before this helper is
+    reached.  Sorting keys and using the canonical JSON separators therefore
+    produces exactly the same bytes as ``canonical_bytes`` while avoiding a
+    second recursive walk over both draw arrays.  Decoded/reconstructed values
+    still take the complete canonical validation and deterministic replay path
+    in ``JointDraws.__post_init__``.
+    """
+
+    payload = dumps(
+        _joint_draw_content(values),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    if len(payload) > MAX_JOINT_DRAW_ARTIFACT_BYTES:
+        raise ContractError("joint draws exceed the artifact byte bound")
+    return sha256(payload).hexdigest()
+
+
 def _decimal_string(value: Decimal) -> str:
     with localcontext() as context:
         context.prec = 96
@@ -1784,8 +2019,11 @@ __all__ = [
     "JOINT_SAMPLING_ALGORITHM",
     "bind_field_dependence",
     "fit_field_dependence",
+    "generate_aligned_component_joint_draws",
     "generate_joint_draws",
+    "generate_joint_draws_from_pool_results",
     "generate_joint_uniforms",
     "has_fresh_joint_generation_proof",
+    "regenerate_joint_uniforms_for_replay",
     "train_dependence_artifact",
 ]

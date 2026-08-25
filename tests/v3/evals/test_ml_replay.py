@@ -65,15 +65,9 @@ def _bundle() -> LoadedMLBundle:
         digest="a" * 64,
         version="ml:v1",
         universal_model=_Model(_logs((30, 32, 35, 40, 45, 50, 55))),
-        specialist_models={
-            "underhand|300|gum": _Model(_logs((25, 27, 30, 34, 38, 42, 46)))
-        },
-        specialist_eligibility={
-            "underhand|300|gum": SpecialistEligibility(500, 30, 10)
-        },
-        gate=SpecialistGate(
-            "0", (("log_history_depth", "0.1"), ("missing_fraction", "0"))
-        ),
+        specialist_models={"underhand|300|gum": _Model(_logs((25, 27, 30, 34, 38, 42, 46)))},
+        specialist_eligibility={"underhand|300|gum": SpecialistEligibility(500, 30, 10)},
+        gate=SpecialistGate("0", (("log_history_depth", "0.1"), ("missing_fraction", "0"))),
         calibrator=PITCalibrator.identity(source_digest="b" * 64),
         feature_names=("event_family", "species", "size_mm"),
         categorical_features=("event_family", "species"),
@@ -99,9 +93,7 @@ def test_frozen_replay_is_reproducible_and_uses_supported_specialist() -> None:
     assert first.forecast.evidence_digest == packet.content_digest
 
 
-def test_sparse_or_unseen_context_has_explicit_universal_fallback_over_whole_domain() -> (
-    None
-):
+def test_sparse_or_unseen_context_has_explicit_universal_fallback_over_whole_domain() -> None:
     assessor = MLAssessor(_bundle())
     packets = (
         (_packet("underhand", 325, "gum"), False),
@@ -159,9 +151,7 @@ class _ConsequenceSpy:
     def __init__(self) -> None:
         self.inputs: list[MarkConsequenceFieldInput] = []
 
-    def evaluate(
-        self, field_input: MarkConsequenceFieldInput
-    ) -> MarkConsequenceReceipt:
+    def evaluate(self, field_input: MarkConsequenceFieldInput) -> MarkConsequenceReceipt:
         self.inputs.append(field_input)
         outcomes = tuple(
             MarkConsequenceOutcome(
@@ -235,30 +225,22 @@ def _authorized_replay_rows(
         {
             "schema_version": "strathmark-v3-ml-role-manifest-v3",
             "generation_digest": "d" * 64,
-            "assignments": [
-                {"tournament_id": "tournament:slice", "role": "locked_audit"}
-            ],
+            "assignments": [{"tournament_id": "tournament:slice", "role": "locked_audit"}],
         },
         signer=signer,
         created_at="2026-01-01T00:00:00.000Z",
     )
     authority = compose_test_ml_audit_authority(signed, signer=signer)
-    rows = authority.build_locked_audit_replay_matrix(
-        authority.authorize_packets((packet,))
-    )
+    rows = authority.build_locked_audit_replay_matrix(authority.authorize_packets((packet,)))
     return authority, rows
 
 
-def test_frozen_rolling_replay_emits_predictive_and_handicap_consequence_slices() -> (
-    None
-):
+def test_frozen_rolling_replay_emits_predictive_and_handicap_consequence_slices() -> None:
     authority, authorized = _authorized_replay_rows()
     evaluator = _ConsequenceSpy()
     bundle = replace(
         _bundle(),
-        calibrator=PITCalibrator(
-            "calibration", (("0", "0"), ("0.5", "0.7"), ("1", "1")), "b" * 64
-        ),
+        calibrator=PITCalibrator("calibration", (("0", "0"), ("0.5", "0.7"), ("1", "1")), "b" * 64),
     )
     report = authority.evaluate_frozen_replay(authorized, bundle, evaluator)
     assert report.grouped_field_count == 2
@@ -271,10 +253,7 @@ def test_frozen_rolling_replay_emits_predictive_and_handicap_consequence_slices(
         "field:separate-1",
         "field:separate-2",
     }
-    assert all(
-        field_input.forecasts[0][1].median_ms != 40_000
-        for field_input in evaluator.inputs
-    )
+    assert all(field_input.forecasts[0][1].median_ms != 40_000 for field_input in evaluator.inputs)
     all_slice = next(item for item in report.slices if item.name == "all")
     assert all_slice.row_count == 2
     assert float(all_slice.mean_pinball_loss) > 0
@@ -293,20 +272,14 @@ def test_frozen_rolling_replay_emits_predictive_and_handicap_consequence_slices(
     assert float(all_slice.win_probability_distortion) == 0.1
 
 
-def test_frozen_replay_scores_post_pit_distribution_and_enforces_audit_versions() -> (
-    None
-):
+def test_frozen_replay_scores_post_pit_distribution_and_enforces_audit_versions() -> None:
     authority, rows = _authorized_replay_rows()
     identity = authority.evaluate_frozen_replay(rows, _bundle(), _ConsequenceSpy())
     calibrated_bundle = replace(
         _bundle(),
-        calibrator=PITCalibrator(
-            "calibration", (("0", "0"), ("0.5", "0.8"), ("1", "1")), "b" * 64
-        ),
+        calibrator=PITCalibrator("calibration", (("0", "0"), ("0.5", "0.8"), ("1", "1")), "b" * 64),
     )
-    calibrated = authority.evaluate_frozen_replay(
-        rows, calibrated_bundle, _ConsequenceSpy()
-    )
+    calibrated = authority.evaluate_frozen_replay(rows, calibrated_bundle, _ConsequenceSpy())
     identity_all = next(item for item in identity.slices if item.name == "all")
     calibrated_all = next(item for item in calibrated.slices if item.name == "all")
     assert calibrated_all.mean_pinball_loss != identity_all.mean_pinball_loss
@@ -328,15 +301,11 @@ def test_consequence_port_contract_is_canonical_exact_and_digest_bound() -> None
         MarkConsequenceOutcome("evidence:a", "1", "2", "0.1", "0.0", "3", "0.2", "0.5")
 
     distribution = (
-        MLAssessor(_bundle())
-        .assess(_packet("underhand", 300, "gum"))
-        .forecast.distribution
+        MLAssessor(_bundle()).assess(_packet("underhand", 300, "gum")).forecast.distribution
     )
     assert distribution is not None
     with pytest.raises(ValueError, match="nonempty field"):
-        MarkConsequenceFieldInput.create(
-            field_id="bad", forecasts=(), actual_raw_times_ms=()
-        )
+        MarkConsequenceFieldInput.create(field_id="bad", forecasts=(), actual_raw_times_ms=())
     with pytest.raises(ValueError, match="typed distributions"):
         MarkConsequenceFieldInput.create(
             field_id="field:a",
@@ -360,9 +329,7 @@ def test_consequence_port_contract_is_canonical_exact_and_digest_bound() -> None
         forecasts=(("evidence:a", distribution),),
         actual_raw_times_ms=(("evidence:a", 40_000),),
     )
-    outcome = MarkConsequenceOutcome(
-        "evidence:a", "1", "2", "0.1", "0", "3", "0.2", "0.5"
-    )
+    outcome = MarkConsequenceOutcome("evidence:a", "1", "2", "0.1", "0", "3", "0.2", "0.5")
     with pytest.raises(ValueError, match="field identity"):
         MarkConsequenceReceipt.create(
             field_id="bad", input_digest=valid_input.input_digest, outcomes=(outcome,)
@@ -388,9 +355,7 @@ def test_consequence_port_contract_is_canonical_exact_and_digest_bound() -> None
         replace(receipt, receipt_digest="f" * 64)
 
 
-@pytest.mark.parametrize(
-    "bad_kind", ["object", "wrong_field", "wrong_input", "wrong_rows"]
-)
+@pytest.mark.parametrize("bad_kind", ["object", "wrong_field", "wrong_input", "wrong_rows"])
 def test_frozen_replay_rejects_unbound_consequence_receipts(bad_kind: str) -> None:
     authority, rows = _authorized_replay_rows()
 
@@ -401,16 +366,10 @@ def test_frozen_replay_rejects_unbound_consequence_receipts(bad_kind: str) -> No
             row_id = field_input.actual_raw_times_ms[0][0]
             if bad_kind == "wrong_rows":
                 row_id = "evidence:wrong"
-            outcome = MarkConsequenceOutcome(
-                row_id, "1", "2", "0.1", "0", "3", "0.2", "0.5"
-            )
+            outcome = MarkConsequenceOutcome(row_id, "1", "2", "0.1", "0", "3", "0.2", "0.5")
             return MarkConsequenceReceipt.create(
-                field_id=(
-                    "field:wrong" if bad_kind == "wrong_field" else field_input.field_id
-                ),
-                input_digest=(
-                    "f" * 64 if bad_kind == "wrong_input" else field_input.input_digest
-                ),
+                field_id=("field:wrong" if bad_kind == "wrong_field" else field_input.field_id),
+                input_digest=("f" * 64 if bad_kind == "wrong_input" else field_input.input_digest),
                 outcomes=(outcome,),
             )
 
@@ -435,9 +394,7 @@ def test_frozen_replay_recomputes_receipt_values_after_evaluator_returns(
     authority, rows = _authorized_replay_rows()
 
     class TamperingEvaluator(_ConsequenceSpy):
-        def evaluate(
-            self, field_input: MarkConsequenceFieldInput
-        ) -> MarkConsequenceReceipt:
+        def evaluate(self, field_input: MarkConsequenceFieldInput) -> MarkConsequenceReceipt:
             receipt = super().evaluate(field_input)
             if tamper == "receipt_digest":
                 object.__setattr__(receipt, "receipt_digest", "f" * 64)
@@ -468,9 +425,7 @@ def test_replay_probability_and_metric_helpers_cover_boundaries() -> None:
     assert _quantile_probability(8.0, quantiles) == 0.95
     assert _quantile_probability(4.5, quantiles) == pytest.approx(0.625)
     distribution = (
-        MLAssessor(_bundle())
-        .assess(_packet("underhand", 300, "gum"))
-        .forecast.distribution
+        MLAssessor(_bundle()).assess(_packet("underhand", 300, "gum")).forecast.distribution
     )
     assert distribution is not None
     assert _distribution_probability(distribution, 0) == 0.001

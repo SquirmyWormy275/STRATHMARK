@@ -89,6 +89,9 @@ packages = ["strathmark"]
 "strathmark/models/prediction_v2_core.json" = "strathmark/models/prediction_v2_core.json"
 "strathmark/contracts/shadow_consumer_v1.openapi.json" = "strathmark/contracts/shadow_consumer_v1.openapi.json"
 "strathmark/contracts/shadow_consumer_v1.openapi.sha256" = "strathmark/contracts/shadow_consumer_v1.openapi.sha256"
+"strathmark/v3/native/optimizer_kernel.rs" = "strathmark/v3/native/optimizer_kernel.rs"
+"strathmark/v3/native/optimizer_kernel_manifest.json" = "strathmark/v3/native/optimizer_kernel_manifest.json"
+"strathmark/v3/native/strathmark_v3_optimizer_kernel.dll" = "strathmark/v3/native/strathmark_v3_optimizer_kernel.dll"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

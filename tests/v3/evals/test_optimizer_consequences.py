@@ -216,13 +216,14 @@ def test_installed_shared_evaluator_replays_same_optimizer_for_numeric_consequen
     assert evaluator.implementation_digest
     assert issued_input.joint_samples_digest == issued_draws.joint_samples_digest
 
-    with pytest.raises(Exception, match="seed"):
-        OptimizationField.from_joint_draws(
-            issued_draws,
-            forecasts=basis,
-            source_receipt_digest="c" * 64,
-            pool_receipt_digest="a" * 64,
-        )
+    rebound_source = OptimizationField.from_joint_draws(
+        issued_draws,
+        forecasts=basis,
+        source_receipt_digest="c" * 64,
+        pool_receipt_digest="a" * 64,
+    )
+    assert rebound_source.seed == issued_draws.inputs.seed
+    assert rebound_source.source_receipt_digest == "c" * 64
     with pytest.raises(Exception, match="typed U13"):
         OptimizationField.from_joint_draws(
             object(),
@@ -267,7 +268,7 @@ def test_installed_shared_evaluator_replays_same_optimizer_for_numeric_consequen
         )
 
     for changes, message in (
-        ({"optimizer_seed": 0}, "seed"),
+        ({"optimizer_seed": 0}, "binding digest"),
         ({"slots": ()}, "complete field"),
         ({"slots": ((StableIdentifier("competitor:a"), "", 0),)}, "draw slot"),
         (

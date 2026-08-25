@@ -7,10 +7,14 @@ compared against the same sealed 4,096-draw field sample.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
+from fractions import Fraction  # noqa: F401 - tests prove the hot path avoids it
+from functools import wraps
 from hashlib import sha256
 from itertools import product
 from math import lcm
@@ -27,6 +31,10 @@ from strathmark.v3.domain.credibility import (
     HandicapConsequenceMetrics,
     OptimizerConsequenceReceipt,
 )
+from strathmark.v3.domain.optimizer_kernel import (
+    bundled_kernel_identity,
+    load_bundled_kernel,
+)
 
 if TYPE_CHECKING:
     from strathmark.v3.application.credibility_reactions import OptimizerScoringInput
@@ -37,6 +45,81 @@ OPTIMIZER_VERSION = "fairness-frontier-v1"
 PARETO_TOLERANCE = Decimal("0.000000001")
 NUMPY_DEPENDENCY_VERSION = np.__version__
 _RawObjective: TypeAlias = tuple[int, int, int, int]
+
+
+@dataclass(slots=True)
+class _WinnerComparisonCache:
+    dense: list[list[list[int | None]]]
+    fallback: dict[tuple[int, int, int], int]
+
+    @classmethod
+    def create(cls, entrant_count: int) -> _WinnerComparisonCache:
+        return cls(
+            [[[None] * 361 for _right in range(entrant_count)] for _left in range(entrant_count)],
+            {},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationContext:
+    expected: Any
+    samples: Any
+    baseline: Any
+    ideal_delays: Any
+    ideal_square_sum: int
+    entrant_count: int
+    credit_scale: int
+    draw_count: int
+    parity_denominator: int
+    winner_comparison_masks: _WinnerComparisonCache
+    native_slot: _NativeEvaluationSlot
+
+
+@dataclass(slots=True)
+class _NativeEvaluationSlot:
+    kernel: Any | None
+    context: Any | None = None
+
+    def get(self, samples: Any) -> Any | None:
+        if self.kernel is None:
+            return None
+        if self.context is None:
+            self.context = self.kernel.context(samples)
+        return self.context
+
+
+_GENERATED_OPTIMIZER_CAPABILITY = object()
+MAX_OPTIMIZER_ENTRANTS = 12
+OPTIMIZER_DECIMAL_PRECISION = 96
+_EVALUATION_BATCH_SIZE = 96
+_NATIVE_KERNEL_IDENTITY = bundled_kernel_identity()
+_NATIVE_OPTIMIZER_KERNEL = load_bundled_kernel()
+
+
+def _validated_sample_tuple_digest(values: tuple[int, ...]) -> str:
+    """Hash the exact canonical JSON integer array without generic tree walking."""
+
+    digest = sha256()
+    digest.update(b"[")
+    for index, value in enumerate(values):
+        if index:
+            digest.update(b",")
+        digest.update(str(value).encode("ascii"))
+    digest.update(b"]")
+    return digest.hexdigest()
+
+
+def _frozen_optimizer_decimal(function):
+    """Run authority-affecting Decimal work under one installed context."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with localcontext() as context:
+            context.prec = OPTIMIZER_DECIMAL_PRECISION
+            context.rounding = ROUND_HALF_EVEN
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 class OptimizerFallback(str, Enum):
@@ -99,8 +182,9 @@ def _implementation_artifact_value() -> dict[str, Any]:
         "schema_version": "strathmark-v3-optimizer-implementation-v1",
         "algorithm": OPTIMIZER_VERSION,
         "policy": DEFAULT_OPTIMIZER_POLICY.to_dict(),
-        "numeric_core": "numpy-integer-vector-v1",
+        "numeric_core": "numpy-integer-vector-with-sealed-rust-kernel-v1",
         "numpy_version": NUMPY_DEPENDENCY_VERSION,
+        "native_kernel": _NATIVE_KERNEL_IDENTITY,
         "chim_geometry": "decimal-jacobi-svd-v1",
         "tie_credit": "exact-lcm-split-v1",
     }
@@ -124,6 +208,7 @@ class OptimizationCompetitor:
     samples_ms: tuple[int, ...]
     upstream_index: int
     distribution_digest: str | None = None
+    _samples_digest_cache: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         require_identifier(self.competitor_id, expected_namespace="competitor")
@@ -146,6 +231,9 @@ class OptimizationCompetitor:
             or self.upstream_index < 0
         ):
             raise ContractError("upstream_index must be a nonnegative integer")
+        object.__setattr__(
+            self, "_samples_digest_cache", _validated_sample_tuple_digest(self.samples_ms)
+        )
         if self.distribution_digest is None:
             object.__setattr__(
                 self,
@@ -161,7 +249,30 @@ class OptimizationCompetitor:
 
     @property
     def samples_digest(self) -> str:
-        return canonical_digest(self.samples_ms)
+        return self._samples_digest_cache
+
+    @classmethod
+    def _from_generated_joint(
+        cls,
+        *,
+        competitor_id: StableIdentifier,
+        expected_time_ms: int,
+        samples_ms: tuple[int, ...],
+        upstream_index: int,
+        distribution_digest: str,
+        samples_authority_digest: str,
+        _capability: object,
+    ) -> OptimizationCompetitor:
+        if _capability is not _GENERATED_OPTIMIZER_CAPABILITY:
+            raise ContractError("generated optimizer input proof is not verifier-owned")
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "competitor_id", competitor_id)
+        object.__setattr__(instance, "expected_time_ms", expected_time_ms)
+        object.__setattr__(instance, "samples_ms", samples_ms)
+        object.__setattr__(instance, "upstream_index", upstream_index)
+        object.__setattr__(instance, "distribution_digest", distribution_digest)
+        object.__setattr__(instance, "_samples_digest_cache", samples_authority_digest)
+        return instance
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,12 +289,14 @@ class OptimizationField:
     def __post_init__(self) -> None:
         require_identifier(self.field_id, expected_namespace="field")
         _digest(self.source_receipt_digest, "source_receipt_digest")
-        if self.seed != _seed_from_digest(self.source_receipt_digest):
-            raise ContractError("optimizer seed differs from the source receipt digest")
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+            raise ContractError("optimizer seed must be a nonnegative integer")
         if not isinstance(self.competitors, tuple) or not all(
             isinstance(item, OptimizationCompetitor) for item in self.competitors
         ):
             raise ContractError("optimizer field competitors must be immutable typed values")
+        if len(self.competitors) > MAX_OPTIMIZER_ENTRANTS:
+            raise ContractError("optimizer field supports at most 12 entrants")
         identities = tuple(str(item.competitor_id) for item in self.competitors)
         indices = tuple(item.upstream_index for item in self.competitors)
         if len(identities) != len(set(identities)):
@@ -277,14 +390,15 @@ class OptimizationField:
         source_receipt_digest: str,
         pool_receipt_digest: str,
     ) -> OptimizationField:
-        from strathmark.v3.domain.joint_dependence import JointDraws
+        from strathmark.v3.domain.joint_dependence import (
+            JointDraws,
+            has_fresh_joint_generation_proof,
+        )
 
         if not isinstance(draws, JointDraws):
             raise ContractError("optimizer requires typed U13 joint draws")
         if draws.inputs.draw_count != DEFAULT_OPTIMIZER_POLICY.sample_count:
             raise ContractError("optimizer joint draws must contain exactly 4096 samples")
-        if draws.inputs.seed != _seed_from_digest(source_receipt_digest):
-            raise ContractError("U13 joint draw seed differs from optimizer receipt seed")
         from strathmark.v3.domain.joint_dependence import FieldCompetitorForecast
 
         if not isinstance(forecasts, tuple) or not all(
@@ -294,13 +408,26 @@ class OptimizationField:
         by_index = {item.crn_index: item for item in forecasts}
         if set(by_index) != {item.crn_index for item in draws.competitors}:
             raise ContractError("U13 forecast basis differs from joint draw roster")
+        fresh_joint = has_fresh_joint_generation_proof(draws)
         rows = tuple(
-            OptimizationCompetitor(
-                item.competitor_id,
-                by_index[item.crn_index].distribution.median_ms,
-                item.samples_ms,
-                index,
-                item.distribution_digest,
+            (
+                OptimizationCompetitor._from_generated_joint(
+                    competitor_id=item.competitor_id,
+                    expected_time_ms=by_index[item.crn_index].distribution.median_ms,
+                    samples_ms=item.samples_ms,
+                    upstream_index=index,
+                    distribution_digest=item.distribution_digest,
+                    samples_authority_digest=item.samples_authority_digest,
+                    _capability=_GENERATED_OPTIMIZER_CAPABILITY,
+                )
+                if fresh_joint
+                else OptimizationCompetitor(
+                    item.competitor_id,
+                    by_index[item.crn_index].distribution.median_ms,
+                    item.samples_ms,
+                    index,
+                    item.distribution_digest,
+                )
             )
             for index, item in enumerate(draws.competitors)
         )
@@ -317,7 +444,7 @@ class OptimizationField:
         values = {
             "field_id": draws.inputs.field_id,
             "source_receipt_digest": source_receipt_digest,
-            "seed": _seed_from_digest(source_receipt_digest),
+            "seed": draws.inputs.seed,
             "competitors": rows,
             "joint_samples_digest": draws.joint_samples_digest,
             "sample_matrix_digest": matrix_digest,
@@ -362,6 +489,7 @@ class ObjectiveVector:
     def values(self) -> tuple[Decimal, Decimal, Decimal, Decimal]:
         return tuple(Decimal(getattr(self, name)) for name in self.__dataclass_fields__)  # type: ignore[return-value]
 
+    @_frozen_optimizer_decimal
     def dominates(self, other: ObjectiveVector) -> bool:
         if not isinstance(other, ObjectiveVector):
             raise ContractError("Pareto comparison requires typed objective vectors")
@@ -419,7 +547,12 @@ class FrontierCandidate:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> FrontierCandidate:
-        if set(value) != {"marks", "objectives", "normalized_objectives", "knee_distance"}:
+        if set(value) != {
+            "marks",
+            "objectives",
+            "normalized_objectives",
+            "knee_distance",
+        }:
             raise ContractError("frontier candidate fields differ")
         return cls(
             tuple(value["marks"]),
@@ -501,6 +634,7 @@ class OptimizerReceipt:
     fallback_reason: OptimizerFallback | None
     receipt_digest: str
 
+    @_frozen_optimizer_decimal
     def __post_init__(self) -> None:
         require_identifier(self.field_id, expected_namespace="field")
         for value, label in (
@@ -565,7 +699,11 @@ class OptimizerReceipt:
             self.baseline_objectives, ObjectiveVector
         ):
             raise ContractError("optimizer receipt objectives must be typed")
-        for value in (self.fairness_gain, self.spread_change_ms, self.gap_fidelity_cost):
+        for value in (
+            self.fairness_gain,
+            self.spread_change_ms,
+            self.gap_fidelity_cost,
+        ):
             canonical_decimal_string(value)
         if self.gap_fidelity_cost != self.selected_objectives.gap_fidelity:
             raise ContractError("optimizer gap-fidelity consequence differs")
@@ -644,7 +782,9 @@ class OptimizerReceipt:
             "search_strategy": self.search_strategy,
             "work_budget": self.work_budget.to_dict(),
             "frontier_digest": self.frontier_digest,
-            "fallback_reason": None if self.fallback_reason is None else self.fallback_reason.value,
+            "fallback_reason": (
+                None if self.fallback_reason is None else self.fallback_reason.value
+            ),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -732,12 +872,13 @@ class VerifiedOptimizerReceipt:
     field: OptimizationField
     verification_digest: str
 
+    @_frozen_optimizer_decimal
     def __post_init__(self) -> None:
         if not isinstance(self.receipt, OptimizerReceipt) or not isinstance(
             self.field, OptimizationField
         ):
             raise ContractError("optimizer verification requires typed receipt and field")
-        if self.receipt.implementation_artifact_digest != implementation_artifact_digest():
+        if self.receipt.implementation_artifact_digest != OPTIMIZER_IMPLEMENTATION_DIGEST:
             raise ContractError("installed optimizer artifact differs from recorded receipt")
         replay = optimize_field(
             self.field,
@@ -758,13 +899,216 @@ class VerifiedOptimizerReceipt:
         if self.verification_digest != expected:
             raise ContractError("optimizer verification digest mismatch")
 
+    def to_authority_dict(self) -> dict[str, Any]:
+        """Serialize the complete replay input for content-addressed storage."""
 
+        sample_matrix = np.asarray(
+            [item.samples_ms for item in self.field.competitors], dtype="<i4"
+        )
+        return {
+            "schema_version": "strathmark-v3-verified-optimizer-authority-v2",
+            "receipt": self.receipt.to_dict(),
+            "field": {
+                **self.field.content_value(),
+                "competitors": [
+                    {
+                        "competitor_id": str(item.competitor_id),
+                        "expected_time_ms": item.expected_time_ms,
+                        "upstream_index": item.upstream_index,
+                        "distribution_digest": item.distribution_digest,
+                    }
+                    for item in self.field.competitors
+                ],
+                "sample_matrix_encoding": "int32-le-base64-v1",
+                "sample_matrix_i32_le": base64.b64encode(sample_matrix.tobytes(order="C")).decode(
+                    "ascii"
+                ),
+                "input_digest": self.field.input_digest,
+            },
+            "verification_digest": self.verification_digest,
+        }
+
+    @classmethod
+    def _from_generated(
+        cls,
+        receipt: OptimizerReceipt,
+        field: OptimizationField,
+        verification_digest: str,
+        *,
+        _capability: object,
+    ) -> VerifiedOptimizerReceipt:
+        """Seal output produced in this call without rerunning the optimizer."""
+
+        if _capability is not _GENERATED_OPTIMIZER_CAPABILITY:
+            raise ContractError("generated optimizer proof is not verifier-owned")
+        if receipt.implementation_artifact_digest != OPTIMIZER_IMPLEMENTATION_DIGEST:
+            raise ContractError("installed optimizer artifact differs from generated receipt")
+        expected = _optimizer_verification_digest(receipt, field)
+        if verification_digest != expected:
+            raise ContractError("optimizer verification digest mismatch")
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "receipt", receipt)
+        object.__setattr__(instance, "field", field)
+        object.__setattr__(instance, "verification_digest", verification_digest)
+        return instance
+
+    @classmethod
+    def from_authority_dict(cls, value: Mapping[str, Any]) -> VerifiedOptimizerReceipt:
+        expected = {
+            "schema_version",
+            "receipt",
+            "field",
+            "verification_digest",
+        }
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected
+            or value.get("schema_version")
+            not in {
+                "strathmark-v3-verified-optimizer-authority-v1",
+                "strathmark-v3-verified-optimizer-authority-v2",
+            }
+            or not isinstance(value.get("receipt"), Mapping)
+            or not isinstance(value.get("field"), Mapping)
+        ):
+            raise ContractError("verified optimizer authority fields or schema differ")
+        field_value = value["field"]
+        authority_schema = value["schema_version"]
+        expected_field = {
+            "schema_version",
+            "field_id",
+            "source_receipt_digest",
+            "seed",
+            "competitors",
+            "joint_samples_digest",
+            "sample_matrix_digest",
+            "pool_receipt_digest",
+            "input_digest",
+        }
+        if authority_schema == "strathmark-v3-verified-optimizer-authority-v2":
+            expected_field |= {
+                "sample_matrix_encoding",
+                "sample_matrix_i32_le",
+            }
+        competitors = field_value.get("competitors")
+        if (
+            set(field_value) != expected_field
+            or field_value.get("schema_version") != "strathmark-v3-optimizer-input-v1"
+            or not isinstance(competitors, list)
+        ):
+            raise ContractError("optimizer authority input fields or schema differ")
+        if len(competitors) > MAX_OPTIMIZER_ENTRANTS:
+            raise ContractError("optimizer field supports at most 12 entrants")
+        typed_competitors = []
+        expected_competitor = {
+            "competitor_id",
+            "expected_time_ms",
+            "upstream_index",
+            "distribution_digest",
+        }
+        if authority_schema == "strathmark-v3-verified-optimizer-authority-v1":
+            expected_competitor.add("samples_ms")
+        if any(
+            not isinstance(item, Mapping) or set(item) != expected_competitor
+            for item in competitors
+        ):
+            raise ContractError("optimizer authority competitor fields differ")
+        if authority_schema == "strathmark-v3-verified-optimizer-authority-v1":
+            sample_rows: list[tuple[int, ...]] = []
+            for item in competitors:
+                samples = item["samples_ms"]
+                if (
+                    not isinstance(samples, list)
+                    or len(samples) != DEFAULT_OPTIMIZER_POLICY.sample_count
+                    or any(
+                        isinstance(sample, bool)
+                        or not isinstance(sample, int)
+                        or sample <= 0
+                        or sample > 2_000_000_000
+                        for sample in samples
+                    )
+                ):
+                    raise ContractError("optimizer authority competitor fields differ")
+                sample_rows.append(tuple(samples))
+        else:
+            if field_value.get("sample_matrix_encoding") != "int32-le-base64-v1" or not isinstance(
+                field_value.get("sample_matrix_i32_le"), str
+            ):
+                raise ContractError("optimizer authority sample matrix differs")
+            try:
+                packed = base64.b64decode(field_value["sample_matrix_i32_le"], validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ContractError("optimizer authority sample matrix differs") from exc
+            expected_bytes = len(competitors) * DEFAULT_OPTIMIZER_POLICY.sample_count * 4
+            if len(packed) != expected_bytes:
+                raise ContractError("optimizer authority sample matrix differs")
+            decoded = np.frombuffer(packed, dtype="<i4").reshape(
+                (len(competitors), DEFAULT_OPTIMIZER_POLICY.sample_count)
+            )
+            if np.any(decoded <= 0) or np.any(decoded > 2_000_000_000):
+                raise ContractError("optimizer authority sample matrix differs")
+            sample_rows = [tuple(int(value) for value in row) for row in decoded]
+        for item, samples_ms in zip(competitors, sample_rows, strict=True):
+            typed_competitors.append(
+                OptimizationCompetitor(
+                    require_identifier(item["competitor_id"], expected_namespace="competitor"),
+                    item["expected_time_ms"],
+                    samples_ms,
+                    item["upstream_index"],
+                    item["distribution_digest"],
+                )
+            )
+        field = OptimizationField(
+            require_identifier(field_value["field_id"], expected_namespace="field"),
+            field_value["source_receipt_digest"],
+            field_value["seed"],
+            tuple(typed_competitors),
+            field_value["joint_samples_digest"],
+            field_value["sample_matrix_digest"],
+            field_value["pool_receipt_digest"],
+            field_value["input_digest"],
+        )
+        return cls(
+            OptimizerReceipt.from_dict(value["receipt"]),
+            field,
+            value["verification_digest"],
+        )
+
+
+@_frozen_optimizer_decimal
 def verify_optimizer_receipt(
     *, receipt: OptimizerReceipt, field: OptimizationField
 ) -> VerifiedOptimizerReceipt:
     if not isinstance(receipt, OptimizerReceipt) or not isinstance(field, OptimizationField):
         raise ContractError("optimizer verification requires typed receipt and field")
-    digest = canonical_digest(
+    digest = _optimizer_verification_digest(receipt, field)
+    return VerifiedOptimizerReceipt(receipt, field, digest)
+
+
+@_frozen_optimizer_decimal
+def optimize_and_verify_field(
+    field: OptimizationField,
+    *,
+    floor: int = 3,
+    ceiling: int,
+    policy: OptimizerPolicy = DEFAULT_OPTIMIZER_POLICY,
+) -> VerifiedOptimizerReceipt:
+    """Optimize once and seal the exact generated receipt for this typed input."""
+
+    if not isinstance(field, OptimizationField):
+        raise ContractError("optimizer generation requires a typed field")
+    receipt = optimize_field(field, floor=floor, ceiling=ceiling, policy=policy)
+    digest = _optimizer_verification_digest(receipt, field)
+    return VerifiedOptimizerReceipt._from_generated(
+        receipt,
+        field,
+        digest,
+        _capability=_GENERATED_OPTIMIZER_CAPABILITY,
+    )
+
+
+def _optimizer_verification_digest(receipt: OptimizerReceipt, field: OptimizationField) -> str:
+    return canonical_digest(
         {
             "schema_version": "strathmark-v3-optimizer-verification-v1",
             "receipt_digest": receipt.receipt_digest,
@@ -772,7 +1116,6 @@ def verify_optimizer_receipt(
             "implementation_artifact_digest": receipt.implementation_artifact_digest,
         }
     )
-    return VerifiedOptimizerReceipt(receipt, field, digest)
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,8 +1145,12 @@ class ConsequenceReplayBinding:
         ):
             _digest(value, label)
         require_identifier(self.field_id, expected_namespace="field")
-        if self.optimizer_seed != _seed_from_digest(self.optimizer_source_receipt_digest):
-            raise ContractError("consequence replay seed differs from optimizer source receipt")
+        if (
+            isinstance(self.optimizer_seed, bool)
+            or not isinstance(self.optimizer_seed, int)
+            or self.optimizer_seed < 0
+        ):
+            raise ContractError("consequence replay seed must be a nonnegative integer")
         if not self.slots:
             raise ContractError("consequence replay binding requires a complete field")
         for competitor_id, draw_slot, crn_index in self.slots:
@@ -852,6 +1199,7 @@ class ConsequenceReplayBinding:
         return cls(**arguments, binding_digest=canonical_digest(content))
 
 
+@_frozen_optimizer_decimal
 def canonical_rounded_sheet(
     expected_times_ms: Sequence[int], *, floor: int, ceiling: int
 ) -> tuple[tuple[str, ...], tuple[int, ...]]:
@@ -875,6 +1223,7 @@ def canonical_rounded_sheet(
     return ideal, baseline
 
 
+@_frozen_optimizer_decimal
 def evaluate_sheet(
     field: OptimizationField,
     marks: tuple[int, ...],
@@ -882,12 +1231,31 @@ def evaluate_sheet(
     *,
     floor: int = 3,
 ) -> ObjectiveVector:
-    _require_sheet(field, marks, floor=floor, ceiling=max(marks, default=floor))
-    if len(baseline) != len(marks):
+    if not isinstance(field, OptimizationField):
+        raise ContractError("optimizer evaluation requires a typed field")
+    if not isinstance(marks, tuple) or any(
+        isinstance(mark, bool) or not isinstance(mark, int) for mark in marks
+    ):
+        raise ContractError("optimizer mark sheet is not legal")
+    if len(marks) != len(field.competitors):
+        raise ContractError("optimizer mark sheet is not legal")
+    if not isinstance(baseline, tuple) or len(baseline) != len(marks):
         raise ContractError("baseline must cover the complete optimizer field")
+    if any(isinstance(mark, bool) or not isinstance(mark, int) for mark in baseline):
+        raise ContractError("baseline must equal the canonical rounded sheet")
+    effective_ceiling = max((*marks, *baseline), default=floor)
+    _bounds(floor, effective_ceiling)
+    _require_sheet(field, marks, floor=floor, ceiling=effective_ceiling)
+    expected = tuple(item.expected_time_ms for item in field.competitors)
+    _ideal, canonical_baseline = canonical_rounded_sheet(
+        expected, floor=floor, ceiling=effective_ceiling
+    )
+    if baseline != canonical_baseline:
+        raise ContractError("baseline must equal the canonical rounded sheet")
     return _evaluate_one(field, marks, baseline, floor)
 
 
+@_frozen_optimizer_decimal
 def optimize_field(
     field: OptimizationField,
     *,
@@ -944,14 +1312,19 @@ def optimize_field(
             candidate_limit = len(marks)
             generated = len(marks)
             frontier_pairs = _pareto_frontier_raw(
-                evaluated_raw, len(field.competitors), DEFAULT_OPTIMIZER_POLICY.sample_count
+                evaluated_raw,
+                len(field.competitors),
+                DEFAULT_OPTIMIZER_POLICY.sample_count,
             )
         else:
-            evaluated, generated, rounds, candidate_limit = _beam_search(
-                field, expected, baseline, floor, ceiling, policy
-            )
+            (
+                evaluated_raw,
+                generated,
+                rounds,
+                candidate_limit,
+                frontier_pairs,
+            ) = _beam_search(field, expected, baseline, floor, ceiling, policy)
             strategy = "deterministic_beam_v1"
-            frontier_pairs = _pareto_frontier(evaluated)
         if not frontier_pairs:
             raise _OptimizerAbort(OptimizerFallback.EMPTY_FRONTIER)
         selected_marks, candidates = _select_chim(frontier_pairs, baseline, baseline_objectives)
@@ -960,10 +1333,10 @@ def optimize_field(
                 4096,
                 3,
                 512,
-                min(8 * len(field.competitors), 128) if len(field.competitors) > 6 else 0,
+                (min(8 * len(field.competitors), 128) if len(field.competitors) > 6 else 0),
                 rounds,
                 generated,
-                len(evaluated_raw) if strategy == "exhaustive_radius_v1" else len(evaluated),
+                len(evaluated_raw),
                 candidate_limit,
             )
             return _receipt(
@@ -989,7 +1362,7 @@ def optimize_field(
             min(8 * len(field.competitors), 128) if len(field.competitors) > 6 else 0,
             rounds,
             generated,
-            len(evaluated_raw) if strategy == "exhaustive_radius_v1" else len(evaluated),
+            len(evaluated_raw),
             candidate_limit,
         )
         return _receipt(
@@ -1063,7 +1436,7 @@ class SharedOptimizerConsequenceEvaluator:
         self.replay_bindings = dict(replay_bindings)
         self.implementation_digest = canonical_digest(
             {
-                "implementation_artifact_digest": implementation_artifact_digest(),
+                "implementation_artifact_digest": OPTIMIZER_IMPLEMENTATION_DIGEST,
                 "dependence_artifact_digest": installed_dependence_artifact.artifact_digest,
                 "replay_binding_digests": sorted(
                     item.binding_digest for item in replay_bindings.values()
@@ -1074,7 +1447,9 @@ class SharedOptimizerConsequenceEvaluator:
     def evaluate(
         self, *, forecast: AssessorForecast, scoring_input: OptimizerScoringInput
     ) -> OptimizerConsequenceReceipt:
-        from strathmark.v3.application.credibility_reactions import OptimizerScoringInput
+        from strathmark.v3.application.credibility_reactions import (
+            OptimizerScoringInput,
+        )
 
         if not isinstance(forecast, AssessorForecast) or not isinstance(
             scoring_input, OptimizerScoringInput
@@ -1178,6 +1553,7 @@ class SharedOptimizerConsequenceEvaluator:
         )
 
 
+@_frozen_optimizer_decimal
 def consequence_metrics(
     *,
     expected_times_ms: tuple[int, ...],
@@ -1295,20 +1671,56 @@ def _beam_search(
     floor: int,
     ceiling: int,
     policy: OptimizerPolicy,
-) -> tuple[dict[tuple[int, ...], ObjectiveVector], int, int, int]:
+) -> tuple[
+    dict[tuple[int, ...], _RawObjective],
+    int,
+    int,
+    int,
+    tuple[tuple[tuple[int, ...], ObjectiveVector], ...],
+]:
     round_limit = min(8 * len(expected), policy.maximum_expansion_rounds)
     candidate_limit = 1 + round_limit * policy.beam_width
-    evaluated = {baseline: _evaluate_one(field, baseline, baseline, floor)}
+    evaluation_context = _compile_evaluation_context(field, baseline)
+    evaluated = _evaluate_candidates_impl(
+        field,
+        (baseline,),
+        baseline,
+        floor,
+        parallel=False,
+        raw=True,
+        _context=evaluation_context,
+    )
+    frontier_index = _GlobalRawParetoIndex(len(expected), len(field.competitors[0].samples_ms))
+    frontier_index.add(evaluated)
     beam = (baseline,)
     generated = 1
     completed = 0
+    ordered_indices = tuple(
+        sorted(range(len(expected)), key=lambda index: (-expected[index], index))
+    )
+    tied_pairs = tuple(
+        (left, right)
+        for left in range(len(expected))
+        for right in range(left + 1, len(expected))
+        if expected[left] == expected[right]
+    )
+
+    def legal_sheet(marks: tuple[int, ...]) -> bool:
+        if min(marks) != floor or any(mark < floor or mark > ceiling for mark in marks):
+            return False
+        ordered_marks = tuple(marks[index] for index in ordered_indices)
+        return all(
+            ordered_marks[index] <= ordered_marks[index + 1]
+            for index in range(len(ordered_marks) - 1)
+        ) and all(marks[left] == marks[right] for left, right in tied_pairs)
+
     for round_number in range(round_limit):
         neighbors = set()
         for marks in beam:
             for index in range(len(marks)):
                 for change in (-1, 1):
                     trial = (*marks[:index], marks[index] + change, *marks[index + 1 :])
-                    if trial not in evaluated and _is_legal(expected, trial, floor, ceiling):
+                    if trial not in evaluated and legal_sheet(trial):
                         neighbors.add(trial)
         if not neighbors:
             break
@@ -1318,11 +1730,35 @@ def _beam_search(
             break
         ordered = ordered[:remaining]
         generated += len(ordered)
-        evaluated.update(_evaluate_candidates(field, ordered, baseline, floor))
-        frontier = _pareto_frontier(evaluated)
-        beam = _normalized_beam(frontier, baseline, policy.beam_width)
+        additions = _evaluate_candidates_impl(
+            field,
+            ordered,
+            baseline,
+            floor,
+            raw=True,
+            _context=evaluation_context,
+        )
+        evaluated.update(additions)
+        frontier_index.add(additions)
+        raw_frontier = frontier_index.raw_frontier()
+        beam = _normalized_beam_raw(
+            raw_frontier,
+            baseline,
+            policy.beam_width,
+            entrant_count=len(expected),
+            draw_count=len(field.competitors[0].samples_ms),
+        )
         completed = round_number + 1
-    return evaluated, generated, completed, candidate_limit
+    final_raw_frontier = frontier_index.raw_frontier()
+    return (
+        evaluated,
+        generated,
+        completed,
+        candidate_limit,
+        _materialize_pareto_frontier_raw(
+            dict(final_raw_frontier), len(expected), len(field.competitors[0].samples_ms)
+        ),
+    )
 
 
 def _normalized_beam(
@@ -1335,9 +1771,11 @@ def _normalized_beam(
     nadir = tuple(max(row[column] for row in matrix) for column in range(4))
     normalized = tuple(
         tuple(
-            Decimal(0)
-            if nadir[column] == ideal[column]
-            else (row[column] - ideal[column]) / (nadir[column] - ideal[column])
+            (
+                Decimal(0)
+                if nadir[column] == ideal[column]
+                else (row[column] - ideal[column]) / (nadir[column] - ideal[column])
+            )
             for column in range(4)
         )
         for row in matrix
@@ -1354,6 +1792,56 @@ def _normalized_beam(
     ranked = sorted(
         (index for index in range(len(frontier)) if index not in anchors),
         key=lambda index: _tie_key(normalized[index], frontier[index][0], baseline),
+    )
+    return tuple(frontier[index][0] for index in (anchors + ranked)[:width])
+
+
+def _normalized_beam_raw(
+    frontier: tuple[tuple[tuple[int, ...], _RawObjective], ...],
+    baseline: tuple[int, ...],
+    width: int,
+    *,
+    entrant_count: int,
+    draw_count: int,
+) -> tuple[tuple[int, ...], ...]:
+    del entrant_count, draw_count
+    minima = tuple(min(values[column] for _marks, values in frontier) for column in range(4))
+    maxima = tuple(max(values[column] for _marks, values in frontier) for column in range(4))
+    denominators = tuple(maximum - minimum for minimum, maximum in zip(minima, maxima, strict=True))
+    shared_denominator = 1
+    for denominator in denominators:
+        if denominator:
+            shared_denominator *= denominator
+    scales = tuple(
+        0 if denominator == 0 else shared_denominator // denominator for denominator in denominators
+    )
+    matrix = tuple(
+        tuple((value - minima[column]) * scales[column] for column, value in enumerate(values))
+        for _marks, values in frontier
+    )
+
+    def tie_key(index: int) -> tuple[int, int, int, tuple[int, ...]]:
+        row = matrix[index]
+        marks = frontier[index][0]
+        return (
+            max(row),
+            sum(row),
+            sum(abs(mark - original) for mark, original in zip(marks, baseline, strict=True)),
+            marks,
+        )
+
+    anchors: list[int] = []
+    for column in range(4):
+        minimum = min(row[column] for row in matrix)
+        anchor = min(
+            (index for index, row in enumerate(matrix) if row[column] == minimum),
+            key=tie_key,
+        )
+        if anchor not in anchors:
+            anchors.append(anchor)
+    ranked = sorted(
+        (index for index in range(len(frontier)) if index not in anchors),
+        key=tie_key,
     )
     return tuple(frontier[index][0] for index in (anchors + ranked)[:width])
 
@@ -1377,10 +1865,12 @@ def _evaluate_candidates_impl(
     *,
     parallel: bool = True,
     raw: bool = False,
+    _context: _EvaluationContext | None = None,
 ) -> dict[tuple[int, ...], ObjectiveVector] | dict[tuple[int, ...], _RawObjective]:
     if not candidates:
         return {}
-    if parallel and len(candidates) > 2048:
+    context = _compile_evaluation_context(field, baseline) if _context is None else _context
+    if parallel and len(candidates) > 2048 and context.native_slot.kernel is None:
         workers = 8
         chunk_size = (len(candidates) + workers - 1) // workers
         chunks = tuple(
@@ -1391,47 +1881,72 @@ def _evaluate_candidates_impl(
             parts = tuple(
                 pool.map(
                     lambda chunk: _evaluate_candidates_impl(
-                        field, chunk, baseline, floor, parallel=False, raw=raw
+                        field,
+                        chunk,
+                        baseline,
+                        floor,
+                        parallel=False,
+                        raw=raw,
+                        _context=context,
                     ),
                     chunks,
                 )
             )
         return {marks: objective for part in parts for marks, objective in part.items()}
-    expected = np.asarray([item.expected_time_ms for item in field.competitors], dtype=np.int64)
-    samples = np.asarray([item.samples_ms for item in field.competitors], dtype=np.int32).T
+    expected = context.expected
+    samples = context.samples
     result: dict[tuple[int, ...], ObjectiveVector] | dict[tuple[int, ...], _RawObjective] = {}
-    # Eight fixed workers each use 96 candidates, keeping aggregate temporary
-    # memory bounded while exploiting the target Windows workstation cores.
-    batch_size = 96
-    entrant_count = len(expected)
-    credit_scale = lcm(*range(1, entrant_count + 1))
-    draw_count = samples.shape[0]
+    # Keep each vectorized working set bounded while amortizing NumPy dispatch
+    # over enough candidates for a full twelve-entrant field.
+    batch_size = (
+        len(candidates) if context.native_slot.kernel is not None else _EVALUATION_BATCH_SIZE
+    )
+    entrant_count = context.entrant_count
+    credit_scale = context.credit_scale
+    draw_count = context.draw_count
     for offset in range(0, len(candidates), batch_size):
         batch = tuple(candidates[offset : offset + batch_size])
         mark_array = np.asarray(batch, dtype=np.int32)
         delays = (mark_array - floor) * 1000
-        finishes = samples[np.newaxis, :, :] + delays[:, np.newaxis, :]
-        minima = np.min(finishes, axis=2)
-        ties = finishes == minima[:, :, np.newaxis]
-        tie_sizes = np.sum(ties, axis=2, dtype=np.int16)
-        if np.all(tie_sizes == 1):
-            winners = np.argmax(ties, axis=2)
-            offsets = winners + np.arange(len(batch), dtype=np.int64)[:, np.newaxis] * entrant_count
-            credit = (
-                np.bincount(offsets.ravel(), minlength=len(batch) * entrant_count).reshape(
-                    len(batch), entrant_count
-                )
-                * credit_scale
+        if len(batch) < 32:
+            finishes = samples[np.newaxis, :, :] + delays[:, np.newaxis, :]
+            minima = np.min(finishes, axis=2)
+            credit = _winner_credits_vectorized(
+                finishes,
+                minima,
+                entrant_count=entrant_count,
+                credit_scale=credit_scale,
             )
+            spreads = np.sum(np.max(finishes, axis=2) - minima, axis=1, dtype=np.int64)
         else:
-            weights = credit_scale // tie_sizes
-            credit = np.sum(ties * weights[:, :, np.newaxis], axis=1, dtype=np.int64)
-        spreads = np.sum(np.max(finishes, axis=2) - minima, axis=1, dtype=np.int64)
-        ideal_delays = int(np.max(expected)) - expected
-        errors = delays.astype(np.int64) - ideal_delays[np.newaxis, :]
-        gaps = np.sum(errors * errors, axis=1, dtype=np.int64)
+            native_context = context.native_slot.get(samples)
+            if native_context is not None:
+                spreads, credit = native_context.evaluate(delays, credit_scale=credit_scale)
+            else:
+                _minima, spreads = _streamed_finish_extremes(samples, delays)
+                credit = _winner_credits_bitset(
+                    samples,
+                    delays,
+                    entrant_count=entrant_count,
+                    draw_count=draw_count,
+                    credit_scale=credit_scale,
+                    comparison_masks=context.winner_comparison_masks,
+                )
+        ideal_delays = context.ideal_delays
+        # The public time contract permits values through two billion ms.  A
+        # twelve-entrant sum of squared ideal-delay errors can therefore exceed
+        # signed int64 even though its mark-dependent terms cannot.  Expand
+        # (delay - ideal)^2 algebraically: keep the constant ideal-square sum as
+        # a Python integer, then add the bounded vectorized variable term.
+        delay_values = delays.astype(np.int64)
+        variable_gaps = np.sum(
+            delay_values * delay_values - 2 * delay_values * ideal_delays[np.newaxis, :],
+            axis=1,
+            dtype=np.int64,
+        )
+        gaps = tuple(context.ideal_square_sum + int(value) for value in variable_gaps)
         movements = np.sum(
-            np.abs(mark_array.astype(np.int64) - np.asarray(baseline, dtype=np.int64)),
+            np.abs(mark_array.astype(np.int64) - context.baseline),
             axis=1,
             dtype=np.int64,
         )
@@ -1439,10 +1954,9 @@ def _evaluate_candidates_impl(
             np.abs(credit * entrant_count - credit_scale * draw_count),
             axis=1,
         )
-        parity_denominator = credit_scale * draw_count * entrant_count
         for index, marks in enumerate(batch):
             values = (
-                int(gaps[index]),
+                gaps[index],
                 int(parity_numerators[index]),
                 int(spreads[index]),
                 int(movements[index]),
@@ -1451,10 +1965,229 @@ def _evaluate_candidates_impl(
                 values
                 if raw
                 else _materialize_raw_objective(
-                    values, entrant_count, parity_denominator, draw_count
+                    values, entrant_count, context.parity_denominator, draw_count
                 )
             )
     return result
+
+
+def _streamed_finish_extremes(samples: Any, delays: Any) -> tuple[Any, Any]:
+    """Compute exact finish minima and spread without a 3-D finish tensor."""
+
+    minimum = samples[:, 0][np.newaxis, :] + delays[:, 0, np.newaxis]
+    maximum = minimum.copy()
+    values = np.empty_like(minimum)
+    for entrant in range(1, samples.shape[1]):
+        np.add(
+            samples[:, entrant][np.newaxis, :],
+            delays[:, entrant, np.newaxis],
+            out=values,
+        )
+        np.minimum(minimum, values, out=minimum)
+        np.maximum(maximum, values, out=maximum)
+    spreads = np.sum(maximum - minimum, axis=1, dtype=np.int64)
+    return minimum, spreads
+
+
+def _winner_credits_vectorized(
+    finishes: Any,
+    minima: Any,
+    *,
+    entrant_count: int,
+    credit_scale: int,
+) -> Any:
+    ties = finishes == minima[:, :, np.newaxis]
+    tie_sizes = np.sum(ties, axis=2, dtype=np.int16)
+    if np.all(tie_sizes == 1):
+        winners = np.argmax(ties, axis=2)
+        offsets = winners + np.arange(len(finishes), dtype=np.int64)[:, np.newaxis] * entrant_count
+        return (
+            np.bincount(offsets.ravel(), minlength=len(finishes) * entrant_count).reshape(
+                len(finishes), entrant_count
+            )
+            * credit_scale
+        )
+    weights = credit_scale // tie_sizes
+    return np.sum(ties * weights[:, :, np.newaxis], axis=1, dtype=np.int64)
+
+
+def _winner_credits_bitset(
+    samples: Any,
+    delay_rows: Any,
+    *,
+    entrant_count: int,
+    draw_count: int,
+    credit_scale: int,
+    comparison_masks: (_WinnerComparisonCache | dict[tuple[int, int, int], int] | None) = None,
+) -> Any:
+    """Evaluate exact shared-winner credit with context-persistent bitsets."""
+
+    full_mask = (1 << draw_count) - 1
+    comparison_masks = (
+        _WinnerComparisonCache.create(entrant_count)
+        if comparison_masks is None
+        else comparison_masks
+    )
+
+    result = np.zeros((len(delay_rows), entrant_count), dtype=np.int64)
+    for candidate_index, delays in enumerate(delay_rows):
+        winner_masks = []
+        for left in range(entrant_count):
+            mask = full_mask
+            for right in range(entrant_count):
+                if left == right:
+                    continue
+                threshold = int(delays[right]) - int(delays[left])
+                if (
+                    isinstance(comparison_masks, _WinnerComparisonCache)
+                    and threshold % 1000 == 0
+                    and -180_000 <= threshold <= 180_000
+                ):
+                    dense = comparison_masks.dense[left][right]
+                    dense_index = threshold // 1000 + 180
+                    comparison_mask = dense[dense_index]
+                    if comparison_mask is None:
+                        comparison = samples[:, left] - samples[:, right] <= threshold
+                        packed = np.packbits(comparison, bitorder="little")
+                        comparison_mask = int.from_bytes(packed.tobytes(), "little") & full_mask
+                        dense[dense_index] = comparison_mask
+                else:
+                    comparison_mask = _draw_comparison_mask(
+                        samples,
+                        left,
+                        right,
+                        threshold,
+                        full_mask=full_mask,
+                        comparison_masks=comparison_masks,
+                    )
+                mask &= comparison_mask
+                if not mask:
+                    break
+            winner_masks.append(mask)
+
+        prefix = [0]
+        for mask in winner_masks:
+            prefix.append(prefix[-1] | mask)
+        suffix = [0] * (entrant_count + 1)
+        for entrant in range(entrant_count - 1, -1, -1):
+            suffix[entrant] = suffix[entrant + 1] | winner_masks[entrant]
+        unique_union = 0
+        for winner, mask in enumerate(winner_masks):
+            others = prefix[winner] | suffix[winner + 1]
+            unique = mask & ~others & full_mask
+            result[candidate_index, winner] = unique.bit_count() * credit_scale
+            unique_union |= unique
+
+        tied = full_mask & ~unique_union
+        if tied.bit_count() > 32:
+            tied_credits = _credits_from_winner_masks(
+                tuple(mask & tied for mask in winner_masks),
+                draw_count=draw_count,
+                credit_scale=credit_scale,
+            )
+            result[candidate_index] += tied_credits
+        else:
+            while tied:
+                draw = tied & -tied
+                winners = [entrant for entrant, mask in enumerate(winner_masks) if mask & draw]
+                if not winners:
+                    raise ContractError("optimizer bitset winner authority is incomplete")
+                weight = credit_scale // len(winners)
+                for winner in winners:
+                    result[candidate_index, winner] += weight
+                tied ^= draw
+    return result
+
+
+def _draw_comparison_mask(
+    samples: Any,
+    left: int,
+    right: int,
+    threshold: int,
+    *,
+    full_mask: int,
+    comparison_masks: _WinnerComparisonCache | dict[tuple[int, int, int], int],
+) -> int:
+    if (
+        isinstance(comparison_masks, _WinnerComparisonCache)
+        and threshold % 1000 == 0
+        and -180_000 <= threshold <= 180_000
+    ):
+        dense = comparison_masks.dense[left][right]
+        index = threshold // 1000 + 180
+        cached = dense[index]
+        if cached is not None:
+            return cached
+        comparison = samples[:, left] - samples[:, right] <= threshold
+        packed = np.packbits(comparison, bitorder="little")
+        value = int.from_bytes(packed.tobytes(), "little") & full_mask
+        dense[index] = value
+        return value
+    target = (
+        comparison_masks.fallback
+        if isinstance(comparison_masks, _WinnerComparisonCache)
+        else comparison_masks
+    )
+    key = (left, right, threshold)
+    cached = target.get(key)
+    if cached is not None:
+        return cached
+    comparison = samples[:, left] - samples[:, right] <= threshold
+    packed = np.packbits(comparison, bitorder="little")
+    value = int.from_bytes(packed.tobytes(), "little") & full_mask
+    target[key] = value
+    return value
+
+
+def _credits_from_winner_masks(
+    winner_masks: tuple[int, ...], *, draw_count: int, credit_scale: int
+) -> list[int]:
+    """Split exact LCM credit by winner multiplicity using bit-sliced counts."""
+
+    full_mask = (1 << draw_count) - 1
+    exact_counts = [full_mask] + [0] * len(winner_masks)
+    for winner_mask in winner_masks:
+        inverse = ~winner_mask & full_mask
+        next_counts = [0] * len(exact_counts)
+        for count in range(len(exact_counts)):
+            next_counts[count] |= exact_counts[count] & inverse
+            if count + 1 < len(exact_counts):
+                next_counts[count + 1] |= exact_counts[count] & winner_mask
+        exact_counts = next_counts
+    return [
+        sum(
+            (winner_mask & exact_counts[count]).bit_count() * (credit_scale // count)
+            for count in range(1, len(exact_counts))
+        )
+        for winner_mask in winner_masks
+    ]
+
+
+def _compile_evaluation_context(
+    field: OptimizationField, baseline: tuple[int, ...]
+) -> _EvaluationContext:
+    expected = np.asarray([item.expected_time_ms for item in field.competitors], dtype=np.int64)
+    samples = np.asarray([item.samples_ms for item in field.competitors], dtype=np.int32).T
+    baseline_array = np.asarray(baseline, dtype=np.int64)
+    ideal_delays = int(np.max(expected)) - expected
+    for array in (expected, samples, baseline_array, ideal_delays):
+        array.setflags(write=False)
+    entrant_count = len(expected)
+    credit_scale = lcm(*range(1, entrant_count + 1))
+    draw_count = samples.shape[0]
+    return _EvaluationContext(
+        expected,
+        samples,
+        baseline_array,
+        ideal_delays,
+        sum(int(value) ** 2 for value in ideal_delays),
+        entrant_count,
+        credit_scale,
+        draw_count,
+        credit_scale * draw_count * entrant_count,
+        _WinnerComparisonCache.create(entrant_count),
+        _NativeEvaluationSlot(_NATIVE_OPTIMIZER_KERNEL),
+    )
 
 
 def _evaluate_one(
@@ -1481,18 +2214,218 @@ def _materialize_raw_objective(
     )
 
 
+class _GlobalRawParetoIndex:
+    """Exact global nondominance index that compares each admitted pair once."""
+
+    def __init__(self, entrant_count: int, draw_count: int) -> None:
+        self._entrant_count = entrant_count
+        self._draw_count = draw_count
+        credit_scale = lcm(*range(1, entrant_count + 1))
+        denominators = np.asarray(
+            (
+                entrant_count,
+                credit_scale * draw_count * entrant_count,
+                draw_count,
+                entrant_count,
+            ),
+            dtype=np.int64,
+        )
+        self._nonstrict = denominators // 1_000_000_000
+        self._strict = (-denominators - 1) // 1_000_000_000
+        self._items: list[tuple[tuple[int, ...], _RawObjective]] = []
+        self._dominated: list[bool] = []
+        self._gap_origin: int | None = None
+        self._vectors = np.empty((0, 4), dtype=np.int64)
+
+    def add(self, additions: Mapping[tuple[int, ...], _RawObjective]) -> None:
+        if not additions:
+            return
+        prior_marks = {marks for marks, _values in self._items}
+        if prior_marks.intersection(additions):
+            raise ContractError("Pareto index additions must be new candidates")
+        new_items = list(additions.items())
+        if self._gap_origin is None:
+            self._gap_origin = new_items[0][1][0]
+        prior_vectors = self._vectors
+        new_vectors = _offset_raw_vectors(
+            [values for _marks, values in new_items], self._gap_origin
+        )
+        prior_dominated = np.asarray(self._dominated, dtype=np.bool_)
+        new_dominated = np.zeros(len(new_items), dtype=np.bool_)
+        _mark_raw_targets_dominated(
+            prior_vectors,
+            new_vectors,
+            new_dominated,
+            self._nonstrict,
+            self._strict,
+        )
+        _mark_raw_targets_dominated(
+            new_vectors,
+            prior_vectors,
+            prior_dominated,
+            self._nonstrict,
+            self._strict,
+        )
+        _mark_raw_targets_dominated(
+            new_vectors,
+            new_vectors,
+            new_dominated,
+            self._nonstrict,
+            self._strict,
+        )
+        self._items.extend(new_items)
+        self._dominated = prior_dominated.tolist() + new_dominated.tolist()
+        self._vectors = np.concatenate((prior_vectors, new_vectors), axis=0)
+
+    def frontier(self) -> tuple[tuple[tuple[int, ...], ObjectiveVector], ...]:
+        return _materialize_pareto_frontier_raw(
+            dict(self.raw_frontier()), self._entrant_count, self._draw_count
+        )
+
+    def raw_frontier(self) -> tuple[tuple[tuple[int, ...], _RawObjective], ...]:
+        nondominated = {
+            marks: values
+            for (marks, values), is_dominated in zip(self._items, self._dominated, strict=True)
+            if not is_dominated
+        }
+        return tuple(sorted(nondominated.items()))
+
+
+def _offset_raw_vectors(values: Sequence[_RawObjective], gap_origin: int) -> np.ndarray:
+    rows = []
+    for item in values:
+        gap_offset = item[0] - gap_origin
+        if gap_offset < -(2**63) or gap_offset > 2**63 - 1:
+            raise ContractError("optimizer field gap delta exceeds signed work capacity")
+        rows.append((gap_offset, item[1], item[2], item[3]))
+    return np.asarray(rows, dtype=np.int64).reshape((-1, 4))
+
+
+def _raw_dominance_matrix(
+    sources: np.ndarray,
+    targets: np.ndarray,
+    nonstrict: np.ndarray,
+    strict: np.ndarray,
+) -> np.ndarray:
+    """Return exact source-dominates-target flags without a 3-D diff tensor."""
+
+    nonstrict_relation = np.ones((len(sources), len(targets)), dtype=np.bool_)
+    strict_relation = np.zeros((len(sources), len(targets)), dtype=np.bool_)
+    for column in range(4):
+        source = sources[:, np.newaxis, column]
+        target = targets[np.newaxis, :, column]
+        nonstrict_relation &= source <= target + nonstrict[column]
+        strict_relation |= source <= target + strict[column]
+    return nonstrict_relation & strict_relation
+
+
+def _mark_raw_targets_dominated(
+    sources: np.ndarray,
+    targets: np.ndarray,
+    target_dominated: np.ndarray,
+    nonstrict: np.ndarray,
+    strict: np.ndarray,
+) -> None:
+    if not len(sources) or not len(targets):
+        return
+    if _NATIVE_OPTIMIZER_KERNEL is not None:
+        _NATIVE_OPTIMIZER_KERNEL.mark_dominated(
+            sources,
+            targets,
+            target_dominated,
+            nonstrict,
+            strict,
+        )
+        return
+    block_size = 256
+    source_order = np.lexsort((sources[:, 3], sources[:, 2], sources[:, 1], sources[:, 0]))
+    ordered_sources = sources[source_order]
+    for source_offset in range(0, len(ordered_sources), block_size):
+        active_targets = np.flatnonzero(~target_dominated)
+        if not len(active_targets):
+            return
+        source = ordered_sources[source_offset : source_offset + block_size]
+        for target_offset in range(0, len(active_targets), block_size):
+            target_indices = active_targets[target_offset : target_offset + block_size]
+            target = targets[target_indices]
+            dominates = _raw_dominance_matrix(source, target, nonstrict, strict)
+            target_dominated[target_indices] |= np.any(dominates, axis=0)
+
+
 def _pareto_frontier_raw(
     evaluated: Mapping[tuple[int, ...], _RawObjective],
     entrant_count: int,
     draw_count: int,
 ) -> tuple[tuple[tuple[int, ...], ObjectiveVector], ...]:
     credit_scale = lcm(*range(1, entrant_count + 1))
-    denominators = (
-        entrant_count,
-        credit_scale * draw_count * entrant_count,
-        draw_count,
-        entrant_count,
+    if entrant_count <= DEFAULT_OPTIMIZER_POLICY.small_field_maximum:
+        return _pareto_frontier_raw_skyline(
+            evaluated,
+            entrant_count=entrant_count,
+            draw_count=draw_count,
+            denominators=(
+                entrant_count,
+                credit_scale * draw_count * entrant_count,
+                draw_count,
+                entrant_count,
+            ),
+        )
+    denominators = np.asarray(
+        (
+            entrant_count,
+            credit_scale * draw_count * entrant_count,
+            draw_count,
+            entrant_count,
+        ),
+        dtype=np.int64,
     )
+    nonstrict = denominators // 1_000_000_000
+    strict = (-denominators - 1) // 1_000_000_000
+    ordered = sorted(evaluated.items(), key=lambda pair: (*pair[1], pair[0]))
+    # Gap fidelity has denominator <= 12, so its 1e-9 epsilon threshold is
+    # exactly zero.  Mapping each unique Python-int gap to its sorted rank
+    # preserves both <= and < while keeping the NumPy dominance matrices in
+    # int64 even when the exact squared-error numerator exceeds INT64_MAX.
+    ranked_ordered: list[
+        tuple[tuple[tuple[int, ...], _RawObjective], tuple[int, int, int, int]]
+    ] = []
+    previous_gap: int | None = None
+    gap_rank = -1
+    for item in ordered:
+        values = item[1]
+        if previous_gap is None or values[0] != previous_gap:
+            gap_rank += 1
+            previous_gap = values[0]
+        ranked_ordered.append((item, (gap_rank, values[1], values[2], values[3])))
+
+    vectors = np.asarray([vector for _item, vector in ranked_ordered], dtype=np.int64)
+    dominated = np.zeros(len(ranked_ordered), dtype=np.bool_)
+    block_size = 256
+    for source_offset in range(0, len(ranked_ordered), block_size):
+        source = vectors[source_offset : source_offset + block_size]
+        for target_offset in range(0, len(ranked_ordered), block_size):
+            target = vectors[target_offset : target_offset + block_size]
+            source_dominates_target = _raw_dominance_matrix(source, target, nonstrict, strict)
+            dominated[target_offset : target_offset + len(target)] |= np.any(
+                source_dominates_target, axis=0
+            )
+    frontier = {
+        item[0]: item[1]
+        for item, is_dominated in zip(ordered, dominated.tolist(), strict=True)
+        if not is_dominated
+    }
+    return _materialize_pareto_frontier_raw(frontier, entrant_count, draw_count)
+
+
+def _pareto_frontier_raw_skyline(
+    evaluated: Mapping[tuple[int, ...], _RawObjective],
+    *,
+    entrant_count: int,
+    draw_count: int,
+    denominators: tuple[int, int, int, int],
+) -> tuple[tuple[tuple[int, ...], ObjectiveVector], ...]:
+    """Keep exhaustive small fields linear in candidates and frontier width."""
+
     skyline: list[tuple[tuple[int, ...], _RawObjective]] = []
     for item in sorted(evaluated.items(), key=lambda pair: (*pair[1], pair[0])):
         if any(_dominates_raw(current[1], item[1], denominators) for current in skyline):
@@ -1501,13 +2434,22 @@ def _pareto_frontier_raw(
             current for current in skyline if not _dominates_raw(item[1], current[1], denominators)
         ]
         skyline.append(item)
-    parity_denominator = denominators[1]
+    return _materialize_pareto_frontier_raw(dict(skyline), entrant_count, draw_count)
+
+
+def _materialize_pareto_frontier_raw(
+    skyline: Mapping[tuple[int, ...], _RawObjective],
+    entrant_count: int,
+    draw_count: int,
+) -> tuple[tuple[tuple[int, ...], ObjectiveVector], ...]:
+    credit_scale = lcm(*range(1, entrant_count + 1))
+    parity_denominator = credit_scale * draw_count * entrant_count
     return tuple(
         (
             marks,
             _materialize_raw_objective(values, entrant_count, parity_denominator, draw_count),
         )
-        for marks, values in sorted(skyline)
+        for marks, values in sorted(skyline.items())
     )
 
 
@@ -1578,9 +2520,11 @@ def _select_chim_exact(
     nadir = tuple(max(row[column] for row in matrix) for column in range(4))
     normalized = tuple(
         tuple(
-            Decimal(0)
-            if nadir[column] == ideal[column]
-            else (row[column] - ideal[column]) / (nadir[column] - ideal[column])
+            (
+                Decimal(0)
+                if nadir[column] == ideal[column]
+                else (row[column] - ideal[column]) / (nadir[column] - ideal[column])
+            )
             for column in range(4)
         )
         for row in matrix
@@ -1752,6 +2696,7 @@ def _project_onto_basis(
     return tuple(result)
 
 
+@_frozen_optimizer_decimal
 def _receipt(
     field: OptimizationField,
     policy: OptimizerPolicy,
@@ -1785,7 +2730,7 @@ def _receipt(
         "ceiling": ceiling,
         "optimizer_version": OPTIMIZER_VERSION,
         "dependency_version": f"numpy:{NUMPY_DEPENDENCY_VERSION}",
-        "implementation_artifact_digest": implementation_artifact_digest(),
+        "implementation_artifact_digest": OPTIMIZER_IMPLEMENTATION_DIGEST,
         "continuous_ideal": ideal,
         "rounded_baseline": baseline,
         "frontier": frontier,
@@ -1837,30 +2782,46 @@ def _receipt(
     return OptimizerReceipt(**values, receipt_digest=canonical_digest(content))
 
 
+@_frozen_optimizer_decimal
 def _win_probabilities(field: OptimizationField, marks: tuple[int, ...]) -> tuple[str, ...]:
     samples = np.asarray([item.samples_ms for item in field.competitors], dtype=np.int64).T
     finishes = samples + np.asarray(marks, dtype=np.int64) * 1000
-    return tuple(canonical_decimal_string(value) for value in _tie_split_probabilities(finishes))
+    return _tie_split_probabilities(finishes)
 
 
-def _tie_split_probabilities(finishes: np.ndarray) -> tuple[Decimal, ...]:
+def _tie_split_probabilities(finishes: np.ndarray) -> tuple[str, ...]:
+    """Apportion exact split-win credit onto a fixed finite-decimal scale."""
+
     minima = np.min(finishes, axis=1)
     tied = finishes == minima[:, np.newaxis]
-    tie_sizes = np.sum(tied, axis=1)
-    draw_count = finishes.shape[0]
-    probabilities = []
-    with localcontext() as context:
-        context.prec = 60
-        for competitor in range(finishes.shape[1]):
-            mass = sum(
-                (
-                    Decimal(int(np.sum(tied[:, competitor] & (tie_sizes == size)))) / Decimal(size)
-                    for size in range(1, finishes.shape[1] + 1)
-                ),
-                Decimal(0),
-            )
-            probabilities.append(mass / Decimal(draw_count))
-    return tuple(probabilities)
+    tie_sizes = np.sum(tied, axis=1, dtype=np.int16)
+    draw_count, entrant_count = finishes.shape
+    credit_scale = lcm(*range(1, entrant_count + 1))
+    numerators = tuple(
+        sum(
+            int(np.sum(tied[:, competitor] & (tie_sizes == size))) * (credit_scale // size)
+            for size in range(1, entrant_count + 1)
+        )
+        for competitor in range(entrant_count)
+    )
+    denominator = draw_count * credit_scale
+    decimal_scale = 10**60
+    apportioned = [numerator * decimal_scale // denominator for numerator in numerators]
+    remainders = tuple(numerator * decimal_scale % denominator for numerator in numerators)
+    missing = decimal_scale - sum(apportioned)
+    order = sorted(range(entrant_count), key=lambda index: (-remainders[index], index))
+    for index in order[:missing]:
+        apportioned[index] += 1
+    return tuple(_fixed_scale_decimal_string(value, places=60) for value in apportioned)
+
+
+def _fixed_scale_decimal_string(value: int, *, places: int) -> str:
+    scale = 10**places
+    whole, fractional = divmod(value, scale)
+    if not fractional:
+        return str(whole)
+    digits = f"{fractional:0{places}d}".rstrip("0")
+    return f"{whole}.{digits}"
 
 
 def _is_legal(expected: tuple[int, ...], marks: tuple[int, ...], floor: int, ceiling: int) -> bool:
@@ -1883,7 +2844,10 @@ def _require_sheet(
     field: OptimizationField, marks: tuple[int, ...], *, floor: int, ceiling: int
 ) -> None:
     if not isinstance(marks, tuple) or not _is_legal(
-        tuple(item.expected_time_ms for item in field.competitors), marks, floor, ceiling
+        tuple(item.expected_time_ms for item in field.competitors),
+        marks,
+        floor,
+        ceiling,
     ):
         raise ContractError("optimizer mark sheet is not legal")
 
@@ -1958,6 +2922,7 @@ class _OptimizerAbort(Exception):
 __all__ = [
     "DEFAULT_OPTIMIZER_POLICY",
     "ConsequenceReplayBinding",
+    "MAX_OPTIMIZER_ENTRANTS",
     "OPTIMIZER_IMPLEMENTATION_DIGEST",
     "OPTIMIZER_VERSION",
     "FrontierCandidate",
@@ -1973,6 +2938,7 @@ __all__ = [
     "canonical_rounded_sheet",
     "consequence_metrics",
     "evaluate_sheet",
+    "optimize_and_verify_field",
     "optimize_field",
     "verify_optimizer_receipt",
 ]

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import struct
+import sys
 from bisect import bisect_left
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
 from typing import Any, Mapping, Protocol
@@ -31,6 +34,9 @@ LLM_AUDIT_SCHEMA_VERSION = "strathmark-v3-llm-member-audit-v1"
 SAMPLING_ALGORITHM = "splitmix64-inverse-quantile-v1"
 MAX_DRAWS = 1_000_000
 _UINT64_MAX = 2**64 - 1
+_STANDARD_QUANTILE_GRID = (Decimal("0.1"), Decimal("0.5"), Decimal("0.9"))
+_NATIVE_STANDARD_SAMPLER: Any | None = None
+_NATIVE_STANDARD_SAMPLER_INITIALIZED = False
 
 
 class DependenceMode(str, Enum):
@@ -83,9 +89,7 @@ class QuantilePoint:
     def __post_init__(self) -> None:
         probability = _require_probability(self.probability)
         if not (Decimal("0") < probability < Decimal("1")):
-            raise ContractError(
-                "quantile probability must be strictly between zero and one"
-            )
+            raise ContractError("quantile probability must be strictly between zero and one")
         _require_positive_int(self.time_ms, "quantile time_ms")
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,13 +102,39 @@ class QuantilePoint:
 
 
 @dataclass(frozen=True, slots=True)
+class _DerivedSamplingSpecProof:
+    token: object
+    seed: int
+    draw_count: int
+    common_uniforms: tuple[str, ...]
+    common_random_map_digest: str
+    validated_common_uniforms: tuple[Decimal, ...]
+    common_uniform_exponent: int | None
+    scaled_common_uniforms: tuple[int, ...]
+    standard_probability_words_le: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
 class SamplingSpec:
     seed: int
     draw_count: int
     common_uniforms: tuple[str, ...] = ()
     common_random_map_digest: str | None = None
+    _derived_proof: InitVar[_DerivedSamplingSpecProof | None] = None
+    _validated_common_uniforms: tuple[Decimal, ...] = field(
+        init=False, repr=False, compare=False, default=()
+    )
+    _common_uniform_exponent: int | None = field(
+        init=False, repr=False, compare=False, default=None
+    )
+    _scaled_common_uniforms: tuple[int, ...] = field(
+        init=False, repr=False, compare=False, default=()
+    )
+    _standard_probability_words_le: bytes | None = field(
+        init=False, repr=False, compare=False, default=None
+    )
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _derived_proof: _DerivedSamplingSpecProof | None) -> None:
         _require_nonnegative_int(self.seed, "seed")
         if self.seed > _UINT64_MAX:
             raise ContractError("seed must fit an unsigned 64-bit integer")
@@ -115,18 +145,160 @@ class SamplingSpec:
             raise ContractError("common_uniforms must be an immutable tuple")
         if self.common_uniforms and len(self.common_uniforms) != self.draw_count:
             raise ContractError("common_uniforms length must equal draw_count")
-        for value in self.common_uniforms:
-            probability = _require_probability(value)
-            if not (Decimal("0") < probability < Decimal("1")):
-                raise ContractError(
-                    "common uniforms must be strictly between zero and one"
-                )
         if self.common_random_map_digest is not None:
             _require_digest(self.common_random_map_digest, "common_random_map_digest")
         if self.common_uniforms and self.common_random_map_digest is None:
-            raise ContractError(
-                "injected common uniforms require a common_random_map_digest"
+            raise ContractError("injected common uniforms require a common_random_map_digest")
+        if _accepts_derived_sampling_spec_proof(
+            _derived_proof,
+            seed=self.seed,
+            draw_count=self.draw_count,
+            common_uniforms=self.common_uniforms,
+            common_random_map_digest=self.common_random_map_digest,
+        ):
+            assert _derived_proof is not None
+            validated = _derived_proof.validated_common_uniforms
+            common_exponent = _derived_proof.common_uniform_exponent
+            scaled = _derived_proof.scaled_common_uniforms
+            standard_words = _derived_proof.standard_probability_words_le
+        else:
+            parsed = []
+            for value in self.common_uniforms:
+                probability = _require_probability(value)
+                if not (Decimal("0") < probability < Decimal("1")):
+                    raise ContractError("common uniforms must be strictly between zero and one")
+                parsed.append(probability)
+            validated = tuple(parsed)
+            common_exponent, scaled = _decimals_to_common_scale(validated)
+            standard_words = _standard_probability_words(self.common_uniforms)
+        object.__setattr__(self, "_validated_common_uniforms", validated)
+        object.__setattr__(self, "_common_uniform_exponent", common_exponent)
+        object.__setattr__(self, "_scaled_common_uniforms", scaled)
+        object.__setattr__(self, "_standard_probability_words_le", standard_words)
+
+    @property
+    def validated_common_uniforms(self) -> tuple[Decimal, ...]:
+        """Return the exact already-validated probabilities without reparsing."""
+
+        return self._validated_common_uniforms
+
+
+def _install_sampling_spec_derivation_capability():
+    token = object()
+
+    def accepts(
+        proof: _DerivedSamplingSpecProof | None,
+        *,
+        seed: int,
+        draw_count: int,
+        common_uniforms: tuple[str, ...],
+        common_random_map_digest: str | None,
+    ) -> bool:
+        return (
+            isinstance(proof, _DerivedSamplingSpecProof)
+            and proof.token is token
+            and proof.seed == seed
+            and proof.draw_count == draw_count
+            and proof.common_uniforms is common_uniforms
+            and proof.common_random_map_digest == common_random_map_digest
+            and len(proof.validated_common_uniforms) == draw_count
+        )
+
+    def derive(source: SamplingSpec, *, common_random_map_digest: str) -> SamplingSpec:
+        if not isinstance(source, SamplingSpec) or not source.common_uniforms:
+            raise ContractError("sampling derivation requires validated common uniforms")
+        return SamplingSpec(
+            source.seed,
+            source.draw_count,
+            source.common_uniforms,
+            common_random_map_digest,
+            _DerivedSamplingSpecProof(
+                token,
+                source.seed,
+                source.draw_count,
+                source.common_uniforms,
+                common_random_map_digest,
+                source.validated_common_uniforms,
+                source._common_uniform_exponent,
+                source._scaled_common_uniforms,
+                source._standard_probability_words_le,
+            ),
+        )
+
+    def build_generated(
+        *,
+        seed: int,
+        draw_count: int,
+        common_uniforms: tuple[str, ...],
+        common_random_map_digest: str,
+    ) -> SamplingSpec:
+        """Bind uniforms produced by the frozen in-process generator once.
+
+        The joint generator already creates canonical probabilities inside this
+        process.  Parsing their decimal values is retained for the public typed
+        view, while the expensive generic transport validation and Decimal-tree
+        rescaling are replaced by the equivalent direct canonical-string scale.
+        Serialized/reconstructed SamplingSpec values still take the full public
+        validation path in ``SamplingSpec.__post_init__``.
+        """
+
+        if (
+            not isinstance(common_uniforms, tuple)
+            or len(common_uniforms) != draw_count
+            or any(
+                not isinstance(value, str)
+                or not value.startswith("0.")
+                or not value[2:]
+                or not value[2:].isdigit()
+                or value.endswith("0")
+                for value in common_uniforms
             )
+        ):
+            raise ContractError("generated common uniforms are not canonical")
+        validated = tuple(Decimal(value) for value in common_uniforms)
+        # The Windows production path consumes the sealed 1e-28 words directly.
+        # Retain parsed Decimals as the exact portable fallback instead of also
+        # constructing a second 4,096-element arbitrary-precision integer cache.
+        exponent, scaled = None, ()
+        standard_words = _standard_probability_words(common_uniforms)
+        return SamplingSpec(
+            seed,
+            draw_count,
+            common_uniforms,
+            common_random_map_digest,
+            _DerivedSamplingSpecProof(
+                token,
+                seed,
+                draw_count,
+                common_uniforms,
+                common_random_map_digest,
+                validated,
+                exponent,
+                scaled,
+                standard_words,
+            ),
+        )
+
+    return derive, build_generated, accepts
+
+
+(
+    _derive_sampling_spec,
+    _build_generated_sampling_spec,
+    _accepts_derived_sampling_spec_proof,
+) = _install_sampling_spec_derivation_capability()
+del _install_sampling_spec_derivation_capability
+
+
+@dataclass(frozen=True, slots=True)
+class _GeneratedDistributionSamplesProof:
+    token: object
+    samples_ms: tuple[int, ...]
+    seed: int
+    distribution_digest: str
+    common_random_map_digest: str | None
+    samples_digest: str
+    samples_authority_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,17 +312,29 @@ class DistributionSamples:
     distribution_digest: str
     samples_digest: str
     common_random_map_digest: str | None
+    _generated_proof: InitVar[_GeneratedDistributionSamplesProof | None] = None
+    _samples_authority_digest_cache: str = field(init=False, repr=False, compare=False, default="")
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _generated_proof: _GeneratedDistributionSamplesProof | None) -> None:
         if not isinstance(self.samples_ms, tuple) or not self.samples_ms:
             raise ContractError("samples_ms must be a nonempty immutable tuple")
-        for sample in self.samples_ms:
-            _require_positive_int(sample, "sample time_ms")
+        trusted_generation = _accepts_generated_distribution_samples_proof(
+            _generated_proof,
+            samples_ms=self.samples_ms,
+            seed=self.seed,
+            distribution_digest=self.distribution_digest,
+            common_random_map_digest=self.common_random_map_digest,
+            samples_digest=self.samples_digest,
+        )
+        if not trusted_generation:
+            for sample in self.samples_ms:
+                _require_positive_int(sample, "sample time_ms")
         if self.algorithm != SAMPLING_ALGORITHM:
             raise ContractError("unknown distribution sampling algorithm")
         if self.dependency_version != "stdlib-only-v1":
             raise ContractError("unknown sampling dependency version")
-        SamplingSpec(self.seed, self.draw_count)
+        if not trusted_generation:
+            SamplingSpec(self.seed, self.draw_count)
         if self.draw_count != len(self.samples_ms):
             raise ContractError("draw_count must match samples_ms")
         if self.time_quantum_ms != 1:
@@ -159,14 +343,24 @@ class DistributionSamples:
         _require_digest(self.samples_digest, "samples_digest")
         if self.common_random_map_digest is not None:
             _require_digest(self.common_random_map_digest, "common_random_map_digest")
-        expected_digest = _samples_digest(
-            samples_ms=self.samples_ms,
-            seed=self.seed,
-            distribution_digest=self.distribution_digest,
-            common_random_map_digest=self.common_random_map_digest,
-        )
-        if self.samples_digest != expected_digest:
-            raise ContractError("distribution samples digest mismatch")
+        if not trusted_generation:
+            expected_digest = _samples_digest(
+                samples_ms=self.samples_ms,
+                seed=self.seed,
+                distribution_digest=self.distribution_digest,
+                common_random_map_digest=self.common_random_map_digest,
+            )
+            if self.samples_digest != expected_digest:
+                raise ContractError("distribution samples digest mismatch")
+            samples_authority_digest = canonical_digest(self.samples_ms)
+        else:
+            assert _generated_proof is not None
+            samples_authority_digest = _generated_proof.samples_authority_digest
+        object.__setattr__(self, "_samples_authority_digest_cache", samples_authority_digest)
+
+    @property
+    def samples_authority_digest(self) -> str:
+        return self._samples_authority_digest_cache
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,6 +407,74 @@ class DistributionSamples:
         )
 
 
+def _install_distribution_samples_generation_capability():
+    token = object()
+
+    def accepts(
+        proof: _GeneratedDistributionSamplesProof | None,
+        *,
+        samples_ms: tuple[int, ...],
+        seed: int,
+        distribution_digest: str,
+        common_random_map_digest: str | None,
+        samples_digest: str,
+    ) -> bool:
+        return (
+            isinstance(proof, _GeneratedDistributionSamplesProof)
+            and proof.token is token
+            and proof.samples_ms is samples_ms
+            and proof.seed == seed
+            and proof.distribution_digest == distribution_digest
+            and proof.common_random_map_digest == common_random_map_digest
+            and proof.samples_digest == samples_digest
+        )
+
+    def build(
+        *,
+        samples_ms: tuple[int, ...],
+        seed: int,
+        distribution_digest: str,
+        common_random_map_digest: str | None,
+    ) -> DistributionSamples:
+        generated_digests = _samples_digest(
+            samples_ms=samples_ms,
+            seed=seed,
+            distribution_digest=distribution_digest,
+            common_random_map_digest=common_random_map_digest,
+            _include_authority=True,
+        )
+        assert isinstance(generated_digests, tuple)
+        samples_digest, samples_authority_digest = generated_digests
+        return DistributionSamples(
+            samples_ms=samples_ms,
+            algorithm=SAMPLING_ALGORITHM,
+            dependency_version="stdlib-only-v1",
+            seed=seed,
+            draw_count=len(samples_ms),
+            time_quantum_ms=1,
+            distribution_digest=distribution_digest,
+            samples_digest=samples_digest,
+            common_random_map_digest=common_random_map_digest,
+            _generated_proof=_GeneratedDistributionSamplesProof(
+                token,
+                samples_ms,
+                seed,
+                distribution_digest,
+                common_random_map_digest,
+                samples_digest,
+                samples_authority_digest,
+            ),
+        )
+
+    return build, accepts
+
+
+_build_distribution_samples, _accepts_generated_distribution_samples_proof = (
+    _install_distribution_samples_generation_capability()
+)
+del _install_distribution_samples_generation_capability
+
+
 @dataclass(frozen=True, slots=True)
 class PositiveTimeDistribution:
     """A finite positive quantile function shared by every V3 assessor.
@@ -230,19 +492,15 @@ class PositiveTimeDistribution:
     def __post_init__(self) -> None:
         _require_schema(self.schema_version, DISTRIBUTION_SCHEMA_VERSION)
         if not isinstance(self.quantiles, tuple) or len(self.quantiles) < 3:
-            raise ContractError(
-                "distribution requires at least three immutable quantiles"
-            )
+            raise ContractError("distribution requires at least three immutable quantiles")
         if not all(isinstance(item, QuantilePoint) for item in self.quantiles):
             raise ContractError("distribution quantiles must be QuantilePoint values")
         probabilities = tuple(Decimal(item.probability) for item in self.quantiles)
         times = tuple(item.time_ms for item in self.quantiles)
-        if probabilities != tuple(sorted(probabilities)) or len(
-            set(probabilities)
-        ) != len(probabilities):
-            raise ContractError(
-                "quantile probabilities must be unique and strictly ordered"
-            )
+        if probabilities != tuple(sorted(probabilities)) or len(set(probabilities)) != len(
+            probabilities
+        ):
+            raise ContractError("quantile probabilities must be unique and strictly ordered")
         if Decimal("0.5") not in probabilities:
             raise ContractError("distribution must include the median quantile 0.5")
         if times != tuple(sorted(times)):
@@ -269,25 +527,24 @@ class PositiveTimeDistribution:
     def sample(self, spec: SamplingSpec) -> DistributionSamples:
         if not isinstance(spec, SamplingSpec):
             raise ContractError("sampling requires a SamplingSpec")
-        uniforms = spec.common_uniforms or _splitmix_uniforms(
-            spec.seed, spec.draw_count
-        )
-        samples = self._sample_probabilities(tuple(Decimal(item) for item in uniforms))
+        native = _sample_standard_quantile_rows((self,), spec)
+        if native is not None:
+            samples = native[0]
+        elif spec._common_uniform_exponent is not None:
+            samples = self._sample_scaled_probabilities(
+                spec._scaled_common_uniforms,
+                spec._common_uniform_exponent,
+            )
+        else:
+            probabilities = spec.validated_common_uniforms or tuple(
+                Decimal(item) for item in _splitmix_uniforms(spec.seed, spec.draw_count)
+            )
+            samples = self._sample_probabilities(probabilities)
         distribution_digest = self.digest
-        return DistributionSamples(
+        return _build_distribution_samples(
             samples_ms=samples,
-            algorithm=SAMPLING_ALGORITHM,
-            dependency_version="stdlib-only-v1",
             seed=spec.seed,
-            draw_count=spec.draw_count,
-            time_quantum_ms=1,
             distribution_digest=distribution_digest,
-            samples_digest=_samples_digest(
-                samples_ms=samples,
-                seed=spec.seed,
-                distribution_digest=distribution_digest,
-                common_random_map_digest=spec.common_random_map_digest,
-            ),
             common_random_map_digest=spec.common_random_map_digest,
         )
 
@@ -297,18 +554,69 @@ class PositiveTimeDistribution:
             context.rounding = ROUND_HALF_EVEN
             return self._at_probability_compiled(probability)
 
-    def _sample_probabilities(
-        self, probabilities: tuple[Decimal, ...]
-    ) -> tuple[int, ...]:
+    def _sample_probabilities(self, probabilities: tuple[Decimal, ...]) -> tuple[int, ...]:
         """Evaluate a batch under one frozen Decimal context."""
 
         with localcontext() as context:
             context.prec = 256
             context.rounding = ROUND_HALF_EVEN
             return tuple(
-                self._at_probability_compiled(probability)
-                for probability in probabilities
+                self._at_probability_compiled(probability) for probability in probabilities
             )
+
+    def _sample_scaled_probabilities(
+        self, probabilities: tuple[int, ...], probability_exponent: int
+    ) -> tuple[int, ...]:
+        """Evaluate exact finite-decimal probabilities with integer arithmetic."""
+
+        grid_exponent, grid = _decimals_to_common_scale(self._probabilities)
+        assert grid_exponent is not None
+        common_exponent = min(probability_exponent, grid_exponent)
+        probability_factor = 10 ** (probability_exponent - common_exponent)
+        grid_factor = 10 ** (grid_exponent - common_exponent)
+        scaled_grid = tuple(value * grid_factor for value in grid)
+        return tuple(
+            _interpolate_scaled_probability(
+                probability * probability_factor,
+                scaled_grid,
+                self._times_ms,
+            )
+            for probability in probabilities
+        )
+
+    def _sample_rational_probabilities(
+        self, probabilities: tuple[tuple[int, int], ...]
+    ) -> tuple[int, ...]:
+        """Evaluate exact nonnegative rational probabilities with integer math."""
+
+        grid_exponent, grid = _decimals_to_common_scale(self._probabilities)
+        assert grid_exponent is not None
+        grid_denominator = 10 ** (-grid_exponent)
+        results = []
+        for numerator, denominator in probabilities:
+            index = 0
+            target = numerator * grid_denominator
+            while index < len(grid) and grid[index] * denominator < target:
+                index += 1
+            if index == 0:
+                results.append(self._times_ms[0])
+                continue
+            if index == len(grid):
+                results.append(self._times_ms[-1])
+                continue
+            left_grid = grid[index - 1]
+            ratio_numerator = target - left_grid * denominator
+            ratio_denominator = denominator * (grid[index] - left_grid)
+            left_time = self._times_ms[index - 1]
+            exact_numerator = left_time * ratio_denominator + ratio_numerator * (
+                self._times_ms[index] - left_time
+            )
+            rounded, remainder = divmod(exact_numerator, ratio_denominator)
+            doubled = remainder * 2
+            if doubled > ratio_denominator or (doubled == ratio_denominator and rounded % 2):
+                rounded += 1
+            results.append(rounded)
+        return tuple(results)
 
     def _at_probability_compiled(self, probability: Decimal) -> int:
         index = bisect_left(self._probabilities, probability)
@@ -340,6 +648,203 @@ class PositiveTimeDistribution:
         return cls(tuple(QuantilePoint.from_dict(item) for item in quantiles))
 
 
+def sample_aligned_positive_distributions(
+    distributions: tuple[PositiveTimeDistribution, ...],
+    spec: SamplingSpec,
+) -> tuple[DistributionSamples, ...]:
+    """Sample distributions while sharing inverse-CDF ratios for one grid.
+
+    This is an exact batch form of ``PositiveTimeDistribution.sample``.  A
+    mismatched quantile grid uses the individual oracle path.
+    """
+
+    if not isinstance(distributions, tuple) or not distributions:
+        raise ContractError("aligned sampling requires a nonempty distribution tuple")
+    if not all(isinstance(item, PositiveTimeDistribution) for item in distributions):
+        raise ContractError("aligned sampling requires positive-time distributions")
+    if not isinstance(spec, SamplingSpec):
+        raise ContractError("aligned sampling requires a SamplingSpec")
+
+    shared_grid = distributions[0]._probabilities
+    if any(item._probabilities != shared_grid for item in distributions[1:]):
+        return tuple(item.sample(spec) for item in distributions)
+
+    native = _sample_standard_quantile_rows(distributions, spec)
+    if native is not None:
+        return _distribution_sample_rows(distributions, [list(row) for row in native], spec)
+    if spec._common_uniform_exponent is not None:
+        sample_rows = [
+            list(
+                distribution._sample_scaled_probabilities(
+                    spec._scaled_common_uniforms,
+                    spec._common_uniform_exponent,
+                )
+            )
+            for distribution in distributions
+        ]
+        return _distribution_sample_rows(distributions, sample_rows, spec)
+
+    probabilities = spec.validated_common_uniforms or tuple(
+        Decimal(item) for item in _splitmix_uniforms(spec.seed, spec.draw_count)
+    )
+    sample_rows = [[] for _item in distributions]
+    with localcontext() as context:
+        context.prec = 256
+        context.rounding = ROUND_HALF_EVEN
+        for probability in probabilities:
+            index = bisect_left(shared_grid, probability)
+            if index == 0:
+                for row, distribution in zip(sample_rows, distributions, strict=True):
+                    row.append(distribution._times_ms[0])
+                continue
+            if index == len(shared_grid):
+                for row, distribution in zip(sample_rows, distributions, strict=True):
+                    row.append(distribution._times_ms[-1])
+                continue
+            left_p = shared_grid[index - 1]
+            ratio = (probability - left_p) / (shared_grid[index] - left_p)
+            for row, distribution in zip(sample_rows, distributions, strict=True):
+                left_t = distribution._times_ms[index - 1]
+                right_t = distribution._times_ms[index]
+                interpolated = Decimal(left_t) + ratio * Decimal(right_t - left_t)
+                row.append(int(interpolated.quantize(Decimal("1"))))
+
+    return _distribution_sample_rows(distributions, sample_rows, spec)
+
+
+def _sample_standard_quantile_rows(
+    distributions: tuple[PositiveTimeDistribution, ...],
+    spec: SamplingSpec,
+) -> tuple[tuple[int, ...], ...] | None:
+    """Use the hash-bound exact kernel for the production three-point grid."""
+
+    if (
+        spec.draw_count != 4096
+        or spec._standard_probability_words_le is None
+        or not 1 <= len(distributions) <= 3
+        or any(item._probabilities != _STANDARD_QUANTILE_GRID for item in distributions)
+    ):
+        return None
+    global _NATIVE_STANDARD_SAMPLER, _NATIVE_STANDARD_SAMPLER_INITIALIZED
+    if not _NATIVE_STANDARD_SAMPLER_INITIALIZED:
+        from strathmark.v3.domain.optimizer_kernel import load_bundled_kernel
+
+        _NATIVE_STANDARD_SAMPLER = load_bundled_kernel(required=sys.platform == "win32")
+        _NATIVE_STANDARD_SAMPLER_INITIALIZED = True
+    if _NATIVE_STANDARD_SAMPLER is None:
+        return None
+    return _NATIVE_STANDARD_SAMPLER.sample_three_quantiles(
+        spec._standard_probability_words_le,
+        tuple(item._times_ms for item in distributions),
+        draw_count=spec.draw_count,
+    )
+
+
+def _distribution_sample_rows(
+    distributions: tuple[PositiveTimeDistribution, ...],
+    sample_rows: list[list[int]],
+    spec: SamplingSpec,
+) -> tuple[DistributionSamples, ...]:
+    results = []
+    for distribution, row in zip(distributions, sample_rows, strict=True):
+        samples = tuple(row)
+        distribution_digest = distribution.digest
+        results.append(
+            _build_distribution_samples(
+                samples_ms=samples,
+                seed=spec.seed,
+                distribution_digest=distribution_digest,
+                common_random_map_digest=spec.common_random_map_digest,
+            )
+        )
+    return tuple(results)
+
+
+def _decimals_to_common_scale(
+    values: tuple[Decimal, ...],
+) -> tuple[int | None, tuple[int, ...]]:
+    """Represent finite decimals as integers sharing one base-ten exponent."""
+
+    if not values:
+        return None, ()
+    exponent = min(value.as_tuple().exponent for value in values)
+    scaled = []
+    for value in values:
+        sign, digits, value_exponent = value.as_tuple()
+        coefficient = 0
+        for digit in digits:
+            coefficient = coefficient * 10 + digit
+        if sign:
+            coefficient = -coefficient
+        scaled.append(coefficient * 10 ** (value_exponent - exponent))
+    return exponent, tuple(scaled)
+
+
+def _canonical_fraction_strings_to_common_scale(
+    values: tuple[str, ...],
+) -> tuple[int | None, tuple[int, ...]]:
+    """Scale canonical generated ``0.<digits>`` values without Decimal walking."""
+
+    if not values:
+        return None, ()
+    fractions = tuple(value[2:] for value in values)
+    exponent = -max(len(value) for value in fractions)
+    return exponent, tuple(int(value) * 10 ** (-len(value) - exponent) for value in fractions)
+
+
+def _standard_probability_words(values: tuple[str, ...]) -> bytes | None:
+    """Pack exact 1e-28 probabilities for the sealed three-quantile kernel.
+
+    Generated rank uniforms have at most 28 significant digits. Values with
+    additional leading fractional zeroes are below the standard 0.1 floor and
+    can be represented as zero without changing inverse-quantile output. Public
+    higher-precision values inside the interpolation range retain the generic
+    integer oracle instead.
+    """
+
+    if not values:
+        return None
+    packed = bytearray(len(values) * 16)
+    for index, value in enumerate(values):
+        digits = value[2:]
+        if len(digits) > 28:
+            if digits[0] != "0":
+                return None
+            scaled = 0
+        else:
+            scaled = int(digits) * 10 ** (28 - len(digits))
+        struct.pack_into(
+            "<QQ",
+            packed,
+            index * 16,
+            scaled & _UINT64_MAX,
+            scaled >> 64,
+        )
+    return bytes(packed)
+
+
+def _interpolate_scaled_probability(
+    probability: int,
+    grid: tuple[int, ...],
+    times_ms: tuple[int, ...],
+) -> int:
+    index = bisect_left(grid, probability)
+    if index == 0:
+        return times_ms[0]
+    if index == len(grid):
+        return times_ms[-1]
+    left_probability = grid[index - 1]
+    denominator = grid[index] - left_probability
+    numerator = probability - left_probability
+    left_time = times_ms[index - 1]
+    exact_numerator = left_time * denominator + numerator * (times_ms[index] - left_time)
+    rounded, remainder = divmod(exact_numerator, denominator)
+    doubled_remainder = remainder * 2
+    if doubled_remainder > denominator or (doubled_remainder == denominator and rounded % 2):
+        rounded += 1
+    return rounded
+
+
 @dataclass(frozen=True, slots=True)
 class DependenceInputs:
     field_id: StableIdentifier
@@ -359,9 +864,7 @@ class DependenceInputs:
             raise ContractError("dependence mode must be a DependenceMode value")
         _require_version(self.version, "dependence version")
         SamplingSpec(self.seed, self.draw_count)
-        _require_nonnegative_decimal(
-            self.effective_sample_size, "effective_sample_size"
-        )
+        _require_nonnegative_decimal(self.effective_sample_size, "effective_sample_size")
         if self.parameters_digest is not None:
             _require_digest(self.parameters_digest, "parameters_digest")
         if self.mode in {
@@ -453,9 +956,7 @@ class EvidenceSupport:
             raise ContractError("exact_context_count cannot exceed eligible_count")
         if self.max_historical_key is not None:
             require_identifier(self.max_historical_key, expected_namespace="history")
-        _require_nonnegative_int(
-            self.tournament_event_sequence, "tournament_event_sequence"
-        )
+        _require_nonnegative_int(self.tournament_event_sequence, "tournament_event_sequence")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -540,22 +1041,14 @@ class AssessorForecast:
             raise ContractError("artifacts must be immutable ArtifactIdentity values")
         if self.state is ForecastState.COMMITTED:
             if not isinstance(self.distribution, PositiveTimeDistribution):
-                raise ContractError(
-                    "committed forecast requires a positive distribution"
-                )
+                raise ContractError("committed forecast requires a positive distribution")
             if self.abstention_code is not None:
-                raise ContractError(
-                    "committed forecast cannot carry an abstention code"
-                )
+                raise ContractError("committed forecast cannot carry an abstention code")
         else:
             if self.distribution is not None:
-                raise ContractError(
-                    "distribution must be absent for non-committed forecasts"
-                )
+                raise ContractError("distribution must be absent for non-committed forecasts")
             if not isinstance(self.abstention_code, str) or not self.abstention_code:
-                raise ContractError(
-                    "non-committed forecast requires an abstention code"
-                )
+                raise ContractError("non-committed forecast requires an abstention code")
         _require_digest(self.commit_digest, "commit_digest")
         if self.commit_digest != self.recompute_digest():
             raise ContractError("forecast commit digest mismatch")
@@ -606,27 +1099,19 @@ class AssessorForecast:
             state = ForecastState(value["state"])
             warnings = tuple(ForecastWarning(item) for item in value["warnings"])
         except (TypeError, ValueError) as exc:
-            raise ContractError(
-                "unknown assessor, forecast state, or warning code"
-            ) from exc
+            raise ContractError("unknown assessor, forecast state, or warning code") from exc
         distribution = value["distribution"]
         return cls(
-            forecast_id=require_identifier(
-                value["forecast_id"], expected_namespace="forecast"
-            ),
+            forecast_id=require_identifier(value["forecast_id"], expected_namespace="forecast"),
             assessor=assessor,
             state=state,
             evidence_digest=value["evidence_digest"],
             distribution=(
-                None
-                if distribution is None
-                else PositiveTimeDistribution.from_dict(distribution)
+                None if distribution is None else PositiveTimeDistribution.from_dict(distribution)
             ),
             support=EvidenceSupport.from_dict(value["support"]),
             warnings=warnings,
-            artifacts=tuple(
-                ArtifactIdentity.from_dict(item) for item in value["artifacts"]
-            ),
+            artifacts=tuple(ArtifactIdentity.from_dict(item) for item in value["artifacts"]),
             abstention_code=value["abstention_code"],
             commit_digest=value["commit_digest"],
         )
@@ -726,9 +1211,7 @@ def _forecast_content_value(**arguments: Any) -> dict[str, Any]:
         "state": arguments["state"].value,
         "evidence_digest": arguments["evidence_digest"],
         "distribution": (
-            None
-            if arguments["distribution"] is None
-            else arguments["distribution"].to_dict()
+            None if arguments["distribution"] is None else arguments["distribution"].to_dict()
         ),
         "support": arguments["support"].to_dict(),
         "warnings": [item.value for item in arguments["warnings"]],
@@ -779,26 +1262,96 @@ def _splitmix_uniforms(seed: int, count: int) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _generated_samples_digests(
+    *,
+    samples_ms: tuple[int, ...],
+    seed: int,
+    distribution_digest: str,
+    common_random_map_digest: str | None,
+) -> tuple[str, str]:
+    """Hash one sampler-produced vector and its envelope in one encoding pass."""
+
+    samples_json = ("[" + ",".join(str(item) for item in samples_ms) + "]").encode("ascii")
+    map_value = "null" if common_random_map_digest is None else f'"{common_random_map_digest}"'
+    encoded = (
+        (
+            f'{{"algorithm":"{SAMPLING_ALGORITHM}",'
+            f'"common_random_map_digest":{map_value},'
+            '"dependency_version":"stdlib-only-v1",'
+            f'"distribution_digest":"{distribution_digest}",'
+            f'"draw_count":{len(samples_ms)},"samples_ms":'
+        ).encode("ascii")
+        + samples_json
+        + (
+            f',"schema_version":"{SAMPLING_SCHEMA_VERSION}","seed":{seed},"time_quantum_ms":1}}'
+        ).encode("ascii")
+    )
+    return hashlib.sha256(encoded).hexdigest(), hashlib.sha256(samples_json).hexdigest()
+
+
 def _samples_digest(
     *,
     samples_ms: tuple[int, ...],
     seed: int,
     distribution_digest: str,
     common_random_map_digest: str | None,
-) -> str:
-    return canonical_digest(
-        {
-            "schema_version": SAMPLING_SCHEMA_VERSION,
-            "algorithm": SAMPLING_ALGORITHM,
-            "dependency_version": "stdlib-only-v1",
-            "seed": seed,
-            "draw_count": len(samples_ms),
-            "time_quantum_ms": 1,
-            "samples_ms": samples_ms,
-            "distribution_digest": distribution_digest,
-            "common_random_map_digest": common_random_map_digest,
-        }
+    _include_authority: bool = False,
+) -> str | tuple[str, str]:
+    if _include_authority:
+        return _generated_samples_digests(
+            samples_ms=samples_ms,
+            seed=seed,
+            distribution_digest=distribution_digest,
+            common_random_map_digest=common_random_map_digest,
+        )
+    value = {
+        "schema_version": SAMPLING_SCHEMA_VERSION,
+        "algorithm": SAMPLING_ALGORITHM,
+        "dependency_version": "stdlib-only-v1",
+        "seed": seed,
+        "draw_count": len(samples_ms),
+        "time_quantum_ms": 1,
+        "samples_ms": samples_ms,
+        "distribution_digest": distribution_digest,
+        "common_random_map_digest": common_random_map_digest,
+    }
+    # This closed-schema path receives validated positive int64 samples and
+    # lower-case SHA-256 identifiers.  Stream its canonical JSON directly so
+    # race-card assembly does not normalize thousands of integers hundreds of
+    # times.  Values outside the proven language retain the generic canonical
+    # boundary and its exact failures.
+    digests = (distribution_digest,) + (
+        () if common_random_map_digest is None else (common_random_map_digest,)
     )
+    fast_path = (
+        isinstance(samples_ms, tuple)
+        and 0 < len(samples_ms) < 100_000
+        and all(type(item) is int and 0 < item <= 2**63 - 1 for item in samples_ms)
+        and type(seed) is int
+        and 0 <= seed <= 2**63 - 1
+        and all(
+            isinstance(item, str)
+            and len(item) == 64
+            and all(character in "0123456789abcdef" for character in item)
+            for item in digests
+        )
+    )
+    if not fast_path:
+        return canonical_digest(value)
+    map_value = "null" if common_random_map_digest is None else f'"{common_random_map_digest}"'
+    encoded = (
+        f'{{"algorithm":"{SAMPLING_ALGORITHM}",'
+        f'"common_random_map_digest":{map_value},'
+        '"dependency_version":"stdlib-only-v1",'
+        f'"distribution_digest":"{distribution_digest}",'
+        f'"draw_count":{len(samples_ms)},"samples_ms":['
+        + ",".join(str(item) for item in samples_ms)
+        + f'],"schema_version":"{SAMPLING_SCHEMA_VERSION}",'
+        f'"seed":{seed},"time_quantum_ms":1}}'
+    ).encode("ascii")
+    if len(encoded) > 1_048_576:
+        return canonical_digest(value)
+    return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [
@@ -822,4 +1375,5 @@ __all__ = [
     "PredictiveDistributionContract",
     "QuantilePoint",
     "SamplingSpec",
+    "sample_aligned_positive_distributions",
 ]
