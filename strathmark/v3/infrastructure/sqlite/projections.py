@@ -1808,6 +1808,18 @@ class SQLiteProjectionStore:
         issued_event = EventEnvelope.from_dict(json.loads(str(issued_row[0])))
         issued_payload = cast(InlinePayload, issued_event.command.payload)
         issued = issued_payload.to_value()
+        if issued.get("schema_version") == "strathmark-v3-batch-issue-authority-v1":
+            fields = issued.get("fields")
+            if not isinstance(fields, list):
+                raise ProjectionConflict("batch issue fields are invalid")
+            matches = [
+                item
+                for item in fields
+                if isinstance(item, dict) and item.get("field_id") == value["field_id"]
+            ]
+            if len(matches) != 1:
+                raise ProjectionConflict("batch issue does not bind the settled field")
+            issued = matches[0]
         if (
             issued.get("field_revision") != value["field_revision"]
             or issued.get("receipt_id") != value["receipt_id"]
@@ -1863,6 +1875,18 @@ class SQLiteProjectionStore:
         event = EventEnvelope.from_dict(json.loads(str(row[1])))
         payload = cast(InlinePayload, event.command.payload)
         value = payload.to_value()
+        if value.get("schema_version") == "strathmark-v3-batch-issue-authority-v1":
+            fields = value.get("fields")
+            if not isinstance(fields, list):
+                raise ProjectionConflict("batch issue fields are invalid")
+            matches = [
+                item
+                for item in fields
+                if isinstance(item, dict) and item.get("field_id") == str(field_id)
+            ]
+            if len(matches) != 1:
+                raise ProjectionConflict("batch issue does not bind the settled field")
+            value = matches[0]
         ingress = connection.execute(
             "SELECT tournament_id, round_id, snapshot_json FROM v3_ingress_snapshots "
             "WHERE entity_kind='field' AND entity_id=? AND source_global_sequence<? "
@@ -1891,6 +1915,18 @@ class SQLiteProjectionStore:
     def _apply_issue_seal(
         connection: sqlite3.Connection, event: EventEnvelope, value: dict[str, object]
     ) -> None:
+        if value.get("schema_version") == "strathmark-v3-batch-issue-authority-v1":
+            fields = value.get("fields")
+            if not isinstance(fields, list):
+                raise ProjectionError("batch issue fields are invalid")
+            matches = [
+                item
+                for item in fields
+                if isinstance(item, dict) and item.get("field_id") == str(event.aggregate_id)
+            ]
+            if len(matches) != 1:
+                raise ProjectionConflict("batch issue must bind each field exactly once")
+            value = matches[0]
         required = {
             "round_id",
             "epoch_id",

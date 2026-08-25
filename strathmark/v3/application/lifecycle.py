@@ -900,6 +900,18 @@ class LifecycleService:
             event = EventEnvelope.from_dict(json.loads(str(row[1])))
             payload = cast(InlinePayload, event.command.payload)
             value = payload.to_value()
+            if value.get("schema_version") == "strathmark-v3-batch-issue-authority-v1":
+                fields = value.get("fields")
+                if not isinstance(fields, list):
+                    raise ContractError("batch issue fields are invalid")
+                matches = [
+                    item
+                    for item in fields
+                    if isinstance(item, dict) and item.get("field_id") == str(field_id)
+                ]
+                if len(matches) != 1:
+                    raise ContractError("batch issue does not bind the requested field")
+                value = matches[0]
             ingress = connection.execute(
                 "SELECT tournament_id, round_id, snapshot_json "
                 "FROM v3_ingress_snapshots WHERE entity_kind='field' AND entity_id=? "
