@@ -154,6 +154,24 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
     AggregateKind.MONITORING: {
         (None, EventKind.MONITORING_RECORDED): LifecycleStatus.MONITORING_RECORDED,
     },
+    AggregateKind.SERVICE_CREDENTIAL: {
+        (
+            None,
+            EventKind.SERVICE_CREDENTIAL_BOOTSTRAPPED,
+        ): LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+        (
+            LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+            EventKind.SERVICE_CREDENTIAL_ROTATED,
+        ): LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+        (
+            LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+            EventKind.SERVICE_CREDENTIAL_REVOKED,
+        ): LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+        (
+            LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+            EventKind.SERVICE_CREDENTIAL_RECOVERED,
+        ): LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE,
+    },
     AggregateKind.ISSUE_BATCH: {
         (None, EventKind.ISSUE_BATCH_ISSUED): LifecycleStatus.ISSUE_BATCH_ISSUED,
     },

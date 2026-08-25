@@ -45,6 +45,7 @@ api = [
     "httpx>=0.27,<1",
     "httpx2>=2.0",
     "uvicorn[standard]>=0.29",
+    "cryptography>=43,<47",
 ]
 llm = [
     "ollama>=0.3",
@@ -92,6 +93,8 @@ packages = ["strathmark"]
 "strathmark/v3/native/optimizer_kernel.rs" = "strathmark/v3/native/optimizer_kernel.rs"
 "strathmark/v3/native/optimizer_kernel_manifest.json" = "strathmark/v3/native/optimizer_kernel_manifest.json"
 "strathmark/v3/native/strathmark_v3_optimizer_kernel.dll" = "strathmark/v3/native/strathmark_v3_optimizer_kernel.dll"
+"strathmark/v3/contracts/v3_consumer.openapi.json" = "strathmark/v3/contracts/v3_consumer.openapi.json"
+"strathmark/v3/contracts/v3_consumer.openapi.sha256" = "strathmark/v3/contracts/v3_consumer.openapi.sha256"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -728,6 +728,7 @@ class SQLiteEventStore:
                 AggregateKind.APPROVAL_DECISION,
                 AggregateKind.AUDIT_GENERATION,
                 AggregateKind.MONITORING,
+                AggregateKind.SERVICE_CREDENTIAL,
             }:
                 try:
                     transition(

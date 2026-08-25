@@ -84,6 +84,22 @@ _COMMAND_EVENT: dict[CommandKind, tuple[AggregateKind, EventKind]] = {
     CommandKind.PROMOTE_BUNDLE: (AggregateKind.BUNDLE, EventKind.BUNDLE_PROMOTED),
     CommandKind.ROLLBACK_BUNDLE: (AggregateKind.BUNDLE, EventKind.BUNDLE_ROLLED_BACK),
     CommandKind.RECORD_MONITORING: (AggregateKind.MONITORING, EventKind.MONITORING_RECORDED),
+    CommandKind.BOOTSTRAP_SERVICE_CREDENTIAL: (
+        AggregateKind.SERVICE_CREDENTIAL,
+        EventKind.SERVICE_CREDENTIAL_BOOTSTRAPPED,
+    ),
+    CommandKind.ROTATE_SERVICE_CREDENTIAL: (
+        AggregateKind.SERVICE_CREDENTIAL,
+        EventKind.SERVICE_CREDENTIAL_ROTATED,
+    ),
+    CommandKind.REVOKE_SERVICE_CREDENTIAL: (
+        AggregateKind.SERVICE_CREDENTIAL,
+        EventKind.SERVICE_CREDENTIAL_REVOKED,
+    ),
+    CommandKind.RECOVER_SERVICE_CREDENTIAL: (
+        AggregateKind.SERVICE_CREDENTIAL,
+        EventKind.SERVICE_CREDENTIAL_RECOVERED,
+    ),
     CommandKind.RECORD_CAPABILITY_UPDATE: (
         AggregateKind.COMPETITOR,
         EventKind.CAPABILITY_UPDATED,

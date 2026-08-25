@@ -49,6 +49,7 @@ class AggregateKind(str, Enum):
     APPROVAL_DECISION = "approval_decision"
     AUDIT_GENERATION = "audit_generation"
     MONITORING = "monitoring"
+    SERVICE_CREDENTIAL = "service_credential"
 
 
 class EventKind(str, Enum):
@@ -109,6 +110,10 @@ class EventKind(str, Enum):
     LIVE_RESUMED = "live_resumed"
     EMERGENCY_STOPPED = "emergency_stopped"
     CHECKPOINT_ANCHORED = "checkpoint_anchored"
+    SERVICE_CREDENTIAL_BOOTSTRAPPED = "service_credential_bootstrapped"
+    SERVICE_CREDENTIAL_ROTATED = "service_credential_rotated"
+    SERVICE_CREDENTIAL_REVOKED = "service_credential_revoked"
+    SERVICE_CREDENTIAL_RECOVERED = "service_credential_recovered"
 
 
 @dataclass(frozen=True, slots=True)

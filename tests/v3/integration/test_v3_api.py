@@ -1,0 +1,1028 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("fastapi")
+from cryptography import x509  # noqa: E402
+from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
+from cryptography.x509.oid import NameOID  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+import strathmark.v3.api.router as router_module  # noqa: E402
+from strathmark.v3.api.app import (  # noqa: E402
+    AuthenticatedBoundedMiddleware,
+    ListenerSecurityPolicy,
+    create_v3_app,
+)
+from strathmark.v3.api.auth import (  # noqa: E402
+    InMemoryCredentialSecretStore,
+    ServiceCredentialRegistry,
+)
+from strathmark.v3.api.router import RequestContext  # noqa: E402
+from strathmark.v3.api.schemas import (  # noqa: E402
+    AssembleFieldRequest,
+    AssembleFieldResponse,
+    ExecuteCommandRequest,
+    ExecuteCommandResponse,
+    IssueAcknowledgmentRequest,
+    IssueAcknowledgmentResponse,
+    PrepareCardResponse,
+    ReceiptLookupResponse,
+    ResultRow,
+    SettlementRequest,
+    SettlementResponse,
+    StatusResponse,
+)
+from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore  # noqa: E402
+
+
+class Gateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any], RequestContext]] = []
+
+    async def prepare_card(self, payload, context):
+        self.calls.append(("prepare_card", payload, context))
+        return PrepareCardResponse(job_id="job:prepare-1", status="queued", authority_sequence=2)
+
+    async def execute_command(self, payload, context):
+        self.calls.append(("execute_command", payload, context))
+        result = '{"ok":true}'
+        return ExecuteCommandResponse(
+            command_id=str(context.command_id),
+            disposition="committed",
+            result_schema_version="strathmark-v3-command-result-v1",
+            result_digest=hashlib.sha256(result.encode()).hexdigest(),
+            canonical_result_json=result,
+            first_global_sequence=2,
+            last_global_sequence=2,
+            event_set_digest="e" * 64,
+        )
+
+    async def assemble_field(self, payload, context):
+        self.calls.append(("assemble_field", payload, context))
+        return AssembleFieldResponse(
+            receipt_id="receipt:field-1",
+            receipt_digest="a" * 64,
+            disposition="prepared",
+            canonical_receipt_json='{"schema_version":"strathmark-v3-field-receipt-v1"}',
+            authority_sequence=3,
+        )
+
+    async def lookup_receipt(self, payload, context):
+        self.calls.append(("lookup_receipt", payload, context))
+        return ReceiptLookupResponse(
+            found=True,
+            receipt_id="receipt:field-1",
+            receipt_digest="a" * 64,
+            canonical_receipt_json='{"schema_version":"strathmark-v3-field-receipt-v1"}',
+            authority_sequence=3,
+        )
+
+    async def acknowledge_issue(self, payload, context):
+        self.calls.append(("acknowledge_issue", payload, context))
+        return IssueAcknowledgmentResponse(
+            issue_batch_id="issue_batch:one",
+            receipt_ids=("receipt:field-1",),
+            authority_sequence=4,
+            recovery_marker_digest="b" * 64,
+        )
+
+    async def settle_result(self, payload, context):
+        self.calls.append(("settle_result", payload, context))
+        return SettlementResponse(
+            settlement_id="settlement:one",
+            receipt_id="receipt:field-1",
+            authority_sequence=5,
+            status="recorded",
+        )
+
+    async def status(self, context):
+        self.calls.append(("status", {}, context))
+        return StatusResponse(
+            service="ready",
+            authority_sequence=5,
+            engine_authority="v3",
+            open_tournament_count=0,
+        )
+
+
+@pytest.fixture
+def api(tmp_path: Path):
+    registry = ServiceCredentialRegistry(
+        SQLiteEventStore(tmp_path / "api.sqlite3"), InMemoryCredentialSecretStore()
+    )
+    issued = registry.bootstrap_offline(
+        principal_id="actor:tournament-manager",
+        listener_stopped=True,
+        credential="smv3.api-key.api-secret-1234567890123456",
+    )
+    gateway = Gateway()
+    app = create_v3_app(gateway=gateway, credentials=registry)
+    client = TestClient(app, raise_server_exceptions=False)
+    return client, gateway, registry, issued
+
+
+def _headers(credential: str, key: str = "heat-7") -> dict[str, str]:
+    return {"Authorization": f"Bearer {credential}", "Idempotency-Key": key}
+
+
+def _prepare_payload() -> dict[str, Any]:
+    return {
+        "schema_version": "strathmark-v3-card-preparation-request-v1",
+        "tournament_id": "tournament:show",
+        "round_id": "round:heats",
+        "field_id": "field:heat-7",
+        "competitor_id": "competitor:alice",
+        "source_revision": 3,
+        "target_context_digest": "a" * 64,
+        "deadline_ms": 5000,
+    }
+
+
+def _mtls_files(tmp_path: Path, hostname: str):
+    now = datetime.now(timezone.utc)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "STRATHMARK test CA")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    server_key = ec.generate_private_key(ec.SECP256R1())
+    server_cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)]))
+        .issuer_name(ca_name)
+        .public_key(server_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    cert = tmp_path / "server.pem"
+    key = tmp_path / "server-key.pem"
+    ca = tmp_path / "client-ca.pem"
+    cert.write_bytes(server_cert.public_bytes(serialization.Encoding.PEM))
+    key.write_bytes(
+        server_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    ca.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+    return cert, key, ca
+
+
+def test_health_is_public_but_every_trusted_route_authenticates_before_gateway(api) -> None:
+    client, gateway, registry, _issued = api
+    assert client.get("/v3/health").json() == {
+        "schema_version": "strathmark-v3-health-v1",
+        "status": "ok",
+    }
+
+    registry._authority.events = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("authentication must not query SQLite")
+    )
+    for header in (None, "Bearer malformed", "Bearer smv3.api-key.wrong-secret-1234567890"):
+        headers = {} if header is None else {"Authorization": header, "Idempotency-Key": "x"}
+        response = client.post("/v3/cards/prepare", headers=headers, json=_prepare_payload())
+        assert response.status_code == 401
+        assert response.json()["schema_version"] == "strathmark-v3-error-v1"
+    assert gateway.calls == []
+
+
+def test_authenticated_principal_and_idempotency_are_transport_derived(api) -> None:
+    client, gateway, _registry, issued = api
+    headers = {
+        **_headers(issued.credential),
+        "X-STRATHMARK-Upstream-Actor": "operator:judge-7",
+        "X-STRATHMARK-Upstream-Action": "marks.approve",
+        "X-STRATHMARK-Upstream-Trace": "manager-run-77",
+    }
+    response = client.post("/v3/cards/prepare", headers=headers, json=_prepare_payload())
+    assert response.status_code == 202
+    assert response.json()["job_id"] == "job:prepare-1"
+    operation, payload, context = gateway.calls[-1]
+    assert operation == "prepare_card"
+    assert payload["competitor_id"] == "competitor:alice"
+    assert str(context.principal.principal_id) == "actor:tournament-manager"
+    assert str(context.command_id).startswith("command:")
+    assert context.external_idempotency_key == "heat-7"
+    assert context.upstream_actor_id == "operator:judge-7"
+    assert context.upstream_action == "marks.approve"
+    assert context.upstream_trace_id == "manager-run-77"
+
+    # The same caller/key is stable; a different key is materially different.
+    first = context.command_id
+    client.post("/v3/cards/prepare", headers=_headers(issued.credential), json=_prepare_payload())
+    assert gateway.calls[-1][2].command_id == first
+    client.post(
+        "/v3/cards/prepare",
+        headers=_headers(issued.credential, "heat-7-retry-2"),
+        json=_prepare_payload(),
+    )
+    assert gateway.calls[-1][2].command_id != first
+
+
+def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -> None:
+    client, gateway, _registry, issued = api
+    for header, value in (
+        ("X-STRATHMARK-Upstream-Actor", "not namespaced"),
+        ("X-STRATHMARK-Upstream-Action", "UPPER"),
+        ("X-STRATHMARK-Upstream-Trace", "bad trace"),
+    ):
+        response = client.post(
+            "/v3/cards/prepare",
+            headers={**_headers(issued.credential), header: value},
+            json=_prepare_payload(),
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "upstream_audit_invalid"
+    assert gateway.calls == []
+
+    gateway.status = lambda _context: StatusResponse(
+        service="ready",
+        authority_sequence=1,
+        engine_authority="v3",
+        open_tournament_count=0,
+    )
+    assert client.get("/v3/status", headers=_headers(issued.credential)).status_code == 200
+
+    async def wrong_identity(_payload, _context):
+        result = '{"ok":true}'
+        return ExecuteCommandResponse(
+            command_id="command:wrong",
+            disposition="committed",
+            result_schema_version="strathmark-v3-command-result-v1",
+            result_digest=hashlib.sha256(result.encode()).hexdigest(),
+            canonical_result_json=result,
+            first_global_sequence=2,
+            last_global_sequence=2,
+            event_set_digest="e" * 64,
+        )
+
+    gateway.execute_command = wrong_identity
+    command = {
+        "schema_version": "strathmark-v3-command-execution-request-v1",
+        "command_kind": "suspend_live",
+        "target_aggregate": "weights:global",
+        "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
+        "payload_schema_version": "strathmark-v3-suspend-live-v1",
+        "canonical_payload_json": (
+            '{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+        ),
+        "payload_digest": hashlib.sha256(
+            b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+        ).hexdigest(),
+        "deadline_ms": 1000,
+    }
+    response = client.post(
+        "/v3/commands/execute", headers=_headers(issued.credential), json=command
+    )
+    assert response.status_code == 500
+    assert response.json()["code"] == "internal_service_error"
+
+    with pytest.raises(RuntimeError, match="principal"):
+        router_module._context(type("Request", (), {"state": object()})())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"actor_id": "actor:spoofed"},
+        {"source_revision": "3"},
+        {"unknown": 1},
+        {"deadline_ms": 0},
+        {"target_context_digest": "not-a-digest"},
+    ],
+)
+def test_unknown_coerced_spoofed_and_out_of_bounds_inputs_fail_before_gateway(
+    api, mutation
+) -> None:
+    client, gateway, _registry, issued = api
+    payload = _prepare_payload()
+    payload.update(mutation)
+    response = client.post("/v3/cards/prepare", headers=_headers(issued.credential), json=payload)
+    assert response.status_code == 422
+    assert response.json() == {
+        "schema_version": "strathmark-v3-error-v1",
+        "code": "request_validation_failed",
+        "message": "Request does not match the frozen V3 schema.",
+    }
+    assert gateway.calls == []
+
+
+def test_missing_idempotency_and_oversized_body_fail_before_gateway(api) -> None:
+    client, gateway, _registry, issued = api
+    response = client.post(
+        "/v3/cards/prepare",
+        headers={"Authorization": f"Bearer {issued.credential}"},
+        json=_prepare_payload(),
+    )
+    assert response.status_code == 400
+
+    response = client.post(
+        "/v3/cards/prepare",
+        headers=_headers(issued.credential, "unsafe key with spaces"),
+        json=_prepare_payload(),
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "idempotency_key_invalid"
+
+    response = client.post(
+        "/v3/cards/prepare",
+        headers={
+            **_headers(issued.credential),
+            "Content-Type": "application/json",
+            "Content-Length": "2000000",
+        },
+        content=b"{}",
+    )
+    assert response.status_code == 413
+    assert gateway.calls == []
+
+
+def test_media_types_routes_redirects_and_cache_policy_are_fail_closed(api) -> None:
+    client, gateway, _registry, issued = api
+    headers = _headers(issued.credential)
+    wrong_media = client.post(
+        "/v3/cards/prepare",
+        headers={**headers, "Content-Type": "text/plain"},
+        content=b"{}",
+    )
+    assert wrong_media.status_code == 415
+    assert wrong_media.json()["code"] == "media_type_rejected"
+    assert gateway.calls == []
+
+    duplicate = client.post(
+        "/v3/cards/prepare",
+        headers=[
+            ("Authorization", f"Bearer {issued.credential}"),
+            ("Authorization", "Bearer smv3.other-key.other-secret-123456789012"),
+            ("Idempotency-Key", "duplicate-header"),
+            ("Content-Type", "application/json"),
+        ],
+        content=b"{}",
+    )
+    assert duplicate.status_code == 400
+    assert duplicate.json()["code"] == "ambiguous_request_headers"
+
+    trailing = client.post(
+        "/v3/cards/prepare/", headers=headers, json=_prepare_payload(), follow_redirects=False
+    )
+    assert trailing.status_code == 404
+    assert "location" not in trailing.headers
+    assert trailing.json()["code"] == "route_not_found"
+
+    valid = client.post("/v3/cards/prepare", headers=headers, json=_prepare_payload())
+    assert valid.headers["cache-control"] == "no-store"
+    assert valid.headers["pragma"] == "no-cache"
+    assert valid.headers["x-content-type-options"] == "nosniff"
+
+
+def test_all_consumer_operations_map_to_separate_application_port_methods(api) -> None:
+    client, gateway, _registry, issued = api
+    headers = _headers(issued.credential)
+    cases = [
+        (
+            "/v3/commands/execute",
+            {
+                "schema_version": "strathmark-v3-command-execution-request-v1",
+                "command_kind": "suspend_live",
+                "target_aggregate": "weights:global",
+                "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
+                "payload_schema_version": "strathmark-v3-suspend-live-v1",
+                "canonical_payload_json": (
+                    '{"reason_code":"operator_hold",'
+                    '"schema_version":"strathmark-v3-suspend-live-v1"}'
+                ),
+                "payload_digest": hashlib.sha256(
+                    b'{"reason_code":"operator_hold",'
+                    b'"schema_version":"strathmark-v3-suspend-live-v1"}'
+                ).hexdigest(),
+                "deadline_ms": 1000,
+            },
+            "execute_command",
+        ),
+        (
+            "/v3/fields/assemble",
+            {
+                "schema_version": "strathmark-v3-field-assembly-request-v1",
+                "field_id": "field:heat-7",
+                "upstream_field_revision": 2,
+                "ordered_competitor_ids": ["competitor:alice", "competitor:bob"],
+                "deadline_ms": 1500,
+            },
+            "assemble_field",
+        ),
+        (
+            "/v3/receipts/lookup",
+            {
+                "schema_version": "strathmark-v3-receipt-lookup-request-v1",
+                "request_identity": "command:original-request",
+                "receipt_id": "receipt:field-1",
+                "deadline_ms": 250,
+            },
+            "lookup_receipt",
+        ),
+        (
+            "/v3/issues/acknowledge",
+            {
+                "schema_version": "strathmark-v3-issue-acknowledgment-request-v1",
+                "upstream_issue_id": "upstream_issue:show-7",
+                "receipt_bindings": [{"receipt_id": "receipt:field-1", "receipt_digest": "a" * 64}],
+                "issued_at_utc": "2026-08-25T12:00:00.000Z",
+                "deadline_ms": 1000,
+            },
+            "acknowledge_issue",
+        ),
+        (
+            "/v3/results/settle",
+            {
+                "schema_version": "strathmark-v3-settlement-request-v1",
+                "issue_batch_id": "issue_batch:one",
+                "receipt_id": "receipt:field-1",
+                "results": [
+                    {
+                        "competitor_id": "competitor:alice",
+                        "status": "completion",
+                        "raw_time_ms": 42321,
+                        "penalty_ms": None,
+                        "source_revision": 1,
+                    }
+                ],
+                "observed_at_utc": "2026-08-25T12:01:00.000Z",
+                "deadline_ms": 1000,
+            },
+            "settle_result",
+        ),
+    ]
+    for path, payload, expected in cases:
+        response = client.post(path, headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        assert gateway.calls[-1][0] == expected
+    assert client.get("/v3/status", headers=headers).status_code == 200
+    assert gateway.calls[-1][0] == "status"
+
+
+def test_rotation_and_revocation_routes_have_no_human_role_layer(api) -> None:
+    client, _gateway, registry, issued = api
+    rotated = client.post(
+        "/v3/credentials/rotate",
+        headers=_headers(issued.credential, "rotate-1"),
+        json={
+            "schema_version": "strathmark-v3-credential-rotation-request-v1",
+            "overlap_seconds": 120,
+        },
+    )
+    assert rotated.status_code == 200
+    assert rotated.headers["cache-control"] == "no-store"
+    next_credential = rotated.json()["credential"]
+    old_digest = issued.key_id_digest
+    revoked = client.post(
+        "/v3/credentials/revoke",
+        headers=_headers(next_credential, "revoke-1"),
+        json={
+            "schema_version": "strathmark-v3-credential-revocation-request-v1",
+            "key_id_digest": old_digest,
+        },
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+    assert registry.authenticate(f"Bearer {next_credential}").principal_id == (
+        registry.principal_id
+    )
+    historical = client.post(
+        "/v3/receipts/lookup",
+        headers=_headers(next_credential, "historical-recovery"),
+        json={
+            "schema_version": "strathmark-v3-receipt-lookup-request-v1",
+            "request_identity": "command:original-request",
+            "receipt_id": "receipt:field-1",
+            "deadline_ms": 250,
+        },
+    )
+    assert historical.status_code == 200
+    assert historical.json()["receipt_id"] == "receipt:field-1"
+
+
+def test_credential_write_retries_are_exact_and_changed_retries_conflict(api) -> None:
+    client, _gateway, registry, issued = api
+    payload = {
+        "schema_version": "strathmark-v3-credential-rotation-request-v1",
+        "overlap_seconds": 120,
+    }
+    first = client.post(
+        "/v3/credentials/rotate",
+        headers=_headers(issued.credential, "rotation-exact-retry"),
+        json=payload,
+    )
+    second = client.post(
+        "/v3/credentials/rotate",
+        headers=_headers(issued.credential, "rotation-exact-retry"),
+        json=payload,
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert registry._authority.event_count() == 2
+
+    changed = client.post(
+        "/v3/credentials/rotate",
+        headers=_headers(issued.credential, "rotation-exact-retry"),
+        json={**payload, "overlap_seconds": 121},
+    )
+    assert changed.status_code == 409
+    assert registry._authority.event_count() == 2
+
+    next_credential = first.json()["credential"]
+    revoke_payload = {
+        "schema_version": "strathmark-v3-credential-revocation-request-v1",
+        "key_id_digest": issued.key_id_digest,
+    }
+    revoke_first = client.post(
+        "/v3/credentials/revoke",
+        headers=_headers(next_credential, "revocation-exact-retry"),
+        json=revoke_payload,
+    )
+    revoke_second = client.post(
+        "/v3/credentials/revoke",
+        headers=_headers(next_credential, "revocation-exact-retry"),
+        json=revoke_payload,
+    )
+    assert revoke_first.status_code == revoke_second.status_code == 200
+    assert registry._authority.event_count() == 3
+
+
+def test_listener_policy_defaults_loopback_and_nonloopback_requires_complete_mtls(
+    tmp_path: Path,
+) -> None:
+    assert ListenerSecurityPolicy().is_loopback is True
+    with pytest.raises(ValueError, match="mutual TLS"):
+        ListenerSecurityPolicy(host="10.0.0.5")
+
+    cert, key, ca = _mtls_files(tmp_path, "strathmark.venue.internal")
+    policy = ListenerSecurityPolicy(
+        host="10.0.0.5",
+        server_hostname="strathmark.venue.internal",
+        tls_certificate=cert,
+        tls_private_key=key,
+        pinned_client_ca=ca,
+    )
+    assert policy.is_loopback is False
+    assert policy.uvicorn_ssl_kwargs["ssl_cert_reqs"] != 0
+    assert len(policy.pinned_client_ca_digest) == 64
+    scope = {
+        "extensions": {
+            "strathmark.verified_client_certificate": {
+                "verified": True,
+                "server_hostname": "strathmark.venue.internal",
+                "principal_id": "actor:tournament-manager",
+                "client_ca_digest": policy.pinned_client_ca_digest,
+            }
+        }
+    }
+    assert policy.certificate_principal(scope) == "actor:tournament-manager"
+    scope["extensions"]["strathmark.verified_client_certificate"]["client_ca_digest"] = "0" * 64
+    with pytest.raises(Exception, match="CA binding"):
+        policy.certificate_principal(scope)
+    with pytest.raises(ValueError, match="hostname"):
+        ListenerSecurityPolicy(
+            host="10.0.0.5",
+            server_hostname="wrong.venue.internal",
+            tls_certificate=cert,
+            tls_private_key=key,
+            pinned_client_ca=ca,
+        )
+    with pytest.raises(ValueError, match="proxy"):
+        ListenerSecurityPolicy(trust_proxy_headers=True)
+    with pytest.raises(ValueError, match="redirect"):
+        ListenerSecurityPolicy(follow_redirects=True)
+
+
+def test_listener_and_app_configuration_reject_invalid_bounds_and_certificate_scope(
+    api, tmp_path: Path
+) -> None:
+    _client, gateway, registry, _issued = api
+    localhost = ListenerSecurityPolicy(host="localhost")
+    assert localhost.is_loopback is True
+    assert localhost.uvicorn_ssl_kwargs == {}
+    with pytest.raises(ValueError, match="pinned client CA"):
+        _ = localhost.pinned_client_ca_digest
+    for arguments in ({"host": ""}, {"port": 0}, {"port": True}):
+        with pytest.raises(ValueError):
+            ListenerSecurityPolicy(**arguments)
+    for arguments in (
+        {"credentials": object()},
+        {"credentials": registry, "max_body_bytes": 1},
+        {"credentials": registry, "max_inflight": 0},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            create_v3_app(gateway=gateway, **arguments)  # type: ignore[arg-type]
+
+    cert, key, ca = _mtls_files(tmp_path, "strathmark.venue.internal")
+    policy = ListenerSecurityPolicy(
+        host="service.venue.internal",
+        server_hostname="strathmark.venue.internal",
+        tls_certificate=cert,
+        tls_private_key=key,
+        pinned_client_ca=ca,
+    )
+    assert policy.is_loopback is False
+    with pytest.raises(Exception, match="certificate"):
+        policy.certificate_principal({})
+    with pytest.raises(Exception, match="hostname"):
+        policy.certificate_principal(
+            {
+                "extensions": {
+                    "strathmark.verified_client_certificate": {
+                        "verified": True,
+                        "server_hostname": "wrong.example",
+                        "principal_id": "actor:manager",
+                        "client_ca_digest": policy.pinned_client_ca_digest,
+                    }
+                }
+            }
+        )
+    with pytest.raises(Exception, match="principal"):
+        policy.certificate_principal(
+            {
+                "extensions": {
+                    "strathmark.verified_client_certificate": {
+                        "verified": True,
+                        "server_hostname": "strathmark.venue.internal",
+                        "principal_id": 7,
+                        "client_ca_digest": policy.pinned_client_ca_digest,
+                    }
+                }
+            }
+        )
+
+
+def test_nonloopback_rejects_missing_certificate_wrong_host_and_proxy_before_body(
+    api, tmp_path: Path
+) -> None:
+    _client, gateway, registry, issued = api
+    cert, key, ca = _mtls_files(tmp_path, "strathmark.venue.internal")
+    policy = ListenerSecurityPolicy(
+        host="10.0.0.5",
+        server_hostname="strathmark.venue.internal",
+        tls_certificate=cert,
+        tls_private_key=key,
+        pinned_client_ca=ca,
+    )
+    remote = TestClient(
+        create_v3_app(gateway=gateway, credentials=registry, listener=policy),
+        base_url="https://strathmark.venue.internal",
+        raise_server_exceptions=False,
+    )
+    response = remote.post(
+        "/v3/cards/prepare", headers=_headers(issued.credential), json=_prepare_payload()
+    )
+    assert response.status_code == 401
+    assert response.json()["code"] == "authentication_failed"
+
+    wrong_host = TestClient(
+        create_v3_app(gateway=gateway, credentials=registry, listener=policy),
+        base_url="https://wrong.venue.internal",
+        raise_server_exceptions=False,
+    )
+    response = wrong_host.post(
+        "/v3/cards/prepare", headers=_headers(issued.credential), json=_prepare_payload()
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "host_identity_rejected"
+
+    response = remote.post(
+        "/v3/cards/prepare",
+        headers={**_headers(issued.credential), "Forwarded": "host=attacker.example"},
+        json=_prepare_payload(),
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "proxy_identity_rejected"
+    assert gateway.calls == []
+
+
+def test_deadline_and_application_contract_failures_use_closed_errors(api) -> None:
+    client, gateway, _registry, issued = api
+
+    async def slow(_payload, _context):
+        await asyncio.sleep(0.1)
+        raise AssertionError("cancelled operation must not finish")
+
+    gateway.prepare_card = slow
+    payload = _prepare_payload()
+    payload["deadline_ms"] = 25
+    response = client.post("/v3/cards/prepare", headers=_headers(issued.credential), json=payload)
+    assert response.status_code == 504
+    assert response.json() == {
+        "schema_version": "strathmark-v3-error-v1",
+        "code": "operation_deadline_exceeded",
+        "message": "V3 operation deadline expired.",
+    }
+
+    async def broken(_payload, _context):
+        return {"unexpected": True}
+
+    gateway.prepare_card = broken
+    response = client.post(
+        "/v3/cards/prepare", headers=_headers(issued.credential), json=_prepare_payload()
+    )
+    assert response.status_code == 500
+    assert response.json()["code"] == "application_contract_violation"
+
+    async def exploded(_payload, _context):
+        raise ValueError("private failure detail")
+
+    gateway.prepare_card = exploded
+    response = client.post(
+        "/v3/cards/prepare", headers=_headers(issued.credential), json=_prepare_payload()
+    )
+    assert response.status_code == 500
+    assert response.json()["code"] == "internal_service_error"
+    assert "private failure" not in response.text
+
+
+def test_method_content_encoding_and_reserved_capacity_errors_are_closed(api) -> None:
+    client, gateway, registry, issued = api
+    response = client.request(
+        "GET", "/v3/cards/prepare", headers={"Authorization": f"Bearer {issued.credential}"}
+    )
+    assert response.status_code == 405
+    assert response.json()["code"] == "method_not_allowed"
+    response = client.post(
+        "/v3/cards/prepare",
+        headers={
+            **_headers(issued.credential),
+            "Content-Encoding": "gzip",
+            "Content-Type": "application/json",
+        },
+        content=b"not-read",
+    )
+    assert response.status_code == 415
+    assert response.json()["code"] == "content_encoding_rejected"
+    assert gateway.calls == []
+
+    downstream_called = False
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal downstream_called
+        downstream_called = True
+
+    middleware = AuthenticatedBoundedMiddleware(
+        downstream,
+        credentials=registry,
+        listener=ListenerSecurityPolicy(),
+        max_body_bytes=1024,
+        max_inflight=1,
+    )
+
+    async def exercise_capacity():
+        assert await middleware._gate.enter() is True
+        messages = []
+
+        async def forbidden_receive():
+            raise AssertionError("capacity rejection must precede body receive")
+
+        async def send(message):
+            messages.append(message)
+
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/v3/cards/prepare",
+                "headers": [
+                    (b"authorization", f"Bearer {issued.credential}".encode()),
+                    (b"content-type", b"application/json"),
+                ],
+            },
+            forbidden_receive,
+            send,
+        )
+        await middleware._gate.leave()
+        return messages
+
+    messages = asyncio.run(exercise_capacity())
+    assert messages[0]["status"] == 503
+    assert downstream_called is False
+
+
+def test_low_level_stream_failures_reject_before_application_work(api) -> None:
+    _client, _gateway, registry, issued = api
+    calls: list[str] = []
+
+    async def downstream(scope, receive, send):
+        calls.append(str(scope["type"]))
+        if scope["type"] == "http":
+            await receive()
+            await receive()
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+    middleware = AuthenticatedBoundedMiddleware(
+        downstream,
+        credentials=registry,
+        listener=ListenerSecurityPolicy(),
+        max_body_bytes=4,
+        max_inflight=1,
+    )
+    base_scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v3/cards/prepare",
+        "headers": [
+            (b"authorization", f"Bearer {issued.credential}".encode()),
+            (b"content-type", b"application/json"),
+        ],
+    }
+
+    async def run_case(scope, incoming):
+        messages = []
+        queue = list(incoming)
+
+        async def receive():
+            return queue.pop(0)
+
+        async def send(message):
+            messages.append(message)
+
+        await middleware(scope, receive, send)
+        return messages
+
+    invalid_length = {**base_scope, "headers": [*base_scope["headers"], (b"content-length", b"x")]}
+    assert asyncio.run(run_case(invalid_length, []))[0]["status"] == 400
+    assert (
+        asyncio.run(run_case(base_scope, [{"type": "websocket.receive", "bytes": b"x"}]))[0][
+            "status"
+        ]
+        == 400
+    )
+    assert (
+        asyncio.run(
+            run_case(
+                base_scope,
+                [{"type": "http.request", "body": b"12345", "more_body": False}],
+            )
+        )[0]["status"]
+        == 413
+    )
+    assert asyncio.run(run_case(base_scope, [{"type": "http.disconnect"}])) == []
+    state_invalid = {**base_scope, "state": object()}
+    assert asyncio.run(run_case(state_invalid, []))[0]["status"] == 500
+    assert (
+        asyncio.run(
+            run_case(
+                base_scope,
+                [{"type": "http.request", "body": b"{}", "more_body": False}],
+            )
+        )[0]["status"]
+        == 204
+    )
+
+    async def non_http():
+        async def receive():
+            return {"type": "lifespan.startup"}
+
+        async def send(_message):
+            return None
+
+        await middleware({"type": "lifespan"}, receive, send)
+
+    asyncio.run(non_http())
+    assert calls == ["http", "lifespan"]
+
+
+def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_values() -> None:
+    canonical_payload = (
+        '{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+    )
+    command = {
+        "schema_version": "strathmark-v3-command-execution-request-v1",
+        "command_kind": "suspend_live",
+        "target_aggregate": "weights:global",
+        "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
+        "payload_schema_version": "strathmark-v3-suspend-live-v1",
+        "canonical_payload_json": canonical_payload,
+        "payload_digest": hashlib.sha256(canonical_payload.encode()).hexdigest(),
+        "deadline_ms": 1000,
+    }
+    ExecuteCommandRequest.model_validate(command)
+    invalid_commands = [
+        {**command, "canonical_payload_json": "{"},
+        {**command, "canonical_payload_json": '{"schema_version":"wrong"}'},
+        {**command, "payload_digest": "0" * 64},
+        {
+            **command,
+            "expected_versions": [
+                {"aggregate_id": "weights:z", "version": 0},
+                {"aggregate_id": "weights:a", "version": 0},
+            ],
+        },
+        {
+            **command,
+            "expected_versions": [{"aggregate_id": "weights:other", "version": 0}],
+        },
+    ]
+    for value in invalid_commands:
+        with pytest.raises(Exception):
+            ExecuteCommandRequest.model_validate(value)
+
+    canonical_result = '{"ok":true}'
+    result = {
+        "command_id": "command:one",
+        "disposition": "committed",
+        "result_schema_version": "strathmark-v3-command-result-v1",
+        "result_digest": hashlib.sha256(canonical_result.encode()).hexdigest(),
+        "canonical_result_json": canonical_result,
+        "first_global_sequence": 2,
+        "last_global_sequence": 2,
+        "event_set_digest": "a" * 64,
+    }
+    ExecuteCommandResponse(**result)
+    for value in (
+        {**result, "canonical_result_json": "{"},
+        {**result, "result_digest": "0" * 64},
+        {**result, "first_global_sequence": 3, "last_global_sequence": 2},
+    ):
+        with pytest.raises(Exception):
+            ExecuteCommandResponse(**value)
+
+    with pytest.raises(Exception, match="unique"):
+        AssembleFieldRequest.model_validate(
+            {
+                "schema_version": "strathmark-v3-field-assembly-request-v1",
+                "field_id": "field:one",
+                "upstream_field_revision": 1,
+                "ordered_competitor_ids": ["competitor:a", "competitor:a"],
+                "deadline_ms": 100,
+            }
+        )
+    with pytest.raises(Exception, match="complete"):
+        from strathmark.v3.api.schemas import ReceiptLookupResponse
+
+        ReceiptLookupResponse(found=True, authority_sequence=1)
+    with pytest.raises(Exception, match="repeat"):
+        IssueAcknowledgmentRequest.model_validate(
+            {
+                "schema_version": "strathmark-v3-issue-acknowledgment-request-v1",
+                "upstream_issue_id": "upstream_issue:one",
+                "receipt_bindings": [
+                    {"receipt_id": "receipt:one", "receipt_digest": "a" * 64},
+                    {"receipt_id": "receipt:one", "receipt_digest": "a" * 64},
+                ],
+                "issued_at_utc": "2026-08-25T12:00:00.000Z",
+                "deadline_ms": 100,
+            }
+        )
+    for row in (
+        {"status": "completion", "raw_time_ms": None, "penalty_ms": None},
+        {"status": "penalty", "raw_time_ms": 10, "penalty_ms": None},
+        {"status": "dnf", "raw_time_ms": 10, "penalty_ms": None},
+    ):
+        with pytest.raises(Exception):
+            ResultRow(
+                competitor_id="competitor:a",
+                source_revision=1,
+                **row,
+            )
+    with pytest.raises(Exception, match="repeat"):
+        SettlementRequest.model_validate(
+            {
+                "schema_version": "strathmark-v3-settlement-request-v1",
+                "issue_batch_id": "issue_batch:one",
+                "receipt_id": "receipt:one",
+                "results": [
+                    {
+                        "competitor_id": "competitor:a",
+                        "status": "completion",
+                        "raw_time_ms": 10,
+                        "penalty_ms": None,
+                        "source_revision": 1,
+                    },
+                    {
+                        "competitor_id": "competitor:a",
+                        "status": "completion",
+                        "raw_time_ms": 11,
+                        "penalty_ms": None,
+                        "source_revision": 2,
+                    },
+                ],
+                "observed_at_utc": "2026-08-25T12:00:00.000Z",
+                "deadline_ms": 100,
+            }
+        )

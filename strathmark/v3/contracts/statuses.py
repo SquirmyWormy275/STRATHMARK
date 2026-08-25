@@ -45,6 +45,7 @@ class LifecycleAggregateKind(str, Enum):
     APPROVAL_DECISION = "approval_decision"
     AUDIT_GENERATION = "audit_generation"
     MONITORING = "monitoring"
+    SERVICE_CREDENTIAL = "service_credential"
 
 
 class LifecycleStatus(str, Enum):
@@ -88,6 +89,7 @@ class LifecycleStatus(str, Enum):
     SCORE_REVERSED = "score_reversed"
     WEIGHTS_CURRENT = "weights_current"
     APPROVAL_DECISION_RECORDED = "approval_decision_recorded"
+    SERVICE_CREDENTIAL_ACTIVE = "service_credential_active"
 
 
 _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
@@ -147,6 +149,9 @@ _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
     LifecycleStatus.SCORE_REVERSED: frozenset(),
     LifecycleStatus.WEIGHTS_CURRENT: frozenset({LifecycleStatus.WEIGHTS_CURRENT}),
     LifecycleStatus.APPROVAL_DECISION_RECORDED: frozenset(),
+    LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE: frozenset(
+        {LifecycleStatus.SERVICE_CREDENTIAL_ACTIVE}
+    ),
 }
 
 

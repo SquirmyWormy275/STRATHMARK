@@ -82,6 +82,10 @@ class CommandKind(str, Enum):
     MARK_JOB_STALE = "mark_job_stale"
     RECORD_PERMANENT_JOB_FAILURE = "record_permanent_job_failure"
     CANCEL_JOB = "cancel_job"
+    BOOTSTRAP_SERVICE_CREDENTIAL = "bootstrap_service_credential"
+    ROTATE_SERVICE_CREDENTIAL = "rotate_service_credential"
+    REVOKE_SERVICE_CREDENTIAL = "revoke_service_credential"
+    RECOVER_SERVICE_CREDENTIAL = "recover_service_credential"
 
 
 @dataclass(frozen=True, slots=True)
