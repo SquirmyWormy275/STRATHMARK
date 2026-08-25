@@ -1,0 +1,17 @@
+{
+  "schema_version": "strathmark-v3-release-attestation-envelope-v1",
+  "signer_identity": {
+    "key_class": "development_ephemeral",
+    "key_id": "integrity-key:v3-release-rehearsal",
+    "provider": "cryptography_ephemeral_p256_sha256",
+    "public_key_der_b64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEYQveSJnHVneIginV3Kc43i8Qjdb+Az/8cmJqaS+HKFXPjzKxv/cMlDwiXJsZp35yU33W3tIjLa/0NHsYjuaQdA=="
+  },
+  "attestation": {
+    "schema_version": "strathmark-v3-signed-manifest-v1",
+    "kind": "v3_release_attestation",
+    "body_json": "{\"algorithm\":\"ecdsa-p256-sha256\",\"created_at\":\"2026-08-25T20:00:00.000Z\",\"key_id\":\"integrity-key:v3-release-rehearsal\",\"kind\":\"v3_release_attestation\",\"payload\":{\"evidence\":[{\"artifact_digest\":\"b81fe86b6cea03463d30777740f1a7d0c121c0304898e1dd0c8046e78276515e\",\"name\":\"installed_artifact\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"306c60458e827977e57753bf9ba78445e95fc25329735fe44ef2406b3644e396\",\"name\":\"dependency_lock\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"d38d1cdb45548cab018d30160c772bdf2da98fc1dd0b58ec063c7e3827094a54\",\"name\":\"consumer_contract\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"e21dd154ecde566530694fb62c5062612b97e756be93c8293816e277e2eae62b\",\"name\":\"full_causal_replay\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"9f56576c8d7db637d9285a4e68220a98c44fddafec19d929af89cfaac4b77f71\",\"name\":\"manipulation_equity_slices\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"ce286b02c373dc834e1d102dc76762e8ec881e55f6717c2bb7b2947c8c70083d\",\"name\":\"provider_failure_matrix\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"ab94d1107f721d49a4c9a584d68d8911b9dbd6d34d291c21949e58fd5cc45476\",\"name\":\"race_day_recovery\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"0f36d1fb0944a0467c7415dd0e5ad9f95d1551639d1d1950e52d75cc5d6d53d3\",\"name\":\"windows_capacity\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"acffedf35bfc65e25118b44203b456cc5a92574dfb06f2f826d05571b6b81507\",\"name\":\"thermal_memory_storage_stress\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"78c0644ba8516d2678257dfd5d2710b344028b2bf13a48dc4b60cce10d2406c3\",\"name\":\"database_backup_restore\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"},{\"artifact_digest\":\"e6ade726f4bcc7b3e482f82dd2ad2e3a82f7a9068eee5da883bb4154693827b4\",\"name\":\"bundle_model_integrity\",\"observed_at\":\"2026-08-25T20:00:00.000Z\",\"result\":\"passed\"}],\"platform\":\"windows-11-x86_64-python-3.13\",\"schema_version\":\"strathmark-v3-release-attestation-v1\",\"source_commit\":\"2e696d8\",\"tier\":\"rehearsal\"},\"schema_version\":\"strathmark-v3-integrity-body-v1\"}",
+    "body_digest": "04bae63519563c9f2a9bc812e9d1c432d6495570529fd766bd514b7f25c3c8b9",
+    "key_id": "integrity-key:v3-release-rehearsal",
+    "signature_der_b64": "MEUCIQCFkYueRS4Q3gOs75yCH0Lay5qcS7zt0vjalqO/sHigywIgZrH4aTVElxu+2XWuflOoPymr5wy/wdLdNbMdRsq7UqU="
+  }
+}

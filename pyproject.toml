@@ -95,6 +95,9 @@ packages = ["strathmark"]
 "strathmark/v3/native/strathmark_v3_optimizer_kernel.dll" = "strathmark/v3/native/strathmark_v3_optimizer_kernel.dll"
 "strathmark/v3/contracts/v3_consumer.openapi.json" = "strathmark/v3/contracts/v3_consumer.openapi.json"
 "strathmark/v3/contracts/v3_consumer.openapi.sha256" = "strathmark/v3/contracts/v3_consumer.openapi.sha256"
+"benchmarks/v3/windows_capacity_manifest.json" = "strathmark/v3/contracts/windows_capacity_manifest.json"
+"benchmarks/v3/v3_release_attestation.json" = "strathmark/v3/contracts/v3_release_attestation.json"
+"requirements/v3-release.lock" = "strathmark/v3/contracts/v3-release.lock"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

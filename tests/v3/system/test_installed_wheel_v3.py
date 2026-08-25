@@ -33,6 +33,9 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
         names = set(archive.namelist())
     assert "strathmark/v3/contracts/v3_consumer.openapi.json" in names
     assert "strathmark/v3/contracts/v3_consumer.openapi.sha256" in names
+    assert "strathmark/v3/contracts/windows_capacity_manifest.json" in names
+    assert "strathmark/v3/contracts/v3_release_attestation.json" in names
+    assert "strathmark/v3/contracts/v3-release.lock" in names
     assert "strathmark/contracts/shadow_consumer_v1.openapi.json" in names
 
     installed_root = tmp_path / "installed"
@@ -68,6 +71,25 @@ from strathmark.v3.consumer_contract import (
     v3_consumer_contract_digest,
 )
 from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+from strathmark.v3.application.cutover import (
+    verify_release_attestation,
+    verify_windows_capacity_manifest,
+)
+from strathmark.v3.application.operations import (
+    FieldDisposition,
+    RaceDayField,
+    RoundStage,
+    verify_race_day_replay,
+)
+from importlib.resources import files
+import json
+import re
+from importlib.metadata import version
+from strathmark.v3.infrastructure.integrity import (
+    IntegrityKeyIdentity,
+    IntegrityTrustStore,
+    SignedManifest,
+)
 v3 = load_v3_consumer_contract()
 assert set(v3["paths"]) == EXPECTED_V3_CONSUMER_PATHS
 assert all(path.startswith("/v3/") for path in v3["paths"])
@@ -81,6 +103,53 @@ registry.bootstrap_offline(
 )
 app = create_v3_app(gateway=object(), credentials=registry)
 assert app.openapi() == v3
+capacity = json.loads(
+    files("strathmark.v3.contracts").joinpath("windows_capacity_manifest.json").read_text("utf-8")
+)
+assert verify_windows_capacity_manifest(capacity)["candidate_tier"] == "rehearsal"
+release_wrapper = json.loads(
+    files("strathmark.v3.contracts").joinpath("v3_release_attestation.json").read_text("utf-8")
+)
+release_identity = IntegrityKeyIdentity.from_dict(release_wrapper["signer_identity"])
+release_payload = verify_release_attestation(
+    SignedManifest.from_dict(release_wrapper["attestation"]),
+    trust_store=IntegrityTrustStore((release_identity,)),
+)
+assert release_payload["tier"] == "rehearsal"
+lock_lines = files("strathmark.v3.contracts").joinpath("v3-release.lock").read_text("utf-8").splitlines()
+assert "cryptography==46.0.5" in lock_lines
+assert "fastapi==0.135.1" in lock_lines
+for locked in lock_lines:
+    locked = locked.strip()
+    if not locked or locked.startswith("#"):
+        continue
+    name, expected = locked.split("==")
+    assert re.sub(r"[-_.]+", "-", name).lower()
+    assert version(name) == expected
+field = lambda name, stage, epoch, entrants, winner, offset, call_delay=0: RaceDayField(
+    name,
+    stage,
+    epoch,
+    entrants,
+    tuple((entrant, index + 3) for index, entrant in enumerate(entrants)),
+    (winner, *(entrant for entrant in entrants if entrant != winner)),
+    winner,
+    1000,
+    100,
+    FieldDisposition.PREDICTIVE,
+    "a" * 64,
+    offset,
+    call_delay,
+)
+report = verify_race_day_replay((
+    field("field:h1", RoundStage.HEAT, 1, ("c:a", "c:b"), "c:a", 0),
+    field("field:h2", RoundStage.HEAT, 1, ("c:c", "c:d"), "c:c", 600000),
+    field("field:q", RoundStage.QUARTER_FINAL, 2, ("c:a", "c:c"), "c:c", 900000),
+    field("field:s", RoundStage.SEMI_FINAL, 3, ("c:c", "c:e"), "c:e", 1200000),
+    field("field:d", RoundStage.DIVISIONAL_FINAL, 4, ("c:e", "c:f"), "c:e", 1500000),
+    field("field:g", RoundStage.GRAND_FINAL, 5, ("c:e", "c:g"), "c:g", 1800000, 300000),
+))
+assert report.field_count == 6
 print("installed-v3-contract-ok")
 """
     installed = subprocess.run(
