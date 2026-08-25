@@ -37,6 +37,7 @@ from strathmark.v3.application.job_ports import (
     ReadinessDependencySnapshot,
     ReadinessProbePort,
     RetryPolicy,
+    RollingDerivationPending,
     RollingRestartExpectedHead,
     RollingRestartReceipt,
     RollingRestartSuffixStatus,
@@ -131,7 +132,9 @@ class JobRequest:
             raise DurableJobError("idempotency key must be typed")
         if not isinstance(self.job_kind, JobKind):
             raise DurableJobError("job kind must be a closed JobKind")
-        if not isinstance(self.lane, JobLane) or not isinstance(self.priority, JobPriority):
+        if not isinstance(self.lane, JobLane) or not isinstance(
+            self.priority, JobPriority
+        ):
             raise DurableJobError("job lane and priority must be typed")
         if not isinstance(self.resource_class, JobResourceClass):
             raise DurableJobError("job resource class must be typed")
@@ -148,7 +151,10 @@ class JobRequest:
             decoded_use = CapacityUse.from_dict(capacity_use)
         except (TypeError, ValueError) as exc:
             raise DurableJobError("capacity use is invalid") from exc
-        if canonical_bytes(decoded_use.to_dict()).decode("utf-8") != self.capacity_use_json:
+        if (
+            canonical_bytes(decoded_use.to_dict()).decode("utf-8")
+            != self.capacity_use_json
+        ):
             raise DurableJobError("capacity use must be canonical JSON")
         try:
             payload = json.loads(self.payload_json)
@@ -156,8 +162,13 @@ class JobRequest:
             raise DurableJobError("job payload must be canonical JSON") from exc
         if not isinstance(payload, dict):
             raise DurableJobError("job payload must be a JSON object")
-        encoded = canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES).decode("utf-8")
-        if encoded != self.payload_json or canonical_digest(payload) != self.payload_digest:
+        encoded = canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES).decode(
+            "utf-8"
+        )
+        if (
+            encoded != self.payload_json
+            or canonical_digest(payload) != self.payload_digest
+        ):
             raise DurableJobError("job payload bytes or digest differ")
         _digest(self.evidence_digest, "evidence digest")
         _digest(self.bundle_digest, "bundle digest")
@@ -166,8 +177,12 @@ class JobRequest:
         not_before = require_utc_milliseconds(self.not_before_at)
         deadline = require_utc_milliseconds(self.hard_deadline_at)
         if not created <= not_before < deadline:
-            raise DurableJobError("job timing must satisfy created <= not-before < deadline")
-        if isinstance(self.max_attempts, bool) or not isinstance(self.max_attempts, int):
+            raise DurableJobError(
+                "job timing must satisfy created <= not-before < deadline"
+            )
+        if isinstance(self.max_attempts, bool) or not isinstance(
+            self.max_attempts, int
+        ):
             raise DurableJobError("max attempts must be an integer")
         if not 1 <= self.max_attempts <= 32:
             raise DurableJobError("max attempts must be between 1 and 32")
@@ -194,7 +209,9 @@ class JobRequest:
     ) -> JobRequest:
         if not isinstance(payload, Mapping):
             raise DurableJobError("job payload must be a mapping")
-        if not isinstance(job_kind, JobKind) or not isinstance(capacity_use, CapacityUse):
+        if not isinstance(job_kind, JobKind) or not isinstance(
+            capacity_use, CapacityUse
+        ):
             raise DurableJobError("job creation requires typed kind and capacity use")
         encoded = canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES)
         return cls(
@@ -326,11 +343,15 @@ class DurableJobRepository:
         trust_store: IntegrityTrustStore,
         restart_trust: RollingRestartTrust | None = None,
     ) -> None:
-        if isinstance(database_path, bool) or not isinstance(database_path, (Path, str)):
+        if isinstance(database_path, bool) or not isinstance(
+            database_path, (Path, str)
+        ):
             raise DurableJobError("database path must be a filesystem path")
         if not isinstance(capacity, CapacityManifest):
             raise DurableJobError("durable jobs require a CapacityManifest")
-        if not callable(getattr(signer, "sign", None)) or not hasattr(signer, "identity"):
+        if not callable(getattr(signer, "sign", None)) or not hasattr(
+            signer, "identity"
+        ):
             raise DurableJobError("durable jobs require a typed external signer")
         if not isinstance(trust_store, IntegrityTrustStore):
             raise DurableJobError("durable jobs require a typed external trust store")
@@ -340,7 +361,9 @@ class DurableJobRepository:
         self._signer = signer
         self._trust_store = trust_store
         self._restart_trust = (
-            RollingRestartTrust.local_corruption_only() if restart_trust is None else restart_trust
+            RollingRestartTrust.local_corruption_only()
+            if restart_trust is None
+            else restart_trust
         )
         if not isinstance(self._restart_trust, RollingRestartTrust):
             raise DurableJobError("durable jobs require typed rolling restart trust")
@@ -360,7 +383,9 @@ class DurableJobRepository:
             ).fetchone()
             if checkpoint is None:
                 self._verify_connection(connection)
-                self._verify_rolling_storage_connection(connection, allow_closed_current=True)
+                self._verify_rolling_storage_connection(
+                    connection, allow_closed_current=True
+                )
                 event_tip = connection.execute(
                     "SELECT global_sequence,event_digest FROM v3_events "
                     "ORDER BY global_sequence DESC LIMIT 1"
@@ -429,11 +454,15 @@ class DurableJobRepository:
                         raise DurableJobError(
                             "rolling projection cursor cutover is required"
                         ) from exc
-                    self._append_rolling_restart_checkpoint(connection, "1970-01-01T00:00:00.000Z")
+                    self._append_rolling_restart_checkpoint(
+                        connection, "1970-01-01T00:00:00.000Z"
+                    )
             else:
                 with immediate_transaction(connection):
                     self._verify_connection(connection)
-                    self._verify_rolling_restart_connection(connection, repair_current=True)
+                    self._verify_rolling_restart_connection(
+                        connection, repair_current=True
+                    )
         self.rebuild_rolling_epoch_closures()
 
     @classmethod
@@ -455,7 +484,9 @@ class DurableJobRepository:
         instance._restart_trust = RollingRestartTrust.local_corruption_only()
         if not isinstance(capacity, CapacityManifest):
             raise DurableJobError("durable jobs require a CapacityManifest")
-        if not callable(getattr(signer, "sign", None)) or not hasattr(signer, "identity"):
+        if not callable(getattr(signer, "sign", None)) or not hasattr(
+            signer, "identity"
+        ):
             raise DurableJobError("durable jobs require a typed external signer")
         if not isinstance(trust_store, IntegrityTrustStore):
             raise DurableJobError("durable jobs require a typed external trust store")
@@ -526,7 +557,9 @@ class DurableJobRepository:
             )
             with immediate_transaction(connection):
                 if instance._legacy_job_cutover_guard(connection) != guard:
-                    raise DurableJobError("job spec cutover authority changed before commit")
+                    raise DurableJobError(
+                        "job spec cutover authority changed before commit"
+                    )
                 for record, value, manifest in prepared:
                     connection.execute(
                         "INSERT INTO v3_job_specs VALUES (?,?,?,?,?,?)",
@@ -554,7 +587,9 @@ class DurableJobRepository:
                 )
         return len(prepared)
 
-    def enqueue(self, request: JobRequest, *, maintenance_suspended: bool = False) -> JobRecord:
+    def enqueue(
+        self, request: JobRequest, *, maintenance_suspended: bool = False
+    ) -> JobRecord:
         if not isinstance(request, JobRequest):
             raise DurableJobError("enqueue requires a JobRequest")
         if not isinstance(maintenance_suspended, bool):
@@ -572,7 +607,9 @@ class DurableJobRepository:
                         is not None
                     ):
                         raise JobAdmissionRejected("rolling_epoch_closed")
-                if payload.get("schema_version") == ("strathmark-v3-weight-only-recombination-v1"):
+                if payload.get("schema_version") == (
+                    "strathmark-v3-weight-only-recombination-v1"
+                ):
                     self._verify_recombination_context(connection, payload)
                 existing = connection.execute(
                     "SELECT * FROM v3_jobs WHERE idempotency_key=?",
@@ -581,7 +618,9 @@ class DurableJobRepository:
                 if existing is not None:
                     record = _decode(existing)
                     if _record_material_digest(record) != request.material_digest:
-                        raise JobConflict("idempotency key already binds different job material")
+                        raise JobConflict(
+                            "idempotency key already binds different job material"
+                        )
                     return record
                 if (
                     connection.execute(
@@ -590,9 +629,13 @@ class DurableJobRepository:
                     ).fetchone()
                     is not None
                 ):
-                    raise JobConflict("job revision already exists under another idempotency key")
+                    raise JobConflict(
+                        "job revision already exists under another idempotency key"
+                    )
                 load = self._load(connection, request.lane)
-                operational = validate_capacity_use(self.capacity, request.capacity_use())
+                operational = validate_capacity_use(
+                    self.capacity, request.capacity_use()
+                )
                 if not operational.admitted:
                     raise JobAdmissionRejected(operational.reason)
                 decision = decide_admission(
@@ -634,9 +677,13 @@ class DurableJobRepository:
                         request.created_at,
                     ),
                 )
-                record = self._get_connection(connection, str(request.job_id), request.job_revision)
+                record = self._get_connection(
+                    connection, str(request.job_id), request.job_revision
+                )
                 self._install_job_spec(connection, record)
-                self._append_history(connection, "queued", None, record, request.created_at)
+                self._append_history(
+                    connection, "queued", None, record, request.created_at
+                )
                 return record
 
     def enqueue_rolling_job(self, **values: Any) -> JobRecord:
@@ -700,6 +747,66 @@ class DurableJobRepository:
             raise DurableJobError("current rolling dependency revision conflicts")
         return dict(current[0])
 
+    def rolling_card_key_for_field(
+        self,
+        *,
+        competitor_id: str,
+        target_context_digest: str,
+        historical_cutoff_key: str,
+        tournament_epoch_id: str,
+        bundle_digest: str,
+    ) -> dict[str, Any] | None:
+        """Resolve the newest complete card inside an immutable field epoch."""
+
+        require_identifier(competitor_id, expected_namespace="competitor")
+        _digest(target_context_digest, "target context digest")
+        require_identifier(historical_cutoff_key, expected_namespace="history")
+        require_identifier(tournament_epoch_id, expected_namespace="epoch")
+        _digest(bundle_digest, "bundle digest")
+        with open_v3_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT * FROM v3_jobs "
+                "WHERE json_extract(payload_json, '$.schema_version')=? "
+                "AND json_extract(payload_json, '$.card_key.competitor_id')=? "
+                "AND json_extract(payload_json, '$.card_key.target_context_digest')=? "
+                "AND json_extract(payload_json, '$.card_key.historical_cutoff_key')=? "
+                "AND json_extract(payload_json, '$.card_key.tournament_epoch_id')=? "
+                "AND json_extract(payload_json, '$.card_key.bundle_digest')=? "
+                "ORDER BY CAST(json_extract(payload_json, "
+                "'$.card_key.dependency_revision') AS INTEGER) DESC, "
+                "json_extract(payload_json, '$.component_ordinal'), job_id, job_revision "
+                "LIMIT 6",
+                (
+                    "strathmark-v3-rolling-component-job-v1",
+                    competitor_id,
+                    target_context_digest,
+                    historical_cutoff_key,
+                    tournament_epoch_id,
+                    bundle_digest,
+                ),
+            ).fetchall()
+            records = self._verify_job_rows_local(connection, rows)
+        if not records:
+            return None
+        newest_revision = max(
+            int(record.payload()["card_key"]["dependency_revision"])
+            for record in records
+        )
+        records = tuple(
+            record
+            for record in records
+            if int(record.payload()["card_key"]["dependency_revision"])
+            == newest_revision
+        )
+        if len(records) != 5:
+            raise DurableJobError("rolling field card has an incomplete component set")
+        keys = tuple(record.payload()["card_key"] for record in records)
+        if len({item["card_digest"] for item in keys}) != 1 or any(
+            item != keys[0] for item in keys[1:]
+        ):
+            raise DurableJobError("rolling field causal key resolves conflicting cards")
+        return dict(keys[0])
+
     def rolling_card_keys_for_epoch(self, epoch_id: str) -> tuple[dict[str, Any], ...]:
         require_identifier(epoch_id, expected_namespace="epoch")
         with open_v3_connection(self.database_path, read_only=True) as connection:
@@ -732,7 +839,9 @@ class DurableJobRepository:
             EventKind.ROUND_CLOSED,
             EventKind.TOURNAMENT_CLOSED,
         }:
-            raise DurableJobError("rolling epoch closure requires canonical close event")
+            raise DurableJobError(
+                "rolling epoch closure requires canonical close event"
+            )
         value = {
             "schema_version": "strathmark-v3-rolling-epoch-closure-v1",
             "epoch_id": str(epoch),
@@ -759,9 +868,13 @@ class DurableJobRepository:
                     or str(source[0]) != event.event_digest
                     or json.loads(str(source[1])) != event.to_dict()
                 ):
-                    raise DurableJobError("rolling epoch closure event is not installed authority")
+                    raise DurableJobError(
+                        "rolling epoch closure event is not installed authority"
+                    )
                 if not self._rolling_close_lineage(connection, str(epoch), event):
-                    raise DurableJobError("rolling epoch does not belong to close event lineage")
+                    raise DurableJobError(
+                        "rolling epoch does not belong to close event lineage"
+                    )
                 existing = connection.execute(
                     "SELECT source_event_digest,source_global_sequence,source_event_kind,"
                     "closed_at,closure_manifest_json FROM v3_rolling_epoch_closures "
@@ -776,7 +889,9 @@ class DurableJobRepository:
                     encoded,
                 )
                 if existing is not None:
-                    stored_manifest = SignedManifest.from_dict(json.loads(str(existing[4])))
+                    stored_manifest = SignedManifest.from_dict(
+                        json.loads(str(existing[4]))
+                    )
                     stored_value = {
                         "schema_version": "strathmark-v3-rolling-epoch-closure-v1",
                         "epoch_id": str(epoch),
@@ -785,7 +900,10 @@ class DurableJobRepository:
                         "source_event_kind": str(existing[2]),
                         "closed_at": str(existing[3]),
                     }
-                    if verify_manifest(stored_manifest, self._trust_store) != stored_value:
+                    if (
+                        verify_manifest(stored_manifest, self._trust_store)
+                        != stored_value
+                    ):
                         raise DurableJobError("rolling epoch closure conflicts")
                     return
                 connection.execute(
@@ -823,7 +941,9 @@ class DurableJobRepository:
                 (self.capacity.max_context_cards + 1,),
             ).fetchall()
             if len(missing) > self.capacity.max_context_cards:
-                raise DurableJobError("unreconciled epoch closures exceed installed capacity")
+                raise DurableJobError(
+                    "unreconciled epoch closures exceed installed capacity"
+                )
             for row in missing:
                 source = connection.execute(
                     "SELECT envelope_json FROM v3_events WHERE "
@@ -885,8 +1005,12 @@ class DurableJobRepository:
                         "updated_at=? WHERE job_id=? AND job_revision=?",
                         (closed_at, current.job_id, current.job_revision),
                     )
-                    result = self._get_connection(connection, current.job_id, current.job_revision)
-                    self._append_history(connection, "cancelled", current.state, result, closed_at)
+                    result = self._get_connection(
+                        connection, current.job_id, current.job_revision
+                    )
+                    self._append_history(
+                        connection, "cancelled", current.state, result, closed_at
+                    )
                     cancelled.append(result)
         return tuple(cancelled)
 
@@ -956,7 +1080,9 @@ class DurableJobRepository:
                 connection,
                 None if not rows else int(rows[0]["first_global_sequence"]),
             )
-            return tuple(self._verify_rolling_reaction_row(connection, row) for row in rows)
+            return tuple(
+                self._verify_rolling_reaction_row(connection, row) for row in rows
+            )
 
     def _verify_rolling_reaction_completion_tip(
         self,
@@ -997,10 +1123,17 @@ class DurableJobRepository:
         reaction_id: str,
         *,
         plan_digest: str,
+        scheduled_card_digests: tuple[str, ...],
         completed_at: str,
     ) -> None:
         _digest(reaction_id, "rolling reaction")
         _digest(plan_digest, "rolling reaction plan")
+        if not isinstance(scheduled_card_digests, tuple) or len(
+            set(scheduled_card_digests)
+        ) != len(scheduled_card_digests):
+            raise DurableJobError("rolling reaction scheduled cards must be unique")
+        for card_digest in scheduled_card_digests:
+            _digest(card_digest, "rolling reaction scheduled card")
         timestamp = require_utc_milliseconds(completed_at)
         with open_v3_connection(self.database_path) as connection:
             with immediate_transaction(connection):
@@ -1021,7 +1154,7 @@ class DurableJobRepository:
                 if existing is not None:
                     if str(existing["plan_digest"]) != plan_digest:
                         raise DurableJobError("rolling reaction completion conflicts")
-                    self._verify_rolling_reaction_completion(
+                    existing_cards = self._verify_rolling_reaction_completion(
                         existing,
                         {
                             "reaction_id": reaction_id,
@@ -1029,6 +1162,10 @@ class DurableJobRepository:
                             "event_set_digest": str(existing["event_set_digest"]),
                         },
                     )
+                    if existing_cards != scheduled_card_digests:
+                        raise DurableJobError(
+                            "rolling reaction scheduled cards conflict"
+                        )
                     return
                 value = {
                     "schema_version": "strathmark-v3-rolling-reaction-completion-v1",
@@ -1036,6 +1173,7 @@ class DurableJobRepository:
                     "source_command_id": str(row["source_command_id"]),
                     "event_set_digest": str(row["event_set_digest"]),
                     "plan_digest": plan_digest,
+                    "scheduled_card_digests": list(scheduled_card_digests),
                     "completed_at": timestamp,
                 }
                 completion_digest = canonical_digest(value)
@@ -1064,6 +1202,101 @@ class DurableJobRepository:
                     observed_at=timestamp,
                 )
 
+    def rolling_derivation_authority(
+        self, source_global_sequence: int
+    ) -> dict[str, Any]:
+        """Return the verified rolling completion whose event set contains a result."""
+
+        if (
+            isinstance(source_global_sequence, bool)
+            or not isinstance(source_global_sequence, int)
+            or source_global_sequence <= 0
+        ):
+            raise DurableJobError("rolling derivation source sequence is invalid")
+        with open_v3_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT obligation.*,completion.plan_digest,completion.completed_at,"
+                "completion.completion_digest,completion.completion_manifest_json "
+                "FROM v3_rolling_reaction_obligations obligation JOIN "
+                "v3_rolling_reaction_completions completion USING(reaction_id) "
+                "WHERE obligation.first_global_sequence<=? AND "
+                "obligation.last_global_sequence>=?",
+                (source_global_sequence, source_global_sequence),
+            ).fetchall()
+            if len(rows) != 1:
+                raise DurableJobError(
+                    "settled result has no unique rolling completion authority"
+                )
+            row = rows[0]
+            obligation = self._verify_rolling_reaction_row(connection, row)
+            scheduled_cards = self._verify_rolling_reaction_completion(row, obligation)
+            card_publications = []
+            for card_digest in scheduled_cards:
+                publication = connection.execute(
+                    "SELECT * FROM v3_rolling_card_publications WHERE card_digest=?",
+                    (card_digest,),
+                ).fetchone()
+                if publication is None:
+                    raise RollingDerivationPending(
+                        "rolling derivation is pending durable card publications"
+                    )
+                self._verify_rolling_publication_material(publication)
+                jobs = tuple(
+                    _decode(item)
+                    for item in connection.execute(
+                        "SELECT * FROM v3_jobs WHERE "
+                        "json_extract(payload_json, '$.schema_version')=? AND "
+                        "json_extract(payload_json, '$.card_key.card_digest')=? "
+                        "ORDER BY json_extract(payload_json, '$.component_ordinal')",
+                        ("strathmark-v3-rolling-component-job-v1", card_digest),
+                    )
+                )
+                if len(jobs) != 5:
+                    raise DurableJobError(
+                        "rolling derivation publication lacks five component jobs"
+                    )
+                self._verify_job_records_local(connection, jobs)
+                if any(
+                    job.state
+                    in {JobState.QUEUED, JobState.LEASED, JobState.RETRYABLE_FAILED}
+                    for job in jobs
+                ):
+                    raise RollingDerivationPending(
+                        "rolling derivation component jobs are not terminal"
+                    )
+                components = json.loads(str(publication["component_refs_json"]))
+                if (
+                    not isinstance(components, list)
+                    or len(components) != 5
+                    or any(not isinstance(item, dict) for item in components)
+                    or tuple(item.get("job_id") for item in components)
+                    != tuple(job.job_id for job in jobs)
+                    or tuple(item.get("job_revision") for item in components)
+                    != tuple(job.job_revision for job in jobs)
+                    or tuple(item.get("fencing_token") for item in components)
+                    != tuple(job.fencing_token for job in jobs)
+                    or tuple(item.get("result_digest") for item in components)
+                    != tuple(job.result_digest for job in jobs)
+                ):
+                    raise DurableJobError(
+                        "rolling derivation publication differs from terminal components"
+                    )
+                card_publications.append(
+                    {
+                        "card_digest": card_digest,
+                        "publication_digest": str(publication["publication_digest"]),
+                    }
+                )
+        return {
+            "schema_version": "strathmark-v3-rolling-derivation-authority-v1",
+            "source_global_sequence": source_global_sequence,
+            "reaction_id": obligation["reaction_id"],
+            "event_set_digest": obligation["event_set_digest"],
+            "plan_digest": str(row["plan_digest"]),
+            "completion_digest": str(row["completion_digest"]),
+            "card_publications": card_publications,
+        }
+
     @staticmethod
     def _verify_rolling_reaction_row(
         connection: sqlite3.Connection, row: sqlite3.Row
@@ -1074,12 +1307,15 @@ class DurableJobRepository:
         if not isinstance(refs, list) or not refs:
             raise DurableJobError("rolling reaction event set is invalid")
         if any(
-            not isinstance(ref, dict) or set(ref) != {"event_id", "event_digest", "global_sequence"}
+            not isinstance(ref, dict)
+            or set(ref) != {"event_id", "event_digest", "global_sequence"}
             for ref in refs
         ):
             raise DurableJobError("rolling reaction event references differ")
         sequences = tuple(ref["global_sequence"] for ref in refs)
-        if any(isinstance(item, bool) or not isinstance(item, int) for item in sequences):
+        if any(
+            isinstance(item, bool) or not isinstance(item, int) for item in sequences
+        ):
             raise DurableJobError("rolling reaction event sequence is invalid")
         if sequences != tuple(range(sequences[0], sequences[-1] + 1)):
             raise DurableJobError("rolling reaction event set is not contiguous")
@@ -1128,27 +1364,48 @@ class DurableJobRepository:
 
     def _verify_rolling_reaction_completion(
         self, row: sqlite3.Row, obligation: Mapping[str, Any]
-    ) -> None:
-        value = {
+    ) -> tuple[str, ...]:
+        base = {
             "schema_version": "strathmark-v3-rolling-reaction-completion-v1",
             "reaction_id": obligation["reaction_id"],
             "source_command_id": obligation["source_command_id"],
             "event_set_digest": obligation["event_set_digest"],
             "plan_digest": str(row["plan_digest"]),
+        }
+        try:
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["completion_manifest_json"]))
+            )
+            verified = verify_manifest(manifest, self._trust_store)
+        except (IntegrityError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DurableJobError(
+                "rolling reaction completion integrity differs"
+            ) from exc
+        scheduled = verified.get("scheduled_card_digests")
+        if (
+            not isinstance(scheduled, list)
+            or len(set(scheduled)) != len(scheduled)
+            or any(
+                not isinstance(item, str)
+                or len(item) != 64
+                or any(character not in "0123456789abcdef" for character in item)
+                for item in scheduled
+            )
+        ):
+            raise DurableJobError("rolling reaction completion integrity differs")
+        value = {
+            **base,
+            "scheduled_card_digests": scheduled,
             "completed_at": str(row["completed_at"]),
         }
         completion_digest = canonical_digest(value)
-        try:
-            manifest = SignedManifest.from_dict(json.loads(str(row["completion_manifest_json"])))
-            verified = verify_manifest(manifest, self._trust_store)
-        except (IntegrityError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise DurableJobError("rolling reaction completion integrity differs") from exc
         if (
             completion_digest != str(row["completion_digest"])
             or manifest.kind != "rolling_reaction_completion"
             or verified != {**value, "completion_digest": completion_digest}
         ):
             raise DurableJobError("rolling reaction completion integrity differs")
+        return tuple(scheduled)
 
     def install_rolling_council_authority(
         self,
@@ -1174,7 +1431,9 @@ class DurableJobRepository:
                 ).fetchone()
                 if row is not None:
                     if str(row[0]) != bundle_digest or str(row[1]) != encoded:
-                        raise DurableJobError("rolling council authority digest conflicts")
+                        raise DurableJobError(
+                            "rolling council authority digest conflicts"
+                        )
                     return manifest.body_digest
                 try:
                     connection.execute(
@@ -1209,8 +1468,12 @@ class DurableJobRepository:
         self, *, publication_digest: str | None = None, card_digest: str | None = None
     ) -> dict[str, Any] | None:
         if (publication_digest is None) == (card_digest is None):
-            raise DurableJobError("rolling publication lookup requires one exact digest")
-        column = "publication_digest" if publication_digest is not None else "card_digest"
+            raise DurableJobError(
+                "rolling publication lookup requires one exact digest"
+            )
+        column = (
+            "publication_digest" if publication_digest is not None else "card_digest"
+        )
         digest = publication_digest if publication_digest is not None else card_digest
         _digest(digest, column)
         with open_v3_connection(self.database_path, read_only=True) as connection:
@@ -1239,7 +1502,9 @@ class DurableJobRepository:
 
         with open_v3_connection(self.database_path) as connection:
             with immediate_transaction(connection):
-                return self._verify_rolling_restart_connection(connection, repair_current=True)
+                return self._verify_rolling_restart_connection(
+                    connection, repair_current=True
+                )
 
     def rolling_restart_suffix_status(self) -> RollingRestartSuffixStatus:
         """Return verified checkpoint and bounded uncompacted delta status."""
@@ -1255,7 +1520,9 @@ class DurableJobRepository:
                 int(checkpoint[0]),
                 str(checkpoint[1]),
             ) != (receipt.checkpoint_sequence, receipt.checkpoint_digest):
-                raise DurableJobError("rolling restart checkpoint changed during suffix read")
+                raise DurableJobError(
+                    "rolling restart checkpoint changed during suffix read"
+                )
             suffix_count = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM v3_rolling_restart_deltas "
@@ -1335,18 +1602,24 @@ class DurableJobRepository:
                 * 1000
             )
             if elapsed_ms < 0:
-                raise DurableJobError("rolling restart refresh time precedes checkpoint")
+                raise DurableJobError(
+                    "rolling restart refresh time precedes checkpoint"
+                )
             if suffix_count < delta_threshold and elapsed_ms < max_elapsed_ms:
                 return None
             self._verify_connection(connection)
-            self._verify_rolling_storage_connection(connection, allow_closed_current=True)
+            self._verify_rolling_storage_connection(
+                connection, allow_closed_current=True
+            )
             material = self._rolling_restart_material(connection)
             guard = self._rolling_restart_refresh_guard(connection)
         self._before_rolling_restart_refresh_commit()
         with open_v3_connection(self.database_path) as connection:
             with immediate_transaction(connection):
                 if self._rolling_restart_refresh_guard(connection) != guard:
-                    raise DurableJobError("rolling restart refresh authority changed before commit")
+                    raise DurableJobError(
+                        "rolling restart refresh authority changed before commit"
+                    )
                 return self._append_rolling_restart_checkpoint(
                     connection, timestamp, prepared_material=material
                 )
@@ -1363,7 +1636,9 @@ class DurableJobRepository:
         with open_v3_connection(self.database_path) as connection:
             with immediate_transaction(connection):
                 if self._job_projection_authority_guard(connection) != guard:
-                    raise DurableJobError("job projection authority changed before rebuild")
+                    raise DurableJobError(
+                        "job projection authority changed before rebuild"
+                    )
                 changed = 0
                 expected = set(rebuilt)
                 existing = {
@@ -1405,7 +1680,9 @@ class DurableJobRepository:
                     )
                     changed += 1
                 for key in set(existing) - expected:
-                    connection.execute("DELETE FROM v3_jobs WHERE job_id=? AND job_revision=?", key)
+                    connection.execute(
+                        "DELETE FROM v3_jobs WHERE job_id=? AND job_revision=?", key
+                    )
                     changed += 1
                 self._verify_connection(connection)
                 return changed
@@ -1422,9 +1699,11 @@ class DurableJobRepository:
             event_store = SQLiteEventStore(self.database_path)
             preflight_anchor = event_store.current_anchor()
             projection_store = SQLiteProjectionStore(self.database_path)
-            rebuilt_anchor = projection_store.rebuild_rolling_reaction_projection_offline(
-                preflight_anchor.global_sequence,
-                preflight_anchor.event_digest,
+            rebuilt_anchor = (
+                projection_store.rebuild_rolling_reaction_projection_offline(
+                    preflight_anchor.global_sequence,
+                    preflight_anchor.event_digest,
+                )
             )
             if rebuilt_anchor != (
                 preflight_anchor.global_sequence,
@@ -1446,12 +1725,17 @@ class DurableJobRepository:
                 trusted_anchor.event_digest,
             )
             with open_v3_connection(self.database_path, read_only=True) as connection:
-                if SQLiteProjectionStore.projection_digest(connection) != projection_digest:
+                if (
+                    SQLiteProjectionStore.projection_digest(connection)
+                    != projection_digest
+                ):
                     raise DurableJobError(
                         "rolling restart projection authority changed after verification"
                     )
                 self._verify_connection(connection)
-                self._verify_rolling_storage_connection(connection, allow_closed_current=True)
+                self._verify_rolling_storage_connection(
+                    connection, allow_closed_current=True
+                )
                 self._verify_rolling_restart_checkpoint_history_connection(connection)
                 aggregate_heads = self._replay_all_rolling_aggregate_heads(connection)
                 cursor_value = self._full_rolling_cursor_value(connection)
@@ -1479,7 +1763,10 @@ class DurableJobRepository:
                     raise DurableJobError(
                         "rolling restart deep audit authority changed before commit"
                     )
-                if SQLiteProjectionStore.projection_digest(connection) != projection_digest:
+                if (
+                    SQLiteProjectionStore.projection_digest(connection)
+                    != projection_digest
+                ):
                     raise DurableJobError(
                         "rolling restart deep audit projection material changed before commit"
                     )
@@ -1509,7 +1796,9 @@ class DurableJobRepository:
             self._advance_rolling_aggregate_head(heads, event)
         material = [heads[key] for key in sorted(heads)]
         if len(material) > self._rolling_aggregate_head_capacity():
-            raise DurableJobError("rolling restart aggregate heads exceed bounded capacity")
+            raise DurableJobError(
+                "rolling restart aggregate heads exceed bounded capacity"
+            )
         return material
 
     @staticmethod
@@ -1524,7 +1813,10 @@ class DurableJobRepository:
         )
         groups: list[tuple[EventEnvelope, ...]] = []
         for event in events:
-            if not groups or groups[-1][0].command.command_id != event.command.command_id:
+            if (
+                not groups
+                or groups[-1][0].command.command_id != event.command.command_id
+            ):
                 groups.append((event,))
             else:
                 groups[-1] = (*groups[-1], event)
@@ -1541,7 +1833,9 @@ class DurableJobRepository:
             "through_event_digest": ZERO_DIGEST if last is None else last.event_digest,
             "relevant_command_count": len(relevant),
             "latest_reaction_id": ZERO_DIGEST if not relevant else relevant[-1],
-            "updated_at": ("1970-01-01T00:00:00.000Z" if last is None else last.occurred_at_utc),
+            "updated_at": (
+                "1970-01-01T00:00:00.000Z" if last is None else last.occurred_at_utc
+            ),
         }
 
     @staticmethod
@@ -1600,9 +1894,9 @@ class DurableJobRepository:
                 ),
                 "pending_reactions": self._rolling_pending_material(connection),
                 "closure_count": int(
-                    connection.execute("SELECT COUNT(*) FROM v3_rolling_epoch_closures").fetchone()[
-                        0
-                    ]
+                    connection.execute(
+                        "SELECT COUNT(*) FROM v3_rolling_epoch_closures"
+                    ).fetchone()[0]
                 ),
             }
         )
@@ -1643,7 +1937,9 @@ class DurableJobRepository:
                         "SELECT * FROM v3_rolling_reaction_cursor WHERE singleton=1"
                     )
                 ],
-                "projection_digest": SQLiteProjectionStore.projection_digest(connection),
+                "projection_digest": SQLiteProjectionStore.projection_digest(
+                    connection
+                ),
             }
         )
 
@@ -1665,7 +1961,9 @@ class DurableJobRepository:
                 json.loads(str(newest["checkpoint_manifest_json"]))
             )
         except Exception as exc:
-            raise DurableJobError("rolling restart checkpoint integrity differs") from exc
+            raise DurableJobError(
+                "rolling restart checkpoint integrity differs"
+            ) from exc
         if (
             str(newest["checkpoint_digest"]) != newest_manifest.body_digest
             or verify_manifest(newest_manifest, self._trust_store) != newest_value
@@ -1692,10 +1990,14 @@ class DurableJobRepository:
                     json.loads(str(prior["checkpoint_manifest_json"]))
                 )
             except Exception as exc:
-                raise DurableJobError("rolling restart checkpoint lineage differs") from exc
+                raise DurableJobError(
+                    "rolling restart checkpoint lineage differs"
+                ) from exc
             if (
-                int(newest["checkpoint_sequence"]) != int(prior["checkpoint_sequence"]) + 1
-                or str(newest["prior_checkpoint_digest"]) != str(prior["checkpoint_digest"])
+                int(newest["checkpoint_sequence"])
+                != int(prior["checkpoint_sequence"]) + 1
+                or str(newest["prior_checkpoint_digest"])
+                != str(prior["checkpoint_digest"])
                 or str(prior["checkpoint_digest"]) != prior_manifest.body_digest
                 or verify_manifest(prior_manifest, self._trust_store) != prior_value
             ):
@@ -1727,7 +2029,9 @@ class DurableJobRepository:
                 "ORDER BY global_sequence DESC LIMIT 1"
             ).fetchone()
             observed_event_tip = (
-                (0, ZERO_DIGEST) if event_tip is None else (int(event_tip[0]), str(event_tip[1]))
+                (0, ZERO_DIGEST)
+                if event_tip is None
+                else (int(event_tip[0]), str(event_tip[1]))
             )
             if observed_event_tip == (
                 int(newest_value["source_global_sequence"]),
@@ -1737,7 +2041,9 @@ class DurableJobRepository:
         delta_authorities = self._verify_rolling_restart_delta_suffix(
             connection, int(newest["checkpoint_sequence"])
         )
-        if newest_value["schema_version"] == ("strathmark-v3-rolling-restart-checkpoint-v2"):
+        if newest_value["schema_version"] == (
+            "strathmark-v3-rolling-restart-checkpoint-v2"
+        ):
             expected_current = self._current_subjects_after_delta_suffix(
                 connection, int(newest["checkpoint_sequence"]), newest_value
             )
@@ -1757,13 +2063,17 @@ class DurableJobRepository:
             )
             if observed_current != expected_rows:
                 if not repair_current or not connection.in_transaction:
-                    raise DurableJobError("rolling current projection differs from delta authority")
+                    raise DurableJobError(
+                        "rolling current projection differs from delta authority"
+                    )
                 connection.execute("DELETE FROM v3_rolling_card_current")
                 for row in expected_rows:
                     connection.execute(
                         "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", row
                     )
-        material = self._rolling_restart_material(connection, repair_cursor=repair_current)
+        material = self._rolling_restart_material(
+            connection, repair_cursor=repair_current
+        )
         current_keys = (
             "current_subject_count",
             "current_subject_digest",
@@ -1774,10 +2084,14 @@ class DurableJobRepository:
                 int(material["status_sequence"]),
                 str(material["status_digest"]),
             ):
-                self._verify_rolling_storage_connection(connection, allow_closed_current=True)
+                self._verify_rolling_storage_connection(
+                    connection, allow_closed_current=True
+                )
             elif not repair_current or not connection.in_transaction:
                 raise DurableJobError("rolling restart checkpoint material differs")
-            elif newest_value["schema_version"] == ("strathmark-v3-rolling-restart-checkpoint-v2"):
+            elif newest_value["schema_version"] == (
+                "strathmark-v3-rolling-restart-checkpoint-v2"
+            ):
                 status_tip = connection.execute(
                     "SELECT status_sequence,status_digest,observed_at "
                     "FROM v3_rolling_card_status_history "
@@ -1799,7 +2113,9 @@ class DurableJobRepository:
                 return self._verify_rolling_restart_connection(connection)
             else:
                 self._restore_rolling_current_from_checkpoint(connection, newest_value)
-                self._append_rolling_restart_checkpoint(connection, str(newest_value["created_at"]))
+                self._append_rolling_restart_checkpoint(
+                    connection, str(newest_value["created_at"])
+                )
                 return self._verify_rolling_restart_connection(connection)
         exact_keys = ["capacity_manifest_digest"]
         status_authority = delta_authorities.get("rolling_status")
@@ -1841,7 +2157,9 @@ class DurableJobRepository:
                 "reaction_latest_reaction_id",
             ]
             if delta_authorities.get("reaction_completion") is None:
-                source_keys.extend(("pending_reaction_count", "pending_reaction_digest"))
+                source_keys.extend(
+                    ("pending_reaction_count", "pending_reaction_digest")
+                )
             else:
                 self._verify_rolling_reactions(connection)
             for key in source_keys:
@@ -1849,7 +2167,9 @@ class DurableJobRepository:
                     raise DurableJobError("rolling restart checkpoint material differs")
         elif current_source > checkpoint_source:
             if not connection.in_transaction:
-                raise DurableJobError("rolling restart tail refresh requires writer transaction")
+                raise DurableJobError(
+                    "rolling restart tail refresh requires writer transaction"
+                )
             cursor = connection.execute(
                 "SELECT updated_at FROM v3_rolling_reaction_cursor WHERE singleton=1"
             ).fetchone()
@@ -1921,7 +2241,9 @@ class DurableJobRepository:
                 (int(delta[0]),),
             ).fetchone()
             if status is None:
-                raise DurableJobError("rolling restart status delta authority is missing")
+                raise DurableJobError(
+                    "rolling restart status delta authority is missing"
+                )
             publication = connection.execute(
                 "SELECT * FROM v3_rolling_card_publications WHERE publication_digest=?",
                 (str(status["publication_digest"]),),
@@ -1973,14 +2295,18 @@ class DurableJobRepository:
                 (source_sequence,),
             ).fetchone()
             if event is None or str(event[0]) != checkpoint["source_event_digest"]:
-                raise DurableJobError("rolling restart cursor authority differs from events")
+                raise DurableJobError(
+                    "rolling restart cursor authority differs from events"
+                )
             updated_at = str(event[1])
         value = {
             "schema_version": "strathmark-v3-rolling-reaction-cursor-v1",
             "cursor_revision": int(checkpoint["reaction_cursor_revision"]),
             "through_global_sequence": source_sequence,
             "through_event_digest": str(checkpoint["source_event_digest"]),
-            "relevant_command_count": int(checkpoint["reaction_relevant_command_count"]),
+            "relevant_command_count": int(
+                checkpoint["reaction_relevant_command_count"]
+            ),
             "latest_reaction_id": str(checkpoint["reaction_latest_reaction_id"]),
             "updated_at": updated_at,
         }
@@ -2017,7 +2343,9 @@ class DurableJobRepository:
             raise DurableJobError("external rolling head rolled back")
         suffix_length = newest_sequence - expected.checkpoint_sequence
         if suffix_length > MAX_ROLLING_RESTART_ANCHORED_SUFFIX:
-            raise DurableJobError("rolling restart external anchor requires checkpoint refresh")
+            raise DurableJobError(
+                "rolling restart external anchor requires checkpoint refresh"
+            )
         rows = tuple(
             connection.execute(
                 "SELECT * FROM v3_rolling_restart_checkpoints "
@@ -2033,7 +2361,9 @@ class DurableJobRepository:
             or str(rows[0]["checkpoint_digest"]) != expected.checkpoint_digest
         ):
             raise DurableJobError("external rolling head differs")
-        self._verify_rolling_restart_checkpoint_rows(connection, rows, require_genesis=False)
+        self._verify_rolling_restart_checkpoint_rows(
+            connection, rows, require_genesis=False
+        )
 
     def _verify_rolling_restart_checkpoint_history_connection(
         self, connection: sqlite3.Connection
@@ -2045,7 +2375,9 @@ class DurableJobRepository:
                 "SELECT * FROM v3_rolling_restart_checkpoints ORDER BY checkpoint_sequence"
             )
         )
-        self._verify_rolling_restart_checkpoint_rows(connection, rows, require_genesis=True)
+        self._verify_rolling_restart_checkpoint_rows(
+            connection, rows, require_genesis=True
+        )
 
     def _verify_rolling_restart_checkpoint_rows(
         self,
@@ -2076,14 +2408,20 @@ class DurableJobRepository:
             if int(row["checkpoint_sequence"]) != prior_sequence + 1:
                 raise DurableJobError("rolling restart checkpoint history has a gap")
             if str(row["prior_checkpoint_digest"]) != prior_digest:
-                raise DurableJobError("rolling restart checkpoint history lineage differs")
+                raise DurableJobError(
+                    "rolling restart checkpoint history lineage differs"
+                )
             if (
                 str(row["checkpoint_digest"]) != manifest.body_digest
                 or verify_manifest(manifest, self._trust_store) != value
             ):
-                raise DurableJobError("rolling restart checkpoint history integrity differs")
+                raise DurableJobError(
+                    "rolling restart checkpoint history integrity differs"
+                )
             is_external_anchor = not require_genesis and row_index == 0
-            if value["schema_version"] == ("strathmark-v3-rolling-restart-checkpoint-v2"):
+            if value["schema_version"] == (
+                "strathmark-v3-rolling-restart-checkpoint-v2"
+            ):
                 absorbed_sequence = int(value["absorbed_delta_sequence"])
                 absorbed_digest = str(value["absorbed_delta_digest"])
                 if is_external_anchor:
@@ -2101,14 +2439,25 @@ class DurableJobRepository:
                     )
                 )
                 if len(deltas) != absorbed_sequence - prior_absorbed_sequence:
-                    raise DurableJobError("rolling restart checkpoint delta lineage has a gap")
+                    raise DurableJobError(
+                        "rolling restart checkpoint delta lineage has a gap"
+                    )
                 expected_delta_prior = prior_absorbed_digest
-                for expected, delta in enumerate(deltas, start=prior_absorbed_sequence + 1):
-                    if int(delta[0]) != expected or str(delta[1]) != expected_delta_prior:
-                        raise DurableJobError("rolling restart checkpoint delta lineage differs")
+                for expected, delta in enumerate(
+                    deltas, start=prior_absorbed_sequence + 1
+                ):
+                    if (
+                        int(delta[0]) != expected
+                        or str(delta[1]) != expected_delta_prior
+                    ):
+                        raise DurableJobError(
+                            "rolling restart checkpoint delta lineage differs"
+                        )
                     expected_delta_prior = str(delta[2])
                 if expected_delta_prior != absorbed_digest:
-                    raise DurableJobError("rolling restart checkpoint absorbed delta differs")
+                    raise DurableJobError(
+                        "rolling restart checkpoint absorbed delta differs"
+                    )
                 prior_absorbed_sequence = absorbed_sequence
                 prior_absorbed_digest = absorbed_digest
             prior_sequence = int(row["checkpoint_sequence"])
@@ -2116,7 +2465,9 @@ class DurableJobRepository:
 
     @staticmethod
     def _rolling_restart_checkpoint_value(row: sqlite3.Row) -> dict[str, Any]:
-        manifest = SignedManifest.from_dict(json.loads(str(row["checkpoint_manifest_json"])))
+        manifest = SignedManifest.from_dict(
+            json.loads(str(row["checkpoint_manifest_json"]))
+        )
         body = manifest.body()
         payload = body.get("payload")
         if isinstance(payload, dict) and payload.get("schema_version") == (
@@ -2130,7 +2481,9 @@ class DurableJobRepository:
                     "pending_reactions_json",
                 )
             ):
-                raise DurableJobError("compact rolling restart checkpoint embeds projection rows")
+                raise DurableJobError(
+                    "compact rolling restart checkpoint embeds projection rows"
+                )
             return {
                 "schema_version": "strathmark-v3-rolling-restart-checkpoint-v2",
                 "checkpoint_sequence": int(row["checkpoint_sequence"]),
@@ -2142,7 +2495,9 @@ class DurableJobRepository:
                 "aggregate_heads_digest": str(row["aggregate_heads_digest"]),
                 "reaction_cursor_digest": str(row["reaction_cursor_digest"]),
                 "reaction_cursor_revision": int(row["reaction_cursor_revision"]),
-                "reaction_relevant_command_count": int(row["reaction_relevant_command_count"]),
+                "reaction_relevant_command_count": int(
+                    row["reaction_relevant_command_count"]
+                ),
                 "reaction_latest_reaction_id": str(row["reaction_latest_reaction_id"]),
                 "job_history_sequence": int(row["job_history_sequence"]),
                 "job_history_digest": str(row["job_history_digest"]),
@@ -2161,16 +2516,21 @@ class DurableJobRepository:
         current_subjects_json = str(row["current_subjects_json"])
         current_subjects = json.loads(current_subjects_json)
         if canonical_bytes(current_subjects).decode("utf-8") != current_subjects_json:
-            raise DurableJobError("rolling restart checkpoint current subjects are not canonical")
+            raise DurableJobError(
+                "rolling restart checkpoint current subjects are not canonical"
+            )
         aggregate_heads_json = str(row["aggregate_heads_json"])
         aggregate_heads = json.loads(aggregate_heads_json)
         pending_reactions_json = str(row["pending_reactions_json"])
         pending_reactions = json.loads(pending_reactions_json)
         if (
             canonical_bytes(aggregate_heads).decode("utf-8") != aggregate_heads_json
-            or canonical_bytes(pending_reactions).decode("utf-8") != pending_reactions_json
+            or canonical_bytes(pending_reactions).decode("utf-8")
+            != pending_reactions_json
         ):
-            raise DurableJobError("rolling restart checkpoint bounded material is not canonical")
+            raise DurableJobError(
+                "rolling restart checkpoint bounded material is not canonical"
+            )
         return {
             "schema_version": "strathmark-v3-rolling-restart-checkpoint-v1",
             "checkpoint_sequence": int(row["checkpoint_sequence"]),
@@ -2183,7 +2543,9 @@ class DurableJobRepository:
             "aggregate_heads_digest": str(row["aggregate_heads_digest"]),
             "reaction_cursor_digest": str(row["reaction_cursor_digest"]),
             "reaction_cursor_revision": int(row["reaction_cursor_revision"]),
-            "reaction_relevant_command_count": int(row["reaction_relevant_command_count"]),
+            "reaction_relevant_command_count": int(
+                row["reaction_relevant_command_count"]
+            ),
             "reaction_latest_reaction_id": str(row["reaction_latest_reaction_id"]),
             "job_history_sequence": int(row["job_history_sequence"]),
             "job_history_digest": str(row["job_history_digest"]),
@@ -2209,7 +2571,9 @@ class DurableJobRepository:
         prepared_material: dict[str, Any] | None = None,
     ) -> RollingRestartReceipt:
         if not connection.in_transaction:
-            raise DurableJobError("rolling restart checkpoint requires writer transaction")
+            raise DurableJobError(
+                "rolling restart checkpoint requires writer transaction"
+            )
         created_at = require_utc_milliseconds(observed_at)
         material = (
             self._rolling_restart_material(
@@ -2251,7 +2615,8 @@ class DurableJobRepository:
             **{
                 key: value
                 for key, value in material.items()
-                if key not in {"aggregate_heads", "current_subjects", "pending_reactions"}
+                if key
+                not in {"aggregate_heads", "current_subjects", "pending_reactions"}
             },
             "absorbed_delta_sequence": absorbed_delta_sequence,
             "absorbed_delta_digest": absorbed_delta_digest,
@@ -2382,7 +2747,9 @@ class DurableJobRepository:
             ).fetchone()[0]
         )
         if suffix_count >= MAX_ROLLING_RESTART_DELTA_SUFFIX:
-            raise DurableJobError("rolling restart delta suffix requires checkpoint refresh")
+            raise DurableJobError(
+                "rolling restart delta suffix requires checkpoint refresh"
+            )
         prior = connection.execute(
             "SELECT delta_sequence,delta_digest FROM v3_rolling_restart_deltas "
             "ORDER BY delta_sequence DESC LIMIT 1"
@@ -2440,7 +2807,9 @@ class DurableJobRepository:
             )
         )
         if len(rows) > MAX_ROLLING_RESTART_DELTA_SUFFIX:
-            raise DurableJobError("rolling restart delta suffix exceeds refresh threshold")
+            raise DurableJobError(
+                "rolling restart delta suffix exceeds refresh threshold"
+            )
         if not rows:
             return {}
         first_sequence = int(rows[0]["delta_sequence"])
@@ -2467,9 +2836,13 @@ class DurableJobRepository:
                 "created_at": str(row["created_at"]),
             }
             try:
-                manifest = SignedManifest.from_dict(json.loads(str(row["delta_manifest_json"])))
+                manifest = SignedManifest.from_dict(
+                    json.loads(str(row["delta_manifest_json"]))
+                )
             except Exception as exc:
-                raise DurableJobError("rolling restart delta integrity differs") from exc
+                raise DurableJobError(
+                    "rolling restart delta integrity differs"
+                ) from exc
             if (
                 int(row["delta_sequence"]) != expected_sequence
                 or str(row["prior_delta_digest"]) != prior
@@ -2529,8 +2902,12 @@ class DurableJobRepository:
             ).fetchone()
             if row is None or str(row["status_digest"]) != digest:
                 raise DurableJobError("rolling status integrity differs")
-            manifest = SignedManifest.from_dict(json.loads(str(row["status_manifest_json"])))
-            if verify_manifest(manifest, self._trust_store) != _rolling_status_value(row):
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["status_manifest_json"]))
+            )
+            if verify_manifest(manifest, self._trust_store) != _rolling_status_value(
+                row
+            ):
                 raise DurableJobError("rolling status integrity differs")
             return
         if kind == "reaction_completion":
@@ -2552,7 +2929,9 @@ class DurableJobRepository:
             ).fetchone()
             if row is None:
                 raise DurableJobError("rolling restart delta authority differs")
-            manifest = SignedManifest.from_dict(json.loads(str(row["closure_manifest_json"])))
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["closure_manifest_json"]))
+            )
             if manifest.body_digest != digest:
                 raise DurableJobError("rolling restart delta authority differs")
             self._verify_rolling_closures(connection)
@@ -2579,10 +2958,14 @@ class DurableJobRepository:
             "ORDER BY global_sequence DESC LIMIT 1"
         ).fetchone()
         command_count = int(
-            connection.execute("SELECT COUNT(DISTINCT command_id) FROM v3_events").fetchone()[0]
+            connection.execute(
+                "SELECT COUNT(DISTINCT command_id) FROM v3_events"
+            ).fetchone()[0]
         )
         reaction_count = int(
-            connection.execute("SELECT COUNT(*) FROM v3_rolling_reaction_obligations").fetchone()[0]
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_rolling_reaction_obligations"
+            ).fetchone()[0]
         )
         reaction = connection.execute(
             "SELECT reaction_id FROM v3_rolling_reaction_obligations "
@@ -2595,7 +2978,9 @@ class DurableJobRepository:
             "through_event_digest": ZERO_DIGEST if event is None else str(event[1]),
             "relevant_command_count": reaction_count,
             "latest_reaction_id": ZERO_DIGEST if reaction is None else str(reaction[0]),
-            "updated_at": ("1970-01-01T00:00:00.000Z" if event is None else str(event[2])),
+            "updated_at": (
+                "1970-01-01T00:00:00.000Z" if event is None else str(event[2])
+            ),
         }
         connection.execute(
             "UPDATE v3_rolling_reaction_cursor SET cursor_revision=?,"
@@ -2671,8 +3056,12 @@ class DurableJobRepository:
             )
         )
         self._verify_job_history_tip(history_rows)
-        history_sequence = 0 if not history_rows else int(history_rows[0]["history_sequence"])
-        history_digest = ZERO_DIGEST if not history_rows else str(history_rows[0]["history_digest"])
+        history_sequence = (
+            0 if not history_rows else int(history_rows[0]["history_sequence"])
+        )
+        history_digest = (
+            ZERO_DIGEST if not history_rows else str(history_rows[0]["history_digest"])
+        )
 
         self._verify_rolling_status_tip(connection)
         status_row = connection.execute(
@@ -2765,7 +3154,9 @@ class DurableJobRepository:
         if checkpoint is not None:
             try:
                 payload = (
-                    SignedManifest.from_dict(json.loads(str(checkpoint[0]))).body().get("payload")
+                    SignedManifest.from_dict(json.loads(str(checkpoint[0])))
+                    .body()
+                    .get("payload")
                 )
                 compact_heads = (
                     isinstance(payload, dict)
@@ -2773,7 +3164,9 @@ class DurableJobRepository:
                     == "strathmark-v3-rolling-restart-checkpoint-v2"
                 )
             except Exception as exc:
-                raise DurableJobError("rolling restart checkpoint integrity differs") from exc
+                raise DurableJobError(
+                    "rolling restart checkpoint integrity differs"
+                ) from exc
         aggregate_digest_material = (
             [
                 {
@@ -2829,7 +3222,9 @@ class DurableJobRepository:
         if checkpoint is None:
             heads: dict[tuple[str, str], dict[str, Any]] = {}
             rows = tuple(
-                connection.execute("SELECT envelope_json FROM v3_events ORDER BY global_sequence")
+                connection.execute(
+                    "SELECT envelope_json FROM v3_events ORDER BY global_sequence"
+                )
             )
             for row in rows:
                 event = EventEnvelope.from_dict(json.loads(str(row[0])))
@@ -2839,7 +3234,9 @@ class DurableJobRepository:
             checkpoint_source = int(value["source_global_sequence"])
             if source_sequence < checkpoint_source:
                 raise DurableJobError("rolling restart event cursor rolled back")
-            if value["schema_version"] == ("strathmark-v3-rolling-restart-checkpoint-v2"):
+            if value["schema_version"] == (
+                "strathmark-v3-rolling-restart-checkpoint-v2"
+            ):
                 heads = self._rolling_checkpoint_aggregate_heads(
                     connection, int(checkpoint["checkpoint_sequence"]), value
                 )
@@ -2855,7 +3252,9 @@ class DurableJobRepository:
                 elif source_digest != value["source_event_digest"]:
                     raise DurableJobError("rolling restart event tip differs")
                 material = [heads[key] for key in sorted(heads)]
-                return self._verify_prepared_rolling_aggregate_heads(connection, material)
+                return self._verify_prepared_rolling_aggregate_heads(
+                    connection, material
+                )
             heads = self._decode_rolling_aggregate_heads(value)
             if source_sequence > checkpoint_source:
                 heads = self._verify_rolling_event_tail(
@@ -2883,7 +3282,9 @@ class DurableJobRepository:
             )
         )
         if len(rows) > capacity:
-            raise DurableJobError("rolling restart aggregate heads exceed bounded capacity")
+            raise DurableJobError(
+                "rolling restart aggregate heads exceed bounded capacity"
+            )
         return [
             {
                 "aggregate_kind": str(row[0]),
@@ -2975,7 +3376,9 @@ class DurableJobRepository:
             )
         aggregate_head_capacity = self._rolling_aggregate_head_capacity()
         if len(material) > aggregate_head_capacity:
-            raise DurableJobError("rolling restart aggregate heads exceed bounded capacity")
+            raise DurableJobError(
+                "rolling restart aggregate heads exceed bounded capacity"
+            )
         observed = tuple(
             connection.execute(
                 "SELECT aggregate_kind,aggregate_id,aggregate_version,event_digest "
@@ -3028,7 +3431,9 @@ class DurableJobRepository:
                 StableIdentifier(value["aggregate_id"])
                 version = int(value["aggregate_version"])
             except (TypeError, ValueError) as exc:
-                raise DurableJobError("rolling restart aggregate-head snapshot differs") from exc
+                raise DurableJobError(
+                    "rolling restart aggregate-head snapshot differs"
+                ) from exc
             status = value["lifecycle_status"]
             if status is not None:
                 try:
@@ -3043,7 +3448,9 @@ class DurableJobRepository:
             _digest(value["event_digest"], "rolling aggregate head")
             heads[key] = value
         if [heads[key] for key in sorted(heads)] != values:
-            raise DurableJobError("rolling restart aggregate-head snapshot is not sorted")
+            raise DurableJobError(
+                "rolling restart aggregate-head snapshot is not sorted"
+            )
         return heads
 
     def _rolling_aggregate_head_capacity(self) -> int:
@@ -3067,16 +3474,25 @@ class DurableJobRepository:
         version = 0 if prior is None else int(prior["aggregate_version"])
         digest = ZERO_DIGEST if prior is None else str(prior["event_digest"])
         status_value = None if prior is None else prior["lifecycle_status"]
-        if event.aggregate_version != version + 1 or event.prior_aggregate_digest != digest:
+        if (
+            event.aggregate_version != version + 1
+            or event.prior_aggregate_digest != digest
+        ):
             raise DurableJobError("rolling restart aggregate tail differs")
         if event.kind is EventKind.HISTORY_IMPORTED:
             next_status = status_value
         else:
             try:
-                current = None if status_value is None else LifecycleStatus(status_value)
-                next_status = transition(event.aggregate_kind, current, event.kind).value
+                current = (
+                    None if status_value is None else LifecycleStatus(status_value)
+                )
+                next_status = transition(
+                    event.aggregate_kind, current, event.kind
+                ).value
             except ContractError as exc:
-                raise DurableJobError("rolling restart event tail lifecycle is illegal") from exc
+                raise DurableJobError(
+                    "rolling restart event tail lifecycle is illegal"
+                ) from exc
         heads[key] = {
             "aggregate_kind": event.aggregate_kind.value,
             "aggregate_id": str(event.aggregate_id),
@@ -3098,7 +3514,9 @@ class DurableJobRepository:
         first = int(checkpoint["source_global_sequence"]) + 1
         tail_length = source_sequence - first + 1
         if tail_length > self._rolling_event_tail_capacity():
-            raise DurableJobError("rolling restart event tail requires authenticated deep audit")
+            raise DurableJobError(
+                "rolling restart event tail requires authenticated deep audit"
+            )
         rows = tuple(
             connection.execute(
                 "SELECT global_sequence,event_id,aggregate_kind,aggregate_id,"
@@ -3119,7 +3537,9 @@ class DurableJobRepository:
                 value = json.loads(raw)
                 event = EventEnvelope.from_dict(value)
             except Exception as exc:
-                raise DurableJobError("rolling restart event tail is malformed") from exc
+                raise DurableJobError(
+                    "rolling restart event tail is malformed"
+                ) from exc
             expected_event_id = deterministic_identifier(
                 "event",
                 {
@@ -3160,7 +3580,10 @@ class DurableJobRepository:
             raise DurableJobError("rolling restart event tail tip differs")
         groups: list[tuple[EventEnvelope, ...]] = []
         for event in events:
-            if not groups or groups[-1][0].command.command_id != event.command.command_id:
+            if (
+                not groups
+                or groups[-1][0].command.command_id != event.command.command_id
+            ):
                 groups.append((event,))
             else:
                 groups[-1] = (*groups[-1], event)
@@ -3207,7 +3630,9 @@ class DurableJobRepository:
             validate_command_event_intents(command, intents)
             require_utc_milliseconds(str(row[9]))
         except Exception as exc:
-            raise DurableJobError("rolling restart event tail idempotency differs") from exc
+            raise DurableJobError(
+                "rolling restart event tail idempotency differs"
+            ) from exc
         event_set_digest = canonical_digest(
             {
                 "schema_version": "strathmark-v3-event-set-v1",
@@ -3244,7 +3669,9 @@ class DurableJobRepository:
         repair_cursor: bool = False,
     ) -> None:
         prior_pending = checkpoint.get("pending_reactions")
-        if checkpoint.get("schema_version") == ("strathmark-v3-rolling-restart-checkpoint-v2"):
+        if checkpoint.get("schema_version") == (
+            "strathmark-v3-rolling-restart-checkpoint-v2"
+        ):
             prior_pending = [
                 {
                     "reaction_id": str(row[0]),
@@ -3262,7 +3689,8 @@ class DurableJobRepository:
         if (
             not isinstance(prior_pending, list)
             or len(prior_pending) != checkpoint.get("pending_reaction_count")
-            or canonical_digest(prior_pending) != checkpoint.get("pending_reaction_digest")
+            or canonical_digest(prior_pending)
+            != checkpoint.get("pending_reaction_digest")
         ):
             raise DurableJobError("rolling restart pending snapshot differs")
         expected_pending = []
@@ -3320,7 +3748,8 @@ class DurableJobRepository:
         ).fetchone()
         expected_cursor = {
             "schema_version": "strathmark-v3-rolling-reaction-cursor-v1",
-            "cursor_revision": int(checkpoint["reaction_cursor_revision"]) + len(groups),
+            "cursor_revision": int(checkpoint["reaction_cursor_revision"])
+            + len(groups),
             "through_global_sequence": groups[-1][-1].global_sequence,
             "through_event_digest": groups[-1][-1].event_digest,
             "relevant_command_count": relevant_count,
@@ -3329,10 +3758,14 @@ class DurableJobRepository:
         }
         differs = cursor is None or (
             int(cursor["cursor_revision"]) != expected_cursor["cursor_revision"]
-            or int(cursor["through_global_sequence"]) != expected_cursor["through_global_sequence"]
-            or str(cursor["through_event_digest"]) != expected_cursor["through_event_digest"]
-            or int(cursor["relevant_command_count"]) != expected_cursor["relevant_command_count"]
-            or str(cursor["latest_reaction_id"]) != expected_cursor["latest_reaction_id"]
+            or int(cursor["through_global_sequence"])
+            != expected_cursor["through_global_sequence"]
+            or str(cursor["through_event_digest"])
+            != expected_cursor["through_event_digest"]
+            or int(cursor["relevant_command_count"])
+            != expected_cursor["relevant_command_count"]
+            or str(cursor["latest_reaction_id"])
+            != expected_cursor["latest_reaction_id"]
             or str(cursor["updated_at"]) != expected_cursor["updated_at"]
             or str(cursor["cursor_digest"]) != canonical_digest(expected_cursor)
         )
@@ -3375,7 +3808,9 @@ class DurableJobRepository:
                 (subject["status_digest"],),
             ).fetchone()
             if publication is None or status is None:
-                raise DurableJobError("rolling restart current snapshot authority is missing")
+                raise DurableJobError(
+                    "rolling restart current snapshot authority is missing"
+                )
             self._verify_rolling_publication_material(publication)
             status_value = _rolling_status_value(status)
             status_manifest = SignedManifest.from_dict(
@@ -3383,15 +3818,20 @@ class DurableJobRepository:
             )
             if (
                 str(publication["competitor_id"]) != subject["competitor_id"]
-                or str(publication["target_context_digest"]) != subject["target_context_digest"]
-                or str(publication["tournament_epoch_id"]) != subject["tournament_epoch_id"]
-                or int(publication["dependency_revision"]) != subject["dependency_revision"]
+                or str(publication["target_context_digest"])
+                != subject["target_context_digest"]
+                or str(publication["tournament_epoch_id"])
+                != subject["tournament_epoch_id"]
+                or int(publication["dependency_revision"])
+                != subject["dependency_revision"]
                 or str(status["publication_digest"]) != subject["publication_digest"]
                 or str(status["status"]) != "current"
                 or canonical_digest(status_value) != subject["status_digest"]
                 or verify_manifest(status_manifest, self._trust_store) != status_value
             ):
-                raise DurableJobError("rolling restart current snapshot authority differs")
+                raise DurableJobError(
+                    "rolling restart current snapshot authority differs"
+                )
             restored.append(
                 (
                     subject["competitor_id"],
@@ -3404,7 +3844,9 @@ class DurableJobRepository:
             )
         connection.execute("DELETE FROM v3_rolling_card_current")
         for row in restored:
-            connection.execute("INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", row)
+            connection.execute(
+                "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", row
+            )
 
     def _rolling_pending_material(
         self,
@@ -3516,7 +3958,9 @@ class DurableJobRepository:
                 )
                 self._verify_job_records_local(connection, current_jobs)
                 if current_jobs != expected_jobs:
-                    raise DurableJobError("component authority changed before card publication")
+                    raise DurableJobError(
+                        "component authority changed before card publication"
+                    )
                 existing = connection.execute(
                     "SELECT * FROM v3_rolling_card_publications WHERE publication_digest=?",
                     (row["publication_digest"],),
@@ -3548,25 +3992,35 @@ class DurableJobRepository:
                     ),
                 ).fetchall()
                 if not scheduled:
-                    raise DurableJobError("rolling publication has no scheduled authority")
-                scheduled_keys = tuple(json.loads(str(item[0]))["card_key"] for item in scheduled)
+                    raise DurableJobError(
+                        "rolling publication has no scheduled authority"
+                    )
+                scheduled_keys = tuple(
+                    json.loads(str(item[0]))["card_key"] for item in scheduled
+                )
                 maximum = scheduled_keys[0]["dependency_revision"]
                 current = tuple(
-                    item for item in scheduled_keys if item["dependency_revision"] == maximum
+                    item
+                    for item in scheduled_keys
+                    if item["dependency_revision"] == maximum
                 )
                 if (
                     len({item["card_digest"] for item in current}) != 1
                     or maximum != row["dependency_revision"]
                     or current[0]["card_digest"] != row["card_digest"]
                 ):
-                    raise DurableJobError("superseded card publication cannot become current")
+                    raise DurableJobError(
+                        "superseded card publication cannot become current"
+                    )
                 self._verify_rolling_restart_connection(connection, repair_current=True)
                 prior = connection.execute(
                     "SELECT publication_digest,dependency_revision FROM v3_rolling_card_current "
                     "WHERE competitor_id=? AND target_context_digest=?",
                     (row["competitor_id"], row["target_context_digest"]),
                 ).fetchone()
-                if prior is not None and int(prior[1]) >= int(row["dependency_revision"]):
+                if prior is not None and int(prior[1]) >= int(
+                    row["dependency_revision"]
+                ):
                     raise DurableJobError("rolling card publication is not monotonic")
                 columns = tuple(row)
                 connection.execute(
@@ -3636,7 +4090,9 @@ class DurableJobRepository:
                 if row is None:
                     return
                 if str(row[0]) != publication_digest:
-                    raise DurableJobError("rolling supersession current pointer differs")
+                    raise DurableJobError(
+                        "rolling supersession current pointer differs"
+                    )
                 self._append_rolling_status(
                     connection, publication_digest, "superseded", reason, now
                 )
@@ -3662,7 +4118,9 @@ class DurableJobRepository:
                 self._verify_rolling_closures(connection)
                 self._verify_rolling_reactions(connection)
                 expected = self._verified_rolling_current_rows(connection)
-                observed = connection.execute("SELECT * FROM v3_rolling_card_current").fetchall()
+                observed = connection.execute(
+                    "SELECT * FROM v3_rolling_card_current"
+                ).fetchall()
                 if _rolling_current_material(observed) == expected:
                     return 0
                 connection.execute("DELETE FROM v3_rolling_card_current")
@@ -3701,7 +4159,9 @@ class DurableJobRepository:
         }
         current = connection.execute("SELECT * FROM v3_rolling_card_current").fetchall()
         if _rolling_current_material(current) != expected_rows:
-            raise DurableJobError("rolling current projection differs from status history")
+            raise DurableJobError(
+                "rolling current projection differs from status history"
+            )
         for row in current:
             source = publications[str(row["publication_digest"])]
             closed = connection.execute(
@@ -3729,7 +4189,9 @@ class DurableJobRepository:
             start=1,
         ):
             value = _rolling_status_value(row)
-            manifest = SignedManifest.from_dict(json.loads(str(row["status_manifest_json"])))
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["status_manifest_json"]))
+            )
             if (
                 int(row["status_sequence"]) != expected
                 or str(row["publication_digest"]) not in publications
@@ -3755,7 +4217,9 @@ class DurableJobRepository:
                 str(source["target_context_digest"]),
             )
             if subject in subjects:
-                raise DurableJobError("rolling status history has two current authorities")
+                raise DurableJobError(
+                    "rolling status history has two current authorities"
+                )
             subjects.add(subject)
             rows.append(
                 (
@@ -3774,7 +4238,9 @@ class DurableJobRepository:
             authority = json.loads(str(row["authority_json"]))
             components = json.loads(str(row["component_refs_json"]))
             availability = json.loads(str(row["availability_json"]))
-            manifest = SignedManifest.from_dict(json.loads(str(row["publication_manifest_json"])))
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["publication_manifest_json"]))
+            )
             body = verify_manifest(manifest, self._trust_store)
         except Exception as exc:
             raise DurableJobError("rolling publication authority is corrupt") from exc
@@ -3796,12 +4262,18 @@ class DurableJobRepository:
             )
         )
         if not rows:
-            if connection.execute("SELECT 1 FROM v3_rolling_card_current LIMIT 1").fetchone():
-                raise DurableJobError("rolling current projection exists without status authority")
+            if connection.execute(
+                "SELECT 1 FROM v3_rolling_card_current LIMIT 1"
+            ).fetchone():
+                raise DurableJobError(
+                    "rolling current projection exists without status authority"
+                )
             return
         newest = rows[0]
         newest_value = _rolling_status_value(newest)
-        newest_manifest = SignedManifest.from_dict(json.loads(str(newest["status_manifest_json"])))
+        newest_manifest = SignedManifest.from_dict(
+            json.loads(str(newest["status_manifest_json"]))
+        )
         if (
             str(newest["status_digest"]) != canonical_digest(newest_value)
             or verify_manifest(newest_manifest, self._trust_store) != newest_value
@@ -3816,7 +4288,9 @@ class DurableJobRepository:
             return
         prior = rows[1]
         prior_value = _rolling_status_value(prior)
-        prior_manifest = SignedManifest.from_dict(json.loads(str(prior["status_manifest_json"])))
+        prior_manifest = SignedManifest.from_dict(
+            json.loads(str(prior["status_manifest_json"]))
+        )
         if (
             int(newest["status_sequence"]) != int(prior["status_sequence"]) + 1
             or str(newest["prior_status_digest"]) != str(prior["status_digest"])
@@ -3840,7 +4314,9 @@ class DurableJobRepository:
                 (competitor_id, target_context_digest),
             )
         )
-        publication_by_digest = {str(row["publication_digest"]): row for row in publications}
+        publication_by_digest = {
+            str(row["publication_digest"]): row for row in publications
+        }
         for publication in publications:
             self._verify_rolling_publication_material(publication)
         latest: dict[str, sqlite3.Row] = {}
@@ -3853,7 +4329,9 @@ class DurableJobRepository:
             (competitor_id, target_context_digest),
         ):
             value = _rolling_status_value(status)
-            manifest = SignedManifest.from_dict(json.loads(str(status["status_manifest_json"])))
+            manifest = SignedManifest.from_dict(
+                json.loads(str(status["status_manifest_json"]))
+            )
             if (
                 str(status["status_digest"]) != canonical_digest(value)
                 or verify_manifest(manifest, self._trust_store) != value
@@ -3890,7 +4368,9 @@ class DurableJobRepository:
             (competitor_id, target_context_digest),
         )
         if expected is not None:
-            connection.execute("INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", expected)
+            connection.execute(
+                "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", expected
+            )
 
     def _verify_rolling_reactions(self, connection: sqlite3.Connection) -> None:
         from itertools import groupby
@@ -3913,7 +4393,9 @@ class DurableJobRepository:
             )
         )
         expected: dict[str, tuple[EventEnvelope, ...]] = {}
-        for command_id, grouped in groupby(events, key=lambda event: str(event.command.command_id)):
+        for command_id, grouped in groupby(
+            events, key=lambda event: str(event.command.command_id)
+        ):
             batch = tuple(grouped)
             if any(event.kind in relevant for event in batch):
                 refs = [
@@ -3955,7 +4437,8 @@ class DurableJobRepository:
             if (
                 obligation["first_global_sequence"] != batch[0].global_sequence
                 or obligation["last_global_sequence"] != batch[-1].global_sequence
-                or obligation["event_ids"] != tuple(str(event.event_id) for event in batch)
+                or obligation["event_ids"]
+                != tuple(str(event.event_id) for event in batch)
             ):
                 raise DurableJobError("rolling reaction obligation event set differs")
             if row["completion_digest"] is not None:
@@ -3964,7 +4447,9 @@ class DurableJobRepository:
     def _verify_rolling_closures(self, connection: sqlite3.Connection) -> None:
         from strathmark.v3.contracts.events import EventEnvelope
 
-        for row in connection.execute("SELECT * FROM v3_rolling_epoch_closures ORDER BY epoch_id"):
+        for row in connection.execute(
+            "SELECT * FROM v3_rolling_epoch_closures ORDER BY epoch_id"
+        ):
             source = connection.execute(
                 "SELECT event_digest,envelope_json FROM v3_events WHERE global_sequence=?",
                 (row["source_global_sequence"],),
@@ -3980,7 +4465,9 @@ class DurableJobRepository:
                 "source_event_kind": str(row["source_event_kind"]),
                 "closed_at": str(row["closed_at"]),
             }
-            manifest = SignedManifest.from_dict(json.loads(str(row["closure_manifest_json"])))
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["closure_manifest_json"]))
+            )
             if (
                 str(source[0]) != event.event_digest
                 or event.event_digest != value["source_event_digest"]
@@ -3993,7 +4480,9 @@ class DurableJobRepository:
                 raise DurableJobError("rolling epoch closure authority differs")
 
     @staticmethod
-    def _rolling_close_lineage(connection: sqlite3.Connection, epoch_id: str, event: Any) -> bool:
+    def _rolling_close_lineage(
+        connection: sqlite3.Connection, epoch_id: str, event: Any
+    ) -> bool:
         from strathmark.v3.contracts.events import EventKind
 
         lineage = connection.execute(
@@ -4008,7 +4497,10 @@ class DurableJobRepository:
                 event.kind is EventKind.TOURNAMENT_CLOSED
                 and str(event.aggregate_id) == str(lineage[0])
             )
-            or (event.kind is EventKind.ROUND_CLOSED and str(event.aggregate_id) == str(lineage[1]))
+            or (
+                event.kind is EventKind.ROUND_CLOSED
+                and str(event.aggregate_id) == str(lineage[1])
+            )
         )
 
     def _append_rolling_status(
@@ -4150,7 +4642,9 @@ class DurableJobRepository:
                 eligible = tuple(
                     item
                     for item in current_records
-                    if not (gpu_busy and item.resource_class is JobResourceClass.LOCAL_GPU)
+                    if not (
+                        gpu_busy and item.resource_class is JobResourceClass.LOCAL_GPU
+                    )
                 )
                 if not eligible:
                     return None
@@ -4164,7 +4658,9 @@ class DurableJobRepository:
                         item.job_revision,
                     ),
                 )
-                expiry = min(_add_milliseconds(now, lease_duration_ms), record.hard_deadline_at)
+                expiry = min(
+                    _add_milliseconds(now, lease_duration_ms), record.hard_deadline_at
+                )
                 connection.execute(
                     "UPDATE v3_jobs SET state='leased', attempt_count=attempt_count+1, "
                     "fencing_token=fencing_token+1, not_before_at=NULL, lease_owner=?, "
@@ -4179,7 +4675,85 @@ class DurableJobRepository:
                         record.job_revision,
                     ),
                 )
-                leased = self._get_connection(connection, record.job_id, record.job_revision)
+                leased = self._get_connection(
+                    connection, record.job_id, record.job_revision
+                )
+                self._append_history(connection, "leased", record.state, leased, now)
+                return leased
+
+    def claim_exact(
+        self,
+        job_id: str,
+        job_revision: int,
+        *,
+        worker_id: str,
+        clock: ClockHook,
+        lease_duration_ms: int,
+    ) -> JobRecord | None:
+        """Lease one already-selected durable component without queue-order ambiguity."""
+
+        _job_identity(job_id, job_revision)
+        _require_token(worker_id, "worker id")
+        if not callable(clock):
+            raise DurableJobError("exact claim requires a trusted clock port")
+        _bounded_duration(lease_duration_ms)
+        with open_v3_connection(self.database_path) as connection:
+            with immediate_transaction(connection):
+                now = require_utc_milliseconds(clock())
+                self._reconcile_for_claim(connection, now)
+                record = self._get_connection(connection, job_id, job_revision)
+                if record.state is not JobState.QUEUED:
+                    return None
+                if record.not_before_at is None or record.not_before_at > now:
+                    return None
+                if record.hard_deadline_at <= now:
+                    return None
+                load = self._load(connection, record.lane)
+                if not decide_admission(
+                    self.capacity,
+                    record.lane,
+                    record.priority,
+                    load,
+                    for_claim=True,
+                ).admitted:
+                    return None
+                if not self._job_context_is_current(connection, record):
+                    self._finish(
+                        connection,
+                        record,
+                        JobState.STALE,
+                        now,
+                        reason="recombination_authority_changed",
+                    )
+                    return None
+                if (
+                    record.resource_class is JobResourceClass.LOCAL_GPU
+                    and connection.execute(
+                        "SELECT 1 FROM v3_jobs WHERE state='leased' AND resource_class=? LIMIT 1",
+                        (JobResourceClass.LOCAL_GPU.value,),
+                    ).fetchone()
+                ):
+                    return None
+                expiry = min(
+                    _add_milliseconds(now, lease_duration_ms), record.hard_deadline_at
+                )
+                connection.execute(
+                    "UPDATE v3_jobs SET state='leased', attempt_count=attempt_count+1, "
+                    "fencing_token=fencing_token+1, not_before_at=NULL, lease_owner=?, "
+                    "lease_acquired_at=?, lease_expires_at=?, terminal_reason=NULL, updated_at=? "
+                    "WHERE job_id=? AND job_revision=? AND state='queued'",
+                    (
+                        worker_id,
+                        now,
+                        expiry,
+                        now,
+                        record.job_id,
+                        record.job_revision,
+                    ),
+                )
+                leased = self._get_connection(
+                    connection, record.job_id, record.job_revision
+                )
                 self._append_history(connection, "leased", record.state, leased, now)
                 return leased
 
@@ -4200,14 +4774,18 @@ class DurableJobRepository:
                 current = self._require_lease(
                     connection, job_id, job_revision, worker_id, fencing_token, now
                 )
-                expiry = min(_add_milliseconds(now, extend_ms), current.hard_deadline_at)
+                expiry = min(
+                    _add_milliseconds(now, extend_ms), current.hard_deadline_at
+                )
                 connection.execute(
                     "UPDATE v3_jobs SET lease_expires_at=?, updated_at=? "
                     "WHERE job_id=? AND job_revision=?",
                     (expiry, now, job_id, job_revision),
                 )
                 result = self._get_connection(connection, job_id, job_revision)
-                self._append_history(connection, "heartbeat", current.state, result, now)
+                self._append_history(
+                    connection, "heartbeat", current.state, result, now
+                )
                 return result
 
     def commit_success(
@@ -4225,7 +4803,9 @@ class DurableJobRepository:
     ) -> JobRecord:
         _digest(result_digest, "result digest")
         if not callable(current_context) or not callable(clock):
-            raise DurableJobError("commit requires callable context and trusted clock ports")
+            raise DurableJobError(
+                "commit requires callable context and trusted clock ports"
+            )
         if publish is not None and not callable(publish):
             raise DurableJobError("publish hook must be callable")
         with open_v3_connection(self.database_path) as connection:
@@ -4237,10 +4817,14 @@ class DurableJobRepository:
                         and current.result_digest == result_digest
                     ):
                         return current
-                    raise JobConflict("job revision already has a different publication")
+                    raise JobConflict(
+                        "job revision already has a different publication"
+                    )
                 context = current_context(connection, current)
                 if not isinstance(context, tuple) or len(context) != 2:
-                    raise DurableJobError("current context port must return two digests")
+                    raise DurableJobError(
+                        "current context port must return two digests"
+                    )
                 current_evidence_digest = _digest(context[0], "current evidence digest")
                 current_bundle_digest = _digest(context[1], "current bundle digest")
                 now = require_utc_milliseconds(clock())
@@ -4263,8 +4847,12 @@ class DurableJobRepository:
                         "updated_at=? WHERE job_id=? AND job_revision=?",
                         (now, current.job_id, current.job_revision),
                     )
-                    result = self._get_connection(connection, current.job_id, current.job_revision)
-                    self._append_history(connection, "cancelled", current.state, result, now)
+                    result = self._get_connection(
+                        connection, current.job_id, current.job_revision
+                    )
+                    self._append_history(
+                        connection, "cancelled", current.state, result, now
+                    )
                     return result
                 if (
                     current.evidence_digest != current_evidence_digest
@@ -4275,7 +4863,9 @@ class DurableJobRepository:
                         if current.evidence_digest != current_evidence_digest
                         else "bundle_changed"
                     )
-                    return self._finish(connection, current, JobState.STALE, now, reason=reason)
+                    return self._finish(
+                        connection, current, JobState.STALE, now, reason=reason
+                    )
                 if not self._job_context_is_current(connection, current):
                     return self._finish(
                         connection,
@@ -4307,12 +4897,18 @@ class DurableJobRepository:
                     (result_digest, now, job_id, job_revision),
                 )
                 result = self._get_connection(connection, job_id, job_revision)
-                self._append_history(connection, "succeeded", current.state, result, now)
+                self._append_history(
+                    connection, "succeeded", current.state, result, now
+                )
                 return result
 
-    def _job_context_is_current(self, connection: sqlite3.Connection, record: JobRecord) -> bool:
+    def _job_context_is_current(
+        self, connection: sqlite3.Connection, record: JobRecord
+    ) -> bool:
         payload = record.payload()
-        if payload.get("schema_version") != ("strathmark-v3-weight-only-recombination-v1"):
+        if payload.get("schema_version") != (
+            "strathmark-v3-weight-only-recombination-v1"
+        ):
             return True
         try:
             self._verify_recombination_context(connection, payload)
@@ -4339,10 +4935,12 @@ class DurableJobRepository:
         ):
             raise DurableJobError("recombination epoch is closed")
         revision_digest = field.get("revision_digest")
-        content = {name: value for name, value in field.items() if name != "revision_digest"}
-        if revision_digest != canonical_digest(content) or revision_digest != payload.get(
-            "field_revision_digest"
-        ):
+        content = {
+            name: value for name, value in field.items() if name != "revision_digest"
+        }
+        if revision_digest != canonical_digest(
+            content
+        ) or revision_digest != payload.get("field_revision_digest"):
             raise DurableJobError("recombination field authority digest differs")
         ingress = connection.execute(
             "SELECT upstream_revision,tournament_id,round_id,snapshot_json "
@@ -4362,10 +4960,13 @@ class DurableJobRepository:
             int(ingress[0]) != payload.get("upstream_field_revision")
             or str(ingress[1]) != payload.get("tournament_id")
             or str(ingress[2]) != payload.get("round_id")
-            or snapshot.get("competitor_ids") != [item.get("competitor_id") for item in assignments]
-            or snapshot.get("stand_ids") != [item.get("stand_id") for item in assignments]
+            or snapshot.get("competitor_ids")
+            != [item.get("competitor_id") for item in assignments]
+            or snapshot.get("stand_ids")
+            != [item.get("stand_id") for item in assignments]
             or snapshot.get("target_context") != field.get("target_context")
-            or snapshot.get("capacity_authority_digest") != field.get("capacity_authority_digest")
+            or snapshot.get("capacity_authority_digest")
+            != field.get("capacity_authority_digest")
             or snapshot.get("max_field_entrants") != field.get("max_field_entrants")
             or snapshot.get("call_order") != field.get("call_order")
             or snapshot.get("scheduled_at") != field.get("scheduled_at")
@@ -4398,7 +4999,8 @@ class DurableJobRepository:
             or str(weight.round_id) != payload.get("round_id")
             or str(weight.epoch_id) != payload.get("tournament_epoch_id")
             or weight.epoch_digest != field.get("evidence_digest")
-            or weight.frozen_tournament_sequence != field.get("tournament_event_sequence")
+            or weight.frozen_tournament_sequence
+            != field.get("tournament_event_sequence")
         ):
             raise DurableJobError("recombination weight authority is not current")
         authority_event = connection.execute(
@@ -4423,8 +5025,12 @@ class DurableJobRepository:
         policy: RetryPolicy,
         provider_audit: ProviderExecutionAudit | None = None,
     ) -> JobRecord:
-        if not isinstance(failure_kind, FailureKind) or not isinstance(policy, RetryPolicy):
-            raise DurableJobError("failure handling requires typed kind and retry policy")
+        if not isinstance(failure_kind, FailureKind) or not isinstance(
+            policy, RetryPolicy
+        ):
+            raise DurableJobError(
+                "failure handling requires typed kind and retry policy"
+            )
         _require_reason(reason)
         now = require_utc_milliseconds(observed_at)
         with open_v3_connection(self.database_path) as connection:
@@ -4433,12 +5039,16 @@ class DurableJobRepository:
                     connection, job_id, job_revision, worker_id, fencing_token, now
                 )
                 if current.retry_policy_version != policy.version:
-                    raise JobConflict("job retry policy version differs from worker policy")
+                    raise JobConflict(
+                        "job retry policy version differs from worker policy"
+                    )
                 self._persist_provider_execution(
                     connection, current, provider_audit, "failed", reason, now
                 )
                 if failure_kind is FailureKind.VALIDATION:
-                    return self._finish(connection, current, JobState.INVALID, now, reason=reason)
+                    return self._finish(
+                        connection, current, JobState.INVALID, now, reason=reason
+                    )
                 if failure_kind is FailureKind.PERMANENT:
                     return self._finish(
                         connection,
@@ -4477,21 +5087,31 @@ class DurableJobRepository:
                     (not_before, reason, now, job_id, job_revision),
                 )
                 result = self._get_connection(connection, job_id, job_revision)
-                self._append_history(connection, "retryable-failed", current.state, result, now)
+                self._append_history(
+                    connection, "retryable-failed", current.state, result, now
+                )
                 return result
 
     def mark_invalid(self, *args: Any, reason: str, **kwargs: Any) -> JobRecord:
-        return self._terminal_from_lease(*args, target=JobState.INVALID, reason=reason, **kwargs)
+        return self._terminal_from_lease(
+            *args, target=JobState.INVALID, reason=reason, **kwargs
+        )
 
     def mark_stale(self, *args: Any, reason: str, **kwargs: Any) -> JobRecord:
-        return self._terminal_from_lease(*args, target=JobState.STALE, reason=reason, **kwargs)
+        return self._terminal_from_lease(
+            *args, target=JobState.STALE, reason=reason, **kwargs
+        )
 
-    def mark_permanent_failure(self, *args: Any, reason: str, **kwargs: Any) -> JobRecord:
+    def mark_permanent_failure(
+        self, *args: Any, reason: str, **kwargs: Any
+    ) -> JobRecord:
         return self._terminal_from_lease(
             *args, target=JobState.PERMANENT_FAILED, reason=reason, **kwargs
         )
 
-    def cancel(self, job_id: str, job_revision: int, *, observed_at: str, reason: str) -> JobRecord:
+    def cancel(
+        self, job_id: str, job_revision: int, *, observed_at: str, reason: str
+    ) -> JobRecord:
         _require_reason(reason)
         now = require_utc_milliseconds(observed_at)
         with open_v3_connection(self.database_path) as connection:
@@ -4511,7 +5131,9 @@ class DurableJobRepository:
                     (reason, now, job_id, job_revision),
                 )
                 result = self._get_connection(connection, job_id, job_revision)
-                self._append_history(connection, "cancelled", current.state, result, now)
+                self._append_history(
+                    connection, "cancelled", current.state, result, now
+                )
                 return result
 
     def health(
@@ -4526,7 +5148,9 @@ class DurableJobRepository:
             raise DurableJobError("health requires a request-scoped dependency probe")
         external = dependency_probe(now)
         if not isinstance(external, ReadinessDependencySnapshot):
-            raise DurableJobError("dependency probe must return a typed readiness snapshot")
+            raise DurableJobError(
+                "dependency probe must return a typed readiness snapshot"
+            )
         _positive(deadline_risk_window_ms, "deadline risk window")
         risk_at = _add_milliseconds(now, deadline_risk_window_ms)
         integrity_ready = True
@@ -4558,7 +5182,9 @@ class DurableJobRepository:
             integrity_ready = False
             active = []
             effective_expired = 0
-        depths = tuple((lane.value, sum(item.lane is lane for item in active)) for lane in JobLane)
+        depths = tuple(
+            (lane.value, sum(item.lane is lane for item in active)) for lane in JobLane
+        )
         leased = tuple(
             (
                 lane.value,
@@ -4598,7 +5224,9 @@ class DurableJobRepository:
             ("deadline_safe", integrity_ready and risk == 0),
         )
         required = tuple(
-            dict.fromkeys((*MANDATORY_REPOSITORY_FIELD_DEPENDENCIES, *external.required_for_field))
+            dict.fromkeys(
+                (*MANDATORY_REPOSITORY_FIELD_DEPENDENCIES, *external.required_for_field)
+            )
         )
         readiness = dict(dependencies)
         return QueueHealth(
@@ -4657,7 +5285,9 @@ class DurableJobRepository:
             (target.value, reason, observed_at, current.job_id, current.job_revision),
         )
         result = self._get_connection(connection, current.job_id, current.job_revision)
-        self._append_history(connection, target.value, current.state, result, observed_at)
+        self._append_history(
+            connection, target.value, current.state, result, observed_at
+        )
         return result
 
     def _require_lease(
@@ -4680,11 +5310,16 @@ class DurableJobRepository:
         ):
             raise JobConflict("worker does not hold the current fencing lease")
         assert current.lease_expires_at is not None
-        if observed_at >= current.lease_expires_at or observed_at >= current.hard_deadline_at:
+        if (
+            observed_at >= current.lease_expires_at
+            or observed_at >= current.hard_deadline_at
+        ):
             raise JobDeadlineExceeded("lease or hard deadline expired before commit")
         return current
 
-    def _reconcile_for_claim(self, connection: sqlite3.Connection, observed_at: str) -> None:
+    def _reconcile_for_claim(
+        self, connection: sqlite3.Connection, observed_at: str
+    ) -> None:
         rows = connection.execute(
             "SELECT * FROM v3_jobs WHERE state='leased' AND lease_expires_at<=?",
             (observed_at,),
@@ -4715,7 +5350,9 @@ class DurableJobRepository:
                     "updated_at=? WHERE job_id=? AND job_revision=?",
                     (observed_at, observed_at, current.job_id, current.job_revision),
                 )
-                result = self._get_connection(connection, current.job_id, current.job_revision)
+                result = self._get_connection(
+                    connection, current.job_id, current.job_revision
+                )
                 self._append_history(
                     connection, "lease_expired", current.state, result, observed_at
                 )
@@ -4747,8 +5384,12 @@ class DurableJobRepository:
                     "WHERE job_id=? AND job_revision=?",
                     (observed_at, current.job_id, current.job_revision),
                 )
-                result = self._get_connection(connection, current.job_id, current.job_revision)
-                self._append_history(connection, "requeued", current.state, result, observed_at)
+                result = self._get_connection(
+                    connection, current.job_id, current.job_revision
+                )
+                self._append_history(
+                    connection, "requeued", current.state, result, observed_at
+                )
         expired_rows = connection.execute(
             "SELECT * FROM v3_jobs WHERE state='queued' AND hard_deadline_at<=?",
             (observed_at,),
@@ -4766,9 +5407,9 @@ class DurableJobRepository:
     def _load(self, connection: sqlite3.Connection, lane: JobLane) -> QueueLoad:
         active = "('queued','leased','retryable-failed')"
         total = int(
-            connection.execute(f"SELECT COUNT(*) FROM v3_jobs WHERE state IN {active}").fetchone()[
-                0
-            ]
+            connection.execute(
+                f"SELECT COUNT(*) FROM v3_jobs WHERE state IN {active}"
+            ).fetchone()[0]
         )
         lane_active = int(
             connection.execute(
@@ -4799,7 +5440,10 @@ class DurableJobRepository:
         jitter_window = max(1, bounded // 4)
         material = f"{record.job_id}:{record.job_revision}:{record.attempt_count}:"
         material += f"{failure_kind.value}:{reason}"
-        jitter = int(hashlib.sha256(material.encode("utf-8")).hexdigest()[:8], 16) % jitter_window
+        jitter = (
+            int(hashlib.sha256(material.encode("utf-8")).hexdigest()[:8], 16)
+            % jitter_window
+        )
         return min(policy.maximum_delay_ms, bounded + jitter)
 
     def _persist_provider_execution(
@@ -4816,16 +5460,38 @@ class DurableJobRepository:
         if not isinstance(audit, ProviderExecutionAudit):
             raise DurableJobError("provider execution audit must be typed")
         if audit.status != status or audit.reason != reason:
-            raise JobConflict("provider execution audit outcome differs from transition")
+            raise JobConflict(
+                "provider execution audit outcome differs from transition"
+            )
         payload = current.payload()
-        packet = payload.get("provider_packet")
+        nested_llm = payload.get("llm_job_payload")
+        execution_payload = nested_llm if isinstance(nested_llm, Mapping) else payload
+        packet = execution_payload.get("provider_packet")
         pin = json.loads(audit.member_pin_json)
-        if (
-            not isinstance(packet, Mapping)
-            or packet.get("provider_id") != audit.provider_id
-            or pin.get("member_manifest_digest") != payload.get("member_manifest_digest")
-        ):
-            raise JobConflict("provider execution audit differs from persisted job pins")
+        numeric_component = (
+            payload.get("schema_version") == "strathmark-v3-rolling-component-job-v1"
+            and payload.get("component_id") in {"formula", "ml"}
+            and audit.provider_id == f"{payload.get('component_id')}.runtime"
+            and audit.member_id == payload.get("component_id")
+            and pin.get("schema_version") == "strathmark-v3-numeric-provider-pin-v1"
+            and pin.get("assessor") == payload.get("component_id")
+            and pin.get("bundle_digest") == current.bundle_digest
+            and isinstance(pin.get("artifact_digest"), str)
+            and len(pin["artifact_digest"]) == 64
+            and all(
+                character in "0123456789abcdef" for character in pin["artifact_digest"]
+            )
+        )
+        llm_component = (
+            isinstance(packet, Mapping)
+            and packet.get("provider_id") == audit.provider_id
+            and pin.get("member_manifest_digest")
+            == execution_payload.get("member_manifest_digest")
+        )
+        if not numeric_component and not llm_component:
+            raise JobConflict(
+                "provider execution audit differs from persisted job pins"
+            )
         execution = audit.to_dict()
         execution_json = canonical_bytes(execution).decode("utf-8")
         authority_payload = {
@@ -4917,7 +5583,9 @@ class DurableJobRepository:
             )
             signed = verify_manifest(authority, self._trust_store)
         except Exception as exc:
-            raise DurableJobError("provider execution audit failed integrity verification") from exc
+            raise DurableJobError(
+                "provider execution audit failed integrity verification"
+            ) from exc
         expected_signed = {
             "schema_version": "strathmark-v3-provider-execution-authority-v1",
             "job_id": str(row["job_id"]),
@@ -4950,9 +5618,13 @@ class DurableJobRepository:
             "AND fencing_token=? ORDER BY attempt_ordinal",
             (row["job_id"], row["job_revision"], row["fencing_token"]),
         ).fetchall()
-        if len(attempt_rows) != len(audit.attempts) or len(storage_rows) != len(audit.attempts):
+        if len(attempt_rows) != len(audit.attempts) or len(storage_rows) != len(
+            audit.attempts
+        ):
             raise DurableJobError("provider execution normalized audit rows differ")
-        for expected, attempt_row, storage_row in zip(audit.attempts, attempt_rows, storage_rows):
+        for expected, attempt_row, storage_row in zip(
+            audit.attempts, attempt_rows, storage_rows
+        ):
             storage = expected.storage_reference
             if (
                 int(attempt_row["attempt_ordinal"]) != expected.ordinal
@@ -4965,10 +5637,14 @@ class DurableJobRepository:
                 or storage_row["reference_json"] != storage.reference_json
                 or storage_row["reference_digest"] != storage.reference_digest
             ):
-                raise DurableJobError("provider execution normalized audit material differs")
+                raise DurableJobError(
+                    "provider execution normalized audit material differs"
+                )
         return audit
 
-    def _install_job_spec(self, connection: sqlite3.Connection, record: JobRecord) -> str:
+    def _install_job_spec(
+        self, connection: sqlite3.Connection, record: JobRecord
+    ) -> str:
         value = _job_spec_value(record)
         digest = canonical_digest(value)
         manifest = sign_manifest(
@@ -4997,7 +5673,9 @@ class DurableJobRepository:
             digest = hashlib.sha256()
             count = 0
             for row in connection.execute(f"SELECT * FROM {table} ORDER BY {ordering}"):
-                encoded = canonical_bytes(list(row), max_bytes=4_194_304, max_items=4_096)
+                encoded = canonical_bytes(
+                    list(row), max_bytes=4_194_304, max_items=4_096
+                )
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
                 count += 1
@@ -5027,7 +5705,9 @@ class DurableJobRepository:
         latest: dict[tuple[str, int], tuple[Any, ...]] = {}
         prior = ZERO_DIGEST
         for expected_sequence, row in enumerate(
-            connection.execute("SELECT * FROM v3_job_history ORDER BY history_sequence"),
+            connection.execute(
+                "SELECT * FROM v3_job_history ORDER BY history_sequence"
+            ),
             start=1,
         ):
             key = (str(row["job_id"]), int(row["job_revision"]))
@@ -5052,8 +5732,13 @@ class DurableJobRepository:
                 raise DurableJobError("legacy job history authority differs")
             previous = latest.get(key)
             if previous is None:
-                if str(row["operation_kind"]) != "queued" or row["from_state"] is not None:
-                    raise DurableJobError("legacy job history does not begin with queued")
+                if (
+                    str(row["operation_kind"]) != "queued"
+                    or row["from_state"] is not None
+                ):
+                    raise DurableJobError(
+                        "legacy job history does not begin with queued"
+                    )
                 queued[key] = _record_with_history_snapshot(record, row)
             elif row["from_state"] != previous[0]:
                 raise DurableJobError("legacy job history states are not contiguous")
@@ -5094,7 +5779,9 @@ class DurableJobRepository:
             "created_at": str(row["created_at"]),
         }
         try:
-            manifest = SignedManifest.from_dict(json.loads(str(row["cutover_manifest_json"])))
+            manifest = SignedManifest.from_dict(
+                json.loads(str(row["cutover_manifest_json"]))
+            )
         except Exception as exc:
             raise DurableJobError("job spec cutover authority is invalid") from exc
         history_tip = connection.execute(
@@ -5122,10 +5809,14 @@ class DurableJobRepository:
             "SELECT legacy_history_sequence FROM v3_job_spec_cutovers WHERE cutover_sequence=1"
         ).fetchone()
         legacy_cutover_sequence = 0 if legacy_row is None else int(legacy_row[0])
-        for row in connection.execute("SELECT * FROM v3_job_specs ORDER BY job_id,job_revision"):
+        for row in connection.execute(
+            "SELECT * FROM v3_job_specs ORDER BY job_id,job_revision"
+        ):
             try:
                 value = json.loads(str(row["spec_json"]))
-                manifest = SignedManifest.from_dict(json.loads(str(row["spec_manifest_json"])))
+                manifest = SignedManifest.from_dict(
+                    json.loads(str(row["spec_manifest_json"]))
+                )
                 record = _job_record_from_spec(value)
             except Exception as exc:
                 raise DurableJobError("job spec authority is invalid") from exc
@@ -5143,7 +5834,9 @@ class DurableJobRepository:
         prior = ZERO_DIGEST
         latest: dict[tuple[str, int], tuple[Any, ...]] = {}
         for expected_sequence, row in enumerate(
-            connection.execute("SELECT * FROM v3_job_history ORDER BY history_sequence"),
+            connection.execute(
+                "SELECT * FROM v3_job_history ORDER BY history_sequence"
+            ),
             start=1,
         ):
             key = (str(row["job_id"]), int(row["job_revision"]))
@@ -5176,7 +5869,10 @@ class DurableJobRepository:
                 raise DurableJobError("job history does not bind current job material")
             previous = latest.get(key)
             if previous is None:
-                if str(row["operation_kind"]) != "queued" or row["from_state"] is not None:
+                if (
+                    str(row["operation_kind"]) != "queued"
+                    or row["from_state"] is not None
+                ):
                     raise DurableJobError("job history does not begin with queued")
             elif row["from_state"] != previous[0]:
                 raise DurableJobError("job history states are not contiguous")
@@ -5275,7 +5971,9 @@ class DurableJobRepository:
         )
 
     @staticmethod
-    def _job_spec_digest(connection: sqlite3.Connection, job_id: str, job_revision: int) -> str:
+    def _job_spec_digest(
+        connection: sqlite3.Connection, job_id: str, job_revision: int
+    ) -> str:
         row = connection.execute(
             "SELECT spec_digest FROM v3_job_specs WHERE job_id=? AND job_revision=?",
             (job_id, job_revision),
@@ -5337,7 +6035,9 @@ class DurableJobRepository:
             payload = record.payload()
             capacity_use = record.capacity_use()
             if (
-                canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES).decode("utf-8")
+                canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES).decode(
+                    "utf-8"
+                )
                 != record.payload_json
                 or canonical_digest(payload) != record.payload_digest
                 or canonical_bytes(capacity_use.to_dict()).decode("utf-8")
@@ -5376,16 +6076,21 @@ class DurableJobRepository:
                 str(history["prior_history_digest"]) != expected_prior
                 or str(history["history_digest"]) != canonical_digest(value)
                 or verify_manifest(manifest, self._trust_store) != value
-                or str(history["job_material_digest"]) != _record_material_digest(record)
+                or str(history["job_material_digest"])
+                != _record_material_digest(record)
                 or _history_snapshot(history) != _record_snapshot(record)
             ):
-                raise DurableJobError("job projection differs from signed local authority")
+                raise DurableJobError(
+                    "job projection differs from signed local authority"
+                )
             publication = connection.execute(
                 "SELECT * FROM v3_job_publications WHERE job_id=? AND job_revision=?",
                 (record.job_id, record.job_revision),
             ).fetchone()
             if (publication is not None) != (record.state is JobState.SUCCEEDED):
-                raise DurableJobError("job publication differs from local succeeded state")
+                raise DurableJobError(
+                    "job publication differs from local succeeded state"
+                )
             if publication is not None:
                 publication_value = _publication_value(publication)
                 publication_manifest = SignedManifest(
@@ -5398,8 +6103,10 @@ class DurableJobRepository:
                 if (
                     int(publication["fencing_token"]) != record.fencing_token
                     or str(publication["result_digest"]) != record.result_digest
-                    or publication_value["job_material_digest"] != _record_material_digest(record)
-                    or verify_manifest(publication_manifest, self._trust_store) != publication_value
+                    or publication_value["job_material_digest"]
+                    != _record_material_digest(record)
+                    or verify_manifest(publication_manifest, self._trust_store)
+                    != publication_value
                 ):
                     raise DurableJobError("job publication local authority differs")
 
@@ -5412,7 +6119,9 @@ class DurableJobRepository:
             payload = record.payload()
             capacity_use = record.capacity_use()
             if (
-                canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES).decode("utf-8")
+                canonical_bytes(payload, max_bytes=MAX_JOB_PAYLOAD_BYTES).decode(
+                    "utf-8"
+                )
                 != record.payload_json
                 or canonical_digest(payload) != record.payload_digest
                 or canonical_bytes(capacity_use.to_dict()).decode("utf-8")
@@ -5427,7 +6136,9 @@ class DurableJobRepository:
             if not validate_capacity_use(self.capacity, capacity_use).admitted:
                 raise DurableJobError("persisted job exceeds operational capacity")
         if self._replay_job_projection_authority(connection) != jobs:
-            raise DurableJobError("job projection differs from signed spec and history authority")
+            raise DurableJobError(
+                "job projection differs from signed spec and history authority"
+            )
         latest: dict[tuple[str, int], tuple[Any, ...]] = {}
         prior = ZERO_DIGEST
         rows = connection.execute(
@@ -5474,16 +6185,22 @@ class DurableJobRepository:
             (str(row["job_id"]), int(row["job_revision"])): row
             for row in connection.execute("SELECT * FROM v3_job_publications")
         }
-        succeeded = {key for key, record in jobs.items() if record.state is JobState.SUCCEEDED}
+        succeeded = {
+            key for key, record in jobs.items() if record.state is JobState.SUCCEEDED
+        }
         if set(publications) != succeeded:
-            raise DurableJobError("job publications do not exactly match succeeded revisions")
+            raise DurableJobError(
+                "job publications do not exactly match succeeded revisions"
+            )
         for key, row in publications.items():
             record = jobs[key]
             if (
                 int(row["fencing_token"]) != record.fencing_token
                 or str(row["result_digest"]) != record.result_digest
             ):
-                raise DurableJobError("job publication differs from its succeeded projection")
+                raise DurableJobError(
+                    "job publication differs from its succeeded projection"
+                )
             payload = _publication_value(row)
             authority = SignedManifest(
                 "job_publication",
@@ -5509,7 +6226,9 @@ class DurableJobRepository:
         ):
             key = (str(row["job_id"]), int(row["job_revision"]))
             if key not in jobs:
-                raise DurableJobError("provider execution audit references unknown work")
+                raise DurableJobError(
+                    "provider execution audit references unknown work"
+                )
             transition = connection.execute(
                 "SELECT operation_kind FROM v3_job_history WHERE job_id=? AND job_revision=? "
                 "AND fencing_token=? AND operation_kind IN ('succeeded', 'invalid', "
@@ -5521,7 +6240,9 @@ class DurableJobRepository:
                     "provider execution audit lacks a terminal attempt transition"
                 )
             if (row["status"] == "succeeded") != (transition[0] == "succeeded"):
-                raise DurableJobError("provider execution audit status differs from job history")
+                raise DurableJobError(
+                    "provider execution audit status differs from job history"
+                )
             self._decode_provider_execution(connection, row)
 
     @staticmethod
@@ -5542,7 +6263,9 @@ def _rolling_job_epoch_id(payload: Mapping[str, Any]) -> str | None:
     schema = payload.get("schema_version")
     if schema == "strathmark-v3-rolling-component-job-v1":
         card_key = payload.get("card_key")
-        value = card_key.get("tournament_epoch_id") if isinstance(card_key, dict) else None
+        value = (
+            card_key.get("tournament_epoch_id") if isinstance(card_key, dict) else None
+        )
     elif schema == "strathmark-v3-weight-only-recombination-v1":
         value = payload.get("tournament_epoch_id")
     else:
@@ -5572,7 +6295,9 @@ def _decode(row: sqlite3.Row) -> JobRecord:
         attempt_count=int(row["attempt_count"]),
         max_attempts=int(row["max_attempts"]),
         initial_not_before_at=str(row["initial_not_before_at"]),
-        not_before_at=(None if row["not_before_at"] is None else str(row["not_before_at"])),
+        not_before_at=(
+            None if row["not_before_at"] is None else str(row["not_before_at"])
+        ),
         hard_deadline_at=str(row["hard_deadline_at"]),
         lease_owner=None if row["lease_owner"] is None else str(row["lease_owner"]),
         lease_acquired_at=(
@@ -5582,8 +6307,12 @@ def _decode(row: sqlite3.Row) -> JobRecord:
             None if row["lease_expires_at"] is None else str(row["lease_expires_at"])
         ),
         fencing_token=int(row["fencing_token"]),
-        terminal_reason=(None if row["terminal_reason"] is None else str(row["terminal_reason"])),
-        result_digest=(None if row["result_digest"] is None else str(row["result_digest"])),
+        terminal_reason=(
+            None if row["terminal_reason"] is None else str(row["terminal_reason"])
+        ),
+        result_digest=(
+            None if row["result_digest"] is None else str(row["result_digest"])
+        ),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -5733,9 +6462,15 @@ def _record_with_history_snapshot(record: JobRecord, row: sqlite3.Row) -> JobRec
         lease_expires_at=(
             None if row["lease_expires_at"] is None else str(row["lease_expires_at"])
         ),
-        not_before_at=(None if row["not_before_at"] is None else str(row["not_before_at"])),
-        terminal_reason=(None if row["terminal_reason"] is None else str(row["terminal_reason"])),
-        result_digest=(None if row["result_digest"] is None else str(row["result_digest"])),
+        not_before_at=(
+            None if row["not_before_at"] is None else str(row["not_before_at"])
+        ),
+        terminal_reason=(
+            None if row["terminal_reason"] is None else str(row["terminal_reason"])
+        ),
+        result_digest=(
+            None if row["result_digest"] is None else str(row["result_digest"])
+        ),
         updated_at=str(row["observed_at"]),
     )
 
@@ -5814,11 +6549,15 @@ def _history_value(row: sqlite3.Row) -> dict[str, Any]:
         "lease_expires_at": (
             None if row["lease_expires_at"] is None else str(row["lease_expires_at"])
         ),
-        "not_before_at": (None if row["not_before_at"] is None else str(row["not_before_at"])),
+        "not_before_at": (
+            None if row["not_before_at"] is None else str(row["not_before_at"])
+        ),
         "terminal_reason": (
             None if row["terminal_reason"] is None else str(row["terminal_reason"])
         ),
-        "result_digest": (None if row["result_digest"] is None else str(row["result_digest"])),
+        "result_digest": (
+            None if row["result_digest"] is None else str(row["result_digest"])
+        ),
         "observed_at": str(row["observed_at"]),
         "prior_history_digest": str(row["prior_history_digest"]),
         "job_material_digest": str(row["job_material_digest"]),
@@ -5961,15 +6700,19 @@ def _bounded_duration(value: object) -> int:
 
 
 def _milliseconds(timestamp: str) -> int:
-    moment = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    moment = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=timezone.utc
+    )
     return int(moment.timestamp() * 1000)
 
 
 def _add_milliseconds(timestamp: str, milliseconds: int) -> str:
-    moment = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
-    return (moment + timedelta(milliseconds=milliseconds)).strftime("%Y-%m-%dT%H:%M:%S.%f")[
-        :-3
-    ] + "Z"
+    moment = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=timezone.utc
+    )
+    return (moment + timedelta(milliseconds=milliseconds)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
 
 
 __all__ = [

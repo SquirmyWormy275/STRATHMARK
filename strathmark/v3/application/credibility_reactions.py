@@ -497,11 +497,18 @@ class SQLiteCredibilityReactionService:
         self._policy = policy
         self._policy_digest = str(policy_payload["policy_digest"])
         self._policy_manifest_digest = policy_manifest.manifest.body_digest
+        self._component_digest = canonical_digest(policy_payload)
         self._verify_persisted_policy()
 
     @property
     def database_path(self) -> Path:
         return self._events.database_path
+
+    @property
+    def component_digest(self) -> str:
+        """Bundle component identity for the complete verified policy authority."""
+
+        return self._component_digest
 
     def _verify_persisted_policy(self) -> None:
         with open_v3_connection(self.database_path, read_only=True) as connection:

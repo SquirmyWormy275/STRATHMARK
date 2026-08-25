@@ -29,12 +29,13 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     wheels = tuple(dist.glob("*.whl"))
     assert len(wheels) == 1
     wheel = wheels[0]
+    assert wheel.name.startswith("strathmark-3.0.0rc1-")
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
     assert "strathmark/v3/contracts/v3_consumer.openapi.json" in names
     assert "strathmark/v3/contracts/v3_consumer.openapi.sha256" in names
     assert "strathmark/v3/contracts/windows_capacity_manifest.json" in names
-    assert "strathmark/v3/contracts/v3_release_attestation.json" in names
+    assert "strathmark/v3/contracts/v3_release_attestation.json" not in names
     assert "strathmark/v3/contracts/v3-release.lock" in names
     assert "strathmark/contracts/shadow_consumer_v1.openapi.json" in names
 
@@ -71,10 +72,7 @@ from strathmark.v3.consumer_contract import (
     v3_consumer_contract_digest,
 )
 from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
-from strathmark.v3.application.cutover import (
-    verify_release_attestation,
-    verify_windows_capacity_manifest,
-)
+from strathmark.v3.application.cutover import verify_windows_capacity_manifest
 from strathmark.v3.application.operations import (
     FieldDisposition,
     RaceDayField,
@@ -85,12 +83,10 @@ from importlib.resources import files
 import json
 import re
 from importlib.metadata import version
-from strathmark.v3.infrastructure.integrity import (
-    IntegrityKeyIdentity,
-    IntegrityTrustStore,
-    SignedManifest,
-)
+import strathmark
 v3 = load_v3_consumer_contract()
+assert strathmark.__version__ == "3.0.0rc1"
+assert version("strathmark") == "3.0.0rc1"
 assert set(v3["paths"]) == EXPECTED_V3_CONSUMER_PATHS
 assert all(path.startswith("/v3/") for path in v3["paths"])
 assert len(v3_consumer_contract_digest()) == 64
@@ -107,15 +103,6 @@ capacity = json.loads(
     files("strathmark.v3.contracts").joinpath("windows_capacity_manifest.json").read_text("utf-8")
 )
 assert verify_windows_capacity_manifest(capacity)["candidate_tier"] == "rehearsal"
-release_wrapper = json.loads(
-    files("strathmark.v3.contracts").joinpath("v3_release_attestation.json").read_text("utf-8")
-)
-release_identity = IntegrityKeyIdentity.from_dict(release_wrapper["signer_identity"])
-release_payload = verify_release_attestation(
-    SignedManifest.from_dict(release_wrapper["attestation"]),
-    trust_store=IntegrityTrustStore((release_identity,)),
-)
-assert release_payload["tier"] == "rehearsal"
 lock_lines = files("strathmark.v3.contracts").joinpath("v3-release.lock").read_text("utf-8").splitlines()
 assert "cryptography==46.0.5" in lock_lines
 assert "fastapi==0.135.1" in lock_lines

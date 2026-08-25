@@ -16,11 +16,11 @@ source: "CEO + Eng plan-review sessions 2026-03-23; TODOS.md TODO-001..011"
 
 # Ensemble Predictor — Design Decisions and Deferred Scope
 
-> **Superseded by Prediction Engine V2.** This document preserves a pre-2.0 proposal
-> for historical context. Its cascade, numeric-LLM, name-keyed ledger, and ensemble
-> backlog are not active requirements. See
-> [`docs/PREDICTION_ENGINE_V2.md`](../../PREDICTION_ENGINE_V2.md) and the current
-> [`TODOS.md`](../../../TODOS.md).
+> **Historical lineage.** V2 superseded this pre-2.0 design. V3 later introduced a new,
+> independently specified adaptive ensemble; it does not reactivate this proposal.
+> Use [`docs/PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md) for implemented V3,
+> [`docs/PREDICTION_ENGINE_V2.md`](../../PREDICTION_ENGINE_V2.md) for preserved V2, and
+> retain this page only as decision history.
 
 ## Historical context
 The CEO and eng reviews on 2026-03-23 produced a comprehensive design for a future ensemble predictor — a meta-learner that would blend outputs from the Manual/LLM/ML/Baseline tiers using learned weights rather than the current first-valid-wins cascade. The work is tracked in [`TODOS.md`](../../../TODOS.md) as TODO-001..011.

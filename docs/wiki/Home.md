@@ -1,36 +1,37 @@
 # STRATHMARK Wiki
 
-STRATHMARK 2.0.0 is an offline-capable woodchopping prediction and handicap-mark
-engine. It uses strictly prior evidence, returns calibrated positive finish-time
-distributions, and assigns marks jointly for a field.
+## Current authority status
 
-Start with the mandatory [Woodchopping Handicap Foundations](Handicap-Mark-Math) domain
-guide. Then read [Prediction Engine V2](Prediction-Engine-V2) and follow the [Quick
-Start](Quick-Start) or [REST API](REST-API).
+V3 is an implemented release candidate under exact-source verification. Its older
+rehearsal is stale after current source changes. V2 remains the trusted production
+authority until an explicit cutover. No production authority has changed, no consumer
+endpoint has switched, and V2 is not audit-only.
 
-## Stable rules
+STRATHMARK is an offline-capable woodchopping prediction and handicap-mark system. V3
+adds independent formula, hierarchical ML, and numeric LLM-council forecasts; automatic
+accuracy-earned weighting; full-field Mark-3 rebasing; between-round capability updates;
+and a fast exception-first judge workflow. The local event store remains race-day
+numeric authority and cloud services are never required to issue or settle a race.
 
-- Mark floor 3; system ceiling 183, with lower event ceilings allowed.
-- One exclusive UTC cutoff and one immutable model bundle per request.
-- Active factors: stable identity/history, event, prior dates, diameter, species
-  physical properties, and gender including missing.
-- Unverified tournament, venue, material, condition, and status factors are numeric
-  no-ops.
-- Forecast interval and race-performance `std_dev` are separate quantities.
-- Numeric LLM prediction is retired; LLMs are narrative-only.
-- The deterministic joint optimizer uses 2,048 samples and a rounded-gap fallback.
-- Public prediction routes are stateless; trusted logging is explicit and authenticated.
+## Start here
 
-## Release evidence
+1. [Handicap foundations](Handicap-Mark-Math.md) — mandatory timeless domain reading.
+2. [Prediction Engine V3](Prediction-Engine-V3.md) — implemented successor and pivot.
+3. [Architecture](Architecture-Overview.md) — V2/V3 system boundaries.
+4. [Deployment](Deployment.md) — rehearsal, recovery, and cutover.
+5. [STRATHEX consumer](STRATHEX-Consumer.md) — upstream authority and adapter contract.
+6. [Historical V2 engine](Prediction-Engine-V2.md) — production engine until cutover.
 
-The frozen 128-row temporal benchmark recorded V2 core MAE 16.1301 seconds versus
-20.5172, RMSE 33.6904 versus 44.4791, and 94.53% coverage for the nominal 90%
-interval. These results are specific to the checked-in workbook and split and do not
-prove universal accuracy or actual equal finishes.
+## What must not be confused
 
-## Where it fits
+- A smaller mark starts earlier; a larger mark waits longer.
+- A displayed mark is field-relative. Reconstruct and rebase every later-round field.
+- Same-round heats use one epoch; results enter at the next round boundary.
+- Both faster and slower valid performances update evidence, but no model infers motive.
+- Once a sheet is issued, the first legal completion wins. No adjusted placing exists.
+- STRATHMARK authenticates one upstream service. Human RBAC and official results remain
+  in the tournament manager.
+- A rehearsal attestation is not a production attestation and never switches authority.
 
-STRATHMARK is a calculation library, not tournament-management software. STRATHEX and
-other scoring applications call it so prediction and mark logic live in one versioned
-place. Future tournament software may collect currently unavailable factors, but those
-fields remain inactive until a later model validates them.
+The canonical repository documentation is [Onboarding](../../ONBOARDING.md) and
+[Prediction Engine V3](../PREDICTION_ENGINE_V3.md).

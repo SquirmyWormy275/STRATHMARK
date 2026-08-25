@@ -23,12 +23,54 @@ OFFLINE_OR_DEDICATED_CREDENTIAL_COMMANDS = frozenset(
         CommandKind.RECOVER_SERVICE_CREDENTIAL,
     }
 )
+GENERIC_ONLINE_COMMAND_KINDS = frozenset(
+    {
+        CommandKind.REVISE_TOURNAMENT_SNAPSHOT,
+        CommandKind.REVISE_ROUND_SNAPSHOT,
+        CommandKind.CONFIGURE_TOURNAMENT,
+        CommandKind.OPEN_TOURNAMENT,
+        CommandKind.CLOSE_TOURNAMENT,
+        CommandKind.CONFIGURE_ROUND,
+        CommandKind.FREEZE_ROUND,
+        CommandKind.BEGIN_ROUND_CLOSING,
+        CommandKind.CLOSE_ROUND,
+        CommandKind.SUPERSEDE_FIELD,
+        CommandKind.REGENERATE_FIELD,
+        CommandKind.RECORD_RESULT,
+        CommandKind.CORRECT_RESULT,
+        CommandKind.VOID_RESULT,
+        CommandKind.COMPLETE_DERIVATION_REACTION,
+        CommandKind.COMPLETE_DERIVATION_SEQUENCE,
+        CommandKind.RECORD_CAPABILITY_UPDATE,
+        CommandKind.REBASE_CAPABILITY_STATE,
+        CommandKind.CHANGE_WEIGHTS,
+        CommandKind.RECORD_APPROVAL_DECISION,
+        CommandKind.OPTIMIZE_FIELD,
+        CommandKind.SETTLE_FIELD,
+        CommandKind.CREATE_MODEL_CANDIDATE,
+        CommandKind.PROMOTE_BUNDLE,
+        CommandKind.ROLLBACK_BUNDLE,
+        CommandKind.RECORD_MONITORING,
+        CommandKind.SUSPEND_LIVE,
+        CommandKind.RESUME_LIVE,
+        CommandKind.EMERGENCY_STOP,
+        CommandKind.QUEUE_JOB,
+        CommandKind.LEASE_JOB,
+        CommandKind.SUCCEED_JOB,
+        CommandKind.INVALIDATE_JOB,
+        CommandKind.RECORD_RETRYABLE_JOB_FAILURE,
+        CommandKind.REQUEUE_JOB,
+        CommandKind.MARK_JOB_STALE,
+        CommandKind.RECORD_PERMANENT_JOB_FAILURE,
+        CommandKind.CANCEL_JOB,
+    }
+)
 OnlineCommandKind = Enum(
     "OnlineCommandKind",
     {
         item.name: item.value
         for item in CommandKind
-        if item not in OFFLINE_OR_DEDICATED_CREDENTIAL_COMMANDS
+        if item in GENERIC_ONLINE_COMMAND_KINDS
     },
     type=str,
     module=__name__,
@@ -85,16 +127,23 @@ class ExecuteCommandRequest(StrictV3Model):
             encoded = canonical_bytes(parsed, max_bytes=65_536)
         except Exception as exc:
             raise ValueError("command payload must be bounded canonical JSON") from exc
-        if not isinstance(parsed, dict) or encoded.decode("utf-8") != self.canonical_payload_json:
+        if (
+            not isinstance(parsed, dict)
+            or encoded.decode("utf-8") != self.canonical_payload_json
+        ):
             raise ValueError("command payload must be a canonical JSON object")
         if parsed.get("schema_version") != self.payload_schema_version:
-            raise ValueError("command payload schema version does not match its envelope")
+            raise ValueError(
+                "command payload schema version does not match its envelope"
+            )
         if hashlib.sha256(encoded).hexdigest() != self.payload_digest:
             raise ValueError("command payload digest does not match canonical bytes")
-        versions = tuple((item.aggregate_id, item.version) for item in self.expected_versions)
-        if versions != tuple(sorted(versions)) or len({item[0] for item in versions}) != len(
-            versions
-        ):
+        versions = tuple(
+            (item.aggregate_id, item.version) for item in self.expected_versions
+        )
+        if versions != tuple(sorted(versions)) or len(
+            {item[0] for item in versions}
+        ) != len(versions):
             raise ValueError("expected versions must be unique and sorted")
         if self.target_aggregate not in {item[0] for item in versions}:
             raise ValueError("expected versions must include the target aggregate")
@@ -123,7 +172,10 @@ class ExecuteCommandResponse(StrictV3Model):
             encoded = canonical_bytes(parsed, max_bytes=1_048_576)
         except Exception as exc:
             raise ValueError("command result must be bounded canonical JSON") from exc
-        if not isinstance(parsed, dict) or encoded.decode("utf-8") != self.canonical_result_json:
+        if (
+            not isinstance(parsed, dict)
+            or encoded.decode("utf-8") != self.canonical_result_json
+        ):
             raise ValueError("command result must be a canonical JSON object")
         if hashlib.sha256(encoded).hexdigest() != self.result_digest:
             raise ValueError("command result digest does not match canonical bytes")
@@ -153,7 +205,8 @@ class AssembleFieldRequest(StrictV3Model):
         if len(set(self.ordered_competitor_ids)) != len(self.ordered_competitor_ids):
             raise ValueError("ordered competitor IDs must be unique")
         if any(
-            __import__("re").fullmatch(_ID, value) is None for value in self.ordered_competitor_ids
+            __import__("re").fullmatch(_ID, value) is None
+            for value in self.ordered_competitor_ids
         ):
             raise ValueError("ordered competitor IDs must be namespaced identifiers")
         return self
@@ -191,7 +244,9 @@ class ReceiptLookupResponse(StrictV3Model):
     def _complete_result(self) -> ReceiptLookupResponse:
         present = (self.receipt_id, self.receipt_digest, self.canonical_receipt_json)
         if self.found != all(value is not None for value in present):
-            raise ValueError("receipt lookup result must be complete exactly when found")
+            raise ValueError(
+                "receipt lookup result must be complete exactly when found"
+            )
         return self
 
 
@@ -238,7 +293,9 @@ class ResultRow(StrictV3Model):
             self.raw_time_ms is None or self.penalty_ms is not None
         ):
             raise ValueError("completion requires raw time and no penalty")
-        if self.status == "penalty" and (self.raw_time_ms is None or self.penalty_ms is None):
+        if self.status == "penalty" and (
+            self.raw_time_ms is None or self.penalty_ms is None
+        ):
             raise ValueError("penalty requires raw time and penalty")
         if self.status not in {"completion", "penalty"} and (
             self.raw_time_ms is not None or self.penalty_ms is not None
@@ -274,7 +331,9 @@ class SettlementResponse(StrictV3Model):
 
 
 class StatusResponse(StrictV3Model):
-    schema_version: Literal["strathmark-v3-status-response-v1"] = "strathmark-v3-status-response-v1"
+    schema_version: Literal["strathmark-v3-status-response-v1"] = (
+        "strathmark-v3-status-response-v1"
+    )
     service: Literal["ready", "degraded", "stopped"]
     authority_sequence: int = Field(ge=0)
     engine_authority: Literal["v3"]

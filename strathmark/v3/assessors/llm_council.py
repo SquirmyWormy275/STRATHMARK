@@ -47,6 +47,8 @@ from strathmark.v3.contracts.statuses import admit_raw_completion
 PROVIDER_PACKET_SCHEMA_VERSION = "strathmark-v3-llm-provider-packet-v1"
 LLM_JOB_PAYLOAD_SCHEMA_VERSION = "strathmark-v3-llm-job-payload-v1"
 LLM_COUNCIL_RECEIPT_SCHEMA_VERSION = "strathmark-v3-llm-council-receipt-v1"
+LLM_MEMBER_RECEIPT_SCHEMA_VERSION = "strathmark-v3-llm-member-receipt-v1"
+ROLLING_COMPONENT_JOB_SCHEMA_VERSION = "strathmark-v3-rolling-component-job-v1"
 PROMPT_VERSION = "strathmark-v3-llm-blind-prompt-v1"
 ALLOWED_PROVIDER_FACT_CODES = ("observed_raw_time", "target_context")
 _TOKEN = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
@@ -86,6 +88,21 @@ class VerifiedCandidateEvaluation:
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise CandidatePromotionError("candidate evaluation can only come from the sealed gate")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PromotedCouncilAuthority:
+    """Authority created only from the factory's verified active or pinned bundle."""
+
+    bundle_digest: str
+    component_digest: str
+    signer_key_id: str
+    members: tuple[LLMMemberSpec, LLMMemberSpec, LLMMemberSpec]
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise CandidatePromotionError(
+            "promoted council authority can only come from the installed bundle gate"
+        )
 
 
 class CouncilAvailability(str, Enum):
@@ -419,6 +436,112 @@ def _member_manifest_digest(member: LLMMemberSpec, *, status: CandidateStatus | 
             "status": (member.status if status is None else status).value,
         }
     )
+
+
+def council_component_digest(members: Sequence[LLMMemberSpec]) -> str:
+    """Bind the complete three-member candidate set into a whole-bundle component digest."""
+
+    frozen = _validated_council_members(members)
+    return canonical_digest(
+        {
+            "schema_version": "strathmark-v3-llm-council-component-v1",
+            "prompt_version": PROMPT_VERSION,
+            "output_schema_version": LLM_OUTPUT_SCHEMA_VERSION,
+            "members": [
+                {
+                    "member_id": member.member_id,
+                    "candidate_manifest_digest": _member_manifest_digest(member),
+                }
+                for member in frozen
+            ],
+        }
+    )
+
+
+def council_factory_model_identity(member: LLMMemberSpec) -> str:
+    """Return the exact factory identity without changing the provider request model id."""
+
+    if not isinstance(member, LLMMemberSpec):
+        raise CandidatePromotionError("factory model identity requires a typed member")
+    return f"{member.provider_id}:{member.model_id}@sha256:{member.model_digest}"
+
+
+def _validated_council_members(
+    members: Sequence[LLMMemberSpec],
+) -> tuple[LLMMemberSpec, LLMMemberSpec, LLMMemberSpec]:
+    if not isinstance(members, (tuple, list)) or len(members) != 3:
+        raise CandidatePromotionError("council promotion requires exactly three members")
+    frozen = tuple(members)
+    if any(
+        not isinstance(member, LLMMemberSpec) or member.status is not CandidateStatus.CANDIDATE
+        for member in frozen
+    ):
+        raise CandidatePromotionError("council promotion requires typed unpromoted candidates")
+    if len({member.member_id for member in frozen}) != 3:
+        raise CandidatePromotionError("council promotion member ids must be unique")
+    local = tuple(member for member in frozen if member.provider_kind is ProviderKind.LOCAL)
+    cloud = tuple(member for member in frozen if member.provider_kind is ProviderKind.CLOUD)
+    if len(local) != 2 or len(cloud) != 1 or local[0].family == local[1].family:
+        raise CandidatePromotionError(
+            "council promotion requires two distinct local families and one cloud member"
+        )
+    ordered = (*sorted(local, key=lambda item: item.member_id), cloud[0])
+    return ordered
+
+
+def load_promoted_council(
+    factory_service: object,
+    tournament_id: object,
+    members: Sequence[LLMMemberSpec],
+) -> PromotedCouncilAuthority:
+    """Load council authority through the factory's verified promotion/pinning path."""
+
+    from strathmark.v3.application.factory import FactoryService
+    from strathmark.v3.contracts.identifiers import StableIdentifier
+    from strathmark.v3.infrastructure.integrity import verify_manifest
+
+    if not isinstance(factory_service, FactoryService):
+        raise CandidatePromotionError("promoted council requires the factory authority")
+    if not isinstance(tournament_id, StableIdentifier):
+        raise CandidatePromotionError("promoted council requires a typed tournament id")
+    require_identifier(tournament_id, expected_namespace="tournament")
+    frozen = _validated_council_members(members)
+    try:
+        installed = factory_service.bundle_for_tournament(tournament_id)
+        payload = verify_manifest(
+            installed.manifest,
+            factory_service.repository.trust_policy.bundle_trust_store,
+        )
+    except Exception as exc:
+        raise CandidatePromotionError(
+            "promoted council requires a verified active or tournament-pinned bundle"
+        ) from exc
+    expected_component = council_component_digest(frozen)
+    components = payload.get("component_digests")
+    expected_local = sorted(
+        council_factory_model_identity(member)
+        for member in frozen
+        if member.provider_kind is ProviderKind.LOCAL
+    )
+    expected_cloud = [
+        council_factory_model_identity(member)
+        for member in frozen
+        if member.provider_kind is ProviderKind.CLOUD
+    ]
+    if (
+        not isinstance(components, dict)
+        or components.get("llm_members") != expected_component
+        or payload.get("local_model_ids") != expected_local
+        or payload.get("cloud_model_ids") != expected_cloud
+        or payload.get("bundle_digest") != installed.bundle_digest
+    ):
+        raise CandidatePromotionError("installed bundle council identity differs")
+    authority = object.__new__(PromotedCouncilAuthority)
+    object.__setattr__(authority, "bundle_digest", installed.bundle_digest)
+    object.__setattr__(authority, "component_digest", expected_component)
+    object.__setattr__(authority, "signer_key_id", installed.signer_key_id)
+    object.__setattr__(authority, "members", frozen)
+    return authority
 
 
 def evaluate_candidate_rotation_receipts(
@@ -806,7 +929,25 @@ def seal_claimed_llm_job(
     )
     if record.job_kind is not expected_kind:
         raise ValueError("persisted LLM job kind differs from provider member")
-    payload = record.payload()
+    outer_payload = record.payload()
+    payload = _llm_payload_from_job_payload(outer_payload)
+    if outer_payload.get("schema_version") == ROLLING_COMPONENT_JOB_SCHEMA_VERSION:
+        card_key = outer_payload.get("card_key")
+        packet_value = outer_payload.get("evidence_packet")
+        try:
+            evidence = EvidencePacket.from_dict(packet_value)
+        except Exception as exc:
+            raise ValueError("rolling LLM evidence packet differs") from exc
+        if (
+            outer_payload.get("component_id") != member.member_id
+            or outer_payload.get("member_manifest_digest")
+            != _member_manifest_digest(member)
+            or not isinstance(card_key, Mapping)
+            or card_key.get("evidence_digest") != record.evidence_digest
+            or card_key.get("bundle_digest") != record.bundle_digest
+            or evidence.content_digest != record.evidence_digest
+        ):
+            raise ValueError("rolling LLM component differs from configured member")
     if (
         set(payload)
         != {
@@ -860,6 +1001,31 @@ def seal_claimed_llm_job(
         object.__setattr__(sealed, name, item)
     sealed._validate()
     return sealed
+
+
+def _llm_payload_from_job_payload(value: object) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("persisted LLM payload schema differs")
+    schema = value.get("schema_version")
+    if schema == LLM_JOB_PAYLOAD_SCHEMA_VERSION:
+        return value
+    if schema == ROLLING_COMPONENT_JOB_SCHEMA_VERSION:
+        if set(value) != {
+            "schema_version",
+            "card_key",
+            "component_id",
+            "component_ordinal",
+            "member_manifest_digest",
+            "council_manifest_digest",
+            "evidence_packet",
+            "llm_job_payload",
+        }:
+            raise ValueError("rolling component executable payload fields differ")
+        nested = value.get("llm_job_payload")
+        if not isinstance(nested, Mapping):
+            raise ValueError("rolling component lacks executable LLM payload")
+        return nested
+    raise ValueError("persisted LLM payload schema differs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1161,7 +1327,10 @@ def _remaining_overall_ms(job: object) -> int:
 
     if not isinstance(job, JobRecord) or job.lease_acquired_at is None:
         raise ValueError("council execution requires a persisted leased job")
-    deadline_value = job.payload().get("deadlines")
+    try:
+        deadline_value = _llm_payload_from_job_payload(job.payload()).get("deadlines")
+    except ValueError as exc:
+        raise ValueError("council execution requires persisted deadline budgets") from exc
     if not isinstance(deadline_value, Mapping):
         raise ValueError("council execution requires persisted deadline budgets")
     deadlines = DeadlineBudget(**deadline_value)
@@ -1184,7 +1353,8 @@ class CouncilRunner:
         reliability_weights: Mapping[str, str],
         context_weights: Mapping[str, str],
         clock: Callable[[object], str],
-    ) -> None:
+        authority: PromotedCouncilAuthority | None = None,
+    ) -> OperationalCouncilMixture:
         return self._run(
             local_jobs=local_jobs,
             cloud_job=cloud_job,
@@ -1194,6 +1364,7 @@ class CouncilRunner:
             context_weights=context_weights,
             clock=clock,
             candidate_evaluations=None,
+            authority=authority,
         )
 
     def run_candidate_evaluation(
@@ -1217,6 +1388,7 @@ class CouncilRunner:
             context_weights=context_weights,
             clock=clock,
             candidate_evaluations=candidate_evaluations,
+            authority=None,
         )
 
     def _run(
@@ -1230,7 +1402,8 @@ class CouncilRunner:
         context_weights: Mapping[str, str],
         clock: Callable[[object], str],
         candidate_evaluations: Mapping[str, VerifiedCandidateEvaluation] | None,
-    ) -> CandidateEvaluationReport:
+        authority: PromotedCouncilAuthority | None,
+    ) -> CandidateEvaluationReport | OperationalCouncilMixture:
         if (
             not isinstance(local_jobs, tuple)
             or len(local_jobs) != 2
@@ -1247,9 +1420,9 @@ class CouncilRunner:
         if any(not isinstance(job, JobRecord) or job.state is not JobState.LEASED for job in jobs):
             raise ValueError("council runner requires current durable leased job records")
         members = tuple(adapter.member for adapter in (*local_adapters, cloud_adapter))
-        if candidate_evaluations is None:
-            raise ValueError("operational council is unavailable until U19 installs promotions")
-        else:
+        if candidate_evaluations is None and not isinstance(authority, PromotedCouncilAuthority):
+            raise ValueError("operational runner requires promoted council authority")
+        if candidate_evaluations is not None:
             if set(candidate_evaluations) != {member.member_id for member in members}:
                 raise ValueError("candidate council requires one evaluation per member")
             if any(
@@ -1263,6 +1436,15 @@ class CouncilRunner:
                 for member in members
             ):
                 raise ValueError("candidate council evaluation receipt differs")
+        else:
+            assert authority is not None
+            promoted = {member.member_id: member for member in authority.members}
+            if set(promoted) != {member.member_id for member in members} or any(
+                _member_manifest_digest(member)
+                != _member_manifest_digest(promoted[member.member_id])
+                for member in members
+            ):
+                raise ValueError("operational council adapters differ from promoted bundle")
         expected_kinds = (
             JobKind.LOCAL_LLM_CARD,
             JobKind.LOCAL_LLM_CARD,
@@ -1336,7 +1518,10 @@ class CouncilRunner:
                 )
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
+        if authority is not None:
+            return aggregate_council(tuple(outcomes), authority=authority)
         assessment = _aggregate_outcomes(tuple(outcomes))
+        assert candidate_evaluations is not None
         return CandidateEvaluationReport(
             authority_class="test_ephemeral",
             candidate_status=CandidateStatus.CANDIDATE,
@@ -1472,7 +1657,6 @@ class CouncilRunner:
             executed.storage_references,
             response.provider_audit,
         )
-
     @staticmethod
     def _unavailable(
         job: object,
@@ -1499,6 +1683,96 @@ class CouncilRunner:
         )
 
 
+def member_outcome_from_response(
+    job: object,
+    adapter: MemberAdapter,
+    response: ProviderResponse,
+    *,
+    reliability_weights: Mapping[str, str],
+    context_weights: Mapping[str, str],
+) -> MemberOutcome:
+    """Validate one executed provider response into a persistable council member result."""
+
+    member = getattr(adapter, "member", None)
+    if not isinstance(member, LLMMemberSpec):
+        raise ValueError("member outcome requires a typed provider adapter")
+    if member.member_id not in reliability_weights or member.member_id not in context_weights:
+        raise ValueError("member outcome requires both promoted weighting inputs")
+    outcome = CouncilRunner._from_executed(
+        job,
+        adapter,
+        response,
+        reliability_weights,
+        context_weights,
+    )
+    if outcome.unavailable_code is not None:
+        raise ValueError("member response differs from its durable execution context")
+    return outcome
+
+
+def unavailable_member_outcome(
+    job: object,
+    member: LLMMemberSpec,
+    execution_audit: ProviderExecutionAudit,
+    *,
+    reliability_weights: Mapping[str, str],
+    context_weights: Mapping[str, str],
+) -> MemberOutcome:
+    """Reconstruct a failed provider result from its exact durable execution audit."""
+
+    if (
+        not isinstance(member, LLMMemberSpec)
+        or not isinstance(execution_audit, ProviderExecutionAudit)
+        or execution_audit.status != "failed"
+        or execution_audit.reason is None
+        or execution_audit.provider_id != member.provider_id
+        or execution_audit.member_id != member.member_id
+    ):
+        raise ValueError("unavailable member requires its failed durable provider audit")
+    if member.member_id not in reliability_weights or member.member_id not in context_weights:
+        raise ValueError("unavailable member requires both promoted weighting inputs")
+    expected_pin = {
+        "member_manifest_digest": _member_manifest_digest(member),
+        "model_id": member.model_id,
+        "model_digest": member.model_digest,
+        "runtime_version": member.runtime_version,
+        "runtime_digest": member.runtime_digest,
+        "quantization": member.quantization,
+        "prompt_version": PROMPT_VERSION,
+        "output_schema_version": LLM_OUTPUT_SCHEMA_VERSION,
+        "sampling_parameters_digest": member.sampling_parameters_digest,
+    }
+    if execution_audit.member_pin_json != canonical_bytes(expected_pin).decode("utf-8"):
+        raise ValueError("unavailable member provider pin differs")
+    evidence_digest = getattr(job, "evidence_digest", None)
+    _digest(evidence_digest, "unavailable member evidence")
+    from strathmark.v3.infrastructure.ollama import RawOutputStorageReference
+
+    references = tuple(
+        RawOutputStorageReference.from_dict(json.loads(item.storage_reference.reference_json))
+        for item in execution_audit.attempts
+    )
+    attempts = tuple(
+        RawAttempt(item.raw_digest, item.validator_code, item.accepted)
+        for item in execution_audit.attempts
+    )
+    return MemberOutcome(
+        member.member_id,
+        member.provider_kind,
+        member.family,
+        evidence_digest,
+        None,
+        reliability_weights[member.member_id],
+        context_weights[member.member_id],
+        attempts,
+        None,
+        (),
+        execution_audit.reason,
+        references,
+        execution_audit,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DiagnosticCouncilMixture:
     """Non-publishable mixture of unpromoted candidate outputs."""
@@ -1511,6 +1785,30 @@ class DiagnosticCouncilMixture:
     distribution: PositiveTimeDistribution | None
     member_weights: tuple[tuple[str, str], ...]
     outcomes: tuple[MemberOutcome, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalCouncilMixture:
+    """Numeric council forecast bound to one verified whole-system bundle."""
+
+    authority_class: str
+    candidate_status: CandidateStatus
+    bundle_digest: str
+    council_component_digest: str
+    availability: CouncilAvailability
+    valid_member_count: int
+    upstream_approval_required: bool
+    distribution: PositiveTimeDistribution | None
+    member_weights: tuple[tuple[str, str], ...]
+    outcomes: tuple[MemberOutcome, ...]
+
+    def __post_init__(self) -> None:
+        if self.authority_class != "installed_promoted_bundle":
+            raise ValueError("operational council authority class differs")
+        if self.candidate_status is not CandidateStatus.PROMOTED:
+            raise ValueError("operational council must be promoted")
+        _digest(self.bundle_digest, "operational council bundle")
+        _digest(self.council_component_digest, "operational council component")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1535,14 +1833,67 @@ class CandidateEvaluationReport:
             raise ValueError("candidate evaluation report requires sealed member receipts")
 
 
-def aggregate_council(outcomes: Sequence[MemberOutcome]) -> None:
-    """Fail closed until U19 installs its cryptographic promotion verifier."""
+def aggregate_council(
+    outcomes: Sequence[MemberOutcome],
+    *,
+    authority: PromotedCouncilAuthority | None = None,
+) -> OperationalCouncilMixture:
+    """Aggregate numeric output only under an installed, promoted bundle authority."""
 
+    if not isinstance(authority, PromotedCouncilAuthority):
+        raise ValueError("operational aggregation requires promoted council authority")
     if not isinstance(outcomes, (tuple, list)) or len(outcomes) != 3:
         raise ValueError("council aggregation requires exactly three declared member outcomes")
     if any(not isinstance(item, MemberOutcome) for item in outcomes):
         raise ValueError("operational council requires typed member outcomes")
-    raise ValueError("operational council is unavailable until U19 installs promotions")
+    frozen = tuple(outcomes)
+    by_id = {member.member_id: member for member in authority.members}
+    if set(by_id) != {outcome.member_id for outcome in frozen}:
+        raise ValueError("operational council member identity differs from promoted bundle")
+    for outcome in frozen:
+        _verify_promoted_member_outcome(outcome, authority)
+    diagnostic = _aggregate_outcomes(frozen)
+    return OperationalCouncilMixture(
+        "installed_promoted_bundle",
+        CandidateStatus.PROMOTED,
+        authority.bundle_digest,
+        authority.component_digest,
+        diagnostic.availability,
+        diagnostic.valid_member_count,
+        diagnostic.upstream_approval_required,
+        diagnostic.distribution,
+        diagnostic.member_weights,
+        diagnostic.outcomes,
+    )
+
+
+def _verify_promoted_member_outcome(
+    outcome: MemberOutcome, authority: PromotedCouncilAuthority
+) -> LLMMemberSpec:
+    if not isinstance(outcome, MemberOutcome) or not isinstance(
+        authority, PromotedCouncilAuthority
+    ):
+        raise ValueError("member outcome requires promoted council authority")
+    by_id = {member.member_id: member for member in authority.members}
+    member = by_id.get(outcome.member_id)
+    if (
+        member is None
+        or outcome.provider_kind is not member.provider_kind
+        or outcome.family != member.family
+    ):
+        raise ValueError("operational council member identity differs from promoted bundle")
+    if outcome.valid_distribution is not None:
+        audit = outcome.audit
+        if (
+            not isinstance(audit, LLMMemberAudit)
+            or audit.model_digest != member.model_digest
+            or audit.runtime_version != member.runtime_version
+            or audit.quantization != member.quantization
+            or audit.sampling_parameters_digest != member.sampling_parameters_digest
+            or audit.provider_model_version != member.model_id
+        ):
+            raise ValueError("operational council artifact identity differs from promoted bundle")
+    return member
 
 
 def _aggregate_outcomes(outcomes: Sequence[MemberOutcome]) -> DiagnosticCouncilMixture:
@@ -1594,9 +1945,12 @@ def _aggregate_outcomes(outcomes: Sequence[MemberOutcome]) -> DiagnosticCouncilM
 
 
 def replay_sealed_council(
-    sealed: bytes, *, provider_call: Callable[[], object] | None = None
-) -> DiagnosticCouncilMixture:
-    """Reconstruct a sealed non-operational diagnostic without provider calls."""
+    sealed: bytes,
+    *,
+    authority: PromotedCouncilAuthority | None = None,
+    provider_call: Callable[[], object] | None = None,
+) -> DiagnosticCouncilMixture | OperationalCouncilMixture:
+    """Reconstruct a sealed council deterministically without provider calls."""
 
     del provider_call
     if not isinstance(sealed, bytes) or not sealed:
@@ -1618,7 +1972,9 @@ def replay_sealed_council(
         raise ValueError("sealed replay receipt digest differs")
     if canonical_bytes(envelope) != sealed:
         raise ValueError("sealed replay receipt is not canonical")
-    if not isinstance(assessment_value, dict) or set(assessment_value) != {
+    if not isinstance(assessment_value, dict):
+        raise ValueError("sealed replay assessment fields differ")
+    diagnostic_fields = {
         "authority_class",
         "candidate_status",
         "availability",
@@ -1627,26 +1983,46 @@ def replay_sealed_council(
         "distribution",
         "member_weights",
         "outcomes",
-    }:
+    }
+    operational = assessment_value.get("authority_class") == "installed_promoted_bundle"
+    expected_fields = (
+        diagnostic_fields | {"bundle_digest", "council_component_digest"}
+        if operational
+        else diagnostic_fields
+    )
+    if set(assessment_value) != expected_fields:
         raise ValueError("sealed replay assessment fields differ")
     outcomes_value = assessment_value["outcomes"]
     if not isinstance(outcomes_value, list):
         raise ValueError("sealed replay outcomes must be an array")
-    reconstructed = _aggregate_outcomes(
-        tuple(_outcome_from_receipt(item) for item in outcomes_value)
-    )
+    outcomes = tuple(_outcome_from_receipt(item) for item in outcomes_value)
+    if operational:
+        if not isinstance(authority, PromotedCouncilAuthority):
+            raise ValueError("operational replay requires promoted council authority")
+        reconstructed = aggregate_council(outcomes, authority=authority)
+    else:
+        reconstructed = _aggregate_outcomes(outcomes)
     expected = _assessment_receipt_value(reconstructed)
     if expected != assessment_value:
         raise ValueError("sealed replay assessment verification differs")
     return reconstructed
 
 
-def seal_council_receipt(assessment: DiagnosticCouncilMixture) -> bytes:
-    """Serialize a non-operational diagnostic and every provider attempt."""
+def seal_council_receipt(
+    assessment: DiagnosticCouncilMixture | OperationalCouncilMixture,
+    *,
+    authority: PromotedCouncilAuthority | None = None,
+) -> bytes:
+    """Serialize one reproducible council assessment and every provider attempt."""
 
-    if not isinstance(assessment, DiagnosticCouncilMixture):
-        raise ValueError("council receipt requires a DiagnosticCouncilMixture")
-    rebuilt = _aggregate_outcomes(assessment.outcomes)
+    if isinstance(assessment, OperationalCouncilMixture):
+        if not isinstance(authority, PromotedCouncilAuthority):
+            raise ValueError("operational receipt requires promoted council authority")
+        rebuilt = aggregate_council(assessment.outcomes, authority=authority)
+    elif isinstance(assessment, DiagnosticCouncilMixture):
+        rebuilt = _aggregate_outcomes(assessment.outcomes)
+    else:
+        raise ValueError("council receipt requires a typed council assessment")
     if rebuilt != assessment:
         raise ValueError("council assessment is not reproducible from its outcomes")
     value = _assessment_receipt_value(assessment)
@@ -1659,8 +2035,10 @@ def seal_council_receipt(assessment: DiagnosticCouncilMixture) -> bytes:
     )
 
 
-def _assessment_receipt_value(assessment: DiagnosticCouncilMixture) -> dict[str, Any]:
-    return {
+def _assessment_receipt_value(
+    assessment: DiagnosticCouncilMixture | OperationalCouncilMixture,
+) -> dict[str, Any]:
+    value = {
         "authority_class": assessment.authority_class,
         "candidate_status": assessment.candidate_status.value,
         "availability": assessment.availability.value,
@@ -1672,6 +2050,10 @@ def _assessment_receipt_value(assessment: DiagnosticCouncilMixture) -> dict[str,
         "member_weights": [list(item) for item in assessment.member_weights],
         "outcomes": [_outcome_receipt_value(item) for item in assessment.outcomes],
     }
+    if isinstance(assessment, OperationalCouncilMixture):
+        value["bundle_digest"] = assessment.bundle_digest
+        value["council_component_digest"] = assessment.council_component_digest
+    return value
 
 
 def _outcome_receipt_value(outcome: MemberOutcome) -> dict[str, Any]:
@@ -1808,6 +2190,65 @@ def _outcome_from_receipt(value: object) -> MemberOutcome:
             else ProviderExecutionAudit.from_dict(value["execution_audit"])
         ),
     )
+
+
+def seal_member_outcome(
+    outcome: MemberOutcome,
+    *,
+    authority: PromotedCouncilAuthority | None = None,
+) -> bytes:
+    """Seal one exact provider result for restart-safe durable composition."""
+
+    if not isinstance(authority, PromotedCouncilAuthority):
+        raise ValueError("member outcome requires promoted council authority")
+    _verify_promoted_member_outcome(outcome, authority)
+    value = _outcome_receipt_value(outcome)
+    return canonical_bytes(
+        {
+            "schema_version": LLM_MEMBER_RECEIPT_SCHEMA_VERSION,
+            "bundle_digest": authority.bundle_digest,
+            "council_component_digest": authority.component_digest,
+            "outcome": value,
+            "receipt_digest": canonical_digest(value),
+        }
+    )
+
+
+def replay_sealed_member_outcome(
+    sealed: bytes,
+    *,
+    authority: PromotedCouncilAuthority | None = None,
+) -> MemberOutcome:
+    """Replay one durable member result without another provider call."""
+
+    if not isinstance(authority, PromotedCouncilAuthority):
+        raise ValueError("member outcome replay requires promoted council authority")
+    if not isinstance(sealed, bytes) or not sealed:
+        raise ValueError("sealed member replay requires durable receipt bytes")
+    try:
+        envelope = json.loads(sealed.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("sealed member replay requires canonical receipt JSON") from exc
+    if not isinstance(envelope, dict) or set(envelope) != {
+        "schema_version",
+        "bundle_digest",
+        "council_component_digest",
+        "outcome",
+        "receipt_digest",
+    }:
+        raise ValueError("sealed member replay receipt fields differ")
+    if (
+        envelope["schema_version"] != LLM_MEMBER_RECEIPT_SCHEMA_VERSION
+        or envelope["bundle_digest"] != authority.bundle_digest
+        or envelope["council_component_digest"] != authority.component_digest
+        or canonical_digest(envelope["outcome"]) != envelope["receipt_digest"]
+    ):
+        raise ValueError("sealed member replay receipt digest or authority differs")
+    if canonical_bytes(envelope) != sealed:
+        raise ValueError("sealed member replay receipt is not canonical")
+    outcome = _outcome_from_receipt(envelope["outcome"])
+    _verify_promoted_member_outcome(outcome, authority)
+    return outcome
 
 
 def initial_local_candidates() -> tuple[LLMMemberSpec, LLMMemberSpec]:
@@ -1961,6 +2402,7 @@ __all__ = [
     "CandidatePromotionError",
     "CandidateStatus",
     "DiagnosticCouncilMixture",
+    "OperationalCouncilMixture",
     "CouncilAvailability",
     "CouncilRunner",
     "DeadlineBudget",
@@ -1968,6 +2410,7 @@ __all__ = [
     "HMACTokenKey",
     "LLMMemberSpec",
     "LLM_COUNCIL_RECEIPT_SCHEMA_VERSION",
+    "LLM_MEMBER_RECEIPT_SCHEMA_VERSION",
     "MemberOutcome",
     "MemberAdapter",
     "MemoryRawOutputSink",
@@ -1977,6 +2420,7 @@ __all__ = [
     "ProviderKind",
     "ProviderObservation",
     "ProviderPacket",
+    "PromotedCouncilAuthority",
     "RawAttempt",
     "RawOutputSink",
     "SealedLLMJob",
@@ -1990,10 +2434,17 @@ __all__ = [
     "aggregate_council",
     "build_provider_packet",
     "configured_cloud_candidate",
+    "council_component_digest",
+    "council_factory_model_identity",
     "execute_response_loop",
     "initial_local_candidates",
+    "load_promoted_council",
+    "member_outcome_from_response",
     "evaluate_candidate_rotation_receipts",
     "render_member_prompt",
     "replay_sealed_council",
+    "replay_sealed_member_outcome",
     "seal_council_receipt",
+    "seal_member_outcome",
+    "unavailable_member_outcome",
 ]

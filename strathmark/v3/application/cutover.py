@@ -276,7 +276,10 @@ def verify_release_attestation(
         raise ValueError("V3 release attestation is incomplete")
     if tier is ReleaseTier.PRODUCTION:
         identity = trust_store.identity(manifest.key_id)
-        if identity.key_class is not IntegrityKeyClass.PRODUCTION_CNG:
+        if (
+            identity.key_class is not IntegrityKeyClass.PRODUCTION_CNG
+            or identity.provider != "windows_cng_p256_sha256"
+        ):
             raise ValueError("production release attestation lacks a production CNG identity")
     return payload
 

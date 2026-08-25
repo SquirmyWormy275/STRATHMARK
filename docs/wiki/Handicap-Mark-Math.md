@@ -304,42 +304,18 @@ construction, and auditability. It does not acquire competition authority merely
 producing a number. A model output, a reviewed handicap sheet, the announced marks, and
 the official result are distinct records.
 
-## STRATHMARK's current mark calculation
+## Product implementations belong in versioned engine documentation
 
-STRATHMARK first predicts one positive finish-time distribution per competitor, then
-chooses integer marks for the complete field.
+This page deliberately stops at domain meaning. Formulae, statistical models, model
+ensembles, evidence cutoffs, uncertainty calculations, optimization objectives,
+operational limits, release states, and API schemas are product decisions. They can
+change without changing what a woodchopping handicap is.
 
-The V2 optimizer compares 2,048 deterministic common-random race samples. Its objective
-is lexicographic: equal model-implied win probability, expected finish spread,
-closeness to legacy rounded-gap marks, then the input-order mark tuple. It runs at most
-eight passes and accepts no sheet worse than the fallback under that objective.
-
-Current engine invariants are:
-
-- every mark is an integer from 3 through the effective event ceiling;
-- at least one competitor receives Mark 3;
-- a faster predicted median cannot start earlier than a slower predicted median;
-- equal medians retain input order;
-- a one-person field receives Mark 3;
-- identical inputs, cutoff, bundle, and seed return identical marks.
-
-If predictive distributions are unavailable or the bounded search fails, STRATHMARK
-uses:
-
-```text
-slowest = max(predicted medians)
-mark = 3 + round(slowest - competitor median)
-mark = clamp(mark, 3, effective ceiling)
-```
-
-Python `round` is round-half-to-even. The 3-second floor matches the reviewed AAA/QAA
-handicap context and is a STRATHMARK invariant. The 183-second system ceiling is a
-STRATHMARK safety boundary derived from its event-duration policy; it is not asserted
-to be a universal association rule.
-
-Each result exposes optimizer metadata so an operator can distinguish
-`posterior_crn_v2` from `rounded_gap_fallback` and see the seed, sample count, passes,
-objectives, and fallback reason.
+Use the versioned prediction-engine documentation to learn how a particular STRATHMARK
+release estimates ability and constructs a legal sheet. Use this page to check that the
+implementation still respects the underlying race: faster expected competitors wait
+longer, every competitor cuts the assigned task, a common rebase preserves relative
+starts, and the issued sheet remains distinct from the official result.
 
 ## Reasoning checklist for agents and systems
 

@@ -1,1 +1,1 @@
-STRATHMARK 2.0.0 · [Prediction Engine V2](Prediction-Engine-V2) · [Source](https://github.com/SquirmyWormy275/STRATHMARK)
+V2 production authority · V3 implemented rehearsal · [V3 status](Prediction-Engine-V3.md) · [Source](https://github.com/SquirmyWormy275/STRATHMARK)

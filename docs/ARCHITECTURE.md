@@ -1,156 +1,148 @@
 # STRATHMARK Architecture
 
-STRATHMARK 2.0.0 turns a field of competitor histories and a target wood profile into
-positive finish-time distributions and bounded integer handicap marks. The base package
-works offline. Prediction does not depend on a database, LLM, or optional native ML
-library.
+## Status and authority
 
-The complete model contract is in [`PREDICTION_ENGINE_V2.md`](PREDICTION_ENGINE_V2.md).
+V3 is an implemented release candidate under exact-source verification. Its older
+rehearsal is stale after current source changes. V2 remains the trusted production
+authority until an explicit cutover. No production authority has changed, the consumer
+endpoint has not switched, and V2 remains runnable and writable.
 
-## Field request flow
+The two engines are deliberately separate:
+
+| Boundary | V2 | V3 |
+| --- | --- | --- |
+| Namespace | `strathmark.*` | `strathmark.v3.*` |
+| Numeric design | one prior-only core plus optional residual | blind formula + ML + LLM council ensemble |
+| Evidence boundary | exclusive historical date | historical cutoff plus tournament/round epoch |
+| Persistence | V2 ledger and shadow contract | V3 event authority and rebuildable projections |
+| Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen ten-route `/v3/*` contract |
+| Authority now | trusted production | implemented release candidate, rehearsal only |
+
+V3 does not mutate V2 receipts or project itself through V2's five keys. Cutover is one
+explicit tournament-boundary authority change, never a request-by-request fallback.
+
+## V3 data flow
 
 ```mermaid
 flowchart LR
-    A["Competitors, target wood, event, cutoff"] --> B["Validate complete field"]
-    B --> C["Snapshot one immutable PredictionBundle"]
-    C --> D["Strict prior-only evidence builder"]
-    D --> E["Hierarchical log-time core"]
-    E --> F{"Promoted residual active?"}
-    F -->|yes| G["Validated residual correction"]
-    F -->|no| H["Core distribution"]
-    G --> I["Calibrated positive distributions"]
-    H --> I
-    I --> J["2,048-sample joint mark optimizer"]
-    J --> K["Backward-compatible MarkResult list"]
-    K -. "optional, after marks" .-> L["Local append-only ledger"]
-    L -. "best effort" .-> M["Supabase mirror"]
+    A["Verified history + tournament result events"] --> B["Cutoff + frozen round epoch"]
+    B --> C["Canonical pseudonymous evidence packets"]
+    C --> D["Transparent formula"]
+    C --> E["Universal + specialist ML"]
+    C --> F["Blind 3-member LLM council"]
+    D --> G["Deterministic validation"]
+    E --> G
+    F --> G
+    G --> H["Dual-state capability"]
+    G --> I["Predictive + consequence credibility"]
+    H --> J["Weighted linear distribution pool"]
+    I --> J
+    J --> K["Consequence disagreement gate"]
+    K --> L["Fairness-frontier optimizer + Mark-3 rebase"]
+    L --> M["Immutable field receipt"]
+    M --> N["Green/amber/red approval projection"]
+    N --> O["Atomic issue acknowledgment"]
+    O --> P["Complete-roster atomic settlement"]
+    P --> Q["Seven durable derivation reactions"]
+    Q --> A
 ```
 
-The calculator validates every input before model or persistence work. It resolves one
-exclusive UTC cutoff and snapshots one bundle for the entire field, preventing a file
-change from mixing model versions in one start sheet. The trusted ledger attempt occurs
-only after every mark is final and cannot block returned marks.
+The circular edge does not mean a result can change its own race. All fields in a round
+share one epoch. Settled results become input only after the legal boundary to the next
+round. Capability, invalidation, scoring, coverage, weights, readiness, and credibility
+must all close before the derivation barrier opens; none inserts a judge decision.
 
-## Module map
+## Layers
 
-| Module | Responsibility |
-| --- | --- |
-| `features.py` | closed evidence allowlist, stable identity, UTC cutoff, exclusion diagnostics, species-property joining |
-| `prediction_v2.py` | robust hierarchical log-time core, competitor state, cross-event borrowing, conformal calibration, safe JSON artifact |
-| `residual.py` | optional CatBoost residual runtime and promotion-compatible artifact checks |
-| `validation.py` | rolling-origin evaluation, promotion gates, chronological residual construction |
-| `predictor.py` | immutable providers, artifact precedence, V2-to-five-key compatibility projection, temporary legacy rollback |
-| `calculator.py` | field validation, performance `std_dev`, ordering, optimizer call, optional trusted write |
-| `mark_optimizer.py` | deterministic joint posterior mark search and rounded-gap fallback |
-| `variance.py` | separate Monte Carlo fairness audit for an already assigned sheet |
-| `ledger.py` | local append-only SQLite request, prediction, feature, and settlement records |
-| `api.py` | stateless public routes and authenticated ledger/result routes |
-| `db.py` | optional Supabase state, mirror, and legacy integration helpers |
-| `loader.py`, `store.py` | workbook input and local result-history storage |
-| `llm.py`, `llm_roles.py`, `fairness.py` | optional narrative analysis only; no numeric V2 authority |
+### Contracts
 
-## Evidence boundary
+`strathmark/v3/contracts/` owns closed dataclasses, identifiers, event and forecast
+vocabularies, receipt schemas, canonical JSON, numeric bounds, and error types. Canonical
+bytes and digests are part of the authority protocol, not serialization convenience.
 
-`features.py` is the only raw-history-to-model boundary. Active evidence is stable
-competitor identity/history, event, strictly prior result date, measured time, diameter,
-species and six physical properties, and gender including missing. The builder excludes
-same-day, future, invalid-date, and undated rows and never parses notes for penalties,
-DNFs, or timeouts.
+### Domain
 
-Division, round/heat, venue, lane/stand, run order, exact material identity,
-quality/moisture, weather, equipment, fatigue, penalty/DNF state, same-tournament
-weighting, and field strength are explicit numeric no-ops. They cannot enter the model
-without a versioned allowlist and new temporal evidence.
+`strathmark/v3/domain/` contains deterministic evidence folding, capability state,
+credibility, pooling, joint dependence, disagreement, state machines, and the optimizer.
+It performs no environment reads, storage, provider I/O, or background work.
 
-## Statistical core and uncertainty
+### Application
 
-The core models log time with robust Huber/ridge population effects and partially pooled
-competitor state. Event, log-diameter ratio, species physical properties,
-gender/missingness, recency, history depth, bounded trend, and cross-event history are
-used only when supported by earlier rows. Predictions have positive support.
+`strathmark/v3/application/` coordinates expected-version commands, rolling cards,
+field assembly, approvals, issue, settlement, lifecycle, automated factory work,
+operational status, recovery proof, and cutover preparation. Ports make every external
+effect explicit.
 
-Chronological split-conformal residuals create the central 90% forecast interval. The
-interval's lower/upper bounds, nominal coverage, calibration state, and pooling scope are
-public. `MarkResult.std_dev` remains performance variability for race simulation; it is
-not forecast uncertainty.
+### Infrastructure
 
-The optional residual learner is an additive correction to the core, not a second
-opinion. It activates only after its manifest proves the frozen promotion gates. No
-residual is active in the 2.0.0 packaged bundle.
+`strathmark/v3/infrastructure/` implements the local SQLite event authority, projections,
+durable jobs, outbox, content-addressed blobs, artifact integrity, backup/restore, Ollama,
+cloud, V2 snapshot import, and rolling-head recovery. Optional provider or archive failure
+cannot become local numeric authority.
 
-## Compatibility projection
+### API and composition
 
-The package keeps the existing `get_all_predictions()` keys:
+`strathmark/v3/api/` exposes the injected FastAPI service. A pre-body boundary rejects
+invalid transport, duplicate singleton headers, unauthenticated trusted requests,
+oversized bodies, and capacity exhaustion before application work. Loopback is default;
+non-loopback requires pinned mutual TLS. The OpenAPI document and SHA-256 are frozen
+installed artifacts.
 
-```text
-manual   operator override; interval-free and not training evidence
-llm      always None numerically
-ml       promoted residual correction, when active
-baseline V2 hierarchical core
-panel    static broad event prior
-```
+`strathmark/v3/composition.py` is the only V3 environment reader. It produces one
+immutable configuration snapshot and performs no I/O. Production ML and release
+authority require installation-owned non-exportable Windows CNG identities; tests use
+explicit ephemeral adapters that cannot pass production verification.
 
-`get_best_prediction()` chooses manual, promoted residual, core, then panel. Legacy
-arguments remain callable but inactive context is ignored. The explicit
-`STRATHMARK_PREDICTION_ENGINE=legacy` selector is a one-release baseline-only rollback;
-it never invokes a numeric LLM.
+## Event authority and concurrency
 
-## Mark assignment
+Every behavior-changing request has a stable command identity, canonical payload digest,
+idempotency key, target aggregate, and sorted expected-version map. The SQLite writer
+validates the legal transition, appends consecutive aggregate/global events, and advances
+required projections in one short transaction.
 
-`mark_optimizer.py` draws 2,048 deterministic common-random-number samples and runs at
-most eight coordinate passes. It minimizes equal-win-probability error, then expected
-finish spread, then departure from rounded median-gap marks, then the input-order tuple.
-It preserves floor, ceiling, monotonicity, input-order ties, and at least one Mark 3.
+- Exact retry returns the original bytes.
+- Same key with changed payload conflicts.
+- Stale versions and illegal transitions fail closed.
+- Multi-field issue either commits all fields or none.
+- Issued receipts cannot be mutated.
+- Projection views may be deleted and rebuilt from the event log.
+- Durable jobs use leases, heartbeats, bounded retries, and reconciliation after
+  ambiguous external work.
 
-Any optimizer failure returns the established rounded-gap sheet and records why. The
-separate `variance.py` simulation accepts up to 250,000 races and audits results after
-marks are assigned; it does not choose V2 marks.
+Large packets, forecasts, model bundles, and support data live in content-addressed blob
+storage. Events carry their verified digests. The optional mirror/archive consumes an
+outbox and never owns race-day authority.
 
-## Persistence boundaries
+## Rolling preparation and live field assembly
 
-There are three distinct persistence concerns:
+As scheduling information arrives, V3 prepares per-competitor context cards and seals
+their assessor forecasts before the final roster exists. The field assembler combines
+current compatible cards, validates epoch/evidence/bundle/roster revisions, pools one
+joint distribution, calculates disagreement and marks, and commits the receipt.
 
-1. `ResultStore` holds local historical results for applications.
-2. `PredictionLedger` holds trusted, immutable prediction and settlement evidence.
-3. Supabase/MNEMEX helpers support optional synchronization and analytics.
+This separates slow speculative inference from the critical call-up path. The designated
+Windows rehearsal measured field assembly below the two-second exclusive budget while
+preserving exact-retry recovery and immutable issuance.
 
-Public `/predict` and `/calculate` do not write the ledger. Authenticated
-`/ledger/calculate` requires stable IDs and a request key. SQLite is authoritative for
-the race-day write. The canonical request is hashed; names, notes, and the full raw
-payload are not retained. Optional cloud mirroring uses a replayable local outbox plus
-migrations 005-006's service-role RPC, versioned request hashes, and forced RLS. Migration
-007 adds a distinct versioned shadow RPC for immutable receipt cores and numeric
-settle/void revisions. It mirrors only namespaced identity linkage, observation
-fingerprints, numeric evidence, and delivery metadata; Missoula outcome/context history
-and free text remain outside STRATHMARK. Delivery is off the calculation response path;
-pending or failed delivery is visible in status and non-blocking.
+## Failure and readiness model
 
-## Artifact architecture
+Readiness is dependency-specific. Field assembly, issue, receipt lookup, result
+settlement, recovery, and support export have different dependency graphs; one aggregate
+green light cannot hide a red critical path. Status records active bundle and epoch,
+weights, queues, oldest job, assessor availability, model warmth, event tip,
+projection/backup health, and SLA risk.
 
-The V2 core is bounded-size, checksummed JSON with schema, feature, canonicalization,
-training-cutoff, model, and calibration versions. Pickled core models are not loaded.
-Artifact precedence is environment override, supported local path, packaged artifact,
-then broad prior. Backdated requests reject newer artifacts.
+Recovery exercises process, machine, worker, Ollama, cloud, power, WAL, blob, disk, and
+queue faults. If trusted numeric service cannot be restored, authority is stated as
+traditional/manual. Silent partial state and automatic V2/V3 dual authority are forbidden.
 
-The packaged model is `strathmark/models/prediction_v2_core.json`. `python
-train_model.py` verifies the artifact, source checksum, manifest, and locked report
-without rescoring the locked rows.
+## Official-system boundary
 
-## Public and internal API
+STRATHMARK owns numeric prediction and receipt evidence. The tournament manager owns
+human authentication/RBAC, roster and schedule authority, official issue, judging,
+results, publication, points, protests, and payouts. Actor/action/trace headers entering
+V3 are audit metadata only.
 
-Package-root exports are the stable Python surface. New V2 dataclass fields were
-appended with defaults, and result order remains slowest-to-fastest. Internal posterior
-metadata exists to replay optimizer distributions but is not a mutable model API.
-
-REST exposes stateless prediction/calculation/simulation and protected result/ledger
-operations. `/health` reports prediction components separately from narrative Ollama
-availability.
-
-## Downstream boundary
-
-STRATHMARK is the reusable engine; STRATHEX and tournament applications are consumers.
-Consumers should install the immutable `v2.0.0` release tag or pin its exact commit,
-pass stable competitor IDs and an explicit cutoff, inspect warnings/degraded state,
-and treat legacy context fields as inactive.
-Tournament software is expected eventually to capture the deferred factors; capture
-alone does not activate them until a future model version validates them.
+For full behavior, use [`PREDICTION_ENGINE_V3.md`](PREDICTION_ENGINE_V3.md). For current
+operations and cutover, use [`DEPLOYMENT.md`](DEPLOYMENT.md). V2 architecture remains in
+[`PREDICTION_ENGINE_V2.md`](PREDICTION_ENGINE_V2.md).

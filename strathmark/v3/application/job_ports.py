@@ -71,6 +71,10 @@ class DurableJobError(RuntimeError):
     """Base durable-job failure shared by application and repository adapters."""
 
 
+class RollingDerivationPending(DurableJobError):
+    """Scheduled rolling work has not produced every required durable publication."""
+
+
 class JobAdmissionRejected(DurableJobError):
     """Capacity or deadline policy rejected work before dispatch."""
 
@@ -481,6 +485,10 @@ class JobRepositoryPort(Protocol):
 
     def claim(self, lane: JobLane, **kwargs: Any) -> JobRecordPort | None: ...
 
+    def claim_exact(
+        self, job_id: str, job_revision: int, **kwargs: Any
+    ) -> JobRecordPort | None: ...
+
     def record_failure(self, job_id: str, job_revision: int, **kwargs: Any) -> JobRecordPort: ...
 
     def mark_stale(self, job_id: str, job_revision: int, **kwargs: Any) -> JobRecordPort: ...
@@ -562,12 +570,17 @@ class RollingJobRepositoryPort(Protocol):
         reaction_id: str,
         *,
         plan_digest: str,
+        scheduled_card_digests: tuple[str, ...],
         completed_at: str,
     ) -> None: ...
 
     def cancel(self, job_id: str, job_revision: int, **values: Any) -> JobRecordPort: ...
 
     def get(self, job_id: str, job_revision: int) -> JobRecordPort: ...
+
+    def claim_exact(
+        self, job_id: str, job_revision: int, **kwargs: Any
+    ) -> JobRecordPort | None: ...
 
 
 class PublicationPort(Protocol):
@@ -627,6 +640,7 @@ __all__ = [
     "ReadinessDependencySnapshot",
     "ReadinessProbePort",
     "RetryPolicy",
+    "RollingDerivationPending",
     "RollingRestartReceipt",
     "RollingRestartSuffixStatus",
     "RollingRestartExpectedHead",

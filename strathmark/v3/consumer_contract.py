@@ -33,7 +33,9 @@ class V3ConsumerContractIntegrityError(RuntimeError):
 
 
 _EXAMPLES: dict[str, dict[str, Any]] = {
-    "/v3/health": {"response": {"schema_version": "strathmark-v3-health-v1", "status": "ok"}},
+    "/v3/health": {
+        "response": {"schema_version": "strathmark-v3-health-v1", "status": "ok"}
+    },
     "/v3/commands/execute": {
         "request": {
             "schema_version": "strathmark-v3-command-execution-request-v1",
@@ -116,7 +118,9 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
         "request": {
             "schema_version": "strathmark-v3-issue-acknowledgment-request-v1",
             "upstream_issue_id": "upstream_issue:show-7",
-            "receipt_bindings": [{"receipt_id": "receipt:field-1", "receipt_digest": "b" * 64}],
+            "receipt_bindings": [
+                {"receipt_id": "receipt:field-1", "receipt_digest": "b" * 64}
+            ],
             "issued_at_utc": "2026-08-25T12:00:00.000Z",
             "deadline_ms": 1000,
         },
@@ -215,44 +219,71 @@ def build_v3_consumer_contract() -> dict[str, Any]:
     document = app.openapi()
     document["jsonSchemaDialect"] = "https://json-schema.org/draft/2020-12/schema"
     document["info"]["x-strathmark-contract-version"] = V3_CONSUMER_CONTRACT_VERSION
-    document["info"]["description"] = (
-        "Frozen V3 tournament-manager boundary. V2 remains separate and is never a V3 fallback."
-    )
+    document["info"][
+        "description"
+    ] = "Frozen V3 tournament-manager boundary. V2 remains separate and is never a V3 fallback."
     online_commands = sorted(item.value for item in OnlineCommandKind)
+    dedicated_commands = {
+        CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
+        CommandKind.SETTLE_LIVE_RACE,
+        CommandKind.ROTATE_SERVICE_CREDENTIAL,
+        CommandKind.REVOKE_SERVICE_CREDENTIAL,
+    }
+    offline_commands = {
+        CommandKind.BOOTSTRAP_SERVICE_CREDENTIAL,
+        CommandKind.RECOVER_SERVICE_CREDENTIAL,
+    }
+    online_command_set = {CommandKind(value) for value in online_commands}
+    internal_commands = set(CommandKind) - (
+        online_command_set | dedicated_commands | offline_commands
+    )
     document["info"]["x-strathmark-command-coverage"] = {
         "authenticated_application_port": online_commands,
-        "dedicated_authenticated_routes": [
-            CommandKind.ROTATE_SERVICE_CREDENTIAL.value,
-            CommandKind.REVOKE_SERVICE_CREDENTIAL.value,
-        ],
-        "listener-stopped-offline-only": [
-            CommandKind.BOOTSTRAP_SERVICE_CREDENTIAL.value,
-            CommandKind.RECOVER_SERVICE_CREDENTIAL.value,
-        ],
+        "dedicated_authenticated_routes": sorted(
+            item.value for item in dedicated_commands
+        ),
+        "internal_typed_application_services": sorted(
+            item.value for item in internal_commands
+        ),
+        "listener-stopped-offline-only": sorted(
+            item.value for item in offline_commands
+        ),
     }
-    document["servers"] = [{"url": "http://127.0.0.1:8787", "description": "Loopback default"}]
+    document["servers"] = [
+        {"url": "http://127.0.0.1:8787", "description": "Loopback default"}
+    ]
     components = document.setdefault("components", {})
     components["securitySchemes"] = {
-        "ServiceCredential": {"type": "http", "scheme": "bearer", "bearerFormat": "SMV3"},
+        "ServiceCredential": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "SMV3",
+        },
         "PinnedClientCertificate": {
             "type": "mutualTLS",
             "description": "Required in addition to the service credential off loopback.",
         },
     }
-    components.setdefault("schemas", {})["ErrorResponse"] = ErrorResponse.model_json_schema(
-        ref_template="#/components/schemas/{model}"
+    components.setdefault("schemas", {})["ErrorResponse"] = (
+        ErrorResponse.model_json_schema(ref_template="#/components/schemas/{model}")
     )
     components["schemas"].pop("HTTPValidationError", None)
     components["schemas"].pop("ValidationError", None)
     for schema in components["schemas"].values():
-        if isinstance(schema, dict) and (schema.get("type") == "object" or "properties" in schema):
+        if isinstance(schema, dict) and (
+            schema.get("type") == "object" or "properties" in schema
+        ):
             schema["required"] = sorted(schema.get("properties", {}))
     for path, path_item in document["paths"].items():
         for method, operation in path_item.items():
             if method not in {"get", "post"}:
                 continue
-            operation["security"] = [] if path == "/v3/health" else [{"ServiceCredential": []}]
-            operation["x-non-loopback-additional-security"] = ["PinnedClientCertificate"]
+            operation["security"] = (
+                [] if path == "/v3/health" else [{"ServiceCredential": []}]
+            )
+            operation["x-non-loopback-additional-security"] = [
+                "PinnedClientCertificate"
+            ]
             if path != "/v3/health":
                 operation["parameters"] = [
                     {
@@ -290,33 +321,55 @@ def build_v3_consumer_contract() -> dict[str, Any]:
                 ]
             examples = _EXAMPLES[path]
             if "request" in examples:
-                operation["requestBody"]["content"]["application/json"]["example"] = examples[
-                    "request"
-                ]
-            success = next(code for code in operation["responses"] if code.startswith("2"))
-            operation["responses"][success]["content"]["application/json"]["example"] = examples[
-                "response"
-            ]
+                operation["requestBody"]["content"]["application/json"]["example"] = (
+                    examples["request"]
+                )
+            success = next(
+                code for code in operation["responses"] if code.startswith("2")
+            )
+            operation["responses"][success]["content"]["application/json"][
+                "example"
+            ] = examples["response"]
             for code, name, message in (
                 ("400", "request_rejected", "Request metadata is invalid."),
-                ("401", "authentication_failed", "A valid V3 service credential is required."),
+                (
+                    "401",
+                    "authentication_failed",
+                    "A valid V3 service credential is required.",
+                ),
                 ("404", "route_not_found", "V3 route was not found."),
                 ("405", "method_not_allowed", "HTTP method is not allowed."),
                 ("413", "request_body_too_large", "Request body is too large."),
-                ("415", "media_type_rejected", "V3 request bodies require application/json."),
+                (
+                    "415",
+                    "media_type_rejected",
+                    "V3 request bodies require application/json.",
+                ),
                 (
                     "422",
                     "request_validation_failed",
                     "Request does not match the frozen V3 schema.",
                 ),
-                ("409", "authority_conflict", "Command conflicts with current authority."),
+                (
+                    "409",
+                    "authority_conflict",
+                    "Command conflicts with current authority.",
+                ),
                 (
                     "503",
                     "request_capacity_exhausted",
                     "V3 request capacity is temporarily exhausted.",
                 ),
-                ("504", "operation_deadline_exceeded", "V3 operation deadline expired."),
-                ("500", "internal_service_error", "V3 operation failed without a trusted result."),
+                (
+                    "504",
+                    "operation_deadline_exceeded",
+                    "V3 operation deadline expired.",
+                ),
+                (
+                    "500",
+                    "internal_service_error",
+                    "V3 operation failed without a trusted result.",
+                ),
             ):
                 operation["responses"][code] = {
                     "description": message,
@@ -342,7 +395,9 @@ def v3_consumer_contract_bytes(*, document: dict[str, Any] | None = None) -> byt
             raise V3ConsumerContractIntegrityError(
                 "Installed V3 consumer contract is missing or malformed."
             ) from exc
-    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
 
 
 def load_v3_consumer_contract() -> dict[str, Any]:
@@ -353,13 +408,19 @@ def load_v3_consumer_contract() -> dict[str, Any]:
             "Installed V3 consumer contract is missing or malformed."
         ) from exc
     if not isinstance(document, dict):
-        raise V3ConsumerContractIntegrityError("Installed V3 consumer contract must be an object.")
+        raise V3ConsumerContractIntegrityError(
+            "Installed V3 consumer contract must be an object."
+        )
     if (document.get("info") or {}).get("x-strathmark-contract-version") != (
         V3_CONSUMER_CONTRACT_VERSION
     ):
-        raise V3ConsumerContractIntegrityError("Installed V3 contract version is unsupported.")
+        raise V3ConsumerContractIntegrityError(
+            "Installed V3 contract version is unsupported."
+        )
     if set(document.get("paths") or {}) != EXPECTED_V3_CONSUMER_PATHS:
-        raise V3ConsumerContractIntegrityError("Installed V3 contract route surface changed.")
+        raise V3ConsumerContractIntegrityError(
+            "Installed V3 contract route surface changed."
+        )
     v3_consumer_contract_digest(document=document)
     return document
 
@@ -367,7 +428,9 @@ def load_v3_consumer_contract() -> dict[str, Any]:
 def v3_consumer_contract_digest(*, document: dict[str, Any] | None = None) -> str:
     expected = _resource_text(_CHECKSUM_RESOURCE).strip().lower()
     if _SHA256.fullmatch(expected) is None:
-        raise V3ConsumerContractIntegrityError("Installed V3 contract checksum is malformed.")
+        raise V3ConsumerContractIntegrityError(
+            "Installed V3 contract checksum is malformed."
+        )
     observed = hashlib.sha256(v3_consumer_contract_bytes(document=document)).hexdigest()
     if observed != expected:
         raise V3ConsumerContractIntegrityError(

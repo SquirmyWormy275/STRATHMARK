@@ -11,6 +11,11 @@ execution: code
 
 # Prediction Engine V2 Second-Pass Hardening - Plan
 
+> **Historical V2 hardening contract.** Its evidence remains valid for V2. The later V3
+> architecture is specified by
+> [`2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md`](2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md).
+> V2 remains production authority until explicit cutover.
+
 ## Goal Capsule
 
 Harden the released Prediction Engine V2 without changing its approved evidence

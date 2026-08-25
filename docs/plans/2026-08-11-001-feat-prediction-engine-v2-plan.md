@@ -11,6 +11,11 @@ execution: code
 
 # Prediction Engine V2 - Plan
 
+> **Historical implementation contract.** This plan remains authoritative for V2 code
+> and receipts. The later V3 architecture supersedes it for the successor engine; see
+> [`2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md`](2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md).
+> V2 retains trusted production authority until an explicit cutover.
+
 ## Goal Capsule
 
 Replace STRATHMARK's numeric prediction cascade with one reproducible,

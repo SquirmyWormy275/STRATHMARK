@@ -224,6 +224,7 @@ def validate_command_event_intents(
             )
         return
     if command.kind is CommandKind.SETTLE_LIVE_RACE:
+        results = [item for item in events if item.aggregate_kind is AggregateKind.RESULT]
         settlements = [item for item in events if item.aggregate_kind is AggregateKind.SETTLEMENT]
         fields = [item for item in events if item.aggregate_kind is AggregateKind.FIELD]
         if (
@@ -232,10 +233,14 @@ def validate_command_event_intents(
             or settlements[0].aggregate_id != command.target_aggregate
             or len(fields) != 1
             or fields[0].event_kind is not EventKind.FIELD_SETTLED
-            or len(events) != 2
+            or any(
+                item.event_kind not in {EventKind.RESULT_RECORDED, EventKind.RESULT_SUPERSEDED}
+                for item in results
+            )
+            or len(results) + len(settlements) + len(fields) != len(events)
         ):
             raise ContractError(
-                "live settlement requires one settlement event and its field settlement"
+                "live settlement requires result events, one settlement, and its field settlement"
             )
         return
     if command.kind is CommandKind.SUPERSEDE_AND_SETTLE_RESULT:

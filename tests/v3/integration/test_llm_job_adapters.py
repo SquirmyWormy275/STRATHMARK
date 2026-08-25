@@ -1999,14 +1999,14 @@ def test_runner_composes_three_real_durable_provider_adapters(tmp_path, monkeypa
         "ministral",
         "cloud",
     }
-    with pytest.raises(ValueError, match="DiagnosticCouncilMixture"):
+    with pytest.raises(ValueError, match="typed council assessment"):
         council.seal_council_receipt(result)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="three declared member outcomes"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council(result)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="unavailable until U19"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council(result.outcomes)
     reconstructed = tuple(replace(outcome) for outcome in result.outcomes)
-    with pytest.raises(ValueError, match="unavailable until U19"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council(reconstructed)
     assert result.availability.value == "normal"
     for record, repository in (
@@ -2640,7 +2640,7 @@ def test_runner_guard_and_failure_paths_never_invent_a_member() -> None:
         "context_weights": weights,
         "clock": lambda job: job.lease_acquired_at,
     }
-    with pytest.raises(ValueError, match="unavailable until U19"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         CouncilRunner().run(**base)
     with pytest.raises(ValueError, match="one evaluation per member"):
         CouncilRunner().run_candidate_evaluation(**base, candidate_evaluations={})
@@ -2685,7 +2685,7 @@ def test_runner_guard_and_failure_paths_never_invent_a_member() -> None:
             record.job_id, record.job_revision, record.fencing_token
         )
         assert persisted.digest == outcome.execution_audit.digest
-    with pytest.raises(ValueError, match="DiagnosticCouncilMixture"):
+    with pytest.raises(ValueError, match="typed council assessment"):
         council.seal_council_receipt(result)  # type: ignore[arg-type]
 
     def fresh_base():

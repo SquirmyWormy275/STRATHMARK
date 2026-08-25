@@ -7,6 +7,10 @@ superseded_by: docs/PREDICTION_ENGINE_V2.md
 
 # Tournament Weighting Audit TODO-011 — Closed
 
+> This closure remains correct for V2. V3 implements a different round-epoch and
+> credibility system; see [`../../PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md).
+> It does not reopen the retired fixed-percentage blend.
+
 This pre-2.0 audit asked whether fixed same-tournament weighting was double-counted
 between baseline and ML paths. Prediction Engine V2 removes that architecture and makes
 same-tournament/round inputs numeric no-ops because their provenance cannot currently be

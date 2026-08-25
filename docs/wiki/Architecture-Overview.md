@@ -1,32 +1,26 @@
 # Architecture Overview
 
-One field request follows this path:
+## Current authority status
 
-```text
-validate field
-  -> resolve one exclusive UTC cutoff
-  -> snapshot one immutable core/residual/calibration bundle
-  -> build strictly prior allowlisted evidence
-  -> predict positive distributions with partial pooling
-  -> apply promoted residual only if active
-  -> optimize field marks from 2,048 shared samples
-  -> return backward-compatible results
-  -> optionally append trusted local ledger transaction
-  -> optionally mirror to Supabase best-effort
-```
+V3 is an implemented release candidate under exact-source verification. Its older
+rehearsal is stale after current source changes. V2 remains the trusted production
+authority until an explicit cutover. No production authority has changed, no consumer
+endpoint has switched, and V2 is not audit-only.
 
-Core modules:
+V2 and V3 are separate engines. V2 keeps its released prior-only model, ledger, and
+shadow contract. V3 uses a new namespace, closed contracts, an append-only SQLite event
+authority, rebuildable projections, rolling preparation, a formula/ML/LLM ensemble,
+accuracy-earned credibility, consequence review, atomic issue, and field-atomic
+settlement. V3 never rewrites V2 receipts or masquerades through V2's five keys.
 
-- `features.py`: causal evidence boundary and exclusion diagnostics.
-- `prediction_v2.py`: hierarchical log-time core and conformal calibration.
-- `residual.py` and `validation.py`: optional learner and promotion evidence.
-- `predictor.py`: artifact provider and legacy-key projection.
-- `calculator.py`: field orchestration and performance variability.
-- `mark_optimizer.py`: deterministic joint mark search.
-- `ledger.py`: append-only trusted SQLite evidence.
-- `api.py`: stateless public and authenticated persistence routes.
-- `variance.py`: independent post-mark Monte Carlo audit.
+The race-day path is sealed evidence and round epoch; independent formula, ML, and LLM
+council; validation, capability, credibility, and pooling; green/amber/red consequence
+review; fairness-frontier marks rebased to 3; then immutable receipt, approval, issue,
+and settlement.
 
-The base package is offline-capable. Database, LLM, and CatBoost failures cannot remove
-the core calculation path. See [Prediction Engine V2](Prediction-Engine-V2) and
-[Persistence and Database](Persistence-and-Database).
+STRATHMARK authenticates a service principal. The tournament manager owns human login,
+RBAC, official issue, results, publication, and payouts. Ollama, cloud, and the optional
+archive may fail without becoming race-day authority.
+
+See the canonical [architecture](../ARCHITECTURE.md) and
+[V3 engine contract](../PREDICTION_ENGINE_V3.md).

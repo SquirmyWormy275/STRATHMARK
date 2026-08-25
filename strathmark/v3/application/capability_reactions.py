@@ -772,6 +772,12 @@ class CapabilityReactionService:
         self._capacity = capacity_verifier.verify(capacity)
         self._capacity_manifest_digest = _signed_manifest_digest(capacity)
 
+    @property
+    def database_path(self) -> Path:
+        """The exact event authority used by this reaction service."""
+
+        return self._events.database_path
+
     def react(
         self,
         sealed: SealedCapabilityAdmission,

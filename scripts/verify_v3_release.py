@@ -1,17 +1,27 @@
-"""Verify the closed V3 rehearsal/release evidence set without changing authority."""
+"""Verify exact executable V3 release evidence without changing authority."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import re
 import sys
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from replay_v3 import build_replay_report
+try:
+    from scripts.release_evidence import (
+        canonical_json_bytes,
+        evidence_receipt_digests,
+        load_canonical_envelope,
+        verify_evidence_envelope,
+    )
+except ModuleNotFoundError:  # direct ``python scripts/verify_v3_release.py`` execution
+    from release_evidence import (
+        canonical_json_bytes,
+        evidence_receipt_digests,
+        load_canonical_envelope,
+        verify_evidence_envelope,
+    )
 
 from strathmark.v3.application.cutover import (
     REQUIRED_RELEASE_EVIDENCE,
@@ -19,9 +29,7 @@ from strathmark.v3.application.cutover import (
     ReleaseTier,
     create_release_attestation,
     verify_release_attestation,
-    verify_windows_capacity_manifest,
 )
-from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.infrastructure.integrity import (
     IntegrityKeyIdentity,
     IntegrityTrustStore,
@@ -30,125 +38,61 @@ from strathmark.v3.infrastructure.integrity import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CAPACITY = ROOT / "benchmarks" / "v3" / "windows_capacity_manifest.json"
-DEFAULT_ATTESTATION = ROOT / "benchmarks" / "v3" / "v3_release_attestation.json"
+DEFAULT_EVIDENCE = ROOT / "benchmarks/v3/v3_executable_evidence.json"
+DEFAULT_ATTESTATION = ROOT / "benchmarks/v3/v3_release_attestation.json"
 
 
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _tree_digest(paths: tuple[Path, ...]) -> str:
-    return canonical_digest(
-        {
-            path.relative_to(ROOT).as_posix(): _sha(path)
-            for path in sorted(paths, key=lambda item: item.as_posix())
-        }
-    )
-
-
-def _verify_dependency_lock(path: Path) -> None:
-    locked: dict[str, str] = {}
-    for raw in path.read_text("utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.count("==") != 1:
-            raise ValueError("V3 dependency lock contains a non-exact requirement")
-        name, expected = line.split("==")
-        canonical = re.sub(r"[-_.]+", "-", name).lower()
-        if not canonical or not expected or canonical in locked:
-            raise ValueError("V3 dependency lock contains an invalid or duplicate package")
-        locked[canonical] = expected
-        try:
-            observed = version(name)
-        except PackageNotFoundError as exc:
-            raise ValueError("V3 dependency lock package is not installed") from exc
-        if observed != expected:
-            raise ValueError("V3 dependency lock differs from the installed environment")
-    if not locked:
-        raise ValueError("V3 dependency lock is empty")
-
-
-def expected_evidence(
-    capacity: dict[str, Any], *, capacity_path: Path = DEFAULT_CAPACITY
-) -> tuple[EvidenceReceipt, ...]:
-    replay = build_replay_report()
-    observed_at = capacity["recorded_at"]
-    dependency_paths = (
-        ROOT / "pyproject.toml",
-        ROOT / "requirements" / "v3-release.lock",
-        ROOT / "requirements" / "api-oldest.txt",
-        ROOT / "requirements" / "api-current.txt",
-    )
-    package_paths = tuple(
-        path
-        for path in (ROOT / "strathmark" / "v3").rglob("*")
-        if path.is_file()
-        and "__pycache__" not in path.parts
-        and path.suffix not in {".pyc", ".pdb", ".lib", ".exp"}
-    )
-    equity_paths = (
-        ROOT / "tests" / "v3" / "evals" / "test_optimizer_consequences.py",
-        ROOT / "tests" / "v3" / "evals" / "test_selective_abstention.py",
-        ROOT / "tests" / "v3" / "integration" / "test_credibility_authority.py",
-    )
-    backup_paths = (
-        ROOT / "strathmark" / "v3" / "infrastructure" / "backup.py",
-        ROOT / "strathmark" / "v3" / "infrastructure" / "integrity.py",
-        ROOT / "tests" / "v3" / "system" / "test_backup_restore.py",
-        ROOT / "tests" / "v3" / "system" / "test_critical_issue_recovery.py",
-    )
-    bundle_paths = tuple(
-        path
-        for path in (ROOT / "benchmarks" / "v3").glob("*.json")
-        if path.name not in {"windows_capacity_manifest.json", "v3_release_attestation.json"}
-    ) + tuple(
-        path for path in (ROOT / "strathmark" / "v3").rglob("*manifest*.json") if path.is_file()
-    )
-    evidence_digests = {
-        "installed_artifact": _tree_digest((ROOT / "pyproject.toml", *package_paths)),
-        "dependency_lock": _tree_digest(dependency_paths),
-        "consumer_contract": _sha(
-            ROOT / "strathmark" / "v3" / "contracts" / "v3_consumer.openapi.json"
-        ),
-        "full_causal_replay": str(replay["report_digest"]),
-        "manipulation_equity_slices": _tree_digest(equity_paths),
-        "provider_failure_matrix": str(replay["recovery_digest"]),
-        "race_day_recovery": str(replay["race_day_digest"]),
-        "windows_capacity": _sha(capacity_path),
-        "thermal_memory_storage_stress": canonical_digest(capacity["stress_matrix"]),
-        "database_backup_restore": _tree_digest(backup_paths),
-        "bundle_model_integrity": _tree_digest(bundle_paths),
-    }
+def expected_evidence(payload: dict[str, Any]) -> tuple[EvidenceReceipt, ...]:
+    digests = evidence_receipt_digests(payload)
+    proofs = {item["name"]: item for item in payload["proofs"]}
     return tuple(
-        EvidenceReceipt(name, "passed", evidence_digests[name], observed_at)
+        EvidenceReceipt(name, "passed", digests[name], proofs[name]["observed_at"])
         for name in REQUIRED_RELEASE_EVIDENCE
     )
 
 
+def _wheel_from_untrusted_envelope(envelope: dict[str, Any]) -> Path:
+    """Locate the candidate for signature verification without trusting its contents."""
+
+    manifest = SignedManifest.from_dict(envelope["evidence_manifest"])
+    body = manifest.body()
+    try:
+        relative = body["payload"]["wheel"]["path"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("executable evidence wheel path is missing") from exc
+    if not isinstance(relative, str):
+        raise ValueError("executable evidence wheel path differs")
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("executable evidence wheel path escaped the repository")
+    resolved = (ROOT / path).resolve()
+    try:
+        resolved.relative_to(ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError("executable evidence wheel path escaped the repository") from exc
+    return resolved
+
+
+def load_verified_executable_evidence(
+    *, evidence_path: Path = DEFAULT_EVIDENCE, wheel_path: Path | None = None
+) -> tuple[dict[str, Any], SignedManifest, Path]:
+    envelope = load_canonical_envelope(evidence_path)
+    candidate = _wheel_from_untrusted_envelope(envelope) if wheel_path is None else wheel_path
+    payload, manifest = verify_evidence_envelope(envelope, root=ROOT, wheel_path=candidate)
+    return payload, manifest, candidate
+
+
 def verify_release_files(
     *,
-    capacity_path: Path = DEFAULT_CAPACITY,
+    evidence_path: Path = DEFAULT_EVIDENCE,
+    wheel_path: Path | None = None,
     attestation_path: Path = DEFAULT_ATTESTATION,
     require_production: bool = False,
+    trusted_production_identity: IntegrityKeyIdentity | None = None,
 ) -> dict[str, Any]:
-    _verify_dependency_lock(ROOT / "requirements" / "v3-release.lock")
-    capacity = verify_windows_capacity_manifest(json.loads(capacity_path.read_text("utf-8")))
-    pins = capacity["artifact_pins"]
-    pin_paths = {
-        "field_assembly_manifest_sha256": ROOT
-        / "benchmarks"
-        / "v3"
-        / "field_assembly_manifest.json",
-        "rolling_restart_manifest_sha256": ROOT
-        / "benchmarks"
-        / "v3"
-        / "rolling_restart_manifest.json",
-        "job_capacity_manifest_sha256": ROOT / "benchmarks" / "v3" / "job_capacity_manifest.json",
-    }
-    if any(_sha(pin_paths[name]) != digest for name, digest in pins.items()):
-        raise ValueError("Windows capacity artifact pin mismatch")
+    evidence_payload, evidence_manifest, candidate = load_verified_executable_evidence(
+        evidence_path=evidence_path, wheel_path=wheel_path
+    )
     wrapper = json.loads(attestation_path.read_text("utf-8"))
     if (
         set(wrapper) != {"schema_version", "signer_identity", "attestation"}
@@ -157,40 +101,71 @@ def verify_release_files(
         raise ValueError("release attestation envelope differs")
     identity = IntegrityKeyIdentity.from_dict(wrapper["signer_identity"])
     attestation = SignedManifest.from_dict(wrapper["attestation"])
+    try:
+        claimed_tier = ReleaseTier(attestation.body()["payload"]["tier"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("release attestation tier differs") from exc
+    if claimed_tier is ReleaseTier.PRODUCTION:
+        if trusted_production_identity is None:
+            raise ValueError("production_trust_identity_required")
+        if identity != trusted_production_identity:
+            raise ValueError("production release signer differs from pinned trust identity")
+        trust_identity = trusted_production_identity
+    else:
+        trust_identity = identity
     payload = verify_release_attestation(
         attestation,
-        trust_store=IntegrityTrustStore((identity,)),
+        trust_store=IntegrityTrustStore((trust_identity,)),
     )
-    expected = expected_evidence(capacity, capacity_path=capacity_path)
+    expected = expected_evidence(evidence_payload)
     observed = tuple(
         EvidenceReceipt(item["name"], item["result"], item["artifact_digest"], item["observed_at"])
         for item in payload["evidence"]
     )
     if observed != expected:
-        raise ValueError("release evidence differs from the exact current artifacts")
+        raise ValueError("release attestation differs from executable proof receipts")
+    if payload["source_commit"] != evidence_payload["source_commit"]:
+        raise ValueError("release attestation source commit differs from executable evidence")
+    if payload["platform"] != evidence_payload["platform"]:
+        raise ValueError("release attestation platform differs from executable evidence")
     if require_production and payload["tier"] != ReleaseTier.PRODUCTION.value:
         raise ValueError("production_attestation_required")
     return {
-        "schema_version": "strathmark-v3-release-verification-v1",
+        "schema_version": "strathmark-v3-release-verification-v2",
         "result": "passed",
         "tier": payload["tier"],
+        "source_commit": payload["source_commit"],
         "attestation_digest": attestation.body_digest,
-        "capacity_manifest_digest": _sha(capacity_path),
+        "executable_evidence_digest": evidence_manifest.body_digest,
+        "installed_wheel": candidate.relative_to(ROOT).as_posix(),
+        "installed_wheel_digest": evidence_payload["wheel"]["sha256"],
         "evidence_count": len(observed),
         "authority_changed": False,
     }
 
 
-def build_rehearsal_envelope(*, source_commit: str) -> dict[str, Any]:
-    capacity = verify_windows_capacity_manifest(json.loads(DEFAULT_CAPACITY.read_text("utf-8")))
+def build_rehearsal_envelope(
+    *,
+    source_commit: str,
+    evidence_path: Path = DEFAULT_EVIDENCE,
+    wheel_path: Path | None = None,
+) -> dict[str, Any]:
+    evidence_payload, _manifest, _candidate = load_verified_executable_evidence(
+        evidence_path=evidence_path, wheel_path=wheel_path
+    )
+    exact_commit = evidence_payload["source_commit"]
+    if not exact_commit.startswith(source_commit):
+        raise ValueError("requested rehearsal source commit differs from executable evidence")
     signer = P256EphemeralSigner.generate("integrity-key:v3-release-rehearsal")
+    proofs = evidence_payload["proofs"]
+    created_at = max(item["observed_at"] for item in proofs)
     attestation = create_release_attestation(
-        evidence=expected_evidence(capacity),
-        source_commit=source_commit,
-        platform="windows-11-x86_64-python-3.13",
+        evidence=expected_evidence(evidence_payload),
+        source_commit=exact_commit,
+        platform=evidence_payload["platform"],
         tier=ReleaseTier.REHEARSAL,
         signer=signer,
-        created_at=capacity["recorded_at"],
+        created_at=created_at,
     )
     return {
         "schema_version": "strathmark-v3-release-attestation-envelope-v1",
@@ -201,31 +176,56 @@ def build_rehearsal_envelope(*, source_commit: str) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--capacity", type=Path, default=DEFAULT_CAPACITY)
+    parser.add_argument("--evidence", type=Path, default=DEFAULT_EVIDENCE)
+    parser.add_argument("--wheel", type=Path)
     parser.add_argument("--attestation", type=Path, default=DEFAULT_ATTESTATION)
     parser.add_argument("--require-production", action="store_true")
+    parser.add_argument(
+        "--trusted-production-identity",
+        type=Path,
+        help="operator-pinned public CNG identity JSON; never read from the attestation",
+    )
     parser.add_argument("--emit-rehearsal", metavar="SOURCE_COMMIT")
+    parser.add_argument("--output-attestation", type=Path)
     arguments = parser.parse_args(argv)
-    if arguments.emit_rehearsal is not None:
-        print(
-            json.dumps(
-                build_rehearsal_envelope(source_commit=arguments.emit_rehearsal),
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-        return 0
     try:
-        result = verify_release_files(
-            capacity_path=arguments.capacity,
-            attestation_path=arguments.attestation,
-            require_production=arguments.require_production,
-        )
+        if arguments.output_attestation is not None and arguments.emit_rehearsal is None:
+            raise ValueError("attestation output requires --emit-rehearsal")
+        if arguments.emit_rehearsal is not None:
+            result = build_rehearsal_envelope(
+                source_commit=arguments.emit_rehearsal,
+                evidence_path=arguments.evidence,
+                wheel_path=arguments.wheel,
+            )
+            if arguments.output_attestation is not None:
+                arguments.output_attestation.parent.mkdir(parents=True, exist_ok=True)
+                arguments.output_attestation.write_bytes(canonical_json_bytes(result))
+                result = {
+                    "schema_version": "strathmark-v3-release-attestation-write-v1",
+                    "result": "passed",
+                    "tier": "rehearsal",
+                    "output": str(arguments.output_attestation.resolve()),
+                    "authority_changed": False,
+                }
+        else:
+            trusted_production_identity = None
+            if arguments.trusted_production_identity is not None:
+                trusted_value = json.loads(
+                    arguments.trusted_production_identity.read_text(encoding="utf-8")
+                )
+                trusted_production_identity = IntegrityKeyIdentity.from_dict(trusted_value)
+            result = verify_release_files(
+                evidence_path=arguments.evidence,
+                wheel_path=arguments.wheel,
+                attestation_path=arguments.attestation,
+                require_production=arguments.require_production,
+                trusted_production_identity=trusted_production_identity,
+            )
     except Exception as exc:
         print(
             json.dumps(
                 {
-                    "schema_version": "strathmark-v3-release-verification-v1",
+                    "schema_version": "strathmark-v3-release-verification-v2",
                     "result": "failed",
                     "reason": str(exc),
                     "authority_changed": False,

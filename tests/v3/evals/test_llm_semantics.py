@@ -125,18 +125,18 @@ def test_public_aggregation_rejects_unpromoted_and_reconstructed_outcomes() -> N
         _member("ministral", 41_000),
         _member("cloud", 39_000),
     )
-    with pytest.raises(ValueError, match="unavailable until U19"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council(members)
     reconstructed = tuple(replace(item) for item in members)
-    with pytest.raises(ValueError, match="unavailable until U19"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council(reconstructed)
     forged_first = object.__new__(MemberOutcome)
     for field_name in MemberOutcome.__dataclass_fields__:
         object.__setattr__(forged_first, field_name, getattr(members[0], field_name))
     forged = (forged_first, members[1], members[2])
-    with pytest.raises(ValueError, match="unavailable until U19"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council(forged)
-    with pytest.raises(ValueError, match="typed member outcomes"):
+    with pytest.raises(ValueError, match="promoted council authority"):
         council.aggregate_council((object(), object(), object()))  # type: ignore[arg-type]
 
 
@@ -275,7 +275,7 @@ def test_sealed_receipt_defensive_schema_and_reconstruction_paths(tmp_path) -> N
         )
     )
     assert replay_sealed_council(seal_council_receipt(unavailable)) == unavailable
-    with pytest.raises(ValueError, match="DiagnosticCouncilMixture"):
+    with pytest.raises(ValueError, match="typed council assessment"):
         seal_council_receipt(object())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="reproducible"):
         seal_council_receipt(replace(assessment, valid_member_count=2))

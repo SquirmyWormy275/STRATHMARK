@@ -1,6 +1,8 @@
 # Prediction Model and Persistence Policy
 
-Status: active for STRATHMARK 2.0.0.
+Status: active for STRATHMARK V2. V3 has a separate signed automated model factory and
+event authority documented in [`PREDICTION_ENGINE_V3.md`](PREDICTION_ENGINE_V3.md).
+V2 remains trusted production authority until explicit cutover.
 
 This policy governs V2 artifacts, promotion, drift, trusted prediction evidence, and
 failure behavior. The full mechanism is documented in

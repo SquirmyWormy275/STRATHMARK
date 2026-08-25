@@ -1,11 +1,16 @@
 # Prediction Engine V2
 
+> **Preserved production contract.** V3 is implemented as a separate successor and its
+> older rehearsal evidence is stale after current source changes. V2 remains the trusted production authority
+> until an explicit cutover. This page is canonical for V2 receipts and behavior; use
+> [`PREDICTION_ENGINE_V3.md`](PREDICTION_ENGINE_V3.md) for V3.
+
 STRATHMARK 2.0.0 replaces the numeric prediction cascade with one reproducible,
 prior-only prediction system. It predicts positive finish times, reports calibrated
 forecast intervals, assigns integer marks from the field's joint predictive
 distributions, and can record trusted predictions in an append-only ledger.
 
-This page is the canonical description of the active mechanism. Older cascade and
+This page is the canonical description of the active V2 mechanism. Older cascade and
 same-tournament documents are retained only as historical decisions and are marked
 superseded.
 

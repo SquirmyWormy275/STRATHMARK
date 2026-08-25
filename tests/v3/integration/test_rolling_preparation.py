@@ -22,7 +22,7 @@ from strathmark.v3.application.coordinator import (
     RollingPreparationPlanner,
 )
 from strathmark.v3.application.field_assembly import seal_competitor_card_authority
-from strathmark.v3.application.job_ports import DurableJobError
+from strathmark.v3.application.job_ports import DurableJobError, RollingDerivationPending
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.evidence import EvidencePacket, TargetContext
 from strathmark.v3.contracts.forecasts import (
@@ -1030,6 +1030,7 @@ def test_canonical_field_revision_event_schedules_affected_cards_and_exact_retry
         resolver=resolver,
         reaction_store=repository,
         clock=lambda: "2026-08-24T18:00:01.000Z",
+        test_only_allow_legacy_non_executable=True,
     )
     assert repository.pending_rolling_reactions(limit=12) == ()
     recovered_job_count = len(
@@ -1038,7 +1039,21 @@ def test_canonical_field_revision_event_schedules_affected_cards_and_exact_retry
     assert recovered_job_count == 0
     with open_v3_connection(path, read_only=True) as connection:
         first_count = int(connection.execute("SELECT COUNT(*) FROM v3_jobs").fetchone()[0])
+        source_sequences = tuple(
+            int(row[0])
+            for row in connection.execute(
+                "SELECT first_global_sequence FROM v3_rolling_reaction_obligations "
+                "ORDER BY first_global_sequence"
+            )
+        )
     assert first_count >= 10
+    pending_sources = []
+    for source_sequence in source_sequences:
+        try:
+            reaction.derivation_authority(source_sequence)
+        except RollingDerivationPending:
+            pending_sources.append(source_sequence)
+    assert pending_sources
 
     lifecycle = LifecycleService(path, reaction_port=reaction)
     _ingest_field(lifecycle, 2)
@@ -1303,6 +1318,7 @@ def test_real_result_and_correction_rebuild_only_causal_prospective_packet(
         resolver=resolver,
         reaction_store=repository,
         clock=lambda: "2026-08-24T18:01:00.000Z",
+        test_only_allow_legacy_non_executable=True,
     )
     lifecycle = LifecycleService(path, reaction_port=reaction)
     assembled = FieldAssemblyService(store).assemble(
@@ -1488,6 +1504,7 @@ def test_delayed_reaction_recovery_does_not_backdate_expired_provider_work(
         ),
         reaction_store=repository,
         clock=lambda: "2026-08-24T19:00:00.000Z",
+        test_only_allow_legacy_non_executable=True,
     )
 
     with open_v3_connection(path, read_only=True) as connection:
@@ -1518,6 +1535,40 @@ def test_delayed_reaction_recovery_does_not_backdate_expired_provider_work(
         connection.commit()
     with pytest.raises(DurableJobError, match="reaction completion integrity"):
         tampered.verify_rolling_storage()
+
+
+def test_live_rolling_reaction_requires_executable_council_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+
+    repository = _repository(tmp_path)
+    coordinator = DurableRollingPreparationCoordinator(
+        repository, signer=repository._signer, trust_store=repository._trust_store
+    )
+
+    class Resolver:
+        def resolve(self, _events):  # pragma: no cover - construction must fail first
+            raise AssertionError("legacy resolver must not run")
+
+    with pytest.raises(DurableJobError, match="executable council"):
+        RollingLifecycleReactionService(
+            event_store=SQLiteEventStore(repository.database_path),
+            coordinator=coordinator,
+            resolver=Resolver(),
+            reaction_store=repository,
+            clock=lambda: T0,
+        )
+    monkeypatch.delenv("STRATHMARK_TEST_DB")
+    with pytest.raises(DurableJobError, match="isolated test harness"):
+        RollingLifecycleReactionService(
+            event_store=SQLiteEventStore(repository.database_path),
+            coordinator=coordinator,
+            resolver=Resolver(),
+            reaction_store=repository,
+            clock=lambda: T0,
+            test_only_allow_legacy_non_executable=True,
+        )
 
 
 def test_reaction_recovery_preserves_head_of_line_after_older_failure(
@@ -1561,6 +1612,7 @@ def test_reaction_recovery_preserves_head_of_line_after_older_failure(
             resolver=FailingOldestResolver(),
             reaction_store=repository,
             clock=lambda: "2026-08-24T18:00:01.000Z",
+            test_only_allow_legacy_non_executable=True,
         )
     with open_v3_connection(path, read_only=True) as connection:
         assert (
@@ -1586,6 +1638,7 @@ def test_reaction_recovery_preserves_head_of_line_after_older_failure(
         resolver=resolver,
         reaction_store=repository,
         clock=lambda: "2026-08-24T18:00:01.000Z",
+        test_only_allow_legacy_non_executable=True,
     )
     assert repository.pending_rolling_reactions(limit=12) == ()
 
@@ -1834,6 +1887,7 @@ def test_epoch_close_cancels_pending_work_and_restart_does_not_reopen_it(
         ),
         reaction_store=restarted_repository,
         clock=lambda: "2026-08-24T19:00:00.000Z",
+        test_only_allow_legacy_non_executable=True,
     )
     assert restarted_repository.pending_rolling_reactions(limit=12) == ()
     repository = restarted_repository

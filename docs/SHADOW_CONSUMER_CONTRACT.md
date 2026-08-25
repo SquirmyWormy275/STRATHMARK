@@ -1,5 +1,10 @@
 # Trusted Shadow Consumer Contract
 
+> **Frozen V2 consumer contract.** V3 is implemented behind a separate `/v3/*` contract
+> and its older rehearsal evidence is stale after current source changes. V2 remains the trusted production
+> authority until an explicit cutover. No V3 route, artifact, or rehearsal changes this
+> shadow contract or switches a consumer.
+
 The frozen local consumer contract is packaged at
 `strathmark/contracts/shadow_consumer_v1.openapi.json`. It is an OpenAPI 3.1
 document covering the complete versioned STRATHMARK boundary consumed by

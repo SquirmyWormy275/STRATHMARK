@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -973,6 +974,9 @@ class DurableRollingPreparationCoordinator:
         capacity_use: CapacityUse,
         council_manifest_digest: str,
         observed_at: str,
+        promoted_council_authority: Any | None = None,
+        token_key: Any | None = None,
+        member_deadlines: Mapping[str, Any] | None = None,
     ) -> tuple[Any, ...]:
         if not isinstance(capacity_use, CapacityUse):
             raise DurableJobError("rolling scheduling requires typed capacity use")
@@ -999,6 +1003,13 @@ class DurableRollingPreparationCoordinator:
                 if len(existing_by_ordinal) != len(existing):
                     raise DurableJobError("rolling card has duplicate component ordinals")
                 component_plan = self._component_plan(council)
+                executable_llm = self._executable_llm_payloads(
+                    candidate,
+                    council,
+                    promoted_council_authority=promoted_council_authority,
+                    token_key=token_key,
+                    member_deadlines=member_deadlines,
+                )
                 payloads = tuple(
                     {
                         "schema_version": "strathmark-v3-rolling-component-job-v1",
@@ -1008,6 +1019,11 @@ class DurableRollingPreparationCoordinator:
                         "member_manifest_digest": member_digest,
                         "council_manifest_digest": council_manifest_digest,
                         "evidence_packet": candidate.evidence_packet.to_dict(),
+                        **(
+                            {}
+                            if component_id not in executable_llm
+                            else {"llm_job_payload": executable_llm[component_id]}
+                        ),
                     }
                     for ordinal, (component_id, _kind, member_digest) in enumerate(
                         component_plan, start=1
@@ -1064,6 +1080,89 @@ class DurableRollingPreparationCoordinator:
         except Exception:
             self._planner._restore(checkpoint)
             raise
+
+    def schedule_executable(
+        self,
+        candidates: tuple[PreparationCandidate, ...],
+        *,
+        capacity_use: CapacityUse,
+        council_manifest_digest: str,
+        promoted_council_authority: Any,
+        token_key: Any,
+        member_deadlines: Mapping[str, Any],
+        observed_at: str,
+    ) -> tuple[Any, ...]:
+        """Schedule the ordinary rolling path with exact executable member payloads."""
+
+        return self.schedule(
+            candidates,
+            capacity_use=capacity_use,
+            council_manifest_digest=council_manifest_digest,
+            observed_at=observed_at,
+            promoted_council_authority=promoted_council_authority,
+            token_key=token_key,
+            member_deadlines=member_deadlines,
+        )
+
+    @staticmethod
+    def _executable_llm_payloads(
+        candidate: PreparationCandidate,
+        council: Mapping[str, Any],
+        *,
+        promoted_council_authority: Any | None,
+        token_key: Any | None,
+        member_deadlines: Mapping[str, Any] | None,
+    ) -> dict[str, dict[str, Any]]:
+        supplied = (
+            promoted_council_authority is not None,
+            token_key is not None,
+            member_deadlines is not None,
+        )
+        if not any(supplied):
+            return {}
+        if not all(supplied):
+            raise DurableJobError("executable council scheduling requires every typed authority")
+        from strathmark.v3.assessors.llm_council import (
+            DeadlineBudget,
+            HMACTokenKey,
+            PromotedCouncilAuthority,
+            build_provider_packet,
+            create_llm_job_payload,
+        )
+
+        if (
+            not isinstance(promoted_council_authority, PromotedCouncilAuthority)
+            or not isinstance(token_key, HMACTokenKey)
+            or not isinstance(member_deadlines, Mapping)
+            or candidate.evidence_packet is None
+            or promoted_council_authority.bundle_digest != candidate.key.bundle_digest
+        ):
+            raise DurableJobError("executable council authority differs from the causal card")
+        members = {item.member_id: item for item in promoted_council_authority.members}
+        roster = {item["member_id"]: item for item in council["members"]}
+        if set(members) != set(roster) or set(member_deadlines) != set(members):
+            raise DurableJobError("promoted council roster or deadline coverage differs")
+        payloads = {}
+        for member_id, member in members.items():
+            row = roster[member_id]
+            deadline = member_deadlines[member_id]
+            if (
+                row["provider_kind"] != member.provider_kind.value
+                or row["family"] != member.family
+                or not isinstance(deadline, DeadlineBudget)
+            ):
+                raise DurableJobError("promoted council member differs from rolling authority")
+            packet = build_provider_packet(
+                candidate.evidence_packet,
+                member,
+                token_key,
+                scope=f"card_{candidate.key.card_digest}",
+            )
+            payload = create_llm_job_payload(packet, member, deadline)
+            if payload["member_manifest_digest"] != row["member_manifest_digest"]:
+                raise DurableJobError("promoted council member manifest differs")
+            payloads[member_id] = payload
+        return payloads
 
     def seal_card(
         self,
@@ -1650,6 +1749,29 @@ class DurableRollingPreparationCoordinator:
                 "evidence_packet": packet.to_dict(),
             }
             if (
+                kind
+                in {
+                    JobKind.LOCAL_LLM_CARD,
+                    JobKind.CLOUD_LLM_CARD,
+                }
+                and "llm_job_payload" in record.payload()
+            ):
+                nested = record.payload().get("llm_job_payload")
+                if (
+                    not isinstance(nested, dict)
+                    or set(nested)
+                    != {
+                        "schema_version",
+                        "member_manifest_digest",
+                        "provider_packet",
+                        "deadlines",
+                    }
+                    or nested.get("schema_version") != "strathmark-v3-llm-job-payload-v1"
+                    or nested.get("member_manifest_digest") != member_digest
+                ):
+                    raise DurableJobError("rolling LLM executable payload differs")
+                expected_payload["llm_job_payload"] = nested
+            if (
                 record.payload() != expected_payload
                 or record.job_kind is not kind
                 or record.evidence_digest != key.evidence_digest
@@ -1710,6 +1832,20 @@ class DurableRollingPreparationCoordinator:
             "aggregate_available": successes >= 2,
             "aggregate_forecast_commit_digest": council_forecast.commit_digest,
         }
+        receipt_reference = payload.get("council_receipt_reference")
+        if receipt_reference is not None:
+            from strathmark.v3.infrastructure.ollama import RawOutputStorageReference
+
+            try:
+                reference = RawOutputStorageReference.from_dict(receipt_reference)
+            except (TypeError, ValueError) as exc:
+                raise DurableJobError("rolling council receipt reference differs") from exc
+            receipt_artifacts = tuple(
+                item for item in council_forecast.artifacts if item.role == "llm_council_receipt"
+            )
+            if len(receipt_artifacts) != 1 or receipt_artifacts[0].digest != reference.raw_digest:
+                raise DurableJobError("rolling council forecast receipt binding differs")
+            expected["council_receipt_reference"] = reference.to_dict()
         if payload != expected or (
             (council_forecast.state is ForecastState.COMMITTED) != (successes >= 2)
         ):
@@ -1799,6 +1935,59 @@ class DurableRollingPreparationCoordinator:
         return publication
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutableCouncilSchedule:
+    """Immutable promoted authority required by the live rolling reaction path."""
+
+    authority: Any
+    token_key: Any
+    member_deadlines: tuple[tuple[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        from strathmark.v3.assessors.llm_council import (
+            DeadlineBudget,
+            HMACTokenKey,
+            PromotedCouncilAuthority,
+        )
+
+        if not isinstance(self.authority, PromotedCouncilAuthority) or not isinstance(
+            self.token_key, HMACTokenKey
+        ):
+            raise DurableJobError("executable rolling reaction requires promoted council authority")
+        expected = tuple(item.member_id for item in self.authority.members)
+        if (
+            not isinstance(self.member_deadlines, tuple)
+            or tuple(item[0] for item in self.member_deadlines) != expected
+            or any(
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[1], DeadlineBudget)
+                for item in self.member_deadlines
+            )
+        ):
+            raise DurableJobError("executable rolling deadlines must match the promoted roster")
+
+    def authority_value(self) -> dict[str, Any]:
+        return {
+            "schema_version": "strathmark-v3-executable-council-schedule-v1",
+            "bundle_digest": self.authority.bundle_digest,
+            "component_digest": self.authority.component_digest,
+            "signer_key_id": self.authority.signer_key_id,
+            "token_key_id": self.token_key.key_id,
+            "member_deadlines": [
+                {
+                    "member_id": member_id,
+                    "queue_ms": budget.queue_ms,
+                    "connect_ms": budget.connect_ms,
+                    "read_ms": budget.read_ms,
+                    "retry_ms": budget.retry_ms,
+                    "overall_ms": budget.overall_ms,
+                }
+                for member_id, budget in self.member_deadlines
+            ],
+        }
+
+
 class RollingLifecycleReactionService:
     """Translate canonical U5 event sets into idempotent durable rolling work."""
 
@@ -1810,6 +1999,8 @@ class RollingLifecycleReactionService:
         resolver: RollingLifecycleResolverPort,
         reaction_store: RollingJobRepositoryPort,
         clock: ClockPort,
+        executable_council: ExecutableCouncilSchedule | None = None,
+        test_only_allow_legacy_non_executable: bool = False,
     ) -> None:
         if (
             not callable(getattr(event_store, "event_at", None))
@@ -1825,6 +2016,19 @@ class RollingLifecycleReactionService:
         self._resolver = resolver
         self._reaction_store = reaction_store
         self._clock = clock
+        if not isinstance(test_only_allow_legacy_non_executable, bool):
+            raise DurableJobError("legacy rolling mode must be an explicit test-only choice")
+        if executable_council is None and not test_only_allow_legacy_non_executable:
+            raise DurableJobError("live rolling reaction requires executable council authority")
+        if test_only_allow_legacy_non_executable and os.environ.get("STRATHMARK_TEST_DB") != "1":
+            raise DurableJobError("legacy rolling mode is restricted to the isolated test harness")
+        if executable_council is not None and not isinstance(
+            executable_council, ExecutableCouncilSchedule
+        ):
+            raise DurableJobError("rolling lifecycle executable council authority differs")
+        if executable_council is not None and test_only_allow_legacy_non_executable:
+            raise DurableJobError("executable and legacy test-only rolling modes conflict")
+        self._executable_council = executable_council
         self.recover_pending()
 
     def react(self, result: LifecycleCommandResultPort) -> None:
@@ -1851,6 +2055,17 @@ class RollingLifecycleReactionService:
             for obligation in pending:
                 self._process(obligation)
                 total += 1
+
+    def derivation_authority(self, source_global_sequence: int) -> dict[str, Any]:
+        """Expose only the verified durable output used by barrier reactions."""
+
+        resolver = getattr(self._reaction_store, "rolling_derivation_authority", None)
+        if not callable(resolver):
+            raise DurableJobError("rolling reaction store lacks derivation authority")
+        value = resolver(source_global_sequence)
+        if not isinstance(value, dict):
+            raise DurableJobError("rolling derivation authority differs")
+        return value
 
     def _process(self, obligation: Mapping[str, Any]) -> None:
         events = tuple(
@@ -1893,22 +2108,48 @@ class RollingLifecycleReactionService:
             if completed_at >= candidate.hard_deadline_at
         )
         if timely_candidates:
-            self._coordinator.schedule(
-                timely_candidates,
-                capacity_use=plan.capacity_use,
-                council_manifest_digest=plan.council_manifest_digest,
-                observed_at=completed_at,
-            )
+            self._schedule_timely(timely_candidates, plan=plan, observed_at=completed_at)
         execution_value = {
             "schema_version": "strathmark-v3-rolling-lifecycle-execution-v1",
             "plan": plan.content_value(),
+            "execution_authority": (
+                {"mode": "legacy_non_executable"}
+                if self._executable_council is None
+                else self._executable_council.authority_value()
+            ),
             "scheduled_card_digests": [item.key.card_digest for item in timely_candidates],
             "deadline_expired_card_digests": list(expired_card_digests),
         }
         self._reaction_store.complete_rolling_reaction(
             obligation["reaction_id"],
             plan_digest=canonical_digest(execution_value),
+            scheduled_card_digests=tuple(item.key.card_digest for item in timely_candidates),
             completed_at=completed_at,
+        )
+
+    def _schedule_timely(
+        self,
+        candidates: tuple[PreparationCandidate, ...],
+        *,
+        plan: RollingLifecycleReactionPlan,
+        observed_at: str,
+    ) -> None:
+        if self._executable_council is None:
+            self._coordinator.schedule(
+                candidates,
+                capacity_use=plan.capacity_use,
+                council_manifest_digest=plan.council_manifest_digest,
+                observed_at=observed_at,
+            )
+            return
+        self._coordinator.schedule_executable(
+            candidates,
+            capacity_use=plan.capacity_use,
+            council_manifest_digest=plan.council_manifest_digest,
+            promoted_council_authority=self._executable_council.authority,
+            token_key=self._executable_council.token_key,
+            member_deadlines=dict(self._executable_council.member_deadlines),
+            observed_at=observed_at,
         )
 
 
@@ -1995,6 +2236,7 @@ __all__ = [
     "ContextDigestPort",
     "DurableCoordinator",
     "DurableRollingPreparationCoordinator",
+    "ExecutableCouncilSchedule",
     "JobRepositoryPort",
     "ProviderFailure",
     "ProviderPort",

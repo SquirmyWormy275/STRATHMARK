@@ -1,5 +1,9 @@
 # Installation
 
+> **Authority status.** The commands below install the trusted V2.0.0 release. V3 is
+> implemented in later source and is under exact-source verification, but no production authority
+> has changed. Installing a V3-capable wheel does not switch a consumer.
+
 Python 3.10 or newer is required.
 
 ```bash

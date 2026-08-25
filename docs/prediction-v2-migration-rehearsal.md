@@ -1,5 +1,8 @@
 # Prediction V2 Migration Rehearsal
 
+> **V2-only proof.** V3 uses separate local SQLite migrations and a separate cutover
+> boundary. This PostgreSQL rehearsal neither initializes nor authorizes V3.
+
 This is a development and CI proof for migrations 005, 006, and 007. It never applies a
 hosted migration and does not authorize production changes.
 

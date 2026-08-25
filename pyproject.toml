@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "2.0.0"
-description = "Woodchopping handicap engine — pip-installable calculation core extracted from STRATHEX"
+version = "3.0.0rc1"
+description = "Offline woodchopping handicap engine with trusted V2 and an auditable V3 adaptive-ensemble release candidate"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -13,9 +13,9 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Alex Kaper", email = "alex.j.kaper@gmail.com" }
 ]
-keywords = ["woodchopping", "handicap", "axemen", "sports", "monte-carlo"]
+keywords = ["woodchopping", "handicap", "axemen", "sports", "ensemble", "audit"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -96,7 +96,6 @@ packages = ["strathmark"]
 "strathmark/v3/contracts/v3_consumer.openapi.json" = "strathmark/v3/contracts/v3_consumer.openapi.json"
 "strathmark/v3/contracts/v3_consumer.openapi.sha256" = "strathmark/v3/contracts/v3_consumer.openapi.sha256"
 "benchmarks/v3/windows_capacity_manifest.json" = "strathmark/v3/contracts/windows_capacity_manifest.json"
-"benchmarks/v3/v3_release_attestation.json" = "strathmark/v3/contracts/v3_release_attestation.json"
 "requirements/v3-release.lock" = "strathmark/v3/contracts/v3-release.lock"
 
 [tool.pytest.ini_options]

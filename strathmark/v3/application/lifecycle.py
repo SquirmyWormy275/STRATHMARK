@@ -521,6 +521,142 @@ class LifecycleService:
             monotonic_elapsed_ms,
         )
 
+    def record_and_settle_live_race(
+        self,
+        submissions: tuple[LiveResultSubmission, ...],
+        *,
+        field_id: StableIdentifier,
+        field_revision: int,
+        claimed_receipt_id: StableIdentifier,
+        command_id: IdempotencyKey,
+        actor_id: StableIdentifier,
+        occurred_at_utc: str,
+        monotonic_elapsed_ms: int,
+    ) -> StoredCommandResult:
+        """Atomically record a complete issued roster and settle its field."""
+
+        if not isinstance(submissions, tuple) or not submissions or any(
+            not isinstance(item, LiveResultSubmission) for item in submissions
+        ):
+            raise ContractError("atomic settlement requires immutable live result submissions")
+        issued = self._issued_field(field_id)
+        if (
+            issued is None
+            or issued.upstream_revision != field_revision
+            or issued.receipt_id != claimed_receipt_id
+        ):
+            raise ContractError("settlement must match the exact acknowledged receipt")
+        by_competitor = {str(item.competitor_id): item for item in submissions}
+        if len(by_competitor) != len(submissions) or set(by_competitor) != {
+            str(item) for item in issued.competitor_ids
+        }:
+            raise ContractError("atomic settlement requires the complete issued roster exactly once")
+        result_payloads: list[dict[str, Any]] = []
+        result_intents: list[EventIntent] = []
+        results: list[dict[str, object]] = []
+        for competitor_id in sorted(by_competitor):
+            submission = by_competitor[competitor_id]
+            if submission.field_id != field_id:
+                raise ContractError("atomic settlement submissions must bind one issued field")
+            observation = submission.to_observation(1)
+            classified = admit_observation(
+                observation,
+                issued_field=issued,
+                field_revision=field_revision,
+                claimed_receipt_id=claimed_receipt_id,
+            )
+            if classified.reason not in {
+                AdmissionReason.ELIGIBLE_COMPLETION,
+                AdmissionReason.STATUS_INELIGIBLE,
+            }:
+                raise ContractError(
+                    f"live outcome does not match authoritative issue: {classified.reason.value}"
+                )
+            result_key = deterministic_identifier(
+                "result",
+                {
+                    "field_id": str(field_id),
+                    "field_revision": field_revision,
+                    "competitor_id": competitor_id,
+                },
+            )
+            previous = self._latest_observation(str(result_key))
+            already_settled = previous is not None and self._latest_result_is_settled(
+                str(result_key)
+            )
+            exact_retry = (
+                already_settled
+                and previous
+                == submission.to_observation(previous.observation_sequence)
+            )
+            if not exact_retry:
+                validate_result_revision(previous, observation)
+                if already_settled:
+                    raise ContractError(
+                        "atomic initial settlement cannot revise an already settled result"
+                    )
+            event_kind = (
+                EventKind.RESULT_RECORDED
+                if observation.result.revision == 1
+                else EventKind.RESULT_SUPERSEDED
+            )
+            result_payloads.append(
+                {
+                    "schema_version": "strathmark-v3-live-result-v1",
+                    "result_key": str(result_key),
+                    "submission": submission.to_dict(),
+                    "field_revision": field_revision,
+                    "claimed_receipt_id": str(claimed_receipt_id),
+                    "candidate_numeric_eligible": classified.numeric_eligible,
+                    "admission_reason": classified.reason.value,
+                }
+            )
+            result_intents.append(EventIntent(AggregateKind.RESULT, result_key, event_kind))
+            results.append(
+                {
+                    "result_key": str(result_key),
+                    "revision": observation.result.revision,
+                    "competitor_id": competitor_id,
+                }
+            )
+        settlement_payload = {
+            "schema_version": "strathmark-v3-live-settlement-v1",
+            "field_id": str(field_id),
+            "field_revision": field_revision,
+            "receipt_id": str(claimed_receipt_id),
+            "results": results,
+        }
+        target = deterministic_identifier(
+            "settlement",
+            {
+                "field_id": str(field_id),
+                "field_revision": field_revision,
+                "receipt_id": str(claimed_receipt_id),
+                "results": results,
+            },
+        )
+        return self._execute_multi(
+            CommandKind.SETTLE_LIVE_RACE,
+            target,
+            (
+                *result_intents,
+                EventIntent(AggregateKind.SETTLEMENT, target, EventKind.LIVE_RACE_SETTLED),
+                EventIntent(AggregateKind.FIELD, field_id, EventKind.FIELD_SETTLED),
+            ),
+            {
+                "schema_version": "strathmark-v3-record-and-settle-live-race-v1",
+                "field_id": str(field_id),
+                "field_revision": field_revision,
+                "receipt_id": str(claimed_receipt_id),
+                "result_submissions": result_payloads,
+                "settlement": settlement_payload,
+            },
+            command_id,
+            actor_id,
+            occurred_at_utc,
+            monotonic_elapsed_ms,
+        )
+
     def complete_derivation_reaction(
         self,
         source_global_sequence: int,

@@ -787,6 +787,25 @@ class SQLiteProjectionStore:
                     if not isinstance(nested, dict):
                         raise ProjectionError("atomic correction payload is malformed")
                     value = nested
+            elif value.get("schema_version") == "strathmark-v3-record-and-settle-live-race-v1":
+                if event.kind in {EventKind.RESULT_RECORDED, EventKind.RESULT_SUPERSEDED}:
+                    candidates = value.get("result_submissions")
+                    if not isinstance(candidates, list):
+                        raise ProjectionError("atomic settlement result payloads are malformed")
+                    matched = [
+                        item
+                        for item in candidates
+                        if isinstance(item, dict)
+                        and item.get("result_key") == str(event.aggregate_id)
+                    ]
+                    if len(matched) != 1:
+                        raise ProjectionError("atomic settlement result payload is missing")
+                    value = matched[0]
+                elif event.kind is EventKind.LIVE_RACE_SETTLED:
+                    nested = value.get("settlement")
+                    if not isinstance(nested, dict):
+                        raise ProjectionError("atomic settlement payload is malformed")
+                    value = nested
             if event.kind in {
                 EventKind.TOURNAMENT_SNAPSHOT_REVISED,
                 EventKind.ROUND_SNAPSHOT_REVISED,
@@ -909,13 +928,47 @@ class SQLiteProjectionStore:
             ):
                 raise ProjectionConflict("epoch freeze round authority does not match its epoch")
         elif command_kind.value == "settle_live_race":
+            results = [
+                event
+                for event in events
+                if event.kind in {EventKind.RESULT_RECORDED, EventKind.RESULT_SUPERSEDED}
+            ]
             settlements = [event for event in events if event.kind is EventKind.LIVE_RACE_SETTLED]
             fields = [event for event in events if event.kind is EventKind.FIELD_SETTLED]
             if len(settlements) != 1 or len(fields) != 1:
                 raise ProjectionConflict("live settlement must atomically settle its field")
             payload = cast(InlinePayload, settlements[0].command.payload)
-            if payload.to_value().get("field_id") != str(fields[0].aggregate_id):
+            payload_value = payload.to_value()
+            if payload_value.get("field_id") != str(fields[0].aggregate_id):
                 raise ProjectionConflict("live settlement field authority does not match")
+            if payload_value.get("schema_version") == (
+                "strathmark-v3-record-and-settle-live-race-v1"
+            ):
+                nested_results = payload_value.get("result_submissions")
+                settlement = payload_value.get("settlement")
+                if (
+                    not isinstance(nested_results, list)
+                    or not isinstance(settlement, dict)
+                    or {item.get("result_key") for item in nested_results if isinstance(item, dict)}
+                    != {str(event.aggregate_id) for event in results}
+                    or len(nested_results) != len(results)
+                    or settlement.get("field_id") != str(fields[0].aggregate_id)
+                    or settlement.get("results")
+                    != [
+                        {
+                            "result_key": item.get("result_key"),
+                            "revision": item.get("submission", {}).get("result", {}).get("revision")
+                            if isinstance(item.get("submission"), dict)
+                            else None,
+                            "competitor_id": item.get("submission", {}).get("competitor_id")
+                            if isinstance(item.get("submission"), dict)
+                            else None,
+                        }
+                        for item in nested_results
+                        if isinstance(item, dict)
+                    ]
+                ):
+                    raise ProjectionConflict("atomic settlement result authority differs")
         elif command_kind.value == "revise_field_roster":
             ingress = next(
                 (event for event in events if event.kind is EventKind.FIELD_ROSTER_REVISED),
@@ -6732,6 +6785,20 @@ class SQLiteRollingLifecycleResolver:
             value = cast(InlinePayload, event.command.payload).to_value()
             if value.get("schema_version") == "strathmark-v3-correction-settlement-v1":
                 value = value["result"]
+            elif value.get(
+                "schema_version"
+            ) == "strathmark-v3-record-and-settle-live-race-v1" and event.kind in {
+                EventKind.RESULT_RECORDED,
+                EventKind.RESULT_SUPERSEDED,
+            }:
+                matches = [
+                    item
+                    for item in value.get("result_submissions", [])
+                    if isinstance(item, dict) and item.get("result_key") == str(event.aggregate_id)
+                ]
+                if len(matches) != 1:
+                    raise ProjectionError("atomic rolling result payload is missing")
+                value = matches[0]
             if event.kind is EventKind.FIELD_ROSTER_REVISED:
                 field_ids.add(str(value["entity_id"]))
                 tournament_ids.add(str(value["tournament_id"]))

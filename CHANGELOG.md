@@ -4,6 +4,44 @@ All notable changes to STRATHMARK will be documented in this file.
 
 ## [Unreleased]
 
+### V3 adaptive ensemble release candidate
+
+- Built V3 as a separate release-candidate namespace, contract, event authority, model
+  factory, and cutover boundary while preserving V2 receipts and runtime behavior.
+- Added the independent formula, hierarchical ML, three-member numeric LLM council,
+  deterministic validation, credibility, pooling, and disagreement components, plus the
+  executable rolling prepare-to-card composition with separately sealed member and
+  council receipts and exact restart replay.
+- Added dual-state capability updates from every valid completion, including both
+  overperformance and underperformance, without inferring motive or altering an issued
+  winner.
+- Added same-round frozen evidence epochs, between-round updates, full-field
+  rehandicapping, Mark-3 rebasing, rolling card preparation, sub-two-second field
+  assembly, exception-first approval, atomic issue, complete-roster atomic settlement,
+  and a restart-safe barrier across all seven mandatory derivation reactions without an
+  implicit judge decision.
+- Added the dedicated SQLite event authority, hash-chained exact-retry commands,
+  rebuildable projections, content-addressed blobs, durable jobs/outbox, signed backup,
+  recovery-device support, and deterministic redacted support bundles.
+- Added authenticated `/v3/*` service routes with closed schemas, pre-body bounds,
+  loopback default, pinned mutual TLS for non-loopback operation, credential rotation and
+  revocation, and a frozen installed OpenAPI contract.
+- Added automated formula/ML/LLM candidate evaluation, signed promotion and rollback,
+  Windows CNG production-key enforcement, and refusal of ephemeral identities in
+  production roles.
+- Added release-proof harnesses for race-day replay, manipulation/equity, provider
+  failure, recovery, backup/restore, installed-wheel, and designated-Windows capacity.
+  Class-specific execution receipts and current-source performance pins remain required;
+  hashes of test source or self-declared rows are not accepted as completed evidence.
+- Added a development-key **rehearsal** attestation format. The checked-in receipt must be
+  regenerated after remediation and is not production evidence:
+  V2 remains the trusted production authority, no endpoint has switched, and V2 is not
+  audit-only. Production cutover still requires a CNG-backed attestation, zero-open-
+  tournament signed handoff, and separate release authorization.
+- Reconciled README, onboarding, architecture, deployment, consumer migration, wiki,
+  migration guidance, package metadata, and documentation checks around that authority
+  boundary; final exact-artifact reconciliation remains a release gate.
+
 ## [2.0.0] - 2026-08-18
 
 Prediction Engine V2 replaces the numeric Manual/LLM/ML/baseline cascade with one
