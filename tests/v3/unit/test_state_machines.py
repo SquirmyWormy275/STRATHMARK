@@ -70,6 +70,11 @@ LIFECYCLES = {
         (None, EventKind.MODEL_CANDIDATE_CREATED, LifecycleStatus.BUNDLE_CANDIDATE),
         (
             LifecycleStatus.BUNDLE_CANDIDATE,
+            EventKind.MODEL_CANDIDATE_EVALUATED,
+            LifecycleStatus.BUNDLE_EVALUATED,
+        ),
+        (
+            LifecycleStatus.BUNDLE_EVALUATED,
             EventKind.BUNDLE_PROMOTED,
             LifecycleStatus.BUNDLE_PROMOTED,
         ),
@@ -81,6 +86,16 @@ LIFECYCLES = {
     ),
     AggregateKind.ISSUE_BATCH: (
         (None, EventKind.ISSUE_BATCH_ISSUED, LifecycleStatus.ISSUE_BATCH_ISSUED),
+    ),
+    AggregateKind.AUDIT_GENERATION: (
+        (
+            None,
+            EventKind.AUDIT_GENERATION_CONSUMED,
+            LifecycleStatus.AUDIT_GENERATION_CONSUMED,
+        ),
+    ),
+    AggregateKind.MONITORING: (
+        (None, EventKind.MONITORING_RECORDED, LifecycleStatus.MONITORING_RECORDED),
     ),
 }
 
@@ -144,6 +159,8 @@ def test_wrong_initial_and_cross_aggregate_events_fail_closed(
         (AggregateKind.JOB, LifecycleStatus.JOB_SUCCEEDED),
         (AggregateKind.BUNDLE, LifecycleStatus.BUNDLE_ROLLED_BACK),
         (AggregateKind.ISSUE_BATCH, LifecycleStatus.ISSUE_BATCH_ISSUED),
+        (AggregateKind.AUDIT_GENERATION, LifecycleStatus.AUDIT_GENERATION_CONSUMED),
+        (AggregateKind.MONITORING, LifecycleStatus.MONITORING_RECORDED),
     ],
 )
 def test_terminal_states_reject_every_event(

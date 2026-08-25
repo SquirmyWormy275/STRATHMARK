@@ -137,12 +137,22 @@ _EDGES: dict[AggregateKind, dict[tuple[State, EventKind], LifecycleStatus]] = {
         (None, EventKind.MODEL_CANDIDATE_CREATED): LifecycleStatus.BUNDLE_CANDIDATE,
         (
             LifecycleStatus.BUNDLE_CANDIDATE,
+            EventKind.MODEL_CANDIDATE_EVALUATED,
+        ): LifecycleStatus.BUNDLE_EVALUATED,
+        (
+            LifecycleStatus.BUNDLE_EVALUATED,
             EventKind.BUNDLE_PROMOTED,
         ): LifecycleStatus.BUNDLE_PROMOTED,
         (
             LifecycleStatus.BUNDLE_PROMOTED,
             EventKind.BUNDLE_ROLLED_BACK,
         ): LifecycleStatus.BUNDLE_ROLLED_BACK,
+    },
+    AggregateKind.AUDIT_GENERATION: {
+        (None, EventKind.AUDIT_GENERATION_CONSUMED): LifecycleStatus.AUDIT_GENERATION_CONSUMED,
+    },
+    AggregateKind.MONITORING: {
+        (None, EventKind.MONITORING_RECORDED): LifecycleStatus.MONITORING_RECORDED,
     },
     AggregateKind.ISSUE_BATCH: {
         (None, EventKind.ISSUE_BATCH_ISSUED): LifecycleStatus.ISSUE_BATCH_ISSUED,

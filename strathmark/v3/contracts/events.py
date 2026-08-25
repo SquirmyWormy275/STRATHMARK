@@ -47,6 +47,8 @@ class AggregateKind(str, Enum):
     SYSTEM = "system"
     ISSUE_BATCH = "issue_batch"
     APPROVAL_DECISION = "approval_decision"
+    AUDIT_GENERATION = "audit_generation"
+    MONITORING = "monitoring"
 
 
 class EventKind(str, Enum):
@@ -98,6 +100,8 @@ class EventKind(str, Enum):
     JOB_PERMANENT_FAILED = "job_permanent_failed"
     JOB_CANCELLED = "job_cancelled"
     MODEL_CANDIDATE_CREATED = "model_candidate_created"
+    MODEL_CANDIDATE_EVALUATED = "model_candidate_evaluated"
+    AUDIT_GENERATION_CONSUMED = "audit_generation_consumed"
     BUNDLE_PROMOTED = "bundle_promoted"
     BUNDLE_ROLLED_BACK = "bundle_rolled_back"
     MONITORING_RECORDED = "monitoring_recorded"

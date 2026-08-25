@@ -77,8 +77,13 @@ _COMMAND_EVENT: dict[CommandKind, tuple[AggregateKind, EventKind]] = {
         AggregateKind.BUNDLE,
         EventKind.MODEL_CANDIDATE_CREATED,
     ),
+    CommandKind.EVALUATE_MODEL_CANDIDATE: (
+        AggregateKind.BUNDLE,
+        EventKind.MODEL_CANDIDATE_EVALUATED,
+    ),
     CommandKind.PROMOTE_BUNDLE: (AggregateKind.BUNDLE, EventKind.BUNDLE_PROMOTED),
     CommandKind.ROLLBACK_BUNDLE: (AggregateKind.BUNDLE, EventKind.BUNDLE_ROLLED_BACK),
+    CommandKind.RECORD_MONITORING: (AggregateKind.MONITORING, EventKind.MONITORING_RECORDED),
     CommandKind.RECORD_CAPABILITY_UPDATE: (
         AggregateKind.COMPETITOR,
         EventKind.CAPABILITY_UPDATED,
@@ -262,6 +267,36 @@ def validate_command_event_intents(
             or any(item.event_kind is not EventKind.FIELD_ISSUED for item in fields)
         ):
             raise ContractError("batch issue requires one batch event and one or more field issues")
+        return
+    if command.kind is CommandKind.EVALUATE_MODEL_CANDIDATE:
+        bundles = [item for item in events if item.aggregate_kind is AggregateKind.BUNDLE]
+        audits = [item for item in events if item.aggregate_kind is AggregateKind.AUDIT_GENERATION]
+        if (
+            len(bundles) != 1
+            or bundles[0].aggregate_id != command.target_aggregate
+            or bundles[0].event_kind is not EventKind.MODEL_CANDIDATE_EVALUATED
+            or len(audits) != 1
+            or audits[0].event_kind is not EventKind.AUDIT_GENERATION_CONSUMED
+            or len(events) != 2
+        ):
+            raise ContractError(
+                "candidate evaluation requires one bundle result and one consumed audit generation"
+            )
+        return
+    if command.kind is CommandKind.RECORD_MONITORING:
+        monitoring = [item for item in events if item.aggregate_kind is AggregateKind.MONITORING]
+        bundles = [item for item in events if item.aggregate_kind is AggregateKind.BUNDLE]
+        if (
+            len(monitoring) != 1
+            or monitoring[0].aggregate_id != command.target_aggregate
+            or monitoring[0].event_kind is not EventKind.MONITORING_RECORDED
+            or len(bundles) > 1
+            or any(item.event_kind is not EventKind.BUNDLE_ROLLED_BACK for item in bundles)
+            or len(monitoring) + len(bundles) != len(events)
+        ):
+            raise ContractError(
+                "monitoring requires one health event and at most one future-bundle rollback"
+            )
         return
     try:
         expected_kind, expected_event = _COMMAND_EVENT[command.kind]

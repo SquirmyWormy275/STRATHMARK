@@ -43,6 +43,8 @@ class LifecycleAggregateKind(str, Enum):
     SCORE = "score"
     WEIGHTS = "weights"
     APPROVAL_DECISION = "approval_decision"
+    AUDIT_GENERATION = "audit_generation"
+    MONITORING = "monitoring"
 
 
 class LifecycleStatus(str, Enum):
@@ -74,8 +76,11 @@ class LifecycleStatus(str, Enum):
     JOB_PERMANENT_FAILED = "job_permanent_failed"
     JOB_CANCELLED = "job_cancelled"
     BUNDLE_CANDIDATE = "bundle_candidate"
+    BUNDLE_EVALUATED = "bundle_evaluated"
     BUNDLE_PROMOTED = "bundle_promoted"
     BUNDLE_ROLLED_BACK = "bundle_rolled_back"
+    AUDIT_GENERATION_CONSUMED = "audit_generation_consumed"
+    MONITORING_RECORDED = "monitoring_recorded"
     ISSUE_BATCH_ISSUED = "issue_batch_issued"
     COMPETITOR_CAPABILITY_CURRENT = "competitor_capability_current"
     FORECAST_CURRENT = "forecast_current"
@@ -127,9 +132,12 @@ _LIFECYCLE_TRANSITIONS: dict[LifecycleStatus, frozenset[LifecycleStatus]] = {
     LifecycleStatus.JOB_STALE: frozenset(),
     LifecycleStatus.JOB_PERMANENT_FAILED: frozenset(),
     LifecycleStatus.JOB_CANCELLED: frozenset(),
-    LifecycleStatus.BUNDLE_CANDIDATE: frozenset({LifecycleStatus.BUNDLE_PROMOTED}),
+    LifecycleStatus.BUNDLE_CANDIDATE: frozenset({LifecycleStatus.BUNDLE_EVALUATED}),
+    LifecycleStatus.BUNDLE_EVALUATED: frozenset({LifecycleStatus.BUNDLE_PROMOTED}),
     LifecycleStatus.BUNDLE_PROMOTED: frozenset({LifecycleStatus.BUNDLE_ROLLED_BACK}),
     LifecycleStatus.BUNDLE_ROLLED_BACK: frozenset(),
+    LifecycleStatus.AUDIT_GENERATION_CONSUMED: frozenset(),
+    LifecycleStatus.MONITORING_RECORDED: frozenset(),
     LifecycleStatus.ISSUE_BATCH_ISSUED: frozenset(),
     LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT: frozenset(
         {LifecycleStatus.COMPETITOR_CAPABILITY_CURRENT}

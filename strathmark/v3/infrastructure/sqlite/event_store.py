@@ -431,6 +431,16 @@ class SQLiteEventStore:
                 )
             )
 
+    def events(self) -> tuple[EventEnvelope, ...]:
+        """Return one fully verified authority snapshot without repeated whole-store replay."""
+
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            self._verify_connection(connection)
+            rows = connection.execute(
+                "SELECT envelope_json FROM v3_events ORDER BY global_sequence"
+            ).fetchall()
+            return tuple(EventEnvelope.from_dict(json.loads(str(row[0]))) for row in rows)
+
     def aggregate_head(self, aggregate_id: str) -> tuple[int, str] | None:
         with open_v3_connection(self._database_path, read_only=True) as connection:
             row = connection.execute(
@@ -716,6 +726,8 @@ class SQLiteEventStore:
                 AggregateKind.SCORE,
                 AggregateKind.WEIGHTS,
                 AggregateKind.APPROVAL_DECISION,
+                AggregateKind.AUDIT_GENERATION,
+                AggregateKind.MONITORING,
             }:
                 try:
                     transition(
