@@ -41,6 +41,7 @@ from strathmark.v3.assessors.llm_council import (
     OperationalCouncilMixture,
     PromotedCouncilAuthority,
     ProviderCallError,
+    SignedMemberWeightAuthority,
     aggregate_council,
     member_outcome_from_response,
     replay_sealed_council,
@@ -48,6 +49,7 @@ from strathmark.v3.assessors.llm_council import (
     seal_council_receipt,
     seal_member_outcome,
     unavailable_member_outcome,
+    verify_member_weight_authority,
 )
 from strathmark.v3.assessors.ml import MLAssessment, MLAssessor
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
@@ -63,6 +65,8 @@ from strathmark.v3.contracts.forecasts import (
 from strathmark.v3.contracts.identifiers import deterministic_identifier
 from strathmark.v3.infrastructure.blobs import BlobStoreError
 from strathmark.v3.infrastructure.integrity import (
+    IntegrityError,
+    IntegrityTrustStore,
     P256Signer,
     SignedManifest,
     sign_manifest,
@@ -104,6 +108,7 @@ class DurableCouncilResult:
     assessment: OperationalCouncilMixture
     member_receipts: tuple[RawOutputStorageReference | None, ...]
     council_receipt: RawOutputStorageReference
+    member_weight_authority: RawOutputStorageReference
 
     def __post_init__(self) -> None:
         if (
@@ -115,6 +120,7 @@ class DurableCouncilResult:
                 for item in self.member_receipts
             )
             or not isinstance(self.council_receipt, RawOutputStorageReference)
+            or not isinstance(self.member_weight_authority, RawOutputStorageReference)
         ):
             raise DurableJobError("durable council result authority differs")
 
@@ -342,6 +348,7 @@ class DurableForecastRuntime:
         ml_provider: MLForecastProvider,
         output_store: DurableForecastOutputStore,
         signer: P256Signer,
+        trust_store: IntegrityTrustStore,
         retry_policy: RetryPolicy,
         publication_reactions: PublicationReactionPort,
     ) -> None:
@@ -354,7 +361,11 @@ class DurableForecastRuntime:
             ml_provider, MLForecastProvider
         ):
             raise DurableJobError("forecast runtime requires Formula and ML providers")
-        if not callable(getattr(signer, "sign", None)) or not isinstance(retry_policy, RetryPolicy):
+        if (
+            not callable(getattr(signer, "sign", None))
+            or not isinstance(trust_store, IntegrityTrustStore)
+            or not isinstance(retry_policy, RetryPolicy)
+        ):
             raise DurableJobError("forecast runtime requires signing and retry authorities")
         if (
             not callable(getattr(publication_reactions, "recover_pending", None))
@@ -362,15 +373,14 @@ class DurableForecastRuntime:
             or Path(publication_reactions.database_path).resolve()
             != Path(repository.database_path).resolve()
         ):
-            raise DurableJobError(
-                "forecast runtime requires same-ledger publication reactions"
-            )
+            raise DurableJobError("forecast runtime requires same-ledger publication reactions")
         self._repository = repository
         self._rolling = coordinator
         self._formula = formula_provider
         self._ml = ml_provider
         self._outputs = output_store
         self._signer = signer
+        self._trust_store = trust_store
         self._publication_reactions = publication_reactions
         self._durable = DurableCoordinator(repository, retry_policy=retry_policy)
 
@@ -419,8 +429,7 @@ class DurableForecastRuntime:
         *,
         authority: PromotedCouncilAuthority,
         adapters: Mapping[str, MemberAdapter],
-        reliability_weights: Mapping[str, str],
-        context_weights: Mapping[str, str],
+        member_weight_authority: SignedMemberWeightAuthority,
         worker_id: str,
         lease_duration_ms: int,
         clock: Callable[[], str],
@@ -436,14 +445,22 @@ class DurableForecastRuntime:
         ):
             raise DurableJobError("council preparation requires exact promoted authority")
         members = {item.member_id: item for item in authority.members}
-        if (
-            set(adapters) != set(members)
-            or set(reliability_weights) != set(members)
-            or set(context_weights) != set(members)
-            or any(
-                getattr(adapters[name], "member", None) != member
-                for name, member in members.items()
+        member_ids = tuple(sorted(members))
+        try:
+            weight_receipt = verify_member_weight_authority(
+                member_weight_authority,
+                trust_store=self._trust_store,
+                expected_member_ids=member_ids,
+                expected_evidence_digest=key.evidence_digest,
+                expected_bundle_digest=key.bundle_digest,
+                expected_council_component_digest=authority.component_digest,
             )
+        except ValueError as exc:
+            raise DurableJobError("council member-weight authority differs") from exc
+        reliability_weights = dict(weight_receipt.reliability_weights)
+        context_weights = dict(weight_receipt.context_weights)
+        if set(adapters) != set(members) or any(
+            getattr(adapters[name], "member", None) != member for name, member in members.items()
         ):
             raise DurableJobError("council adapters or weights differ from promoted roster")
         records = {
@@ -519,15 +536,40 @@ class DurableForecastRuntime:
             for record, member in zip(ordered_records, authority.members, strict=True)
         )
         outcomes = tuple(item[0] for item in loaded)
-        assessment = aggregate_council(outcomes, authority=authority)
-        sealed_council = seal_council_receipt(assessment, authority=authority)
-        if replay_sealed_council(sealed_council, authority=authority) != assessment:
+        for outcome in outcomes:
+            if (
+                outcome.reliability_weight != reliability_weights[outcome.member_id]
+                or outcome.context_weight != context_weights[outcome.member_id]
+            ):
+                raise DurableJobError("durable member outcome weights differ from authority")
+        assessment = aggregate_council(
+            outcomes,
+            authority=authority,
+            member_weight_receipt=weight_receipt,
+        )
+        sealed_council = seal_council_receipt(
+            assessment,
+            authority=authority,
+            member_weight_receipt=weight_receipt,
+        )
+        if (
+            replay_sealed_council(
+                sealed_council,
+                authority=authority,
+                member_weight_receipt=weight_receipt,
+            )
+            != assessment
+        ):
             raise DurableJobError("durable council aggregate is not reproducible")
         _raw, council_reference = self._outputs.retain_bytes(sealed_council)
+        _weight_raw, weight_reference = self._outputs.retain(
+            member_weight_authority.manifest.to_dict()
+        )
         return DurableCouncilResult(
             assessment,
             tuple(item[1] for item in loaded),
             council_reference,
+            weight_reference,
         )
 
     def _claim_member(
@@ -669,8 +711,39 @@ class DurableForecastRuntime:
             council_authority, PromotedCouncilAuthority
         ):
             raise DurableJobError("card assembly requires promoted council output")
-        sealed_council = seal_council_receipt(assessment, authority=council_authority)
-        if replay_sealed_council(sealed_council, authority=council_authority) != assessment:
+        weight_receipt = None
+        if durable_council is not None:
+            try:
+                weight_manifest = SignedManifest.from_dict(
+                    json.loads(
+                        self._outputs.read(durable_council.member_weight_authority).decode("utf-8")
+                    )
+                )
+                weight_receipt = verify_member_weight_authority(
+                    SignedMemberWeightAuthority(weight_manifest),
+                    trust_store=self._trust_store,
+                    expected_member_ids=tuple(
+                        sorted(member.member_id for member in council_authority.members)
+                    ),
+                    expected_evidence_digest=key.evidence_digest,
+                    expected_bundle_digest=key.bundle_digest,
+                    expected_council_component_digest=council_authority.component_digest,
+                )
+            except (IntegrityError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                raise DurableJobError("durable member-weight authority differs") from exc
+        sealed_council = seal_council_receipt(
+            assessment,
+            authority=council_authority,
+            member_weight_receipt=weight_receipt,
+        )
+        if (
+            replay_sealed_council(
+                sealed_council,
+                authority=council_authority,
+                member_weight_receipt=weight_receipt,
+            )
+            != assessment
+        ):
             raise DurableJobError("council output is not reproducible")
         if assessment.bundle_digest != key.bundle_digest:
             raise DurableJobError("council bundle differs from the causal card")

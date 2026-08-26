@@ -16,6 +16,7 @@ from strathmark.v3.application.credibility_reactions import (
     SQLiteCredibilityReactionService,
     seal_credibility_policy,
     seal_forecast_commit,
+    seal_live_control_preview,
     seal_optimizer_evaluator_authority,
 )
 from strathmark.v3.application.formula_governor import (
@@ -241,6 +242,22 @@ def _empty_live_authority(tmp_path):
         policy_manifest=_policy(signer),
     )
     return lifecycle, credibility, signer, tournament, completed, successor
+
+
+def _live_control_preview(credibility, signer, tournament, action):
+    anchor = credibility._events.current_anchor()
+    return seal_live_control_preview(
+        tournament_id=tournament,
+        action=action,
+        authority_sequence=anchor.global_sequence,
+        authority_digest=anchor.event_digest,
+        before_weights={"formula": "0.5", "ml": "0.5"},
+        after_weights={"formula": "0.5", "ml": "0.5"},
+        before_sheet={"competitor:a": 3, "competitor:b": 5},
+        after_sheet={"competitor:a": 3, "competitor:b": 5},
+        signer=signer,
+        created_at=NOW,
+    )
 
 
 class _MLModel:
@@ -2032,12 +2049,13 @@ def test_live_controls_are_atomic_and_exact_retry_returns_original_after_restart
 
     def synchronized_append(**arguments):
         if arguments["payload"].get("schema_version") == (
-            "strathmark-v3-live-credibility-control-v1"
+            "strathmark-v3-live-credibility-control-v2"
         ):
             barrier.wait(timeout=10)
         return original(**arguments)
 
     monkeypatch.setattr(credibility, "_append_event", synchronized_append)
+    preview = _live_control_preview(credibility, signer, tournament, "suspend")
 
     def control(index):
         command_id = IdempotencyKey(f"command:concurrent-control-{index}")
@@ -2046,6 +2064,7 @@ def test_live_controls_are_atomic_and_exact_retry_returns_original_after_restart
                 tournament,
                 action="suspend",
                 reason=f"judge reason {index}",
+                preview_manifest=preview,
                 command_id=command_id,
                 actor_id=ACTOR,
                 occurred_at_utc=NOW,
@@ -2071,6 +2090,7 @@ def test_live_controls_are_atomic_and_exact_retry_returns_original_after_restart
         tournament,
         action="suspend",
         reason=winners[0][1],
+        preview_manifest=preview,
         command_id=winners[0][0],
         actor_id=ACTOR,
         occurred_at_utc="2026-08-23T12:01:00.000Z",
@@ -2082,6 +2102,7 @@ def test_live_controls_are_atomic_and_exact_retry_returns_original_after_restart
             tournament,
             action="suspend",
             reason="changed retry reason",
+            preview_manifest=preview,
             command_id=winners[0][0],
             actor_id=ACTOR,
             occurred_at_utc=NOW,
@@ -2144,15 +2165,97 @@ def test_live_controls_are_atomic_and_exact_retry_returns_original_after_restart
         return append_after_restart(**arguments)
 
     monkeypatch.setattr(restarted, "_append_event", close_during_control)
+    reenable_preview = _live_control_preview(restarted, signer, tournament, "re_enable")
     with pytest.raises(CredibilityReactionError, match="concurrent authority"):
         restarted.record_live_control(
             tournament,
             action="re_enable",
             reason="racing close",
+            preview_manifest=reenable_preview,
             command_id=IdempotencyKey("command:control-during-close"),
             actor_id=ACTOR,
             occurred_at_utc=NOW,
             monotonic_elapsed_ms=1_002,
+        )
+
+
+def test_live_control_preview_is_signed_bounded_current_and_persisted_fail_closed(tmp_path):
+    _lifecycle, credibility, signer, tournament, _completed, _successor = _empty_live_authority(
+        tmp_path
+    )
+    with pytest.raises(CredibilityReactionError, match="signed before/after preview"):
+        credibility.record_live_control(
+            tournament,
+            action="suspend",
+            reason="judge review",
+            preview_manifest=None,
+            command_id=IdempotencyKey("command:missing-control-preview"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=1,
+        )
+
+    preview = _live_control_preview(credibility, signer, tournament, "suspend")
+    result = credibility.record_live_control(
+        tournament,
+        action="suspend",
+        reason="judge review",
+        preview_manifest=preview,
+        command_id=IdempotencyKey("command:signed-control-preview"),
+        actor_id=ACTOR,
+        occurred_at_utc=NOW,
+        monotonic_elapsed_ms=2,
+    )
+    event = credibility._events.event_at(result.first_global_sequence)
+    payload = event.command.payload.to_value()
+    assert payload["preview_manifest"] == preview.to_dict()
+    assert payload["preview_digest"] == preview.body_digest
+    assert payload["preview"]["scope"] == {
+        "kind": "tournament",
+        "tournament_id": str(tournament),
+    }
+    assert payload["preview"]["before"]["sheet"] == [
+        {"competitor_id": "competitor:a", "mark": 3},
+        {"competitor_id": "competitor:b", "mark": 5},
+    ]
+
+    stale = _live_control_preview(credibility, signer, tournament, "re_enable")
+    credibility._append_event(
+        command_kind=CommandKind.RECORD_CAPABILITY_UPDATE,
+        event_kind=EventKind.CAPABILITY_UPDATED,
+        aggregate_kind=AggregateKind.COMPETITOR,
+        aggregate_id=StableIdentifier("competitor:head-advance"),
+        payload={"reason": "advance authority head"},
+        result={"advanced": True},
+        command_id=IdempotencyKey("command:advance-before-live-preview"),
+        actor_id=ACTOR,
+        occurred_at_utc=NOW,
+        monotonic_elapsed_ms=3,
+    )
+    with pytest.raises(CredibilityReactionError, match="authority head"):
+        credibility.record_live_control(
+            tournament,
+            action="re_enable",
+            reason="authority changed",
+            preview_manifest=stale,
+            command_id=IdempotencyKey("command:stale-control-preview"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=4,
+        )
+
+    untrusted = P256EphemeralSigner.generate("integrity-key:untrusted-live-preview")
+    forged = _live_control_preview(credibility, untrusted, tournament, "re_enable")
+    with pytest.raises(CredibilityReactionError, match="untrusted"):
+        credibility.record_live_control(
+            tournament,
+            action="re_enable",
+            reason="forged preview",
+            preview_manifest=forged,
+            command_id=IdempotencyKey("command:forged-control-preview"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=5,
         )
 
 
@@ -2284,13 +2387,14 @@ def test_tournament_baseline_concurrent_creation_recovers_the_winning_receipt(
 
 
 def test_tournament_baseline_recovers_a_persisted_concurrent_winner(tmp_path, monkeypatch):
-    _lifecycle, credibility, _signer, tournament, _completed, _successor = _empty_live_authority(
+    _lifecycle, credibility, signer, tournament, _completed, _successor = _empty_live_authority(
         tmp_path
     )
     credibility.record_live_control(
         tournament,
         action="suspend",
         reason="preexisting non-baseline event",
+        preview_manifest=_live_control_preview(credibility, signer, tournament, "suspend"),
         command_id=IdempotencyKey("command:preexisting-baseline-control"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,
@@ -2645,6 +2749,9 @@ def test_live_freeze_requires_persisted_close_and_next_epoch_then_survives_resta
         StableIdentifier("tournament:show"),
         action="emergency_stop",
         reason="integrity alarm",
+        preview_manifest=_live_control_preview(
+            credibility, signer, StableIdentifier("tournament:show"), "emergency_stop"
+        ),
         command_id=IdempotencyKey("command:emergency-before-freeze"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,
@@ -2654,6 +2761,9 @@ def test_live_freeze_requires_persisted_close_and_next_epoch_then_survives_resta
         StableIdentifier("tournament:show"),
         action="re_enable",
         reason="signed recovery",
+        preview_manifest=_live_control_preview(
+            credibility, signer, StableIdentifier("tournament:show"), "re_enable"
+        ),
         command_id=IdempotencyKey("command:reenable-before-freeze"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,
@@ -2663,6 +2773,9 @@ def test_live_freeze_requires_persisted_close_and_next_epoch_then_survives_resta
         StableIdentifier("tournament:show"),
         action="suspend",
         reason="judge review",
+        preview_manifest=_live_control_preview(
+            credibility, signer, StableIdentifier("tournament:show"), "suspend"
+        ),
         command_id=IdempotencyKey("command:suspend-before-freeze"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,

@@ -20,6 +20,7 @@ from typing import Any
 
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.evidence import require_utc_milliseconds
+from strathmark.v3.contracts.identifiers import require_identifier
 from strathmark.v3.infrastructure.integrity import (
     IntegrityTrustStore,
     P256Signer,
@@ -39,6 +40,7 @@ _SENSITIVE_VALUE = re.compile(
     r"(?:bearer\s+\S+|-----BEGIN [A-Z ]+PRIVATE KEY-----|[A-Za-z]:[/\\])",
     re.IGNORECASE,
 )
+_MAX_OBSERVED_MODELS = 128
 
 
 class DependencyState(str, Enum):
@@ -71,6 +73,197 @@ class FieldDisposition(str, Enum):
     PREDICTIVE = "predictive"
     TRADITIONAL_MANUAL = "traditional_manual"
     PARTIAL = "partial"
+
+
+class ModelResidencyError(ValueError):
+    """A local model-residency transition could not be verified."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelResidencyPolicy:
+    enabled: bool
+    max_models: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ModelResidencyError("model residency enabled flag must be explicit")
+        if (
+            isinstance(self.max_models, bool)
+            or not isinstance(self.max_models, int)
+            or not 1 <= self.max_models <= 16
+        ):
+            raise ModelResidencyError("model residency maximum must be between one and sixteen")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelResidencyReceipt:
+    event_window_id: str
+    enabled: bool
+    state: str
+    required_model_ids: tuple[str, ...]
+    resident_model_ids: tuple[str, ...]
+    warmed_model_ids: tuple[str, ...]
+    released_model_ids: tuple[str, ...]
+    observed_at: str
+
+    def __post_init__(self) -> None:
+        require_identifier(self.event_window_id, expected_namespace="event_window")
+        if not isinstance(self.enabled, bool) or self.state not in {
+            "active",
+            "closed",
+            "disabled",
+        }:
+            raise ModelResidencyError("model residency receipt state is invalid")
+        require_utc_milliseconds(self.observed_at)
+        for values in (
+            self.required_model_ids,
+            self.resident_model_ids,
+            self.warmed_model_ids,
+            self.released_model_ids,
+        ):
+            if values != tuple(sorted(set(values))):
+                raise ModelResidencyError("model residency receipt identifiers are not canonical")
+            for model_id in values:
+                require_identifier(model_id, expected_namespace="model")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "strathmark-v3-model-residency-receipt-v1",
+            "event_window_id": self.event_window_id,
+            "enabled": self.enabled,
+            "state": self.state,
+            "required_model_ids": list(self.required_model_ids),
+            "resident_model_ids": list(self.resident_model_ids),
+            "warmed_model_ids": list(self.warmed_model_ids),
+            "released_model_ids": list(self.released_model_ids),
+            "observed_at": self.observed_at,
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_dict())
+
+
+class EventWindowModelResidency:
+    """Reconcile caller-driven event windows against local installed model state.
+
+    The injected ports are deliberately local process/host operations. This component neither
+    downloads models nor grants prediction authority; artifact preflight remains authoritative.
+    """
+
+    def __init__(
+        self,
+        *,
+        policy: ModelResidencyPolicy,
+        installed_model_ids: Callable[[], Sequence[str]],
+        resident_model_ids: Callable[[], Sequence[str]],
+        warm_local_model: Callable[[str], None],
+        release_local_model: Callable[[str], None],
+    ) -> None:
+        if not isinstance(policy, ModelResidencyPolicy):
+            raise ModelResidencyError("model residency requires a typed policy")
+        ports = (
+            installed_model_ids,
+            resident_model_ids,
+            warm_local_model,
+            release_local_model,
+        )
+        if any(not callable(port) for port in ports):
+            raise ModelResidencyError("model residency requires explicit local ports")
+        self._policy = policy
+        self._installed_model_ids = installed_model_ids
+        self._resident_model_ids = resident_model_ids
+        self._warm_local_model = warm_local_model
+        self._release_local_model = release_local_model
+
+    def reconcile(
+        self,
+        *,
+        event_window_id: str,
+        active: bool,
+        required_model_ids: Sequence[str],
+        observed_at: str,
+    ) -> ModelResidencyReceipt:
+        require_identifier(event_window_id, expected_namespace="event_window")
+        if not isinstance(active, bool):
+            raise ModelResidencyError("event-window active flag must be explicit")
+        timestamp = require_utc_milliseconds(observed_at)
+        required = self._canonical_models(
+            required_model_ids,
+            label="required",
+            maximum=self._policy.max_models,
+        )
+        if not self._policy.enabled:
+            return ModelResidencyReceipt(
+                event_window_id,
+                False,
+                "disabled",
+                required,
+                (),
+                (),
+                (),
+                timestamp,
+            )
+        installed = set(self._probe(self._installed_model_ids, "installed"))
+        missing = tuple(model_id for model_id in required if model_id not in installed)
+        if missing:
+            raise ModelResidencyError("required event-window models are not installed locally")
+        before = set(self._probe(self._resident_model_ids, "resident"))
+        changed: list[str] = []
+        try:
+            if active:
+                changed = [model_id for model_id in required if model_id not in before]
+                for model_id in changed:
+                    self._warm_local_model(model_id)
+            else:
+                changed = [model_id for model_id in required if model_id in before]
+                for model_id in changed:
+                    self._release_local_model(model_id)
+        except Exception as exc:
+            raise ModelResidencyError("local model residency transition failed closed") from exc
+        after = set(self._probe(self._resident_model_ids, "resident"))
+        if active and not set(required).issubset(after):
+            raise ModelResidencyError("required event-window models remain cold")
+        if not active and set(required) & after:
+            raise ModelResidencyError("closed event-window models remain resident")
+        return ModelResidencyReceipt(
+            event_window_id,
+            True,
+            "active" if active else "closed",
+            required,
+            tuple(sorted(after & set(required))),
+            tuple(changed) if active else (),
+            tuple(changed) if not active else (),
+            timestamp,
+        )
+
+    def _probe(self, probe: Callable[[], Sequence[str]], label: str) -> tuple[str, ...]:
+        try:
+            return self._canonical_models(
+                probe(),
+                label=label,
+                maximum=_MAX_OBSERVED_MODELS,
+            )
+        except ModelResidencyError:
+            raise
+        except Exception as exc:
+            raise ModelResidencyError(f"local {label} model probe failed closed") from exc
+
+    @staticmethod
+    def _canonical_models(values: Sequence[str], *, label: str, maximum: int) -> tuple[str, ...]:
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise ModelResidencyError(f"{label} model identifiers must be a sequence")
+        if len(values) > maximum:
+            raise ModelResidencyError(f"{label} model count exceeds the configured maximum")
+        canonical = tuple(sorted(set(values)))
+        if len(canonical) != len(values):
+            raise ModelResidencyError(f"{label} model identifiers must be unique")
+        try:
+            for model_id in canonical:
+                require_identifier(model_id, expected_namespace="model")
+        except (TypeError, ValueError) as exc:
+            raise ModelResidencyError(f"{label} model identifier is invalid") from exc
+        return canonical
 
 
 _DEPENDENCIES = (
@@ -889,7 +1082,11 @@ def _redact(value: Any, *, key: str = "") -> Any:
 __all__ = [
     "DependencyObservation",
     "DependencyState",
+    "EventWindowModelResidency",
     "FieldDisposition",
+    "ModelResidencyError",
+    "ModelResidencyPolicy",
+    "ModelResidencyReceipt",
     "OperationalProbeSet",
     "OperationalFacts",
     "OperationalMetrics",

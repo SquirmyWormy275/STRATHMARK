@@ -33,6 +33,11 @@ REQUIRED_COMPONENT_ROLES = (
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_CLOUD_FAMILIES = {
+    "anthropic": "claude",
+    "google": "gemini",
+    "openai": "gpt",
+}
 _PROHIBITED_SUFFIXES = {
     ".bat",
     ".cmd",
@@ -64,6 +69,25 @@ _SECRET_MARKERS = (
 
 class CandidateError(ValueError):
     """Candidate construction violated a frozen safety or lineage contract."""
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class CloudModelIdentity:
+    """Exact configured cloud-family identity used by comparative evaluation."""
+
+    provider: str
+    family: str
+    model_id: str
+
+    def __post_init__(self) -> None:
+        expected_family = _CLOUD_FAMILIES.get(self.provider)
+        if expected_family is None or self.family != expected_family:
+            raise CandidateError("cloud model provider/family identity is unsupported")
+        _pinned_model(self.model_id)
+        provider, model_revision = self.model_id.split(":", 1)
+        model_name = model_revision.split("@", 1)[0]
+        if provider != self.provider or not model_name.casefold().startswith(f"{self.family}-"):
+            raise CandidateError("cloud model provider/family identity differs from its pin")
 
 
 class FactoryRole(str, Enum):
@@ -410,6 +434,22 @@ def _selected_models(
     return values
 
 
+def cloud_model_identity(candidate: CandidateBundle) -> CloudModelIdentity:
+    """Return one exact GPT, Claude, or Gemini identity from a candidate bundle."""
+
+    if not isinstance(candidate, CandidateBundle):
+        raise CandidateError("cloud model identity requires a closed candidate bundle")
+    if len(candidate.cloud_model_ids) != 1:
+        raise CandidateError("cloud comparison candidates require exactly one cloud model")
+    model_id = _pinned_model(candidate.cloud_model_ids[0])
+    provider, model_revision = model_id.split(":", 1)
+    family = _CLOUD_FAMILIES.get(provider)
+    model_name = model_revision.split("@", 1)[0].casefold()
+    if family is None or not model_name.startswith(f"{family}-"):
+        raise CandidateError("cloud comparison requires exact GPT, Claude, or Gemini models")
+    return CloudModelIdentity(provider, family, model_id)
+
+
 def _pinned_model(value: object) -> str:
     if (
         not isinstance(value, str)
@@ -441,6 +481,8 @@ __all__ = [
     "CandidateBuilder",
     "CandidateBundle",
     "CandidateError",
+    "CloudModelIdentity",
     "FactoryRole",
     "RoleSnapshot",
+    "cloud_model_identity",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from threading import Event, Lock
 
@@ -21,6 +22,7 @@ from strathmark.v3.application.coordinator import (
     RollingLifecycleReactionPlan,
     RollingLifecycleReactionService,
 )
+from strathmark.v3.application.field_assembly import seal_competitor_card_authority
 from strathmark.v3.application.forecast_runtime import (
     DurableForecastOutputStore,
     DurableForecastRuntime,
@@ -41,6 +43,7 @@ from strathmark.v3.assessors.llm_council import (
     ProviderKind,
     RawAttempt,
     seal_claimed_llm_job,
+    seal_member_weight_authority,
 )
 from strathmark.v3.assessors.ml import MLAssessment
 from strathmark.v3.assessors.output_validation import ValidatedMemberOutput
@@ -57,6 +60,10 @@ from strathmark.v3.contracts.forecasts import (
     QuantilePoint,
 )
 from strathmark.v3.contracts.identifiers import StableIdentifier
+from strathmark.v3.domain.credibility import (
+    MemberCredibilityEvidence,
+    derive_member_subweights,
+)
 from strathmark.v3.domain.epochs import ReactionBarrier, freeze_epoch
 from strathmark.v3.infrastructure.blobs import ContentAddressedBlobStore
 from strathmark.v3.infrastructure.integrity import (
@@ -296,10 +303,42 @@ def _system(
         ml_provider=MLForecastProvider(assessor=ml, output_store=outputs),
         output_store=outputs,
         signer=signer,
+        trust_store=trust,
         retry_policy=RetryPolicy("rolling-card-v1"),
         publication_reactions=_PublicationReactions(repository.database_path),
     )
     return runtime, repository, rolling, signer, trust, candidate, ml, council, projection
+
+
+def _member_weight_authority(signer, candidate, authority):
+    receipt = derive_member_subweights(
+        members=tuple(
+            MemberCredibilityEvidence(
+                member.member_id,
+                str(index + 1),
+                str(index + 1),
+                "24",
+                "1",
+            )
+            for index, member in enumerate(
+                sorted(authority.members, key=lambda item: item.member_id)
+            )
+        ),
+        council_outer_weight="0.3333333333333333",
+        credibility_ledger_digest="8" * 64,
+        credibility_policy_digest="9" * 64,
+        context_digest=candidate.key.evidence_digest,
+        calibration_cutoff_at_utc=T0,
+    )
+    return seal_member_weight_authority(
+        receipt,
+        member_ids=tuple(item.member_id for item in receipt.members),
+        evidence_digest=candidate.key.evidence_digest,
+        bundle_digest=candidate.key.bundle_digest,
+        council_component_digest=authority.component_digest,
+        signer=signer,
+        created_at=T0,
+    )
 
 
 def _promoted_system(tmp_path: Path):
@@ -544,6 +583,7 @@ def test_numeric_workers_persist_exact_outputs_and_restart_without_reexecution(
         ml_provider=MLForecastProvider(assessor=restarted_ml, output_store=restarted_outputs),
         output_store=restarted_outputs,
         signer=signer,
+        trust_store=trust,
         retry_policy=RetryPolicy("rolling-card-v1"),
         publication_reactions=_PublicationReactions(restarted_repository.database_path),
     )
@@ -847,18 +887,38 @@ def test_council_runtime_overlaps_cloud_serializes_gpu_and_restarts_without_call
         _deadlines,
     ) = _promoted_system(tmp_path)
     adapters, local_counts = _runtime_adapters(runtime, repository, authority)
-    weights = {member.member_id: "1" for member in authority.members}
+    weight_authority = _member_weight_authority(signer, candidate, authority)
+    spoofed = _member_weight_authority(
+        P256EphemeralSigner.generate("integrity-key:spoofed-member-weights"),
+        candidate,
+        authority,
+    )
+    with pytest.raises(DurableJobError, match="member-weight authority"):
+        runtime.prepare_council(
+            candidate.key,
+            authority=authority,
+            adapters=adapters,
+            member_weight_authority=spoofed,
+            worker_id="worker:spoofed-weights",
+            lease_duration_ms=30_000,
+            clock=lambda: T1,
+        )
     council = runtime.prepare_council(
         candidate.key,
         authority=authority,
         adapters=adapters,
-        reliability_weights=weights,
-        context_weights=weights,
+        member_weight_authority=weight_authority,
         worker_id="worker:council",
         lease_duration_ms=30_000,
         clock=lambda: T1,
     )
     assert council.assessment.availability.value == "normal"
+    assert sum(Decimal(value) for _member, value in council.assessment.member_weights) == (
+        Decimal("0.3333333333333333")
+    )
+    assert council.member_weight_authority.raw_digest == canonical_digest(
+        weight_authority.manifest.to_dict()
+    )
     assert local_counts == {"active": 0, "maximum": 1}
     for record, reference in zip(
         repository.records_for_card(candidate.key.card_digest)[2:],
@@ -907,6 +967,7 @@ def test_council_runtime_overlaps_cloud_serializes_gpu_and_restarts_without_call
         ),
         output_store=restarted_outputs,
         signer=signer,
+        trust_store=trust,
         retry_policy=RetryPolicy("rolling-card-v1"),
         publication_reactions=_PublicationReactions(restarted_repository.database_path),
     )
@@ -915,8 +976,7 @@ def test_council_runtime_overlaps_cloud_serializes_gpu_and_restarts_without_call
         candidate.key,
         authority=authority,
         adapters=no_call_adapters,
-        reliability_weights=weights,
-        context_weights=weights,
+        member_weight_authority=weight_authority,
         worker_id="worker:restart",
         lease_duration_ms=30_000,
         clock=lambda: T1,
@@ -981,13 +1041,12 @@ def test_council_runtime_fails_closed_on_raw_and_member_receipt_tamper(
     runtime, repository, *_middle, candidate, _ml, _roster, _projection, authority, _ = first
     large_member = authority.members[0].member_id
     adapters, _counts = _runtime_adapters(runtime, repository, authority, large_member=large_member)
-    weights = {member.member_id: "1" for member in authority.members}
+    weight_authority = _member_weight_authority(runtime._signer, candidate, authority)
     council = runtime.prepare_council(
         candidate.key,
         authority=authority,
         adapters=adapters,
-        reliability_weights=weights,
-        context_weights=weights,
+        member_weight_authority=weight_authority,
         worker_id="worker:raw-tamper",
         lease_duration_ms=30_000,
         clock=lambda: T1,
@@ -1003,8 +1062,7 @@ def test_council_runtime_fails_closed_on_raw_and_member_receipt_tamper(
             candidate.key,
             authority=authority,
             adapters=adapters,
-            reliability_weights=weights,
-            context_weights=weights,
+            member_weight_authority=weight_authority,
             worker_id="worker:raw-replay",
             lease_duration_ms=30_000,
             clock=lambda: T1,
@@ -1013,13 +1071,12 @@ def test_council_runtime_fails_closed_on_raw_and_member_receipt_tamper(
     second = _promoted_system(tmp_path / "receipt")
     runtime, repository, *_middle, candidate, _ml, _roster, _projection, authority, _ = second
     adapters, _counts = _runtime_adapters(runtime, repository, authority)
-    weights = {member.member_id: "1" for member in authority.members}
+    weight_authority = _member_weight_authority(runtime._signer, candidate, authority)
     runtime.prepare_council(
         candidate.key,
         authority=authority,
         adapters=adapters,
-        reliability_weights=weights,
-        context_weights=weights,
+        member_weight_authority=weight_authority,
         worker_id="worker:receipt-tamper",
         lease_duration_ms=30_000,
         clock=lambda: T1,
@@ -1037,8 +1094,7 @@ def test_council_runtime_fails_closed_on_raw_and_member_receipt_tamper(
             candidate.key,
             authority=authority,
             adapters=adapters,
-            reliability_weights=weights,
-            context_weights=weights,
+            member_weight_authority=weight_authority,
             worker_id="worker:receipt-replay",
             lease_duration_ms=30_000,
             clock=lambda: T1,
@@ -1063,7 +1119,7 @@ def test_formula_ml_and_degraded_council_publish_one_signed_card(tmp_path: Path)
     adapters, local_counts = _runtime_adapters(
         runtime, repository, authority, failing_member=failed_member
     )
-    weights = {member.member_id: "1" for member in authority.members}
+    weight_authority = _member_weight_authority(_signer, candidate, authority)
     numeric = runtime.prepare_numeric(
         candidate.key,
         worker_id="worker:numeric-card",
@@ -1074,8 +1130,7 @@ def test_formula_ml_and_degraded_council_publish_one_signed_card(tmp_path: Path)
         candidate.key,
         authority=authority,
         adapters=adapters,
-        reliability_weights=weights,
-        context_weights=weights,
+        member_weight_authority=weight_authority,
         worker_id="worker:degraded-card",
         lease_duration_ms=30_000,
         clock=lambda: T1,
@@ -1106,3 +1161,178 @@ def test_formula_ml_and_degraded_council_publish_one_signed_card(tmp_path: Path)
         ("ml", "available"),
         ("llm_council", "degraded_2_of_3"),
     )
+
+
+@pytest.mark.parametrize("valid_member_count", (0, 1), ids=("zero-of-three", "one-of-three"))
+def test_unavailable_durable_council_publishes_explicit_restart_safe_abstention(
+    tmp_path: Path, valid_member_count: int
+) -> None:
+    (
+        runtime,
+        repository,
+        _rolling,
+        signer,
+        trust,
+        candidate,
+        _ml,
+        roster,
+        projection,
+        authority,
+        _deadlines,
+    ) = _promoted_system(tmp_path)
+    adapters, _local_counts = _runtime_adapters(runtime, repository, authority)
+    valid_members = {item.member_id for item in authority.members[:valid_member_count]}
+    for member_id, adapter in adapters.items():
+        adapter._fail = member_id not in valid_members
+    weight_authority = _member_weight_authority(signer, candidate, authority)
+    numeric = runtime.prepare_numeric(
+        candidate.key,
+        worker_id="worker:unavailable-numeric",
+        lease_duration_ms=30_000,
+        clock=lambda: T1,
+    )
+    council = runtime.prepare_council(
+        candidate.key,
+        authority=authority,
+        adapters=adapters,
+        member_weight_authority=weight_authority,
+        worker_id="worker:unavailable-council",
+        lease_duration_ms=30_000,
+        clock=lambda: T1,
+    )
+    publication = runtime.assemble_and_seal(
+        candidate.key,
+        numeric=numeric,
+        council=council,
+        council_authority=authority,
+        council_manifest_digest=roster.body_digest,
+        observed_at=T1,
+    )
+
+    member_records = repository.records_for_card(candidate.key.card_digest)[2:]
+    assert council.assessment.valid_member_count == valid_member_count
+    assert council.assessment.availability.value == "unavailable"
+    assert sum(item.state is JobState.SUCCEEDED for item in member_records) == valid_member_count
+    assert all(
+        item.state
+        in {
+            JobState.SUCCEEDED,
+            JobState.INVALID,
+            JobState.PERMANENT_FAILED,
+            JobState.CANCELLED,
+            JobState.STALE,
+        }
+        for item in member_records
+    )
+    assert all(adapter.calls == 1 for adapter in adapters.values())
+    assert tuple(item.assessor for item in publication.authority.forecasts) == (
+        AssessorKind.FORMULA,
+        AssessorKind.ML,
+        AssessorKind.LLM_COUNCIL,
+    )
+    council_forecast = publication.authority.forecasts[2]
+    assert council_forecast.state is ForecastState.ABSTAINED
+    assert council_forecast.distribution is None
+    assert council_forecast.abstention_code == "council_unavailable"
+    assert publication.availability[-1] == (
+        "llm_council",
+        f"unavailable_{valid_member_count}_of_3",
+    )
+
+    restarted_repository = DurableJobRepository(
+        repository.database_path,
+        capacity=_capacity(),
+        signer=signer,
+        trust_store=trust,
+    )
+    restarted_rolling = DurableRollingPreparationCoordinator(
+        restarted_repository, signer=signer, trust_store=trust
+    )
+    restarted_outputs = DurableForecastOutputStore(
+        ContentAddressedRawOutputSink(
+            ContentAddressedBlobStore(tmp_path / "rolling" / "forecast-blobs")
+        )
+    )
+    restarted_ml = _ML(candidate.key.bundle_digest)
+    restarted = DurableForecastRuntime(
+        restarted_repository,
+        restarted_rolling,
+        formula_provider=FormulaForecastProvider(
+            projection=projection,
+            manifest=FormulaManifest.load("benchmarks/v3/formula_manifest.json"),
+            output_store=restarted_outputs,
+        ),
+        ml_provider=MLForecastProvider(
+            assessor=restarted_ml,
+            output_store=restarted_outputs,
+        ),
+        output_store=restarted_outputs,
+        signer=signer,
+        trust_store=trust,
+        retry_policy=RetryPolicy("rolling-card-v1"),
+        publication_reactions=_PublicationReactions(restarted_repository.database_path),
+    )
+    replayed_numeric = restarted.prepare_numeric(
+        candidate.key,
+        worker_id="worker:unavailable-numeric-restart",
+        lease_duration_ms=30_000,
+        clock=lambda: T1,
+    )
+    no_call_adapters, _counts = _runtime_adapters(restarted, restarted_repository, authority)
+    replayed_council = restarted.prepare_council(
+        candidate.key,
+        authority=authority,
+        adapters=no_call_adapters,
+        member_weight_authority=weight_authority,
+        worker_id="worker:unavailable-council-restart",
+        lease_duration_ms=30_000,
+        clock=lambda: T1,
+    )
+    replayed_publication = restarted.assemble_and_seal(
+        candidate.key,
+        numeric=replayed_numeric,
+        council=replayed_council,
+        council_authority=authority,
+        council_manifest_digest=roster.body_digest,
+        observed_at=T1,
+    )
+
+    assert replayed_numeric == numeric
+    assert replayed_council == council
+    assert replayed_publication == publication
+    assert restarted_ml.calls == 0
+    assert all(adapter.calls == 0 for adapter in no_call_adapters.values())
+
+    forged_council_forecast = AssessorForecast.create(
+        forecast_id=StableIdentifier("forecast:forged-unavailable-council"),
+        assessor=council_forecast.assessor,
+        state=council_forecast.state,
+        evidence_digest=council_forecast.evidence_digest,
+        distribution=council_forecast.distribution,
+        support=council_forecast.support,
+        warnings=council_forecast.warnings,
+        artifacts=council_forecast.artifacts,
+        abstention_code="forged_council_unavailable",
+    )
+    forged_card = seal_competitor_card_authority(
+        publication.authority.evidence_packet,
+        (numeric.formula, numeric.ml, forged_council_forecast),
+        bundle_digest=candidate.key.bundle_digest,
+        signer=signer,
+        created_at=T1,
+    )
+    forged_aggregate = restarted._aggregate_manifest(
+        candidate.key,
+        forged_card,
+        council_manifest_digest=roster.body_digest,
+        council_receipt_reference=replayed_council.council_receipt,
+        observed_at=T1,
+    )
+    with pytest.raises(DurableJobError, match="existing rolling publication material differs"):
+        restarted_rolling.seal_card(
+            candidate.key,
+            forged_card,
+            council_manifest_digest=roster.body_digest,
+            council_aggregate_authority=forged_aggregate,
+            observed_at=T1,
+        )

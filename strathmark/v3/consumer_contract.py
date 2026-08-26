@@ -33,21 +33,19 @@ class V3ConsumerContractIntegrityError(RuntimeError):
 
 
 _EXAMPLES: dict[str, dict[str, Any]] = {
-    "/v3/health": {
-        "response": {"schema_version": "strathmark-v3-health-v1", "status": "ok"}
-    },
+    "/v3/health": {"response": {"schema_version": "strathmark-v3-health-v1", "status": "ok"}},
     "/v3/commands/execute": {
         "request": {
             "schema_version": "strathmark-v3-command-execution-request-v1",
-            "command_kind": "suspend_live",
+            "command_kind": "change_weights",
             "target_aggregate": "weights:global",
             "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-            "payload_schema_version": "strathmark-v3-suspend-live-v1",
+            "payload_schema_version": "strathmark-v3-change-weights-v1",
             "canonical_payload_json": (
-                '{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+                '{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
             ),
             "payload_digest": hashlib.sha256(
-                b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+                b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
             ).hexdigest(),
             "deadline_ms": 1000,
         },
@@ -118,9 +116,7 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
         "request": {
             "schema_version": "strathmark-v3-issue-acknowledgment-request-v1",
             "upstream_issue_id": "upstream_issue:show-7",
-            "receipt_bindings": [
-                {"receipt_id": "receipt:field-1", "receipt_digest": "b" * 64}
-            ],
+            "receipt_bindings": [{"receipt_id": "receipt:field-1", "receipt_digest": "b" * 64}],
             "issued_at_utc": "2026-08-25T12:00:00.000Z",
             "deadline_ms": 1000,
         },
@@ -162,7 +158,18 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
             "schema_version": "strathmark-v3-status-response-v1",
             "service": "ready",
             "authority_sequence": 13,
-            "engine_authority": "v3",
+            "engine_authority": "v2",
+            "v3_readiness": "candidate",
+            "production_authority": "v2",
+            "cutover_receipt_digest": None,
+            "cutover_verified_at_utc": None,
+            "deep_verification_state": "verified",
+            "event_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
+            "event_checkpoint_digest": "a" * 64,
+            "field_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
+            "field_checkpoint_digest": "b" * 64,
+            "job_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
+            "job_checkpoint_digest": "c" * 64,
             "open_tournament_count": 0,
         }
     },
@@ -219,9 +226,9 @@ def build_v3_consumer_contract() -> dict[str, Any]:
     document = app.openapi()
     document["jsonSchemaDialect"] = "https://json-schema.org/draft/2020-12/schema"
     document["info"]["x-strathmark-contract-version"] = V3_CONSUMER_CONTRACT_VERSION
-    document["info"][
-        "description"
-    ] = "Frozen V3 tournament-manager boundary. V2 remains separate and is never a V3 fallback."
+    document["info"]["description"] = (
+        "Frozen V3 tournament-manager boundary. V2 remains separate and is never a V3 fallback."
+    )
     online_commands = sorted(item.value for item in OnlineCommandKind)
     dedicated_commands = {
         CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
@@ -239,19 +246,11 @@ def build_v3_consumer_contract() -> dict[str, Any]:
     )
     document["info"]["x-strathmark-command-coverage"] = {
         "authenticated_application_port": online_commands,
-        "dedicated_authenticated_routes": sorted(
-            item.value for item in dedicated_commands
-        ),
-        "internal_typed_application_services": sorted(
-            item.value for item in internal_commands
-        ),
-        "listener-stopped-offline-only": sorted(
-            item.value for item in offline_commands
-        ),
+        "dedicated_authenticated_routes": sorted(item.value for item in dedicated_commands),
+        "internal_typed_application_services": sorted(item.value for item in internal_commands),
+        "listener-stopped-offline-only": sorted(item.value for item in offline_commands),
     }
-    document["servers"] = [
-        {"url": "http://127.0.0.1:8787", "description": "Loopback default"}
-    ]
+    document["servers"] = [{"url": "http://127.0.0.1:8787", "description": "Loopback default"}]
     components = document.setdefault("components", {})
     components["securitySchemes"] = {
         "ServiceCredential": {
@@ -264,26 +263,20 @@ def build_v3_consumer_contract() -> dict[str, Any]:
             "description": "Required in addition to the service credential off loopback.",
         },
     }
-    components.setdefault("schemas", {})["ErrorResponse"] = (
-        ErrorResponse.model_json_schema(ref_template="#/components/schemas/{model}")
+    components.setdefault("schemas", {})["ErrorResponse"] = ErrorResponse.model_json_schema(
+        ref_template="#/components/schemas/{model}"
     )
     components["schemas"].pop("HTTPValidationError", None)
     components["schemas"].pop("ValidationError", None)
     for schema in components["schemas"].values():
-        if isinstance(schema, dict) and (
-            schema.get("type") == "object" or "properties" in schema
-        ):
+        if isinstance(schema, dict) and (schema.get("type") == "object" or "properties" in schema):
             schema["required"] = sorted(schema.get("properties", {}))
     for path, path_item in document["paths"].items():
         for method, operation in path_item.items():
             if method not in {"get", "post"}:
                 continue
-            operation["security"] = (
-                [] if path == "/v3/health" else [{"ServiceCredential": []}]
-            )
-            operation["x-non-loopback-additional-security"] = [
-                "PinnedClientCertificate"
-            ]
+            operation["security"] = [] if path == "/v3/health" else [{"ServiceCredential": []}]
+            operation["x-non-loopback-additional-security"] = ["PinnedClientCertificate"]
             if path != "/v3/health":
                 operation["parameters"] = [
                     {
@@ -321,15 +314,13 @@ def build_v3_consumer_contract() -> dict[str, Any]:
                 ]
             examples = _EXAMPLES[path]
             if "request" in examples:
-                operation["requestBody"]["content"]["application/json"]["example"] = (
-                    examples["request"]
-                )
-            success = next(
-                code for code in operation["responses"] if code.startswith("2")
-            )
-            operation["responses"][success]["content"]["application/json"][
-                "example"
-            ] = examples["response"]
+                operation["requestBody"]["content"]["application/json"]["example"] = examples[
+                    "request"
+                ]
+            success = next(code for code in operation["responses"] if code.startswith("2"))
+            operation["responses"][success]["content"]["application/json"]["example"] = examples[
+                "response"
+            ]
             for code, name, message in (
                 ("400", "request_rejected", "Request metadata is invalid."),
                 (
@@ -395,9 +386,7 @@ def v3_consumer_contract_bytes(*, document: dict[str, Any] | None = None) -> byt
             raise V3ConsumerContractIntegrityError(
                 "Installed V3 consumer contract is missing or malformed."
             ) from exc
-    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode(
-        "utf-8"
-    )
+    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def load_v3_consumer_contract() -> dict[str, Any]:
@@ -408,19 +397,13 @@ def load_v3_consumer_contract() -> dict[str, Any]:
             "Installed V3 consumer contract is missing or malformed."
         ) from exc
     if not isinstance(document, dict):
-        raise V3ConsumerContractIntegrityError(
-            "Installed V3 consumer contract must be an object."
-        )
+        raise V3ConsumerContractIntegrityError("Installed V3 consumer contract must be an object.")
     if (document.get("info") or {}).get("x-strathmark-contract-version") != (
         V3_CONSUMER_CONTRACT_VERSION
     ):
-        raise V3ConsumerContractIntegrityError(
-            "Installed V3 contract version is unsupported."
-        )
+        raise V3ConsumerContractIntegrityError("Installed V3 contract version is unsupported.")
     if set(document.get("paths") or {}) != EXPECTED_V3_CONSUMER_PATHS:
-        raise V3ConsumerContractIntegrityError(
-            "Installed V3 contract route surface changed."
-        )
+        raise V3ConsumerContractIntegrityError("Installed V3 contract route surface changed.")
     v3_consumer_contract_digest(document=document)
     return document
 
@@ -428,9 +411,7 @@ def load_v3_consumer_contract() -> dict[str, Any]:
 def v3_consumer_contract_digest(*, document: dict[str, Any] | None = None) -> str:
     expected = _resource_text(_CHECKSUM_RESOURCE).strip().lower()
     if _SHA256.fullmatch(expected) is None:
-        raise V3ConsumerContractIntegrityError(
-            "Installed V3 contract checksum is malformed."
-        )
+        raise V3ConsumerContractIntegrityError("Installed V3 contract checksum is malformed.")
     observed = hashlib.sha256(v3_consumer_contract_bytes(document=document)).hexdigest()
     if observed != expected:
         raise V3ConsumerContractIntegrityError(

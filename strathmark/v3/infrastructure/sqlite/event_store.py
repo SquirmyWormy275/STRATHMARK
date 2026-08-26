@@ -10,6 +10,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from strathmark.v3.contracts.errors import ContractError, V3Error
 from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
 from strathmark.v3.contracts.evidence import require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import deterministic_identifier
+from strathmark.v3.contracts.statuses import LifecycleStatus
 from strathmark.v3.domain.state_machines import replay, transition
 from strathmark.v3.infrastructure.integrity import (
     CriticalDatabaseCommit,
@@ -125,6 +127,69 @@ FaultHook = Callable[[str], None]
 ProjectionHook = Callable[[sqlite3.Connection, tuple[EventEnvelope, ...]], None]
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _aggregate_head_digest(
+    aggregate_kind: str,
+    aggregate_id: str,
+    aggregate_version: int,
+    event_digest: str,
+    lifecycle: LifecycleStatus | None,
+) -> str:
+    return canonical_digest(
+        {
+            "schema_version": "strathmark-v3-aggregate-head-v1",
+            "aggregate_kind": aggregate_kind,
+            "aggregate_id": aggregate_id,
+            "aggregate_version": aggregate_version,
+            "event_digest": event_digest,
+            "lifecycle_status": None if lifecycle is None else lifecycle.value,
+        }
+    )
+
+
+def _authority_checkpoint_digest(
+    global_sequence: int,
+    event_digest: str,
+    aggregate_head_count: int,
+    last_deep_verified_at: str,
+) -> str:
+    return canonical_digest(
+        {
+            "schema_version": "strathmark-v3-event-authority-checkpoint-v1",
+            "global_sequence": global_sequence,
+            "event_digest": event_digest,
+            "aggregate_head_count": aggregate_head_count,
+            "last_deep_verified_at": last_deep_verified_at,
+        }
+    )
+
+
+def _verify_authority_checkpoint_row(row: sqlite3.Row) -> None:
+    try:
+        sequence = int(row[0])
+        digest = str(row[1])
+        count = int(row[2])
+        verified_at = require_utc_milliseconds(str(row[3]))
+        expected = _authority_checkpoint_digest(sequence, digest, count, verified_at)
+    except Exception as exc:
+        raise EventStoreIntegrityError("event authority checkpoint is malformed") from exc
+    if sequence < 0 or count < 0 or str(row[4]) != expected:
+        raise EventStoreIntegrityError("event authority checkpoint digest differs")
+
+
+def _has_hotpath_schema(connection: sqlite3.Connection) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='v3_event_authority_checkpoint'"
+        ).fetchone()
+        is not None
+    )
+
+
 class SQLiteEventStore:
     """One connection-per-operation adapter over the U3 authority schema."""
 
@@ -144,6 +209,9 @@ class SQLiteEventStore:
             with open_v3_connection(self._database_path) as connection:
                 migrate_connection(connection)
                 self._verify_connection(connection)
+                if _has_hotpath_schema(connection):
+                    with immediate_transaction(connection):
+                        self._write_deep_checkpoint(connection)
         except EventStoreIntegrityError:
             raise
         except Exception as exc:
@@ -227,11 +295,21 @@ class SQLiteEventStore:
                     )
                     if retry is not None:
                         return retry
-                    self._validate_versions_and_transitions(connection, request, intents)
+                    authenticated_heads = _has_hotpath_schema(connection)
+                    if authenticated_heads:
+                        self._verify_bounded_head_connection(connection)
+                    next_states = self._validate_versions_and_transitions(
+                        connection,
+                        request,
+                        intents,
+                        authenticated_heads=authenticated_heads,
+                    )
                     events = self._append_events(
                         connection,
                         request,
                         intents,
+                        next_states=next_states,
+                        authenticated_heads=authenticated_heads,
                         command_digest=command_digest,
                         fault_hook=fault_hook,
                     )
@@ -285,6 +363,9 @@ class SQLiteEventStore:
             with open_v3_connection(self._database_path) as connection:
                 migrate_connection(connection)
                 self._verify_connection(connection)
+                if _has_hotpath_schema(connection):
+                    with immediate_transaction(connection):
+                        self._write_deep_checkpoint(connection)
         except EventStoreIntegrityError:
             raise
         except Exception as exc:
@@ -463,6 +544,30 @@ class SQLiteEventStore:
                 return AuthorityAnchor(0, ZERO_DIGEST)
             return AuthorityAnchor(int(row[0]), str(row[1]))
 
+    def verify_bounded_head(self) -> AuthorityAnchor:
+        """Verify the transactional authority tip without replaying lifetime history."""
+
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            return self._verify_bounded_head_connection(connection)
+
+    def integrity_checkpoint_status(self) -> dict[str, object]:
+        """Return bounded, database-authenticated deep-verification evidence."""
+
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            anchor = self._verify_bounded_head_connection(connection)
+            row = connection.execute(
+                "SELECT aggregate_head_count,last_deep_verified_at,checkpoint_digest "
+                "FROM v3_event_authority_checkpoint WHERE singleton=1"
+            ).fetchone()
+            assert row is not None
+            return {
+                "authority_sequence": anchor.global_sequence,
+                "authority_digest": anchor.event_digest,
+                "aggregate_head_count": int(row[0]),
+                "last_deep_verified_at": str(row[1]),
+                "checkpoint_digest": str(row[2]),
+            }
+
     def _resolve_retry(
         self,
         connection: sqlite3.Connection,
@@ -492,16 +597,19 @@ class SQLiteEventStore:
         connection: sqlite3.Connection,
         request: CommandRequest,
         intents: tuple[EventIntent, ...],
-    ) -> None:
-        count, maximum = connection.execute(
-            "SELECT COUNT(*), COALESCE(MAX(global_sequence), 0) FROM v3_events"
-        ).fetchone()
-        if int(count) != int(maximum):
-            raise EventStoreIntegrityError("global sequence is not consecutive before append")
+        *,
+        authenticated_heads: bool,
+    ) -> dict[tuple[str, str], LifecycleStatus]:
+        next_states: dict[tuple[str, str], LifecycleStatus] = {}
         expected = dict(request.command.expected_versions)
         for intent in intents:
+            columns = (
+                "aggregate_version,event_digest,lifecycle_status,head_digest"
+                if authenticated_heads
+                else "aggregate_version,event_digest"
+            )
             row = connection.execute(
-                "SELECT aggregate_version, event_digest FROM v3_aggregate_heads "
+                f"SELECT {columns} FROM v3_aggregate_heads "
                 "WHERE aggregate_kind=? AND aggregate_id=?",
                 (intent.aggregate_kind.value, str(intent.aggregate_id)),
             ).fetchone()
@@ -522,19 +630,38 @@ class SQLiteEventStore:
                     f"expected version {expected[str(intent.aggregate_id)]} for "
                     f"{intent.aggregate_id}, observed {actual_version}"
                 )
-            kinds = tuple(
-                EventKind(str(item[0]))
-                for item in connection.execute(
-                    "SELECT event_kind FROM v3_events WHERE aggregate_kind=? AND aggregate_id=? "
-                    "ORDER BY aggregate_version",
-                    (intent.aggregate_kind.value, str(intent.aggregate_id)),
-                )
-            )
             try:
-                current = replay(intent.aggregate_kind, kinds)
-                transition(intent.aggregate_kind, current, intent.event_kind)
+                if authenticated_heads:
+                    current = None if row is None else LifecycleStatus(str(row[2]))
+                else:
+                    kinds = tuple(
+                        EventKind(str(item[0]))
+                        for item in connection.execute(
+                            "SELECT event_kind FROM v3_events WHERE aggregate_kind=? "
+                            "AND aggregate_id=? ORDER BY aggregate_version",
+                            (intent.aggregate_kind.value, str(intent.aggregate_id)),
+                        )
+                    )
+                    current = replay(intent.aggregate_kind, kinds)
+                if (
+                    authenticated_heads
+                    and row is not None
+                    and str(row[3])
+                    != _aggregate_head_digest(
+                        intent.aggregate_kind.value,
+                        str(intent.aggregate_id),
+                        int(row[0]),
+                        str(row[1]),
+                        current,
+                    )
+                ):
+                    raise EventStoreIntegrityError("aggregate checkpoint digest differs")
+                next_states[(intent.aggregate_kind.value, str(intent.aggregate_id))] = transition(
+                    intent.aggregate_kind, current, intent.event_kind
+                )
             except ContractError as exc:
                 raise EventStoreConflict(str(exc)) from exc
+        return next_states
 
     def _append_events(
         self,
@@ -542,6 +669,8 @@ class SQLiteEventStore:
         request: CommandRequest,
         intents: tuple[EventIntent, ...],
         *,
+        next_states: Mapping[tuple[str, str], LifecycleStatus],
+        authenticated_heads: bool,
         command_digest: str,
         fault_hook: FaultHook | None,
     ) -> tuple[EventEnvelope, ...]:
@@ -606,27 +735,184 @@ class SQLiteEventStore:
                 ),
             )
             _fault(fault_hook, f"after_event:{index}")
-            write = connection.execute(
-                "INSERT INTO v3_aggregate_heads(aggregate_kind, aggregate_id, aggregate_version, "
-                "event_digest) VALUES (?, ?, ?, ?) ON CONFLICT(aggregate_kind, aggregate_id) "
-                "DO UPDATE SET aggregate_version=excluded.aggregate_version, "
-                "event_digest=excluded.event_digest WHERE "
-                "v3_aggregate_heads.aggregate_version=excluded.aggregate_version-1 AND "
-                "v3_aggregate_heads.event_digest=?",
-                (
-                    event.aggregate_kind.value,
-                    str(event.aggregate_id),
-                    event.aggregate_version,
-                    event.event_digest,
-                    event.prior_aggregate_digest,
-                ),
+            lifecycle = next_states[(intent.aggregate_kind.value, str(intent.aggregate_id))]
+            head_digest = _aggregate_head_digest(
+                intent.aggregate_kind.value,
+                str(intent.aggregate_id),
+                event.aggregate_version,
+                event.event_digest,
+                lifecycle,
             )
+            if authenticated_heads:
+                write = connection.execute(
+                    "INSERT INTO v3_aggregate_heads(aggregate_kind, aggregate_id, aggregate_version, "
+                    "event_digest,lifecycle_status,head_digest) VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(aggregate_kind, aggregate_id) "
+                    "DO UPDATE SET aggregate_version=excluded.aggregate_version, "
+                    "event_digest=excluded.event_digest,lifecycle_status=excluded.lifecycle_status,"
+                    "head_digest=excluded.head_digest WHERE "
+                    "v3_aggregate_heads.aggregate_version=excluded.aggregate_version-1 AND "
+                    "v3_aggregate_heads.event_digest=?",
+                    (
+                        event.aggregate_kind.value,
+                        str(event.aggregate_id),
+                        event.aggregate_version,
+                        event.event_digest,
+                        lifecycle.value,
+                        head_digest,
+                        event.prior_aggregate_digest,
+                    ),
+                )
+            else:
+                write = connection.execute(
+                    "INSERT INTO v3_aggregate_heads(aggregate_kind,aggregate_id,aggregate_version,"
+                    "event_digest) VALUES (?,?,?,?) ON CONFLICT(aggregate_kind,aggregate_id) "
+                    "DO UPDATE SET aggregate_version=excluded.aggregate_version,"
+                    "event_digest=excluded.event_digest WHERE "
+                    "v3_aggregate_heads.aggregate_version=excluded.aggregate_version-1 AND "
+                    "v3_aggregate_heads.event_digest=?",
+                    (
+                        event.aggregate_kind.value,
+                        str(event.aggregate_id),
+                        event.aggregate_version,
+                        event.event_digest,
+                        event.prior_aggregate_digest,
+                    ),
+                )
             _require_head_advance(write)
             _fault(fault_hook, f"after_head:{index}")
             built.append(event)
             next_global += 1
             prior_global = event.event_digest
+        if authenticated_heads:
+            self._advance_authority_checkpoint(connection, built)
         return tuple(built)
+
+    def _write_deep_checkpoint(self, connection: sqlite3.Connection) -> None:
+        """Refresh derived heads only after a successful full genesis replay."""
+
+        states: dict[tuple[str, str], LifecycleStatus | None] = {}
+        for row in connection.execute(
+            "SELECT aggregate_kind,aggregate_id,event_kind FROM v3_events ORDER BY global_sequence"
+        ):
+            key = (str(row[0]), str(row[1]))
+            kind = AggregateKind(key[0])
+            event_kind = EventKind(str(row[2]))
+            if event_kind is EventKind.HISTORY_IMPORTED:
+                states[key] = None
+            else:
+                states[key] = transition(kind, states.get(key), event_kind)
+        heads = connection.execute(
+            "SELECT aggregate_kind,aggregate_id,aggregate_version,event_digest "
+            "FROM v3_aggregate_heads"
+        ).fetchall()
+        for row in heads:
+            key = (str(row[0]), str(row[1]))
+            state = states.get(key)
+            connection.execute(
+                "UPDATE v3_aggregate_heads SET lifecycle_status=?,head_digest=? "
+                "WHERE aggregate_kind=? AND aggregate_id=?",
+                (
+                    None if state is None else state.value,
+                    _aggregate_head_digest(key[0], key[1], int(row[2]), str(row[3]), state),
+                    key[0],
+                    key[1],
+                ),
+            )
+        latest = connection.execute(
+            "SELECT global_sequence,event_digest FROM v3_events "
+            "ORDER BY global_sequence DESC LIMIT 1"
+        ).fetchone()
+        sequence = 0 if latest is None else int(latest[0])
+        digest = ZERO_DIGEST if latest is None else str(latest[1])
+        verified_at = _utc_now()
+        checkpoint_digest = _authority_checkpoint_digest(sequence, digest, len(heads), verified_at)
+        connection.execute(
+            "INSERT INTO v3_event_authority_checkpoint VALUES (1,?,?,?,?,?) "
+            "ON CONFLICT(singleton) DO UPDATE SET global_sequence=excluded.global_sequence,"
+            "event_digest=excluded.event_digest,aggregate_head_count=excluded.aggregate_head_count,"
+            "last_deep_verified_at=excluded.last_deep_verified_at,"
+            "checkpoint_digest=excluded.checkpoint_digest",
+            (sequence, digest, len(heads), verified_at, checkpoint_digest),
+        )
+
+    def _advance_authority_checkpoint(
+        self, connection: sqlite3.Connection, events: list[EventEnvelope]
+    ) -> None:
+        if not events:
+            return
+        row = connection.execute(
+            "SELECT global_sequence,event_digest,aggregate_head_count,"
+            "last_deep_verified_at,checkpoint_digest "
+            "FROM v3_event_authority_checkpoint WHERE singleton=1"
+        ).fetchone()
+        if row is None:
+            raise EventStoreIntegrityError("event authority checkpoint is missing")
+        _verify_authority_checkpoint_row(row)
+        if (
+            int(row[0]) != events[0].global_sequence - 1
+            or str(row[1]) != events[0].prior_global_digest
+        ):
+            raise EventStoreIntegrityError("event authority checkpoint is stale before append")
+        head_count = int(row[2]) + sum(event.aggregate_version == 1 for event in events)
+        sequence = events[-1].global_sequence
+        digest = events[-1].event_digest
+        verified_at = str(row[3])
+        checkpoint_digest = _authority_checkpoint_digest(sequence, digest, head_count, verified_at)
+        connection.execute(
+            "UPDATE v3_event_authority_checkpoint SET global_sequence=?,event_digest=?,"
+            "aggregate_head_count=?,checkpoint_digest=? WHERE singleton=1",
+            (sequence, digest, head_count, checkpoint_digest),
+        )
+
+    def _verify_bounded_head_connection(self, connection: sqlite3.Connection) -> AuthorityAnchor:
+        row = connection.execute(
+            "SELECT global_sequence,event_digest,aggregate_head_count,"
+            "last_deep_verified_at,checkpoint_digest "
+            "FROM v3_event_authority_checkpoint WHERE singleton=1"
+        ).fetchone()
+        if row is None:
+            raise EventStoreIntegrityError("event authority checkpoint is missing")
+        _verify_authority_checkpoint_row(row)
+        latest = connection.execute(
+            "SELECT global_sequence,envelope_json,event_digest FROM v3_events "
+            "ORDER BY global_sequence DESC LIMIT 1"
+        ).fetchone()
+        if latest is None:
+            observed = AuthorityAnchor(0, ZERO_DIGEST)
+        else:
+            try:
+                raw = str(latest[1])
+                value = json.loads(raw)
+                event = EventEnvelope.from_dict(value)
+                if (
+                    canonical_bytes(value).decode("utf-8") != raw
+                    or event.global_sequence != int(latest[0])
+                    or event.event_digest != str(latest[2])
+                ):
+                    raise ValueError("event tip differs")
+            except Exception as exc:
+                raise EventStoreIntegrityError("event authority tip is malformed") from exc
+            observed = AuthorityAnchor(event.global_sequence, event.event_digest)
+            if event.global_sequence > 1:
+                prior = connection.execute(
+                    "SELECT event_digest FROM v3_events WHERE global_sequence=?",
+                    (event.global_sequence - 1,),
+                ).fetchone()
+                if prior is None or str(prior[0]) != event.prior_global_digest:
+                    raise EventStoreIntegrityError(
+                        "global sequence authority tail is not contiguous before append"
+                    )
+        if observed.global_sequence != int(row[0]) or observed.event_digest != str(row[1]):
+            raise EventStoreIntegrityError("event authority checkpoint differs from database head")
+        if self._trusted_anchor is not None and self._trusted_anchor.global_sequence > 0:
+            anchored = connection.execute(
+                "SELECT event_digest FROM v3_events WHERE global_sequence=?",
+                (self._trusted_anchor.global_sequence,),
+            ).fetchone()
+            if anchored is None or str(anchored[0]) != self._trusted_anchor.event_digest:
+                raise EventStoreIntegrityError("trusted authority anchor differs")
+        return observed
 
     def _verify_connection(self, connection: sqlite3.Connection) -> None:
         try:

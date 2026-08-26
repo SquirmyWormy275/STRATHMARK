@@ -36,6 +36,7 @@ REQUIRED_RELEASE_EVIDENCE = (
     "manipulation_equity_slices",
     "provider_failure_matrix",
     "race_day_recovery",
+    "result_to_ready",
     "windows_capacity",
     "thermal_memory_storage_stress",
     "database_backup_restore",

@@ -152,6 +152,8 @@ class OutboxRepository:
         with open_v3_connection(self.database_path) as connection:
             migrate_connection(connection)
             verify_outbox_integrity(connection, trust_store=self.trust_store)
+            with immediate_transaction(connection):
+                self._write_deep_checkpoints(connection)
 
     def enqueue(
         self,
@@ -210,7 +212,9 @@ class OutboxRepository:
                         timestamp,
                     ),
                 )
-                return self._get_connection(connection, outbox_id)
+                result = self._get_connection(connection, outbox_id)
+                self._write_item_checkpoint(connection, result)
+                return result
 
     def get(self, outbox_id: str) -> OutboxItem:
         _require_token(outbox_id, "outbox id")
@@ -228,13 +232,16 @@ class OutboxRepository:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1_000:
             raise OutboxError("outbox page limit must be between 1 and 1000")
         with open_v3_connection(self.database_path, read_only=True) as connection:
-            verify_outbox_integrity(connection, trust_store=self.trust_store)
+            self._verify_bounded_checkpoint(connection)
             rows = connection.execute(
                 "SELECT * FROM v3_outbox WHERE state IN ('pending', 'transient', 'repaired') "
                 "AND next_attempt_at <= ? ORDER BY next_attempt_at, created_at, outbox_id LIMIT ?",
                 (timestamp, limit),
             ).fetchall()
-            return tuple(_decode(row) for row in rows)
+            items = tuple(_decode(row) for row in rows)
+            for item in items:
+                self._verify_item_checkpoint(connection, item)
+            return items
 
     def record_outcome(
         self,
@@ -493,6 +500,181 @@ class OutboxRepository:
                 signed_transition_json,
             ),
         )
+        self._write_item_checkpoint(
+            connection,
+            result,
+            transition_sequence=sequence,
+            transition_digest=transition_digest,
+        )
+        self._write_global_checkpoint(
+            connection,
+            transition_sequence=sequence,
+            transition_digest=transition_digest,
+            observed_at=observed_at,
+        )
+
+    def _write_deep_checkpoints(self, connection: sqlite3.Connection) -> None:
+        latest = connection.execute(
+            "SELECT transition_sequence,transition_digest,observed_at "
+            "FROM v3_outbox_transitions ORDER BY transition_sequence DESC LIMIT 1"
+        ).fetchone()
+        sequence = 0 if latest is None else int(latest[0])
+        digest = "0" * 64 if latest is None else str(latest[1])
+        verified_at = "1970-01-01T00:00:00.000Z" if latest is None else str(latest[2])
+        connection.execute("DELETE FROM v3_outbox_integrity_checkpoint")
+        self._write_global_checkpoint(
+            connection,
+            transition_sequence=sequence,
+            transition_digest=digest,
+            observed_at=verified_at,
+        )
+        connection.execute("DELETE FROM v3_outbox_item_checkpoints")
+        for row in connection.execute("SELECT * FROM v3_outbox ORDER BY outbox_id"):
+            item = _decode(row)
+            transition = connection.execute(
+                "SELECT transition_sequence,transition_digest FROM v3_outbox_transitions "
+                "WHERE outbox_id=? ORDER BY transition_sequence DESC LIMIT 1",
+                (item.outbox_id,),
+            ).fetchone()
+            self._write_item_checkpoint(
+                connection,
+                item,
+                transition_sequence=0 if transition is None else int(transition[0]),
+                transition_digest="0" * 64 if transition is None else str(transition[1]),
+            )
+
+    def _write_global_checkpoint(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        transition_sequence: int,
+        transition_digest: str,
+        observed_at: str,
+    ) -> None:
+        from strathmark.v3.infrastructure.integrity import sign_manifest
+
+        existing = connection.execute(
+            "SELECT last_deep_verified_at FROM v3_outbox_integrity_checkpoint WHERE singleton=1"
+        ).fetchone()
+        deep_at = observed_at if existing is None else str(existing[0])
+        value = {
+            "schema_version": "strathmark-v3-outbox-integrity-checkpoint-v1",
+            "transition_sequence": transition_sequence,
+            "transition_digest": transition_digest,
+            "last_deep_verified_at": deep_at,
+        }
+        manifest = sign_manifest(
+            "outbox_integrity_checkpoint", value, signer=self.signer, created_at=observed_at
+        )
+        connection.execute(
+            "INSERT INTO v3_outbox_integrity_checkpoint VALUES (1,?,?,?,?) "
+            "ON CONFLICT(singleton) DO UPDATE SET "
+            "transition_sequence=excluded.transition_sequence,"
+            "transition_digest=excluded.transition_digest,"
+            "last_deep_verified_at=excluded.last_deep_verified_at,"
+            "checkpoint_manifest_json=excluded.checkpoint_manifest_json",
+            (
+                transition_sequence,
+                transition_digest,
+                deep_at,
+                canonical_bytes(manifest.to_dict()).decode("utf-8"),
+            ),
+        )
+
+    def _write_item_checkpoint(
+        self,
+        connection: sqlite3.Connection,
+        item: OutboxItem,
+        *,
+        transition_sequence: int = 0,
+        transition_digest: str = "0" * 64,
+    ) -> None:
+        from strathmark.v3.infrastructure.integrity import sign_manifest
+
+        value = _outbox_item_checkpoint_value(item, transition_sequence, transition_digest)
+        digest = canonical_digest(value)
+        manifest = sign_manifest(
+            "outbox_item_checkpoint", value, signer=self.signer, created_at=item.updated_at
+        )
+        connection.execute(
+            "INSERT INTO v3_outbox_item_checkpoints VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(outbox_id) DO UPDATE SET revision=excluded.revision,"
+            "item_digest=excluded.item_digest,transition_sequence=excluded.transition_sequence,"
+            "transition_digest=excluded.transition_digest,"
+            "checkpoint_manifest_json=excluded.checkpoint_manifest_json",
+            (
+                item.outbox_id,
+                item.revision,
+                digest,
+                transition_sequence,
+                transition_digest,
+                canonical_bytes(manifest.to_dict()).decode("utf-8"),
+            ),
+        )
+
+    def _verify_bounded_checkpoint(self, connection: sqlite3.Connection) -> None:
+        from strathmark.v3.infrastructure.integrity import SignedManifest, verify_manifest
+
+        row = connection.execute(
+            "SELECT * FROM v3_outbox_integrity_checkpoint WHERE singleton=1"
+        ).fetchone()
+        if row is None:
+            raise OutboxError("outbox integrity checkpoint is missing")
+        value = {
+            "schema_version": "strathmark-v3-outbox-integrity-checkpoint-v1",
+            "transition_sequence": int(row["transition_sequence"]),
+            "transition_digest": str(row["transition_digest"]),
+            "last_deep_verified_at": str(row["last_deep_verified_at"]),
+        }
+        try:
+            manifest = SignedManifest.from_dict(json.loads(str(row["checkpoint_manifest_json"])))
+            verified = verify_manifest(manifest, self.trust_store)
+        except Exception as exc:
+            raise OutboxError("outbox integrity checkpoint signature is invalid") from exc
+        latest = connection.execute(
+            "SELECT transition_sequence,transition_digest FROM v3_outbox_transitions "
+            "ORDER BY transition_sequence DESC LIMIT 1"
+        ).fetchone()
+        tip = (0, "0" * 64) if latest is None else (int(latest[0]), str(latest[1]))
+        if verified != value or tip != (value["transition_sequence"], value["transition_digest"]):
+            raise OutboxError("outbox integrity checkpoint differs from transition head")
+
+    def _verify_item_checkpoint(self, connection: sqlite3.Connection, item: OutboxItem) -> None:
+        from strathmark.v3.infrastructure.integrity import SignedManifest, verify_manifest
+
+        row = connection.execute(
+            "SELECT * FROM v3_outbox_item_checkpoints WHERE outbox_id=?",
+            (item.outbox_id,),
+        ).fetchone()
+        if row is None:
+            raise OutboxError("outbox item checkpoint is missing")
+        value = _outbox_item_checkpoint_value(
+            item, int(row["transition_sequence"]), str(row["transition_digest"])
+        )
+        try:
+            manifest = SignedManifest.from_dict(json.loads(str(row["checkpoint_manifest_json"])))
+            verified = verify_manifest(manifest, self.trust_store)
+        except Exception as exc:
+            raise OutboxError("outbox item checkpoint signature is invalid") from exc
+        if (
+            int(row["revision"]) != item.revision
+            or str(row["item_digest"]) != canonical_digest(value)
+            or verified != value
+        ):
+            raise OutboxError("outbox item differs from its signed checkpoint")
+        transition = connection.execute(
+            "SELECT * FROM v3_outbox_transitions WHERE outbox_id=? "
+            "ORDER BY transition_sequence DESC LIMIT 1",
+            (item.outbox_id,),
+        ).fetchone()
+        if item.revision == 1:
+            if transition is not None or int(row["transition_sequence"]) != 0:
+                raise OutboxError("pending outbox checkpoint has unexpected transition")
+        elif transition is None or (
+            int(transition["transition_sequence"]),
+            str(transition["transition_digest"]),
+        ) != (int(row["transition_sequence"]), str(row["transition_digest"])):
+            raise OutboxError("outbox item checkpoint differs from latest transition")
 
     @staticmethod
     def _resolve_operation(
@@ -564,6 +746,27 @@ class OutboxRepository:
         ).fetchone()
         assert row is not None
         return _decode(row)
+
+
+def _outbox_item_checkpoint_value(
+    item: OutboxItem, transition_sequence: int, transition_digest: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": "strathmark-v3-outbox-item-checkpoint-v1",
+        "outbox_id": item.outbox_id,
+        "destination": item.destination,
+        "source_global_sequence": item.source_global_sequence,
+        "payload_digest": item.payload_digest,
+        "state": item.state.value,
+        "revision": item.revision,
+        "attempt_count": item.attempt_count,
+        "next_attempt_at": item.next_attempt_at,
+        "terminal_reason": item.terminal_reason,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "transition_sequence": transition_sequence,
+        "transition_digest": transition_digest,
+    }
 
 
 def _decode(row: sqlite3.Row) -> OutboxItem:

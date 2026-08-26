@@ -624,6 +624,404 @@ class CredibilityPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class MemberCredibilityEvidence:
+    """Causal individual-member summary extracted from the credibility ledger."""
+
+    member_id: str
+    global_predictive_loss: str
+    context_predictive_loss: str
+    context_n_eff: str
+    coverage_rate: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.member_id, str) or not self.member_id or len(self.member_id) > 128:
+            raise ValueError("member credibility identity must be bounded")
+        _nonnegative_decimal(self.global_predictive_loss, "global member loss")
+        _nonnegative_decimal(self.context_predictive_loss, "context member loss")
+        _nonnegative_decimal(self.context_n_eff, "member effective sample size")
+        _probability(self.coverage_rate, "member coverage rate")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "member_id": self.member_id,
+            "global_predictive_loss": self.global_predictive_loss,
+            "context_predictive_loss": self.context_predictive_loss,
+            "context_n_eff": self.context_n_eff,
+            "coverage_rate": self.coverage_rate,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemberWeightReceipt:
+    members: tuple[MemberCredibilityEvidence, ...]
+    reliability_weights: tuple[tuple[str, str], ...]
+    context_weights: tuple[tuple[str, str], ...]
+    member_subweights: tuple[tuple[str, str], ...]
+    council_outer_weight: str
+    credibility_ledger_digest: str
+    credibility_policy_digest: str
+    context_digest: str
+    calibration_cutoff_at_utc: str
+    receipt_digest: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.members, tuple)
+            or len(self.members) != 3
+            or self.members != tuple(sorted(self.members, key=lambda item: item.member_id))
+            or len({item.member_id for item in self.members}) != 3
+        ):
+            raise ValueError("member weight receipt requires three uniquely sorted members")
+        member_ids = tuple(item.member_id for item in self.members)
+        for values, label in (
+            (self.reliability_weights, "reliability"),
+            (self.context_weights, "context"),
+            (self.member_subweights, "subweight"),
+        ):
+            if tuple(item for item, _value in values) != member_ids:
+                raise ValueError(f"member {label} weights differ from the credibility roster")
+            for _member_id, value in values:
+                _positive_decimal(value, f"member {label} weight")
+        outer = _positive_decimal(self.council_outer_weight, "council outer weight")
+        if outer > 1 or sum(Decimal(value) for _member, value in self.member_subweights) != outer:
+            raise ValueError("member subweights must sum exactly to the council outer weight")
+        for value, label in (
+            (self.credibility_ledger_digest, "member credibility ledger"),
+            (self.credibility_policy_digest, "member credibility policy"),
+            (self.context_digest, "member credibility context"),
+            (self.receipt_digest, "member weight receipt"),
+        ):
+            _digest(value, label)
+        require_utc_milliseconds(self.calibration_cutoff_at_utc)
+        if self.receipt_digest != canonical_digest(self.body()):
+            raise ValueError("member weight receipt digest differs")
+
+    def body(self) -> dict[str, object]:
+        return _member_weight_body(
+            self.members,
+            self.reliability_weights,
+            self.context_weights,
+            self.member_subweights,
+            self.council_outer_weight,
+            self.credibility_ledger_digest,
+            self.credibility_policy_digest,
+            self.context_digest,
+            self.calibration_cutoff_at_utc,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {**self.body(), "receipt_digest": self.receipt_digest}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> MemberWeightReceipt:
+        expected = {
+            "schema_version",
+            "members",
+            "reliability_weights",
+            "context_weights",
+            "member_subweights",
+            "council_outer_weight",
+            "credibility_ledger_digest",
+            "credibility_policy_digest",
+            "context_digest",
+            "calibration_cutoff_at_utc",
+            "receipt_digest",
+        }
+        if set(value) != expected or value["schema_version"] != (
+            "strathmark-v3-member-weight-receipt-v1"
+        ):
+            raise ValueError("member weight receipt schema is not closed")
+        return cls(
+            tuple(MemberCredibilityEvidence(**item) for item in value["members"]),
+            tuple(tuple(item) for item in value["reliability_weights"]),
+            tuple(tuple(item) for item in value["context_weights"]),
+            tuple(tuple(item) for item in value["member_subweights"]),
+            value["council_outer_weight"],
+            value["credibility_ledger_digest"],
+            value["credibility_policy_digest"],
+            value["context_digest"],
+            value["calibration_cutoff_at_utc"],
+            value["receipt_digest"],
+        )
+
+
+def _member_weight_body(
+    members: tuple[MemberCredibilityEvidence, ...],
+    reliability_weights: tuple[tuple[str, str], ...],
+    context_weights: tuple[tuple[str, str], ...],
+    member_subweights: tuple[tuple[str, str], ...],
+    council_outer_weight: str,
+    credibility_ledger_digest: str,
+    credibility_policy_digest: str,
+    context_digest: str,
+    calibration_cutoff_at_utc: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": "strathmark-v3-member-weight-receipt-v1",
+        "members": [item.to_dict() for item in members],
+        "reliability_weights": [list(item) for item in reliability_weights],
+        "context_weights": [list(item) for item in context_weights],
+        "member_subweights": [list(item) for item in member_subweights],
+        "council_outer_weight": council_outer_weight,
+        "credibility_ledger_digest": credibility_ledger_digest,
+        "credibility_policy_digest": credibility_policy_digest,
+        "context_digest": context_digest,
+        "calibration_cutoff_at_utc": calibration_cutoff_at_utc,
+    }
+
+
+def derive_member_subweights(
+    *,
+    members: tuple[MemberCredibilityEvidence, ...],
+    council_outer_weight: str,
+    credibility_ledger_digest: str,
+    credibility_policy_digest: str,
+    context_digest: str,
+    calibration_cutoff_at_utc: str,
+    policy: CredibilityPolicy | None = None,
+) -> MemberWeightReceipt:
+    """Derive context-shrunk member weights from sealed causal credibility summaries."""
+
+    frozen_policy = policy or CredibilityPolicy()
+    ordered = tuple(sorted(members, key=lambda item: item.member_id))
+    if len(ordered) != 3 or len({item.member_id for item in ordered}) != 3:
+        raise ValueError("member calibration requires exactly three unique members")
+    outer = _positive_decimal(council_outer_weight, "council outer weight")
+    if outer > 1:
+        raise ValueError("council outer weight cannot exceed one")
+    reliability: dict[str, Decimal] = {}
+    context: dict[str, Decimal] = {}
+    combined: dict[str, Decimal] = {}
+    for item in ordered:
+        global_loss = Decimal(item.global_predictive_loss)
+        context_loss = Decimal(item.context_predictive_loss)
+        n_eff = Decimal(item.context_n_eff)
+        prior = Decimal(frozen_policy.prior_strength)
+        shrunk = (n_eff * context_loss + prior * global_loss) / (n_eff + prior)
+        reliability[item.member_id] = Decimal(
+            str(exp(float(-global_loss / Decimal(frozen_policy.temperature))))
+        )
+        coverage = min(
+            Decimal(1), Decimal(item.coverage_rate) / Decimal(frozen_policy.minimum_coverage)
+        )
+        context[item.member_id] = (
+            Decimal(str(exp(float(-(shrunk - global_loss) / Decimal(frozen_policy.temperature)))))
+            * coverage
+        )
+        combined[item.member_id] = reliability[item.member_id] * context[item.member_id]
+    total = sum(combined.values(), Decimal(0))
+    if total <= 0:
+        raise ValueError("member credibility cannot produce zero total authority")
+    subweights: list[tuple[str, str]] = []
+    assigned = Decimal(0)
+    for index, item in enumerate(ordered):
+        weight = (
+            outer - assigned
+            if index == len(ordered) - 1
+            else outer * combined[item.member_id] / total
+        )
+        assigned += weight
+        subweights.append((item.member_id, _ds(weight)))
+    reliability_values = tuple(
+        (item.member_id, _ds(reliability[item.member_id])) for item in ordered
+    )
+    context_values = tuple((item.member_id, _ds(context[item.member_id])) for item in ordered)
+    subweight_values = tuple(subweights)
+    body = _member_weight_body(
+        ordered,
+        reliability_values,
+        context_values,
+        subweight_values,
+        _ds(outer),
+        credibility_ledger_digest,
+        credibility_policy_digest,
+        context_digest,
+        calibration_cutoff_at_utc,
+    )
+    return MemberWeightReceipt(
+        ordered,
+        reliability_values,
+        context_values,
+        subweight_values,
+        _ds(outer),
+        credibility_ledger_digest,
+        credibility_policy_digest,
+        context_digest,
+        calibration_cutoff_at_utc,
+        canonical_digest(body),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SelectiveAbstentionTrial:
+    trial_id: str
+    scenario: str
+    expected_opportunity_mass: str
+    recorded_opportunity_mass: str
+    successful_mass: str
+    invalid_mass: str
+    claimed_principled_abstention_mass: str
+    predictive_loss: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.trial_id, str) or not self.trial_id:
+            raise ValueError("selective-abstention trial identity is required")
+        if self.scenario not in {
+            "honest_baseline",
+            "selective_missing",
+            "invalid_as_abstention",
+        }:
+            raise ValueError("selective-abstention scenario is not adversarially complete")
+        values = tuple(
+            _nonnegative_decimal(getattr(self, name), name)
+            for name in (
+                "expected_opportunity_mass",
+                "recorded_opportunity_mass",
+                "successful_mass",
+                "invalid_mass",
+                "claimed_principled_abstention_mass",
+                "predictive_loss",
+            )
+        )
+        expected, recorded, successful, invalid, claimed, _loss = values
+        if (
+            expected <= 0
+            or recorded > expected
+            or successful + invalid > recorded
+            or claimed > recorded
+        ):
+            raise ValueError("selective-abstention opportunity accounting is inconsistent")
+
+    def to_dict(self) -> dict[str, str]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+
+@dataclass(frozen=True, slots=True)
+class SelectiveAbstentionEvaluation:
+    candidate_digest: str
+    policy: CredibilityPolicy
+    trials: tuple[SelectiveAbstentionTrial, ...]
+    effective_scores: tuple[tuple[str, str], ...]
+    passed: bool
+    evaluation_digest: str
+
+    def __post_init__(self) -> None:
+        _digest(self.candidate_digest, "selective-abstention candidate")
+        if not isinstance(self.policy, CredibilityPolicy):
+            raise ValueError("selective-abstention policy must be frozen and typed")
+        if {item.scenario for item in self.trials} != {
+            "honest_baseline",
+            "selective_missing",
+            "invalid_as_abstention",
+        } or len(self.trials) != 3:
+            raise ValueError("promotion requires all selective-abstention adversaries")
+        if tuple(item.trial_id for item in self.trials) != tuple(
+            sorted(item.trial_id for item in self.trials)
+        ):
+            raise ValueError("selective-abstention trials must be canonically sorted")
+        if tuple(item for item, _score in self.effective_scores) != tuple(
+            item.trial_id for item in self.trials
+        ):
+            raise ValueError("selective-abstention scores differ from trials")
+        for _item, score in self.effective_scores:
+            _nonnegative_decimal(score, "selective-abstention effective score")
+        expected_scores = tuple(
+            (
+                item.trial_id,
+                _selective_effective_score(item, self.policy),
+            )
+            for item in self.trials
+        )
+        if self.effective_scores != expected_scores:
+            raise ValueError("selective-abstention scores differ from frozen policy")
+        honest_id = next(
+            item.trial_id for item in self.trials if item.scenario == "honest_baseline"
+        )
+        scores = dict(self.effective_scores)
+        expected_pass = all(
+            scores[item.trial_id] <= scores[honest_id]
+            for item in self.trials
+            if item.scenario != "honest_baseline"
+        )
+        if self.passed is not expected_pass:
+            raise ValueError("selective-abstention promotion result differs")
+        _digest(self.evaluation_digest, "selective-abstention evaluation")
+        if self.evaluation_digest != canonical_digest(self.body()):
+            raise ValueError("selective-abstention evaluation digest differs")
+
+    def body(self) -> dict[str, object]:
+        return {
+            "schema_version": "strathmark-v3-selective-abstention-evaluation-v1",
+            "candidate_digest": self.candidate_digest,
+            "policy": {
+                name: getattr(self.policy, name) for name in self.policy.__dataclass_fields__
+            },
+            "policy_digest": canonical_digest(
+                {name: getattr(self.policy, name) for name in self.policy.__dataclass_fields__}
+            ),
+            "trials": [item.to_dict() for item in self.trials],
+            "effective_scores": [list(item) for item in self.effective_scores],
+            "passed": self.passed,
+        }
+
+
+def evaluate_selective_abstention_trials(
+    *,
+    candidate_digest: str,
+    policy: CredibilityPolicy,
+    trials: tuple[SelectiveAbstentionTrial, ...],
+) -> SelectiveAbstentionEvaluation:
+    """Run required withholding/reclassification adversaries under true opportunity mass."""
+
+    if not isinstance(policy, CredibilityPolicy):
+        raise ValueError("selective-abstention evaluation requires a frozen policy")
+    ordered = tuple(sorted(trials, key=lambda item: item.trial_id))
+    scores: list[tuple[str, str]] = []
+    for item in ordered:
+        scores.append((item.trial_id, _selective_effective_score(item, policy)))
+    score_values = tuple(scores)
+    honest_id = next(
+        (item.trial_id for item in ordered if item.scenario == "honest_baseline"), None
+    )
+    if honest_id is None:
+        raise ValueError("selective-abstention evaluation requires an honest baseline")
+    by_id = dict(score_values)
+    passed = all(
+        by_id[item.trial_id] <= by_id[honest_id]
+        for item in ordered
+        if item.scenario != "honest_baseline"
+    )
+    body = {
+        "schema_version": "strathmark-v3-selective-abstention-evaluation-v1",
+        "candidate_digest": candidate_digest,
+        "policy": {name: getattr(policy, name) for name in policy.__dataclass_fields__},
+        "policy_digest": canonical_digest(
+            {name: getattr(policy, name) for name in policy.__dataclass_fields__}
+        ),
+        "trials": [item.to_dict() for item in ordered],
+        "effective_scores": [list(item) for item in score_values],
+        "passed": passed,
+    }
+    return SelectiveAbstentionEvaluation(
+        candidate_digest,
+        policy,
+        ordered,
+        score_values,
+        passed,
+        canonical_digest(body),
+    )
+
+
+def _selective_effective_score(trial: SelectiveAbstentionTrial, policy: CredibilityPolicy) -> str:
+    coverage = Decimal(trial.successful_mass) / Decimal(trial.expected_opportunity_mass)
+    coverage_penalty = min(Decimal(1), coverage / Decimal(policy.minimum_coverage))
+    accuracy = Decimal(
+        str(exp(float(-Decimal(trial.predictive_loss) / Decimal(policy.temperature))))
+    )
+    return _ds(accuracy * coverage_penalty)
+
+
+@dataclass(frozen=True, slots=True)
 class WeightComponent:
     assessor: AssessorKind
     predictive_loss: str
@@ -1387,6 +1785,8 @@ __all__ = [
     "LedgerReversal",
     "LiveControlEvent",
     "LiveOverlay",
+    "MemberCredibilityEvidence",
+    "MemberWeightReceipt",
     "Opportunity",
     "OpportunityOutcome",
     "OptimizerConsequenceReceipt",
@@ -1394,12 +1794,16 @@ __all__ = [
     "PredictiveScore",
     "RoundWeightFreeze",
     "ScoreScope",
+    "SelectiveAbstentionEvaluation",
+    "SelectiveAbstentionTrial",
     "WeightComponent",
     "WeightReceipt",
     "calibrate_baseline",
     "close_live_overlay",
     "compute_predictive_metrics",
     "effective_degraded_weights",
+    "derive_member_subweights",
+    "evaluate_selective_abstention_trials",
     "freeze_live_round",
     "initial_live_overlay",
     "set_live_control",

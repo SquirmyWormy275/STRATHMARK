@@ -81,9 +81,7 @@ def _test_environment(run_directory: str, proof_name: str) -> dict[str, str]:
     }
 
 
-def _pytest_argv(
-    selectors: list[str], *, run_directory: str, proof_name: str
-) -> list[str]:
+def _pytest_argv(selectors: list[str], *, run_directory: str, proof_name: str) -> list[str]:
     return [
         str(Path(sys.executable).resolve()),
         "-m",
@@ -363,6 +361,23 @@ def build_evidence(
         run_directory=run_directory,
         timeout=3_600,
     )
+    result_to_ready_run_output = ROOT / run_directory / "result-to-ready.json"
+    result_to_ready = _machine_proof(
+        "result_to_ready",
+        "result_to_ready_benchmark",
+        [
+            str(Path(sys.executable).resolve()),
+            "scripts/benchmark_v3_result_to_ready.py",
+            "--output",
+            _relative(result_to_ready_run_output),
+            "--work-root",
+            f"{run_directory}/result-to-ready-work",
+        ],
+        run_directory=run_directory,
+        run_output=result_to_ready_run_output,
+        final_output=artifact_directory / f"{source_commit}-result-to-ready.json",
+        timeout=3_600,
+    )
     capacity_run_output = ROOT / run_directory / "windows-capacity.json"
     capacity = _machine_proof(
         "windows_capacity",
@@ -423,6 +438,7 @@ def build_evidence(
         equity,
         provider,
         recovery,
+        result_to_ready,
         capacity,
         stress,
         backup,

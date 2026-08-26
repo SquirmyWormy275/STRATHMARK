@@ -11,6 +11,9 @@ from strathmark.v3.application.operations import (
     REQUIRED_OPERATIONAL_METRICS,
     DependencyObservation,
     DependencyState,
+    EventWindowModelResidency,
+    ModelResidencyError,
+    ModelResidencyPolicy,
     OperationalFacts,
     OperationalMetrics,
     OperationalProbeSet,
@@ -365,3 +368,116 @@ def test_operational_facts_reject_invalid_digests_epoch_depth_age_and_member_sha
     for mutation in mutations:
         with pytest.raises(ValueError):
             replace(valid, **mutation)
+
+
+def test_event_window_residency_keeps_required_local_models_warm_and_releases_at_close() -> None:
+    installed = {"model:llm-primary", "model:llm-secondary"}
+    resident = {"model:llm-primary"}
+    calls: list[tuple[str, str]] = []
+
+    def warm(model_id: str) -> None:
+        calls.append(("warm", model_id))
+        resident.add(model_id)
+
+    def release(model_id: str) -> None:
+        calls.append(("release", model_id))
+        resident.discard(model_id)
+
+    residency = EventWindowModelResidency(
+        policy=ModelResidencyPolicy(enabled=True, max_models=2),
+        installed_model_ids=lambda: tuple(installed),
+        resident_model_ids=lambda: tuple(resident),
+        warm_local_model=warm,
+        release_local_model=release,
+    )
+
+    opened = residency.reconcile(
+        event_window_id="event_window:show-day-one",
+        active=True,
+        required_model_ids=("model:llm-secondary", "model:llm-primary"),
+        observed_at=NOW,
+    )
+    assert opened.required_model_ids == ("model:llm-primary", "model:llm-secondary")
+    assert opened.warmed_model_ids == ("model:llm-secondary",)
+    assert opened.resident_model_ids == opened.required_model_ids
+    assert calls == [("warm", "model:llm-secondary")]
+
+    resident.remove("model:llm-primary")
+    kept_warm = residency.reconcile(
+        event_window_id="event_window:show-day-one",
+        active=True,
+        required_model_ids=("model:llm-primary", "model:llm-secondary"),
+        observed_at=NOW,
+    )
+    assert kept_warm.warmed_model_ids == ("model:llm-primary",)
+
+    closed = residency.reconcile(
+        event_window_id="event_window:show-day-one",
+        active=False,
+        required_model_ids=("model:llm-primary", "model:llm-secondary"),
+        observed_at=NOW,
+    )
+    assert closed.released_model_ids == ("model:llm-primary", "model:llm-secondary")
+    assert len(closed.digest) == 64
+    already_closed = residency.reconcile(
+        event_window_id="event_window:show-day-one",
+        active=False,
+        required_model_ids=("model:llm-primary", "model:llm-secondary"),
+        observed_at=NOW,
+    )
+    assert already_closed.released_model_ids == ()
+
+
+def test_event_window_residency_is_disableable_bounded_local_only_and_fail_closed() -> None:
+    calls: list[tuple[str, str]] = []
+    disabled = EventWindowModelResidency(
+        policy=ModelResidencyPolicy(enabled=False, max_models=2),
+        installed_model_ids=lambda: ("model:llm-primary",),
+        resident_model_ids=lambda: (),
+        warm_local_model=lambda model_id: calls.append(("warm", model_id)),
+        release_local_model=lambda model_id: calls.append(("release", model_id)),
+    )
+    receipt = disabled.reconcile(
+        event_window_id="event_window:show-day-one",
+        active=True,
+        required_model_ids=("model:llm-primary",),
+        observed_at=NOW,
+    )
+    assert not receipt.enabled and receipt.state == "disabled" and calls == []
+
+    missing = EventWindowModelResidency(
+        policy=ModelResidencyPolicy(enabled=True, max_models=1),
+        installed_model_ids=lambda: (),
+        resident_model_ids=lambda: (),
+        warm_local_model=lambda model_id: None,
+        release_local_model=lambda model_id: None,
+    )
+    with pytest.raises(ModelResidencyError, match="not installed"):
+        missing.reconcile(
+            event_window_id="event_window:show-day-one",
+            active=True,
+            required_model_ids=("model:llm-primary",),
+            observed_at=NOW,
+        )
+    with pytest.raises(ModelResidencyError, match="maximum"):
+        disabled.reconcile(
+            event_window_id="event_window:show-day-one",
+            active=True,
+            required_model_ids=("model:one", "model:two", "model:three"),
+            observed_at=NOW,
+        )
+
+    did_not_warm = EventWindowModelResidency(
+        policy=ModelResidencyPolicy(enabled=True, max_models=1),
+        installed_model_ids=lambda: ("model:llm-primary",),
+        resident_model_ids=lambda: (),
+        warm_local_model=lambda model_id: None,
+        release_local_model=lambda model_id: None,
+    )
+    with pytest.raises(ModelResidencyError, match="remain cold"):
+        did_not_warm.reconcile(
+            event_window_id="event_window:show-day-one",
+            active=True,
+            required_model_ids=("model:llm-primary",),
+            observed_at=NOW,
+        )

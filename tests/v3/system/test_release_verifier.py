@@ -154,6 +154,65 @@ def _capacity_receipt(root: Path, path: Path) -> None:
     )
 
 
+def _result_to_ready_receipt(root: Path, path: Path) -> None:
+    source_paths = (
+        "scripts/benchmark_v3_result_to_ready.py",
+        "strathmark/v3/application/lifecycle.py",
+        "strathmark/v3/application/settlement.py",
+        "strathmark/v3/application/coordinator.py",
+        "strathmark/v3/application/pipeline_builder.py",
+        "strathmark/v3/application/field_assembly.py",
+        "strathmark/v3/application/approval.py",
+        "strathmark/v3/domain/optimizer.py",
+        "strathmark/v3/infrastructure/sqlite/event_store.py",
+        "strathmark/v3/infrastructure/sqlite/jobs.py",
+        "strathmark/v3/infrastructure/sqlite/projections.py",
+        "tests/v3/integration/test_field_receipts.py",
+        "tests/v3/integration/test_rolling_preparation.py",
+        "benchmarks/v3/job_capacity_manifest.json",
+    )
+    bindings = {name: sha256_file(root / name) for name in source_paths}
+    components = {
+        "final_heat_settlement": 1,
+        "deliberate_round_close": 1,
+        "newly_affected_cards": 1,
+        "gate_optimizer": 1,
+        "receipt_commit": 1,
+        "approval_projection": 1,
+    }
+    trials = [
+        {
+            "trial_ordinal": ordinal,
+            "measured_result_to_ready_ms": 6,
+            "component_latency_ms": components,
+            "newly_affected_card_count": 2,
+        }
+        for ordinal in range(1, 6)
+    ]
+    body = {
+        "schema_version": "strathmark-v3-result-to-ready-benchmark-v1",
+        "status": "passed",
+        "platform": "fixture",
+        "python_version": "3.13",
+        "repetitions": 5,
+        "limits": {"result_to_ready_ms_inclusive": 120_000},
+        "gates": {
+            "formal_repetition_count": True,
+            "result_to_ready_within_budget": True,
+            "all_trials_completed": True,
+            "exact_source_bindings": True,
+        },
+        "maximum_measured_result_to_ready_ms": 6,
+        "source_bindings": bindings,
+        "source_bindings_digest": canonical_digest(bindings),
+        "trials": trials,
+    }
+    path.write_text(
+        json.dumps({**body, "manifest_digest": canonical_digest(body)}, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def _stress_receipt(path: Path) -> None:
     sample = {
         "observed_at": NOW,
@@ -186,10 +245,13 @@ def _fixture(root: Path, tmp_path: Path) -> tuple[dict[str, object], Path, str]:
     _wheel(wheel)
     relative_wheel = wheel.resolve().relative_to(root.resolve()).as_posix()
     capacity = tmp_path / "capacity.json"
+    result_to_ready = tmp_path / "result-to-ready.json"
     stress = tmp_path / "stress.json"
     _capacity_receipt(root, capacity)
+    _result_to_ready_receipt(root, result_to_ready)
     _stress_receipt(stress)
     relative_capacity = capacity.resolve().relative_to(root.resolve()).as_posix()
+    relative_result_to_ready = result_to_ready.resolve().relative_to(root.resolve()).as_posix()
     relative_stress = stress.resolve().relative_to(root.resolve()).as_posix()
     python = str(Path(sys.executable).resolve())
     selectors = {
@@ -281,6 +343,22 @@ def _fixture(root: Path, tmp_path: Path) -> tuple[dict[str, object], Path, str]:
                 )
             ]
             files = {}
+        elif name == "result_to_ready":
+            steps = [
+                _step(
+                    "result_to_ready_benchmark",
+                    [
+                        python,
+                        "scripts/benchmark_v3_result_to_ready.py",
+                        "--output",
+                        f"{run_directory}/result-to-ready.json",
+                        "--work-root",
+                        f"{run_directory}/result-to-ready-work",
+                    ],
+                    run_directory,
+                )
+            ]
+            files = {"machine_receipt_sha256": relative_result_to_ready}
         elif name == "windows_capacity":
             steps = [
                 _step(
@@ -488,7 +566,7 @@ def test_rehearsal_generation_requires_current_executable_receipt_and_production
             attestation_path=attestation_path,
             require_production=True,
         )
-    assert len(expected_evidence(evidence_payload)) == 11
+    assert len(expected_evidence(evidence_payload)) == 12
 
 
 def test_production_attestation_cannot_supply_its_own_forged_trust_identity(

@@ -62,6 +62,7 @@ PROOF_OPERATIONS: dict[str, tuple[str, ...]] = {
     "manipulation_equity_slices": ("manipulation_equity_tests",),
     "provider_failure_matrix": ("provider_failure_tests",),
     "race_day_recovery": ("race_day_recovery_tests",),
+    "result_to_ready": ("result_to_ready_benchmark",),
     "windows_capacity": ("windows_capacity_benchmark",),
     "thermal_memory_storage_stress": ("windows_stress_benchmark",),
     "database_backup_restore": ("backup_restore_tests",),
@@ -89,11 +90,7 @@ def git_source_paths(root: Path) -> tuple[Path, ...]:
     paths: list[Path] = []
     for raw in completed.stdout.decode("utf-8").split("\0"):
         normalized = raw.replace("\\", "/")
-        if (
-            not raw
-            or normalized in GENERATED_SIDECARS
-            or normalized.startswith(GENERATED_PREFIXES)
-        ):
+        if not raw or normalized in GENERATED_SIDECARS or normalized.startswith(GENERATED_PREFIXES):
             continue
         path = root / raw
         if path.is_file():
@@ -105,10 +102,7 @@ def git_source_paths(root: Path) -> tuple[Path, ...]:
 
 def source_tree_digest(root: Path) -> str:
     return canonical_digest(
-        {
-            path.relative_to(root).as_posix(): sha256_file(path)
-            for path in git_source_paths(root)
-        }
+        {path.relative_to(root).as_posix(): sha256_file(path) for path in git_source_paths(root)}
     )
 
 
@@ -149,8 +143,7 @@ def verify_source_commit(root: Path, source_commit: str) -> None:
         for item in changed.stdout.splitlines()
         if item
         for normalized in (item.replace("\\", "/"),)
-        if normalized not in GENERATED_SIDECARS
-        and not normalized.startswith(GENERATED_PREFIXES)
+        if normalized not in GENERATED_SIDECARS and not normalized.startswith(GENERATED_PREFIXES)
     ]
     if material:
         raise ValueError("executable evidence source commit is stale")
@@ -174,9 +167,7 @@ def require_clean_release_inputs(root: Path) -> None:
         path_text = line[3:].strip().strip('"').replace("\\", "/")
         if " -> " in path_text:
             path_text = path_text.split(" -> ", 1)[1]
-        generated = path_text in GENERATED_SIDECARS or path_text.startswith(
-            GENERATED_PREFIXES
-        )
+        generated = path_text in GENERATED_SIDECARS or path_text.startswith(GENERATED_PREFIXES)
         untracked_release_input = status == "??" and path_text.startswith(
             ("strathmark/", "scripts/", "tests/v3/", "requirements/", "benchmarks/v3/")
         )
@@ -218,9 +209,7 @@ def wheel_identity(path: Path, *, root: Path | None = None) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(path) as archive:
             metadata_names = [
-                name
-                for name in archive.namelist()
-                if name.endswith(".dist-info/METADATA")
+                name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
             ]
             if len(metadata_names) != 1:
                 raise ValueError("installed artifact has no unique wheel metadata")
@@ -321,9 +310,10 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         raise ValueError("executable evidence fields differ")
     if payload["schema_version"] != EVIDENCE_SCHEMA:
         raise ValueError("executable evidence schema differs")
-    if not isinstance(payload["source_commit"], str) or _COMMIT.fullmatch(
-        payload["source_commit"]
-    ) is None:
+    if (
+        not isinstance(payload["source_commit"], str)
+        or _COMMIT.fullmatch(payload["source_commit"]) is None
+    ):
         raise ValueError("executable evidence source commit differs")
     verify_source_commit(root, payload["source_commit"])
     _require_digest(payload["source_tree_digest"], "source tree digest")
@@ -351,14 +341,14 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         raise ValueError("executable evidence installed wheel is missing or stale")
 
     proofs = payload["proofs"]
-    if not isinstance(proofs, list) or tuple(
-        item.get("name") for item in proofs if isinstance(item, Mapping)
-    ) != REQUIRED_RELEASE_EVIDENCE:
+    if (
+        not isinstance(proofs, list)
+        or tuple(item.get("name") for item in proofs if isinstance(item, Mapping))
+        != REQUIRED_RELEASE_EVIDENCE
+    ):
         raise ValueError("executable evidence proof set is incomplete or unordered")
     for proof in proofs:
-        _verify_proof(
-            proof, run_directory=run_directory, wheel=payload["wheel"], root=root
-        )
+        _verify_proof(proof, run_directory=run_directory, wheel=payload["wheel"], root=root)
 
 
 def _verify_proof(
@@ -384,9 +374,10 @@ def _verify_proof(
     _require_utc(proof["observed_at"])
     steps = proof["steps"]
     operations = PROOF_OPERATIONS[name]
-    if not isinstance(steps, list) or tuple(
-        step.get("operation") for step in steps if isinstance(step, Mapping)
-    ) != operations:
+    if (
+        not isinstance(steps, list)
+        or tuple(step.get("operation") for step in steps if isinstance(step, Mapping)) != operations
+    ):
         raise ValueError(f"executable proof command differs: {name}")
     for step in steps:
         _verify_step(step, run_directory=run_directory, wheel=wheel)
@@ -405,22 +396,32 @@ def _verify_proof(
         path = _resolve_repository_path(root, relative)
         if not path.is_file() or sha256_file(path) != artifacts[role]:
             raise ValueError(f"executable proof artifact is missing or stale: {name}")
-        if name in {"windows_capacity", "thermal_memory_storage_stress"}:
+        if name in {
+            "result_to_ready",
+            "windows_capacity",
+            "thermal_memory_storage_stress",
+        }:
             _verify_machine_receipt(name, path=path, root=root)
     if name == "installed_artifact" and artifacts != {"wheel_sha256": wheel["sha256"]}:
         raise ValueError("installed artifact proof substituted a source-only digest")
     if name == "installed_artifact" and artifact_files != {"wheel_sha256": wheel["path"]}:
         raise ValueError("installed artifact proof did not bind the candidate wheel path")
-    if name in {"windows_capacity", "thermal_memory_storage_stress"} and not artifacts:
+    if (
+        name
+        in {
+            "result_to_ready",
+            "windows_capacity",
+            "thermal_memory_storage_stress",
+        }
+        and not artifacts
+    ):
         raise ValueError(f"machine evidence artifact is missing: {name}")
     receipt_body = {key: value for key, value in proof.items() if key != "receipt_digest"}
     if proof["receipt_digest"] != canonical_digest(receipt_body):
         raise ValueError(f"executable proof receipt digest differs: {name}")
 
 
-def _verify_step(
-    step: object, *, run_directory: str, wheel: Mapping[str, Any]
-) -> None:
+def _verify_step(step: object, *, run_directory: str, wheel: Mapping[str, Any]) -> None:
     expected = {
         "operation",
         "argv",
@@ -447,9 +448,7 @@ def _verify_step(
         or any(not isinstance(item, str) or not item for item in argv)
     ):
         raise ValueError("executable proof argv differs")
-    _verify_operation_argv(
-        str(step["operation"]), argv, run_directory=run_directory, wheel=wheel
-    )
+    _verify_operation_argv(str(step["operation"]), argv, run_directory=run_directory, wheel=wheel)
     environment = step["environment"]
     if not isinstance(environment, Mapping) or environment.get("STRATHMARK_TEST_DB") != "1":
         raise ValueError("executable proof did not use isolated test authority")
@@ -499,7 +498,10 @@ def _verify_operation_argv(
             "tests/v3/integration/test_durable_jobs.py::test_coordinator_classifies_provider_failures",
         ],
         "race_day_recovery_tests": pytest_prefix
-        + ["tests/v3/system/test_executable_replay.py", "tests/v3/system/test_critical_issue_recovery.py"],
+        + [
+            "tests/v3/system/test_executable_replay.py",
+            "tests/v3/system/test_critical_issue_recovery.py",
+        ],
         "backup_restore_tests": pytest_prefix + ["tests/v3/system/test_backup_restore.py"],
         "bundle_integrity_tests": pytest_prefix
         + [
@@ -546,17 +548,27 @@ def _verify_operation_argv(
         if list(argv[: len(expected)]) != expected or "--installed-root" not in argv:
             raise ValueError("installed wheel probe command differs")
         return
-    if operation in {"windows_capacity_benchmark", "windows_stress_benchmark"}:
-        script = (
-            "scripts/benchmark_v3_field_assembly.py"
-            if operation == "windows_capacity_benchmark"
-            else "scripts/run_v3_windows_stress.py"
-        )
+    if operation in {
+        "result_to_ready_benchmark",
+        "windows_capacity_benchmark",
+        "windows_stress_benchmark",
+    }:
+        script = {
+            "result_to_ready_benchmark": "scripts/benchmark_v3_result_to_ready.py",
+            "windows_capacity_benchmark": "scripts/benchmark_v3_field_assembly.py",
+            "windows_stress_benchmark": "scripts/run_v3_windows_stress.py",
+        }[operation]
         expected = [python, script, "--output"]
         if list(argv[:3]) != expected or len(argv) < 4:
             raise ValueError(f"machine benchmark command differs: {operation}")
         if not argv[3].startswith(f"{run_directory}/"):
             raise ValueError("machine benchmark output escaped the isolated run directory")
+        if operation == "result_to_ready_benchmark" and (
+            len(argv) != 6
+            or argv[4] != "--work-root"
+            or not argv[5].startswith(f"{run_directory}/")
+        ):
+            raise ValueError("result-to-ready work root escaped the isolated run directory")
         return
     raise ValueError(f"executable proof operation is unknown: {operation}")
 
@@ -611,7 +623,9 @@ def _verify_machine_receipt(name: str, *, path: Path, root: Path) -> None:
         raise ValueError(f"machine evidence receipt is unreadable: {name}") from exc
     if not isinstance(value, Mapping):
         raise ValueError(f"machine evidence receipt is not an object: {name}")
-    if name == "windows_capacity":
+    if name == "result_to_ready":
+        _verify_result_to_ready_receipt(value, root=root)
+    elif name == "windows_capacity":
         _verify_capacity_receipt(value, root=root)
     else:
         if encoded != canonical_json_bytes(value):
@@ -629,7 +643,11 @@ def _verify_capacity_receipt(value: Mapping[str, Any], *, root: Path) -> None:
     if value.get("manifest_digest") != canonical_digest(body):
         raise ValueError("Windows capacity receipt digest differs")
     gates = value.get("gates")
-    if not isinstance(gates, Mapping) or not gates or any(item is not True for item in gates.values()):
+    if (
+        not isinstance(gates, Mapping)
+        or not gates
+        or any(item is not True for item in gates.values())
+    ):
         raise ValueError("Windows capacity gate is incomplete or failed")
     complete = value.get("complete_confirmed_field_assembly")
     if (
@@ -656,6 +674,74 @@ def _verify_capacity_receipt(value: Mapping[str, Any], *, root: Path) -> None:
         raise ValueError("Windows capacity source pins are incomplete")
     if any(identity[name] != sha256_file(source) for name, source in paths.items()):
         raise ValueError("Windows capacity source pin is stale")
+
+
+def _verify_result_to_ready_receipt(value: Mapping[str, Any], *, root: Path) -> None:
+    if (
+        value.get("schema_version") != "strathmark-v3-result-to-ready-benchmark-v1"
+        or value.get("status") != "passed"
+        or value.get("repetitions") != 5
+        or value.get("limits") != {"result_to_ready_ms_inclusive": 120_000}
+        or value.get("maximum_measured_result_to_ready_ms", 120_001) > 120_000
+    ):
+        raise ValueError("result-to-ready execution did not pass the formal budget")
+    body = {key: item for key, item in value.items() if key != "manifest_digest"}
+    if value.get("manifest_digest") != canonical_digest(body):
+        raise ValueError("result-to-ready receipt digest differs")
+    gates = value.get("gates")
+    if (
+        not isinstance(gates, Mapping)
+        or set(gates)
+        != {
+            "formal_repetition_count",
+            "result_to_ready_within_budget",
+            "all_trials_completed",
+            "exact_source_bindings",
+        }
+        or any(item is not True for item in gates.values())
+    ):
+        raise ValueError("result-to-ready gate is incomplete or failed")
+    bindings = value.get("source_bindings")
+    if not isinstance(bindings, Mapping) or value.get("source_bindings_digest") != canonical_digest(
+        bindings
+    ):
+        raise ValueError("result-to-ready source binding digest differs")
+    for relative, digest in bindings.items():
+        if not isinstance(relative, str) or not isinstance(digest, str):
+            raise ValueError("result-to-ready source binding is invalid")
+        source = _resolve_repository_path(root, relative)
+        if not source.is_file() or sha256_file(source) != digest:
+            raise ValueError("result-to-ready source binding is stale")
+    trials = value.get("trials")
+    components = {
+        "final_heat_settlement",
+        "deliberate_round_close",
+        "newly_affected_cards",
+        "gate_optimizer",
+        "receipt_commit",
+        "approval_projection",
+    }
+    if not isinstance(trials, list) or len(trials) != 5:
+        raise ValueError("result-to-ready formal trials are incomplete")
+    for trial in trials:
+        if (
+            not isinstance(trial, Mapping)
+            or set(trial.get("component_latency_ms", {})) != components
+            or trial.get("newly_affected_card_count") != 2
+            or not isinstance(trial.get("measured_result_to_ready_ms"), int)
+            or trial["measured_result_to_ready_ms"] > 120_000
+        ):
+            raise ValueError("result-to-ready trial evidence differs")
+    if _contains_mapping_key(value, "ready_ms"):
+        raise ValueError("result-to-ready evidence contains a synthetic readiness timestamp")
+
+
+def _contains_mapping_key(value: object, key: str) -> bool:
+    if isinstance(value, Mapping):
+        return key in value or any(_contains_mapping_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_mapping_key(item, key) for item in value)
+    return False
 
 
 def _verify_stress_receipt(value: Mapping[str, Any]) -> None:
@@ -697,7 +783,10 @@ def _verify_stress_receipt(value: Mapping[str, Any]) -> None:
         or len(samples) < 3
         or any(not isinstance(item, Mapping) for item in samples)
         or any(item.get("temperature_c", 10_000) > value["thermal_gate_c"] for item in samples)
-        or any(item.get("memory_used_mib", 10_000) >= item.get("memory_total_mib", 0) for item in samples)
+        or any(
+            item.get("memory_used_mib", 10_000) >= item.get("memory_total_mib", 0)
+            for item in samples
+        )
     ):
         raise ValueError("Windows stress hardware telemetry differs")
     for section_name in ("pressure_injection", "storage_injection"):

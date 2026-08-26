@@ -114,6 +114,56 @@ def test_rotation_accepts_current_and_next_only_during_bounded_overlap(credentia
     )
 
 
+def test_live_registries_refresh_shared_authority_for_overlap_expiry(credentials) -> None:
+    registry, events, secrets, clock = credentials
+    current = registry.bootstrap_offline(
+        principal_id="actor:manager",
+        listener_stopped=True,
+        credential="smv3.current-key.current-secret-1234567890",
+    )
+    replica = ServiceCredentialRegistry(
+        SQLiteEventStore(events.database_path), secrets, clock=clock
+    )
+    principal = registry.authenticate(f"Bearer {current.credential}")
+    next_key = registry.rotate(
+        principal,
+        overlap_seconds=60,
+        credential="smv3.next-key.next-secret-12345678901234",
+    )
+
+    assert replica.authenticate(f"Bearer {next_key.credential}").principal_id == (
+        principal.principal_id
+    )
+    clock.advance(seconds=61)
+    with pytest.raises(CredentialError, match="revoked or expired"):
+        replica.authenticate(f"Bearer {current.credential}")
+
+
+def test_live_registries_refresh_shared_authority_for_revocation(credentials) -> None:
+    registry, events, secrets, clock = credentials
+    current = registry.bootstrap_offline(
+        principal_id="actor:manager",
+        listener_stopped=True,
+        credential="smv3.current-key.current-secret-1234567890",
+    )
+    replica = ServiceCredentialRegistry(
+        SQLiteEventStore(events.database_path), secrets, clock=clock
+    )
+    principal = registry.authenticate(f"Bearer {current.credential}")
+    next_key = registry.rotate(
+        principal,
+        overlap_seconds=60,
+        credential="smv3.next-key.next-secret-12345678901234",
+    )
+    assert replica.authenticate(f"Bearer {next_key.credential}").principal_id == (
+        principal.principal_id
+    )
+
+    registry.revoke(principal, current.key_id_digest)
+    with pytest.raises(CredentialError, match="revoked or expired"):
+        replica.authenticate(f"Bearer {current.credential}")
+
+
 @pytest.mark.parametrize("overlap", [-1, 0, 901, True, 1.5])
 def test_rotation_rejects_invalid_or_overlong_overlap(credentials, overlap) -> None:
     registry, _events, _secrets, _clock = credentials

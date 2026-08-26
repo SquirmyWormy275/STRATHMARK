@@ -126,10 +126,13 @@ def test_promoted_whole_bundle_authorizes_numeric_council_and_replay(tmp_path) -
     member_sealed = tuple(
         council.seal_member_outcome(outcome, authority=authority) for outcome in outcomes
     )
-    assert tuple(
-        council.replay_sealed_member_outcome(item, authority=authority)
-        for item in member_sealed
-    ) == outcomes
+    assert (
+        tuple(
+            council.replay_sealed_member_outcome(item, authority=authority)
+            for item in member_sealed
+        )
+        == outcomes
+    )
     with pytest.raises(ValueError, match="promoted council authority"):
         council.replay_sealed_council(sealed)
     with pytest.raises(ValueError, match="promoted council authority"):
@@ -176,7 +179,10 @@ def test_operational_council_rejects_unpromoted_or_identity_drift(tmp_path) -> N
         )
     with pytest.raises(ValueError, match="artifact"):
         council.aggregate_council(
-            (replace(outcomes[0], audit=replace(outcomes[0].audit, model_digest="f" * 64)), *outcomes[1:]),
+            (
+                replace(outcomes[0], audit=replace(outcomes[0].audit, model_digest="f" * 64)),
+                *outcomes[1:],
+            ),
             authority=authority,
         )
     sealed = council.seal_member_outcome(outcomes[0], authority=authority)

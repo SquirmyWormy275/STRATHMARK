@@ -1137,6 +1137,154 @@ def retain_promotion_scores(
 
 
 @dataclass(frozen=True, slots=True)
+class CapabilityPromotionPolicy:
+    """Frozen tolerance for the shared capability operator in factory replay."""
+
+    max_adjusted_score_regression: str
+
+    def __post_init__(self) -> None:
+        _dec(
+            self.max_adjusted_score_regression,
+            "maximum adjusted score regression",
+            "0",
+            "1000000000",
+        )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "schema_version": "strathmark-v3-capability-promotion-policy-v1",
+                "max_adjusted_score_regression": self.max_adjusted_score_regression,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityPromotionEvaluation:
+    candidate_digest: str
+    retentions: tuple[PromotionScoreRetention, ...]
+    operator_application_counts: tuple[tuple[AssessorKind, int], ...]
+    policy: CapabilityPromotionPolicy
+    passed: bool
+    failure_codes: tuple[str, ...]
+    evaluation_digest: str
+
+    def __post_init__(self) -> None:
+        _require_digest(self.candidate_digest, "capability promotion candidate")
+        if (
+            not isinstance(self.retentions, tuple)
+            or len(self.retentions) != 3
+            or {item.assessor for item in self.retentions}
+            != {AssessorKind.FORMULA, AssessorKind.ML, AssessorKind.LLM_COUNCIL}
+        ):
+            raise ContractError("capability promotion requires all three outer assessors")
+        if self.retentions != tuple(sorted(self.retentions, key=lambda item: item.assessor.value)):
+            raise ContractError("capability promotion retentions must be canonically sorted")
+        expected_counts = tuple(
+            (item, 1) for item in (AssessorKind.FORMULA, AssessorKind.LLM_COUNCIL, AssessorKind.ML)
+        )
+        if self.operator_application_counts != expected_counts:
+            raise ContractError("capability operator must be applied exactly once per assessor")
+        if not isinstance(self.policy, CapabilityPromotionPolicy):
+            raise ContractError("capability promotion policy must be frozen")
+        expected_failures = tuple(
+            sorted(
+                f"overprotection:{item.assessor.value}"
+                for item in self.retentions
+                if Decimal(item.adjusted_score) - Decimal(item.original_score)
+                > Decimal(self.policy.max_adjusted_score_regression)
+            )
+        )
+        if self.failure_codes != expected_failures or self.passed is not (not expected_failures):
+            raise ContractError("capability promotion outcome differs from retained scores")
+        _require_digest(self.evaluation_digest, "capability promotion evaluation")
+        if self.evaluation_digest != canonical_digest(self.body()):
+            raise ContractError("capability promotion evaluation digest differs")
+
+    def body(self) -> dict[str, object]:
+        return _capability_promotion_body(
+            self.candidate_digest,
+            self.retentions,
+            self.operator_application_counts,
+            self.policy,
+            self.passed,
+            self.failure_codes,
+        )
+
+
+def _capability_promotion_body(
+    candidate_digest: str,
+    retentions: tuple[PromotionScoreRetention, ...],
+    operator_application_counts: tuple[tuple[AssessorKind, int], ...],
+    policy: CapabilityPromotionPolicy,
+    passed: bool,
+    failure_codes: tuple[str, ...],
+) -> dict[str, object]:
+    return {
+        "schema_version": "strathmark-v3-capability-promotion-evaluation-v1",
+        "candidate_digest": candidate_digest,
+        "retentions": [
+            {
+                "assessor": item.assessor.value,
+                "original_forecast_digest": item.original_forecast_digest,
+                "adjusted_forecast_digest": item.adjusted_forecast_digest,
+                "original_score": item.original_score,
+                "adjusted_score": item.adjusted_score,
+            }
+            for item in retentions
+        ],
+        "operator_application_counts": [
+            [item.value, count] for item, count in operator_application_counts
+        ],
+        "policy_digest": policy.digest,
+        "passed": passed,
+        "failure_codes": list(failure_codes),
+    }
+
+
+def evaluate_capability_promotion(
+    *,
+    candidate_digest: str,
+    retentions: tuple[PromotionScoreRetention, ...],
+    operator_application_counts: tuple[tuple[AssessorKind, int], ...],
+    policy: CapabilityPromotionPolicy,
+) -> CapabilityPromotionEvaluation:
+    """Score immutable original/adjusted pairs and reject repeat application."""
+
+    if not isinstance(retentions, tuple) or not all(
+        isinstance(item, PromotionScoreRetention) for item in retentions
+    ):
+        raise ContractError("capability promotion requires typed retained scores")
+    ordered = tuple(sorted(retentions, key=lambda item: item.assessor.value))
+    if not isinstance(operator_application_counts, tuple):
+        raise ContractError("capability operator application counts must be immutable")
+    counts = tuple(sorted(operator_application_counts, key=lambda item: item[0].value))
+    if any(count != 1 for _assessor, count in counts):
+        raise ContractError("capability operator must be applied exactly once per assessor")
+    failures = tuple(
+        sorted(
+            f"overprotection:{item.assessor.value}"
+            for item in ordered
+            if Decimal(item.adjusted_score) - Decimal(item.original_score)
+            > Decimal(policy.max_adjusted_score_regression)
+        )
+    )
+    body = _capability_promotion_body(
+        candidate_digest, ordered, counts, policy, not failures, failures
+    )
+    return CapabilityPromotionEvaluation(
+        candidate_digest,
+        ordered,
+        counts,
+        policy,
+        not failures,
+        failures,
+        canonical_digest(body),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityCapacityEnvelope:
     maximum_lineage_rows: int = 256
     maximum_invalidated_work: int = 128
@@ -1252,6 +1400,8 @@ __all__ = [
     "CapabilityCapacityEnvelope",
     "CapabilityEvidence",
     "CapabilityPrior",
+    "CapabilityPromotionEvaluation",
+    "CapabilityPromotionPolicy",
     "CapabilityState",
     "CapabilityTransition",
     "FastCapabilityRegime",
@@ -1262,6 +1412,7 @@ __all__ = [
     "RunLengthHypothesis",
     "apply_capability_operator",
     "evaluate_rebase_capacity",
+    "evaluate_capability_promotion",
     "replay_capability",
     "retain_promotion_scores",
 ]

@@ -11,6 +11,7 @@ import json
 import sqlite3
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 from typing import Any, Mapping, cast
@@ -71,6 +72,29 @@ _ROLLING_REACTION_EVENTS = {
     EventKind.ROUND_CLOSED,
     EventKind.TOURNAMENT_CLOSED,
 }
+_MODEL_STATUS_EVENTS = {
+    EventKind.MODEL_CANDIDATE_CREATED,
+    EventKind.MODEL_CANDIDATE_EVALUATED,
+    EventKind.BUNDLE_PROMOTED,
+    EventKind.BUNDLE_ROLLED_BACK,
+    EventKind.TOURNAMENT_OPENED,
+}
+_MODEL_STATUS_EVENT_VALUES = tuple(sorted(item.value for item in _MODEL_STATUS_EVENTS))
+_PROJECTION_TABLES = (
+    "v3_ingress_snapshots",
+    "v3_result_revisions",
+    "v3_derivation_reactions",
+    "v3_derivation_barrier",
+    "v3_evidence_epochs",
+    "v3_evidence_epoch_members",
+    "v3_derivation_sequence_completions",
+    "v3_round_closures",
+    "v3_round_issue_seals",
+    "v3_prepared_field_dependencies",
+    "v3_model_status",
+    "v3_model_candidates",
+    "v3_model_tournament_pins",
+)
 
 
 class ProjectionError(V3Error, RuntimeError):
@@ -253,6 +277,7 @@ class SQLiteProjectionStore:
             with immediate_transaction(connection):
                 self._reconcile_result_sources(connection)
                 self._advance_barrier(connection)
+                self._ensure_model_status_projection(connection)
 
     def bootstrap_rolling_reaction_cursor_cutover(self) -> int:
         """Perform the one-time verified populated-0011 to 0012 cursor replay."""
@@ -351,6 +376,9 @@ class SQLiteProjectionStore:
                         "rolling reaction cursor is not eligible for one-time cutover"
                     )
                 for table in (
+                    "v3_model_tournament_pins",
+                    "v3_model_candidates",
+                    "v3_model_status",
                     "v3_prepared_field_dependencies",
                     "v3_round_issue_seals",
                     "v3_evidence_epoch_members",
@@ -362,6 +390,7 @@ class SQLiteProjectionStore:
                     "v3_ingress_snapshots",
                 ):
                     connection.execute(f"DELETE FROM {table}")  # noqa: S608
+                self._write_model_status(connection, ZERO_DIGEST, None, 0, ZERO_DIGEST)
                 connection.execute(
                     "UPDATE v3_derivation_barrier SET through_global_sequence=0, "
                     "barrier_digest=? WHERE singleton=1",
@@ -706,15 +735,206 @@ class SQLiteProjectionStore:
                 self._advance_barrier(connection)
             return self.projection_digest(connection)
 
+    def active_model_bundle_digest(self) -> str:
+        """Return the digest-bound active champion without replaying model history."""
+
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            row = self._verify_model_status_connection(connection)
+            return str(row[1])
+
+    def model_candidate_evaluation(
+        self, candidate_id: StableIdentifier
+    ) -> Mapping[str, Any] | None:
+        require_identifier(candidate_id, expected_namespace="bundle")
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            self._verify_model_status_connection(connection)
+            row = connection.execute(
+                "SELECT candidate_id,candidate_digest,lineage_digest,evaluation_json,"
+                "evaluation_digest,promoted_bundle_digest,source_global_sequence,"
+                "source_event_digest,row_digest FROM v3_model_candidates WHERE candidate_id=?",
+                (str(candidate_id),),
+            ).fetchone()
+            if row is None or row[3] is None:
+                return None
+            self._verify_model_candidate_row(connection, row)
+            value = json.loads(str(row[3]))
+            if not isinstance(value, dict):
+                raise ProjectionError("model candidate evaluation is malformed")
+            return value
+
+    def candidate_for_promoted_bundle(self, bundle_digest: str) -> StableIdentifier:
+        _require_projection_digest(bundle_digest, "promoted bundle")
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            self._verify_model_status_connection(connection)
+            row = connection.execute(
+                "SELECT candidate_id,candidate_digest,lineage_digest,evaluation_json,"
+                "evaluation_digest,promoted_bundle_digest,source_global_sequence,"
+                "source_event_digest,row_digest FROM v3_model_candidates "
+                "WHERE promoted_bundle_digest=?",
+                (bundle_digest,),
+            ).fetchone()
+            if row is None:
+                raise ProjectionError("active bundle has no projected promotion authority")
+            self._verify_model_candidate_row(connection, row)
+            return StableIdentifier(str(row[0]))
+
+    def tournament_bundle_pin(self, tournament_id: StableIdentifier) -> str | None:
+        require_identifier(tournament_id, expected_namespace="tournament")
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            self._verify_model_status_connection(connection)
+            row = connection.execute(
+                "SELECT tournament_id,bundle_id,source_global_sequence,"
+                "source_event_digest,row_digest FROM v3_model_tournament_pins "
+                "WHERE tournament_id=?",
+                (str(tournament_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            value = {
+                "schema_version": "strathmark-v3-model-tournament-pin-v1",
+                "tournament_id": str(row[0]),
+                "bundle_id": str(row[1]),
+                "source_global_sequence": int(row[2]),
+                "source_event_digest": str(row[3]),
+            }
+            if canonical_digest(value) != str(row[4]):
+                raise ProjectionError("model tournament pin row digest differs")
+            self._verify_projected_source(connection, int(row[2]), str(row[3]))
+            return str(row[1])
+
+    def rebuild_model_status_projection(self) -> str:
+        """Deterministically rebuild model status from the indexed relevant event stream."""
+
+        from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+
+        SQLiteEventStore(self._database_path).verify()
+        with open_v3_connection(self._database_path) as connection:
+            with immediate_transaction(connection):
+                connection.execute("DELETE FROM v3_model_tournament_pins")
+                connection.execute("DELETE FROM v3_model_candidates")
+                connection.execute("DELETE FROM v3_model_status")
+                self._write_model_status(connection, ZERO_DIGEST, None, 0, ZERO_DIGEST)
+                placeholders = ",".join("?" for _ in _MODEL_STATUS_EVENT_VALUES)
+                rows = connection.execute(
+                    "SELECT envelope_json FROM v3_events WHERE event_kind IN ("
+                    + placeholders
+                    + ") ORDER BY global_sequence",
+                    _MODEL_STATUS_EVENT_VALUES,
+                ).fetchall()
+                for row in rows:
+                    event = EventEnvelope.from_dict(json.loads(str(row[0])))
+                    self._apply_model_status_event(connection, event)
+                self._verify_model_status_connection(connection)
+                return self.model_status_digest(connection)
+
+    def capture_projection_checkpoint(self, *, captured_at: str = _PENDING_AT) -> str:
+        """Persist a full projection snapshot for a subsequently signed registry anchor."""
+
+        require_utc_milliseconds(captured_at)
+        with open_v3_connection(self._database_path) as connection:
+            with immediate_transaction(connection):
+                projection_digest = self.projection_digest(connection)
+                head = connection.execute(
+                    "SELECT global_sequence,event_digest FROM v3_events "
+                    "ORDER BY global_sequence DESC LIMIT 1"
+                ).fetchone()
+                authority_sequence = 0 if head is None else int(head[0])
+                authority_digest = ZERO_DIGEST if head is None else str(head[1])
+                tables = self._projection_snapshot_material(connection)
+                snapshot = {
+                    "schema_version": "strathmark-v3-projection-restore-snapshot-v1",
+                    "authority_sequence": authority_sequence,
+                    "authority_digest": authority_digest,
+                    "projection_digest": projection_digest,
+                    "tables": tables,
+                }
+                encoded = canonical_bytes(
+                    snapshot, max_bytes=16_777_216, max_items=2_000_000
+                ).decode("utf-8")
+                snapshot_digest = canonical_digest(
+                    snapshot, max_bytes=16_777_216, max_items=2_000_000
+                )
+                material = (
+                    projection_digest,
+                    authority_sequence,
+                    authority_digest,
+                    encoded,
+                    snapshot_digest,
+                    captured_at,
+                )
+                existing = connection.execute(
+                    "SELECT projection_digest,authority_sequence,authority_digest,"
+                    "snapshot_json,snapshot_digest,captured_at "
+                    "FROM v3_projection_restore_snapshots WHERE projection_digest=?",
+                    (projection_digest,),
+                ).fetchone()
+                if existing is not None and tuple(existing) != material:
+                    raise ProjectionConflict("projection restore snapshot conflicts")
+                if existing is None:
+                    connection.execute(
+                        "INSERT INTO v3_projection_restore_snapshots VALUES (?,?,?,?,?,?)",
+                        material,
+                    )
+                return projection_digest
+
     def rebuild_from_checkpoint_registry(self, checkpoint_registry: object) -> str:
-        """Rebuild only from authority containing the external signed checkpoint."""
+        """Restore a signed projection checkpoint, then replay only its event suffix."""
 
         from strathmark.v3.infrastructure.integrity import CheckpointRegistry
 
         if not isinstance(checkpoint_registry, CheckpointRegistry):
             raise ProjectionError("trusted rebuild requires a CheckpointRegistry")
-        checkpoint_registry.verify_database(self._database_path, require_current=False)
-        rebuilt = self.rebuild_reaction_projection()
+        checkpoint = checkpoint_registry.verify_database(self._database_path, require_current=False)
+        with open_v3_connection(self._database_path) as connection:
+            row = connection.execute(
+                "SELECT authority_sequence,authority_digest,snapshot_json,snapshot_digest "
+                "FROM v3_projection_restore_snapshots WHERE projection_digest=?",
+                (checkpoint.projection_digest,),
+            ).fetchone()
+            if row is None:
+                raise ProjectionError("signed projection checkpoint has no restore snapshot")
+            try:
+                snapshot = json.loads(str(row[2]))
+                encoded = canonical_bytes(
+                    snapshot, max_bytes=16_777_216, max_items=2_000_000
+                ).decode("utf-8")
+            except Exception as exc:
+                raise ProjectionError("projection restore snapshot is not canonical") from exc
+            if encoded != str(row[2]) or canonical_digest(
+                snapshot, max_bytes=16_777_216, max_items=2_000_000
+            ) != str(row[3]):
+                raise ProjectionError("projection restore snapshot digest differs")
+            if not isinstance(snapshot, dict) or (
+                snapshot.get("schema_version") != "strathmark-v3-projection-restore-snapshot-v1"
+            ):
+                raise ProjectionError("projection restore snapshot is malformed")
+            expected_anchor = (checkpoint.authority_sequence, checkpoint.authority_digest)
+            if (
+                int(row[0]),
+                str(row[1]),
+            ) != expected_anchor or (
+                snapshot.get("authority_sequence"),
+                snapshot.get("authority_digest"),
+                snapshot.get("projection_digest"),
+            ) != (*expected_anchor, checkpoint.projection_digest):
+                raise ProjectionError("projection restore snapshot authority binding differs")
+            with immediate_transaction(connection):
+                connection.execute("PRAGMA defer_foreign_keys=ON")
+                self._restore_projection_snapshot(connection, snapshot)
+                if self.projection_digest(connection) != checkpoint.projection_digest:
+                    raise ProjectionError("restored projection differs from signed checkpoint")
+                rows = connection.execute(
+                    "SELECT envelope_json FROM v3_events WHERE global_sequence>? "
+                    "ORDER BY global_sequence",
+                    (checkpoint.authority_sequence,),
+                ).fetchall()
+                events = tuple(EventEnvelope.from_dict(json.loads(str(item[0]))) for item in rows)
+                for _command_id, grouped in groupby(
+                    events, key=lambda item: str(item.command.command_id)
+                ):
+                    self.apply_events(connection, tuple(grouped))
+                self._advance_barrier(connection)
+                rebuilt = self.projection_digest(connection)
         checkpoint_registry.verify_database(self._database_path, require_current=False)
         return rebuilt
 
@@ -839,6 +1059,8 @@ class SQLiteProjectionStore:
                 self._apply_field_superseded(connection, event)
             elif event.kind is EventKind.ROUND_CLOSING_STARTED:
                 self._apply_round_closing_started(connection, event)
+            if event.kind in _MODEL_STATUS_EVENTS:
+                self._apply_model_status_event(connection, event)
         self._advance_barrier(connection)
         if any(
             event.kind
@@ -2130,6 +2352,363 @@ class SQLiteProjectionStore:
             connection, str(event.aggregate_id), before_sequence=event.global_sequence
         )
 
+    def _ensure_model_status_projection(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT singleton FROM v3_model_status WHERE singleton=1"
+        ).fetchone()
+        if row is not None:
+            self._verify_model_status_connection(connection)
+            return
+        self._write_model_status(connection, ZERO_DIGEST, None, 0, ZERO_DIGEST)
+        placeholders = ",".join("?" for _ in _MODEL_STATUS_EVENT_VALUES)
+        rows = connection.execute(
+            "SELECT envelope_json FROM v3_events WHERE event_kind IN ("
+            + placeholders
+            + ") ORDER BY global_sequence",
+            _MODEL_STATUS_EVENT_VALUES,
+        ).fetchall()
+        for event_row in rows:
+            self._apply_model_status_event(
+                connection, EventEnvelope.from_dict(json.loads(str(event_row[0])))
+            )
+
+    @staticmethod
+    def _write_model_status(
+        connection: sqlite3.Connection,
+        active_bundle_digest: str,
+        active_candidate_id: str | None,
+        source_global_sequence: int,
+        source_event_digest: str,
+    ) -> None:
+        value = {
+            "schema_version": "strathmark-v3-model-status-v1",
+            "active_bundle_digest": active_bundle_digest,
+            "active_candidate_id": active_candidate_id,
+            "source_global_sequence": source_global_sequence,
+            "source_event_digest": source_event_digest,
+        }
+        connection.execute(
+            "INSERT INTO v3_model_status(singleton,active_bundle_digest,active_candidate_id,"
+            "source_global_sequence,source_event_digest,checkpoint_digest) VALUES (1,?,?,?,?,?) "
+            "ON CONFLICT(singleton) DO UPDATE SET active_bundle_digest=excluded.active_bundle_digest,"
+            "active_candidate_id=excluded.active_candidate_id,"
+            "source_global_sequence=excluded.source_global_sequence,"
+            "source_event_digest=excluded.source_event_digest,"
+            "checkpoint_digest=excluded.checkpoint_digest",
+            (
+                active_bundle_digest,
+                active_candidate_id,
+                source_global_sequence,
+                source_event_digest,
+                canonical_digest(value),
+            ),
+        )
+
+    def _apply_model_status_event(
+        self, connection: sqlite3.Connection, event: EventEnvelope
+    ) -> None:
+        if event.kind not in _MODEL_STATUS_EVENTS:
+            return
+        if not isinstance(event.command.payload, InlinePayload):
+            raise ProjectionError("model status event requires an inline payload")
+        value = event.command.payload.to_value()
+        status = connection.execute(
+            "SELECT active_bundle_digest,active_candidate_id FROM v3_model_status WHERE singleton=1"
+        ).fetchone()
+        if status is None:
+            raise ProjectionError("model status checkpoint is missing")
+        active_bundle = str(status[0])
+        active_candidate = None if status[1] is None else str(status[1])
+        if event.kind is EventKind.MODEL_CANDIDATE_CREATED:
+            self._store_model_candidate(
+                connection,
+                str(event.aggregate_id),
+                _require_projection_digest(value.get("candidate_digest"), "model candidate"),
+                _require_projection_digest(value.get("lineage_digest"), "model candidate lineage"),
+                None,
+                None,
+                None,
+                event,
+            )
+        elif event.kind is EventKind.MODEL_CANDIDATE_EVALUATED:
+            candidate_id = str(event.aggregate_id)
+            row = connection.execute(
+                "SELECT candidate_digest,lineage_digest,promoted_bundle_digest "
+                "FROM v3_model_candidates WHERE candidate_id=?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise ProjectionError("model evaluation has no projected candidate")
+            evaluation_json = canonical_bytes(value, max_bytes=MAX_INLINE_PAYLOAD_BYTES).decode(
+                "utf-8"
+            )
+            self._store_model_candidate(
+                connection,
+                candidate_id,
+                str(row[0]),
+                str(row[1]),
+                evaluation_json,
+                canonical_digest(value, max_bytes=MAX_INLINE_PAYLOAD_BYTES),
+                None if row[2] is None else str(row[2]),
+                event,
+            )
+        elif event.kind is EventKind.BUNDLE_PROMOTED:
+            candidate_id = str(event.aggregate_id)
+            row = connection.execute(
+                "SELECT candidate_digest,lineage_digest,evaluation_json,evaluation_digest "
+                "FROM v3_model_candidates WHERE candidate_id=?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None or row[2] is None:
+                raise ProjectionError("model promotion has no evaluated candidate projection")
+            parent = _require_projection_digest(
+                value.get("rollback_parent_digest"), "model promotion parent"
+            )
+            if parent != active_bundle:
+                raise ProjectionConflict("model promotion does not descend from active champion")
+            promoted = _require_projection_digest(
+                value.get("bundle_digest"), "model promoted bundle"
+            )
+            self._store_model_candidate(
+                connection,
+                candidate_id,
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                str(row[3]),
+                promoted,
+                event,
+            )
+            active_bundle = promoted
+            active_candidate = candidate_id
+        elif event.kind is EventKind.BUNDLE_ROLLED_BACK:
+            target = _require_projection_digest(value.get("bundle_digest"), "model rollback source")
+            if target != active_bundle:
+                raise ProjectionConflict("model rollback does not target active champion")
+            active_bundle = _require_projection_digest(
+                value.get("rollback_to_bundle_digest"), "model rollback target"
+            )
+            if active_bundle == ZERO_DIGEST:
+                active_candidate = None
+            else:
+                candidate = connection.execute(
+                    "SELECT candidate_id FROM v3_model_candidates WHERE promoted_bundle_digest=?",
+                    (active_bundle,),
+                ).fetchone()
+                if candidate is None:
+                    raise ProjectionError("model rollback target has no promotion projection")
+                active_candidate = str(candidate[0])
+        elif event.kind is EventKind.TOURNAMENT_OPENED:
+            bundle_id = value.get("bundle_id")
+            if not isinstance(bundle_id, str) or not bundle_id.startswith("bundle:"):
+                raise ProjectionError("tournament open has an invalid model bundle pin")
+            pin = {
+                "schema_version": "strathmark-v3-model-tournament-pin-v1",
+                "tournament_id": str(event.aggregate_id),
+                "bundle_id": bundle_id,
+                "source_global_sequence": event.global_sequence,
+                "source_event_digest": event.event_digest,
+            }
+            connection.execute(
+                "INSERT INTO v3_model_tournament_pins VALUES (?,?,?,?,?) "
+                "ON CONFLICT(tournament_id) DO UPDATE SET bundle_id=excluded.bundle_id,"
+                "source_global_sequence=excluded.source_global_sequence,"
+                "source_event_digest=excluded.source_event_digest,row_digest=excluded.row_digest",
+                (
+                    str(event.aggregate_id),
+                    bundle_id,
+                    event.global_sequence,
+                    event.event_digest,
+                    canonical_digest(pin),
+                ),
+            )
+        self._write_model_status(
+            connection,
+            active_bundle,
+            active_candidate,
+            event.global_sequence,
+            event.event_digest,
+        )
+
+    @staticmethod
+    def _store_model_candidate(
+        connection: sqlite3.Connection,
+        candidate_id: str,
+        candidate_digest: str,
+        lineage_digest: str,
+        evaluation_json: str | None,
+        evaluation_digest: str | None,
+        promoted_bundle_digest: str | None,
+        event: EventEnvelope,
+    ) -> None:
+        material = {
+            "schema_version": "strathmark-v3-model-candidate-projection-v1",
+            "candidate_id": candidate_id,
+            "candidate_digest": candidate_digest,
+            "lineage_digest": lineage_digest,
+            "evaluation_json": evaluation_json,
+            "evaluation_digest": evaluation_digest,
+            "promoted_bundle_digest": promoted_bundle_digest,
+            "source_global_sequence": event.global_sequence,
+            "source_event_digest": event.event_digest,
+        }
+        connection.execute(
+            "INSERT INTO v3_model_candidates VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(candidate_id) DO UPDATE SET candidate_digest=excluded.candidate_digest,"
+            "lineage_digest=excluded.lineage_digest,evaluation_json=excluded.evaluation_json,"
+            "evaluation_digest=excluded.evaluation_digest,"
+            "promoted_bundle_digest=excluded.promoted_bundle_digest,"
+            "source_global_sequence=excluded.source_global_sequence,"
+            "source_event_digest=excluded.source_event_digest,row_digest=excluded.row_digest",
+            (
+                candidate_id,
+                candidate_digest,
+                lineage_digest,
+                evaluation_json,
+                evaluation_digest,
+                promoted_bundle_digest,
+                event.global_sequence,
+                event.event_digest,
+                canonical_digest(material, max_bytes=MAX_INLINE_PAYLOAD_BYTES * 2),
+            ),
+        )
+
+    def _verify_model_status_connection(self, connection: sqlite3.Connection) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT singleton,active_bundle_digest,active_candidate_id,source_global_sequence,"
+            "source_event_digest,checkpoint_digest FROM v3_model_status WHERE singleton=1"
+        ).fetchone()
+        if row is None:
+            raise ProjectionError("model status checkpoint is missing")
+        value = {
+            "schema_version": "strathmark-v3-model-status-v1",
+            "active_bundle_digest": str(row[1]),
+            "active_candidate_id": None if row[2] is None else str(row[2]),
+            "source_global_sequence": int(row[3]),
+            "source_event_digest": str(row[4]),
+        }
+        if canonical_digest(value) != str(row[5]):
+            raise ProjectionError("model status checkpoint digest differs")
+        status_row = row
+        candidates: list[sqlite3.Row] = []
+        for kind in _MODEL_STATUS_EVENT_VALUES:
+            candidate_row = connection.execute(
+                "SELECT global_sequence,event_digest FROM v3_events "
+                "WHERE event_kind=? ORDER BY global_sequence DESC LIMIT 1",
+                (kind,),
+            ).fetchone()
+            if candidate_row is not None:
+                candidates.append(candidate_row)
+        latest = max(candidates, key=lambda item: int(item[0]), default=None)
+        expected = (0, ZERO_DIGEST) if latest is None else (int(latest[0]), str(latest[1]))
+        if (int(status_row[3]), str(status_row[4])) != expected:
+            raise ProjectionError("model status checkpoint is stale")
+        if status_row[2] is not None:
+            candidate = connection.execute(
+                "SELECT promoted_bundle_digest FROM v3_model_candidates WHERE candidate_id=?",
+                (str(status_row[2]),),
+            ).fetchone()
+            if candidate is None or str(candidate[0]) != str(status_row[1]):
+                raise ProjectionError("model status active candidate binding differs")
+        return status_row
+
+    @staticmethod
+    def _verify_projected_source(
+        connection: sqlite3.Connection, sequence: int, event_digest: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT event_digest FROM v3_events WHERE global_sequence=?", (sequence,)
+        ).fetchone()
+        if row is None or str(row[0]) != event_digest:
+            raise ProjectionError("model projection source authority differs")
+
+    def _verify_model_candidate_row(self, connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+        material = {
+            "schema_version": "strathmark-v3-model-candidate-projection-v1",
+            "candidate_id": str(row[0]),
+            "candidate_digest": str(row[1]),
+            "lineage_digest": str(row[2]),
+            "evaluation_json": None if row[3] is None else str(row[3]),
+            "evaluation_digest": None if row[4] is None else str(row[4]),
+            "promoted_bundle_digest": None if row[5] is None else str(row[5]),
+            "source_global_sequence": int(row[6]),
+            "source_event_digest": str(row[7]),
+        }
+        if canonical_digest(material, max_bytes=MAX_INLINE_PAYLOAD_BYTES * 2) != str(row[8]):
+            raise ProjectionError("model candidate row digest differs")
+        if row[3] is not None:
+            try:
+                evaluation = json.loads(str(row[3]))
+            except Exception as exc:
+                raise ProjectionError("model candidate evaluation is malformed") from exc
+            if canonical_bytes(evaluation, max_bytes=MAX_INLINE_PAYLOAD_BYTES).decode(
+                "utf-8"
+            ) != str(row[3]) or canonical_digest(
+                evaluation, max_bytes=MAX_INLINE_PAYLOAD_BYTES
+            ) != str(row[4]):
+                raise ProjectionError("model candidate evaluation digest differs")
+        self._verify_projected_source(connection, int(row[6]), str(row[7]))
+
+    @staticmethod
+    def model_status_digest(connection: sqlite3.Connection) -> str:
+        material: dict[str, list[list[object]]] = {}
+        for table in (
+            "v3_model_status",
+            "v3_model_candidates",
+            "v3_model_tournament_pins",
+        ):
+            rows = connection.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+            material[table] = [
+                list(row) for row in sorted(rows, key=lambda item: tuple(str(x) for x in item))
+            ]
+        return canonical_digest(
+            {"schema_version": "strathmark-v3-model-status-projection-v1", "tables": material},
+            max_bytes=16_777_216,
+            max_items=2_000_000,
+        )
+
+    @staticmethod
+    def _projection_snapshot_material(
+        connection: sqlite3.Connection,
+    ) -> dict[str, dict[str, object]]:
+        material: dict[str, dict[str, object]] = {}
+        for table in _PROJECTION_TABLES:
+            columns = [str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")]
+            rows = connection.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
+            material[table] = {
+                "columns": columns,
+                "rows": [
+                    list(row) for row in sorted(rows, key=lambda item: tuple(str(x) for x in item))
+                ],
+            }
+        return material
+
+    @staticmethod
+    def _restore_projection_snapshot(
+        connection: sqlite3.Connection, snapshot: Mapping[str, Any]
+    ) -> None:
+        tables = snapshot.get("tables")
+        if not isinstance(tables, dict) or set(tables) != set(_PROJECTION_TABLES):
+            raise ProjectionError("projection restore snapshot table set differs")
+        for table in reversed(_PROJECTION_TABLES):
+            connection.execute(f"DELETE FROM {table}")  # noqa: S608
+        for table in _PROJECTION_TABLES:
+            value = tables[table]
+            if not isinstance(value, dict):
+                raise ProjectionError("projection restore snapshot table is malformed")
+            columns = [str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")]
+            if value.get("columns") != columns or not isinstance(value.get("rows"), list):
+                raise ProjectionError("projection restore snapshot columns differ")
+            placeholders = ",".join("?" for _ in columns)
+            column_sql = ",".join(columns)
+            for row in value["rows"]:
+                if not isinstance(row, list) or len(row) != len(columns):
+                    raise ProjectionError("projection restore snapshot row is malformed")
+                connection.execute(
+                    f"INSERT INTO {table}({column_sql}) VALUES ({placeholders})",  # noqa: S608
+                    tuple(row),
+                )
+
     @staticmethod
     def _require_all_fields_settled(
         connection: sqlite3.Connection, round_id: str, *, before_sequence: int
@@ -2231,27 +2810,27 @@ class SQLiteProjectionStore:
 
     @staticmethod
     def projection_digest(connection: sqlite3.Connection) -> str:
-        tables = (
-            "v3_ingress_snapshots",
-            "v3_result_revisions",
-            "v3_derivation_reactions",
-            "v3_derivation_barrier",
-            "v3_evidence_epochs",
-            "v3_evidence_epoch_members",
-            "v3_derivation_sequence_completions",
-            "v3_round_closures",
-            "v3_round_issue_seals",
-            "v3_prepared_field_dependencies",
-        )
         material: dict[str, list[list[object]]] = {}
-        for table in tables:
+        for table in _PROJECTION_TABLES:
             rows = connection.execute(f"SELECT * FROM {table}").fetchall()  # noqa: S608
             material[table] = [
                 list(row) for row in sorted(rows, key=lambda row: tuple(str(x) for x in row))
             ]
         return canonical_digest(
-            {"schema_version": "strathmark-v3-u5-projections-v1", "tables": material}
+            {"schema_version": "strathmark-v3-u5-projections-v1", "tables": material},
+            max_bytes=16_777_216,
+            max_items=2_000_000,
         )
+
+
+def _require_projection_digest(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ProjectionError(f"{label} digest is invalid")
+    return value
 
 
 def _default_field_blob_root(database_path: Path) -> Path:
@@ -2417,6 +2996,9 @@ class SQLiteFieldProjectionStore:
         with open_v3_connection(self._database_path) as connection:
             migrate_connection(connection)
         self.verify()
+        with open_v3_connection(self._database_path) as connection:
+            with immediate_transaction(connection):
+                _refresh_projection_deep_checkpoints(connection)
         from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
 
         self._events = SQLiteEventStore(self._database_path)
@@ -3318,8 +3900,52 @@ class SQLiteFieldProjectionStore:
     def verified_receipt(self, receipt_id: str) -> Any:
         """Load a receipt only after its event-backed projection has verified."""
 
-        self.verify()
-        return self.receipt(receipt_id)
+        require_identifier(receipt_id, expected_namespace="receipt")
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM v3_field_receipts WHERE receipt_id=?", (receipt_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(receipt_id)
+            return self._verify_exact_receipt_row(connection, row)
+
+    def verify_bounded_checkpoint(self) -> str:
+        """Verify the newest transactional approval checkpoint without a rebuild."""
+
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT tournament_id FROM v3_approval_projection_meta "
+                "ORDER BY source_global_sequence DESC,tournament_id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return ZERO_DIGEST
+            return _verify_approval_checkpoint_connection(connection, str(row[0]))
+
+    def integrity_checkpoint_status(self) -> dict[str, object]:
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT subject_id,source_global_sequence,source_event_digest,"
+                "projection_digest,last_deep_verified_at,checkpoint_digest "
+                "FROM v3_projection_integrity_checkpoints "
+                "WHERE projection_kind='approval' "
+                "ORDER BY source_global_sequence DESC,subject_id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return {
+                    "authority_sequence": 0,
+                    "authority_digest": ZERO_DIGEST,
+                    "projection_digest": ZERO_DIGEST,
+                    "last_deep_verified_at": "1970-01-01T00:00:00.000Z",
+                    "checkpoint_digest": ZERO_DIGEST,
+                }
+            verified = _verify_approval_checkpoint_connection(connection, str(row[0]))
+            return {
+                "authority_sequence": int(row[1]),
+                "authority_digest": str(row[2]),
+                "projection_digest": verified,
+                "last_deep_verified_at": str(row[4]),
+                "checkpoint_digest": str(row[5]),
+            }
 
     def approval_facts(self, receipt_id: str) -> Any:
         """Derive KTD10 facts from verified receipt/current projection authority."""
@@ -3406,7 +4032,7 @@ class SQLiteFieldProjectionStore:
         tournament_id = str(require_identifier(tournament_id, expected_namespace="tournament"))
         with open_v3_connection(self._database_path) as connection:
             with immediate_transaction(connection):
-                _verify_live_approval_projection_connection(connection)
+                _verify_approval_checkpoint_connection(connection, tournament_id)
                 meta = connection.execute(
                     "SELECT snapshot_id, row_count, lifecycle_state, "
                     "preparation_completed, preparation_total, preparing_count, "
@@ -3421,19 +4047,36 @@ class SQLiteFieldProjectionStore:
                 if snapshot_id is not None and snapshot_id != current_snapshot:
                     raise ApprovalConflict("approval snapshot is stale", ())
                 rows = connection.execute(
-                    "SELECT row_json, row_digest FROM v3_approval_queue_rows "
+                    "SELECT field_id,row_json,row_digest FROM v3_approval_queue_rows "
                     "WHERE tournament_id=? "
                     "ORDER BY call_order, deadline_at, field_id LIMIT ? OFFSET ?",
                     (tournament_id, limit, offset),
                 ).fetchall()
+                snapshot = connection.execute(
+                    "SELECT snapshot_json FROM v3_approval_snapshot_history WHERE snapshot_id=?",
+                    (current_snapshot,),
+                ).fetchone()
+                if snapshot is None:
+                    raise ProjectionError("approval snapshot checkpoint is missing")
+                snapshot_value = json.loads(str(snapshot[0]))
+                snapshot_rows = {
+                    str(item[0]): str(item[5])
+                    for item in snapshot_value["fields"]
+                    if isinstance(item, list) and len(item) == 7
+                }
+                for stored in rows:
+                    if snapshot_rows.get(str(stored[0])) != str(stored[2]):
+                        raise ProjectionError(
+                            "approval row differs from canonical authority checkpoint"
+                        )
         decoded = []
         for stored in rows:
             try:
-                value = json.loads(str(stored[0]))
+                value = json.loads(str(stored[1]))
                 row = ApprovalRow.from_dict(value, _authority=_VERIFIED_RECEIPT_AUTHORITY)
             except Exception as exc:
                 raise ProjectionError("approval scan row is corrupt") from exc
-            if row.row_digest != str(stored[1]):
+            if row.row_digest != str(stored[2]):
                 raise ProjectionError("approval scan row digest differs")
             decoded.append(row)
         counts = json.loads(str(meta[9]))
@@ -3770,6 +4413,7 @@ class SQLiteFieldProjectionStore:
         from strathmark.v3.contracts.receipts import FieldReceipt
         from strathmark.v3.infrastructure.sqlite.event_store import (
             EventStoreConflict,
+            EventStoreIntegrityError,
         )
 
         if (
@@ -4298,6 +4942,8 @@ class SQLiteFieldProjectionStore:
                 stored = event_store.execute(request, projection_hook=project)
         except (BlobStoreError, OSError) as exc:
             raise AssemblyConflict("field receipt required blob integrity failed") from exc
+        except EventStoreIntegrityError as exc:
+            raise AssemblyConflict("field receipt event authority integrity failed") from exc
         except EventStoreConflict as exc:
             concurrent_retry = self.lookup_exact(
                 caller_namespace=receipt.caller_namespace,
@@ -6020,6 +6666,13 @@ def _rebuild_approval_projection_connection(
         ):
             raise ProjectionError("approval snapshot history differs from authority")
         snapshots[tournament_id] = snapshot_id
+    for projected_tournament_id in snapshots:
+        _write_approval_checkpoint(
+            connection,
+            projected_tournament_id,
+            checkpointed_at=rebuilt_at,
+            deep_verified=False,
+        )
     return snapshots
 
 
@@ -6616,6 +7269,146 @@ def _approval_projection_material(connection: sqlite3.Connection) -> str | None:
     ).decode()
 
 
+def _projection_checkpoint_digest(
+    subject_id: str,
+    source_global_sequence: int,
+    source_event_digest: str,
+    projection_digest: str,
+    last_deep_verified_at: str,
+) -> str:
+    return canonical_digest(
+        {
+            "schema_version": "strathmark-v3-projection-integrity-checkpoint-v1",
+            "projection_kind": "approval",
+            "subject_id": subject_id,
+            "source_global_sequence": source_global_sequence,
+            "source_event_digest": source_event_digest,
+            "projection_digest": projection_digest,
+            "last_deep_verified_at": last_deep_verified_at,
+        }
+    )
+
+
+def _write_approval_checkpoint(
+    connection: sqlite3.Connection,
+    tournament_id: str,
+    *,
+    checkpointed_at: str,
+    deep_verified: bool,
+) -> None:
+    meta = connection.execute(
+        "SELECT projection_digest,source_global_sequence "
+        "FROM v3_approval_projection_meta WHERE tournament_id=?",
+        (tournament_id,),
+    ).fetchone()
+    if meta is None:
+        return
+    sequence = int(meta[1])
+    source = (
+        None
+        if sequence == 0
+        else connection.execute(
+            "SELECT event_digest FROM v3_events WHERE global_sequence=?", (sequence,)
+        ).fetchone()
+    )
+    if sequence > 0 and source is None:
+        raise ProjectionError("approval projection source authority is missing")
+    event_digest = ZERO_DIGEST if source is None else str(source[0])
+    existing = connection.execute(
+        "SELECT last_deep_verified_at FROM v3_projection_integrity_checkpoints "
+        "WHERE projection_kind='approval' AND subject_id=?",
+        (tournament_id,),
+    ).fetchone()
+    deep_at = checkpointed_at if deep_verified or existing is None else str(existing[0])
+    require_utc_milliseconds(deep_at)
+    projection_digest = str(meta[0])
+    digest = _projection_checkpoint_digest(
+        tournament_id, sequence, event_digest, projection_digest, deep_at
+    )
+    connection.execute(
+        "INSERT INTO v3_projection_integrity_checkpoints VALUES "
+        "('approval',?,?,?,?,?,?) ON CONFLICT(projection_kind,subject_id) DO UPDATE SET "
+        "source_global_sequence=excluded.source_global_sequence,"
+        "source_event_digest=excluded.source_event_digest,"
+        "projection_digest=excluded.projection_digest,"
+        "last_deep_verified_at=excluded.last_deep_verified_at,"
+        "checkpoint_digest=excluded.checkpoint_digest",
+        (tournament_id, sequence, event_digest, projection_digest, deep_at, digest),
+    )
+
+
+def _refresh_projection_deep_checkpoints(connection: sqlite3.Connection) -> None:
+    verified_at = (
+        datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )
+    for row in connection.execute(
+        "SELECT tournament_id FROM v3_approval_projection_meta ORDER BY tournament_id"
+    ):
+        _write_approval_checkpoint(
+            connection,
+            str(row[0]),
+            checkpointed_at=verified_at,
+            deep_verified=True,
+        )
+
+
+def _verify_approval_checkpoint_connection(
+    connection: sqlite3.Connection, tournament_id: str
+) -> str:
+    row = connection.execute(
+        "SELECT source_global_sequence,source_event_digest,projection_digest,"
+        "last_deep_verified_at,checkpoint_digest "
+        "FROM v3_projection_integrity_checkpoints "
+        "WHERE projection_kind='approval' AND subject_id=?",
+        (tournament_id,),
+    ).fetchone()
+    meta = connection.execute(
+        "SELECT snapshot_id,projection_digest FROM v3_approval_projection_meta "
+        "WHERE tournament_id=?",
+        (tournament_id,),
+    ).fetchone()
+    if row is None or meta is None:
+        raise ProjectionError("approval projection checkpoint is missing")
+    sequence = int(row[0])
+    event_digest = str(row[1])
+    projection_digest = str(row[2])
+    deep_at = require_utc_milliseconds(str(row[3]))
+    if str(row[4]) != _projection_checkpoint_digest(
+        tournament_id, sequence, event_digest, projection_digest, deep_at
+    ):
+        raise ProjectionError("approval projection checkpoint digest differs")
+    source = (
+        None
+        if sequence == 0
+        else connection.execute(
+            "SELECT event_digest FROM v3_events WHERE global_sequence=?", (sequence,)
+        ).fetchone()
+    )
+    observed = (0, ZERO_DIGEST) if source is None else (sequence, str(source[0]))
+    if observed != (sequence, event_digest):
+        raise ProjectionError("approval projection checkpoint is stale at database head")
+    history = connection.execute(
+        "SELECT snapshot_json,snapshot_digest FROM v3_approval_snapshot_history "
+        "WHERE snapshot_id=? AND tournament_id=?",
+        (str(meta[0]), tournament_id),
+    ).fetchone()
+    if history is None:
+        raise ProjectionError("approval snapshot checkpoint is missing")
+    try:
+        value = json.loads(str(history[0]))
+    except Exception as exc:
+        raise ProjectionError("approval snapshot checkpoint is malformed") from exc
+    if (
+        canonical_bytes(value).decode("utf-8") != str(history[0])
+        or canonical_digest(value) != str(history[1])
+        or str(history[1]) != projection_digest
+        or str(meta[1]) != projection_digest
+        or str(meta[0]) != f"approval_snapshot:{projection_digest}"
+    ):
+        raise ProjectionError("approval snapshot checkpoint digest differs")
+    return projection_digest
+
+
 def _verify_live_approval_projection_connection(
     connection: sqlite3.Connection,
 ) -> None:
@@ -6776,6 +7569,7 @@ class SQLiteRollingLifecycleResolver:
         tournament_ids: set[str] = set()
         affected_competitors: set[str] = set()
         round_ids: set[str] = set()
+        frozen_epoch_triggered = False
         close_events = tuple(
             event
             for event in events
@@ -6809,7 +7603,15 @@ class SQLiteRollingLifecycleResolver:
                 affected_competitors.add(str(submission["competitor_id"]))
                 tournament_ids.add(str(submission["tournament_id"]))
             elif event.kind is EventKind.ROUND_EPOCH_FROZEN:
-                round_ids.add(str(event.aggregate_id))
+                epoch = value.get("epoch")
+                if not isinstance(epoch, dict):
+                    raise ProjectionError("rolling epoch payload is malformed")
+                try:
+                    round_id = require_identifier(epoch.get("round_id"), expected_namespace="round")
+                except ContractError as exc:
+                    raise ProjectionError("rolling epoch round identity is invalid") from exc
+                round_ids.add(str(round_id))
+                frozen_epoch_triggered = True
             elif event.kind is EventKind.ROUND_CLOSED:
                 round_ids.add(str(event.aggregate_id))
             elif event.kind is EventKind.TOURNAMENT_CLOSED:
@@ -6905,14 +7707,16 @@ class SQLiteRollingLifecycleResolver:
                     (tournament_id, source_sequence),
                 ).fetchone()
                 epoch = connection.execute(
-                    "SELECT epoch_id,historical_cutoff_key FROM v3_evidence_epochs "
+                    "SELECT epoch_id,historical_cutoff_key,maximum_tournament_sequence "
+                    "FROM v3_evidence_epochs "
                     "WHERE round_id=? AND frozen_global_sequence<=? "
                     "ORDER BY epoch_revision DESC LIMIT 1",
                     (round_id, source_sequence),
                 ).fetchone()
                 if epoch is None:
                     epoch = connection.execute(
-                        "SELECT epoch.epoch_id,epoch.historical_cutoff_key "
+                        "SELECT epoch.epoch_id,epoch.historical_cutoff_key,"
+                        "epoch.maximum_tournament_sequence "
                         "FROM v3_evidence_epochs epoch JOIN v3_ingress_snapshots ingress "
                         "ON ingress.entity_kind='round' AND ingress.entity_id=epoch.round_id "
                         "WHERE ingress.tournament_id=? AND epoch.frozen_global_sequence<=? "
@@ -6973,7 +7777,9 @@ class SQLiteRollingLifecycleResolver:
                             "historical_cutoff_key"
                         ],
                         tournament_epoch_id=StableIdentifier(str(epoch[0])),
-                        tournament_event_sequence=source_sequence,
+                        tournament_event_sequence=(
+                            int(epoch[2]) if frozen_epoch_triggered else source_sequence
+                        ),
                     )
                     if competitor_id in roster:
                         preparation_class = (

@@ -535,8 +535,10 @@ class LifecycleService:
     ) -> StoredCommandResult:
         """Atomically record a complete issued roster and settle its field."""
 
-        if not isinstance(submissions, tuple) or not submissions or any(
-            not isinstance(item, LiveResultSubmission) for item in submissions
+        if (
+            not isinstance(submissions, tuple)
+            or not submissions
+            or any(not isinstance(item, LiveResultSubmission) for item in submissions)
         ):
             raise ContractError("atomic settlement requires immutable live result submissions")
         issued = self._issued_field(field_id)
@@ -550,7 +552,9 @@ class LifecycleService:
         if len(by_competitor) != len(submissions) or set(by_competitor) != {
             str(item) for item in issued.competitor_ids
         }:
-            raise ContractError("atomic settlement requires the complete issued roster exactly once")
+            raise ContractError(
+                "atomic settlement requires the complete issued roster exactly once"
+            )
         result_payloads: list[dict[str, Any]] = []
         result_intents: list[EventIntent] = []
         results: list[dict[str, object]] = []
@@ -584,10 +588,8 @@ class LifecycleService:
             already_settled = previous is not None and self._latest_result_is_settled(
                 str(result_key)
             )
-            exact_retry = (
-                already_settled
-                and previous
-                == submission.to_observation(previous.observation_sequence)
+            exact_retry = already_settled and previous == submission.to_observation(
+                previous.observation_sequence
             )
             if not exact_retry:
                 validate_result_revision(previous, observation)

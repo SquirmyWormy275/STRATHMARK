@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from strathmark.v3.api.app import create_v3_app  # noqa: E402
+from strathmark.v3.api.app import TransportError, create_v3_app  # noqa: E402
 from strathmark.v3.api.auth import (  # noqa: E402
     InMemoryCredentialSecretStore,
     ServiceCredentialRegistry,
@@ -33,6 +33,10 @@ from strathmark.v3.application.coordinator import (  # noqa: E402
     DurableRollingPreparationCoordinator,
     PreparationCandidate,
     PreparationClass,
+)
+from strathmark.v3.application.gateway import (  # noqa: E402
+    V3ApplicationGateway,
+    VerifiedV3CutoverState,
 )
 from strathmark.v3.application.issuance import IssuanceService  # noqa: E402
 from strathmark.v3.application.lifecycle import LifecycleService  # noqa: E402
@@ -128,6 +132,7 @@ def _runtime(
     *,
     fail_reactions_once: bool = False,
     schedule_cross_epoch_decoy: bool = False,
+    verified_cutover: VerifiedV3CutoverState | None = None,
 ):
     database = tmp_path / "runtime.sqlite3"
     store, field, build, _lifecycle = _bootstrap(database)
@@ -346,17 +351,13 @@ def _runtime(
     source = CoordinatorRollingFieldInputSource(
         coordinator,
         authority_verifier=store,
-        capability_resolver=SQLiteCapabilityStateResolver(
-            database, trust_store=store._trust_store
-        ),
+        capability_resolver=SQLiteCapabilityStateResolver(database, trust_store=store._trust_store),
         weight_receipt=weight_receipt,
         operational_weight_authority=pipeline.operational_weight_authority,
         dependence_artifact=pipeline.dependence_artifact,
         disagreement_policy=disagreement_policy,
         formula_manifest=formula_manifest,
-        zero_history_policy=ZeroHistoryPolicy(
-            "0.05", "0.95", 10_000, "zero-history:v1"
-        ),
+        zero_history_policy=ZeroHistoryPolicy("0.05", "0.95", 10_000, "zero-history:v1"),
     )
     rolling_builder = RollingFieldPipelineBuilder(
         source,
@@ -382,6 +383,12 @@ def _runtime(
         settlement_reactions=reactions,
         clock=lambda: "2026-08-25T18:00:00.000Z",
     )
+    if verified_cutover is not None:
+        gateway = V3ApplicationGateway(
+            gateway._services,
+            clock=lambda: "2026-08-25T18:00:00.000Z",
+            verified_cutover=lambda: verified_cutover,
+        )
     registry = ServiceCredentialRegistry(
         SQLiteEventStore(database), InMemoryCredentialSecretStore()
     )
@@ -419,9 +426,7 @@ def _assemble_approve_and_issue(client, credential, store, field, *, key: str):
     )
     assert assembled.status_code == 200, assembled.text
     receipt_id = assembled.json()["receipt_id"]
-    page = store.approval_page(
-        tournament_id=str(field.tournament_id), offset=0, limit=10
-    )
+    page = store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=10)
     row = next(item for item in page.rows if item.receipt_id == receipt_id)
     if row.decision_state.value == "undecided":
         store.record_approval_decision(
@@ -493,33 +498,34 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     tmp_path: Path,
 ) -> None:
     client, credential, store, field, reactions, _repository = _runtime(tmp_path)
-    monitoring_payload = {"schema_version": "strathmark-v3-monitoring-v1"}
+    live_control_payload = {
+        "reason_code": "runtime_contract_proof",
+        "schema_version": "strathmark-v3-suspend-live-v1",
+    }
     command_body = {
         "schema_version": "strathmark-v3-command-execution-request-v1",
-        "command_kind": "record_monitoring",
-        "target_aggregate": "monitoring:runtime-proof",
-        "expected_versions": [
-            {"aggregate_id": "monitoring:runtime-proof", "version": 0}
-        ],
-        "payload_schema_version": monitoring_payload["schema_version"],
-        "canonical_payload_json": '{"schema_version":"strathmark-v3-monitoring-v1"}',
-        "payload_digest": canonical_digest(monitoring_payload),
+        "command_kind": "suspend_live",
+        "target_aggregate": "weights:runtime-proof",
+        "expected_versions": [{"aggregate_id": "weights:runtime-proof", "version": 0}],
+        "payload_schema_version": live_control_payload["schema_version"],
+        "canonical_payload_json": (
+            '{"reason_code":"runtime_contract_proof",'
+            '"schema_version":"strathmark-v3-suspend-live-v1"}'
+        ),
+        "payload_digest": canonical_digest(live_control_payload),
         "deadline_ms": 5_000,
     }
     command = client.post(
         "/v3/commands/execute",
-        headers=_headers(credential, "monitor-runtime"),
+        headers=_headers(credential, "suspend-runtime"),
         json=command_body,
     )
-    assert command.status_code == 200, command.text
-    assert command.json()["disposition"] == "committed"
-    command_retry = client.post(
-        "/v3/commands/execute",
-        headers=_headers(credential, "monitor-runtime"),
-        json=command_body,
+    assert command.status_code == 422, command.text
+    assert command.json()["code"] == "request_validation_failed"
+    assert all(
+        event.command.kind.value != "suspend_live"
+        for event in SQLiteEventStore(reactions.database_path).events()
     )
-    assert command_retry.status_code == 200, command_retry.text
-    assert command_retry.json()["disposition"] == "recovered"
 
     first_competitor = str(field.ordered_assignments[0].competitor_id)
     prepared = client.post(
@@ -556,9 +562,7 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     receipt_id = assembled.json()["receipt_id"]
     assert assembled.json()["disposition"] == "prepared"
 
-    page = store.approval_page(
-        tournament_id=str(field.tournament_id), offset=0, limit=10
-    )
+    page = store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=10)
     row = page.rows[0]
     if row.decision_state.value == "undecided":
         store.record_approval_decision(
@@ -585,9 +589,9 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
                 submitted_at="2026-08-25T18:00:01.000Z",
             )
         )
-    assert store.approval_page(
-        tournament_id=str(field.tournament_id), offset=0, limit=10
-    ).rows[0].decision_state.value in {"accepted", "override-submitted"}
+    assert store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=10).rows[
+        0
+    ].decision_state.value in {"accepted", "override-submitted"}
 
     issued = client.post(
         "/v3/issues/acknowledge",
@@ -612,22 +616,15 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
         headers=_headers(credential, "lookup-final"),
         json={
             "schema_version": "strathmark-v3-receipt-lookup-request-v1",
-            "request_identity": assembled.json()["receipt_id"].replace(
-                "receipt:", "command:"
-            ),
+            "request_identity": assembled.json()["receipt_id"].replace("receipt:", "command:"),
             "receipt_id": receipt_id,
             "deadline_ms": 5_000,
         },
     )
     assert lookup.status_code == 200, lookup.text
-    assert (
-        lookup.json()["canonical_receipt_json"]
-        == assembled.json()["canonical_receipt_json"]
-    )
+    assert lookup.json()["canonical_receipt_json"] == assembled.json()["canonical_receipt_json"]
 
-    marks = {
-        str(item.competitor_id): item.mark for item in store.receipt(receipt_id).marks
-    }
+    marks = {str(item.competitor_id): item.mark for item in store.receipt(receipt_id).marks}
     results = [
         {
             "competitor_id": str(item.competitor_id),
@@ -676,6 +673,176 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     )
 
 
+@pytest.mark.parametrize("command_kind", ("promote_bundle", "rollback_bundle", "record_monitoring"))
+def test_gateway_defense_in_depth_rejects_factory_control_commands(
+    command_kind: str,
+) -> None:
+    gateway = object.__new__(V3ApplicationGateway)
+
+    with pytest.raises(TransportError) as raised:
+        gateway.execute_command(
+            {"command_kind": command_kind},
+            SimpleNamespace(),
+        )
+
+    assert getattr(raised.value, "status_code", None) == 409
+    assert getattr(raised.value, "code", None) == "command_requires_specialized_service"
+
+
+def test_status_separates_candidate_health_from_production_authority(tmp_path) -> None:
+    client, credential, *_rest = _runtime(tmp_path)
+
+    status = client.get("/v3/status", headers=_headers(credential, "status")).json()
+
+    assert status["service"] == "ready"
+    assert status["v3_readiness"] == "candidate"
+    assert status["production_authority"] == "v2"
+    assert status["engine_authority"] == "v2"
+    assert status["cutover_receipt_digest"] is None
+    assert status["cutover_verified_at_utc"] is None
+    assert status["deep_verification_state"] == "verified"
+    assert len(status["event_checkpoint_digest"]) == 64
+    assert len(status["field_checkpoint_digest"]) == 64
+    assert len(status["job_checkpoint_digest"]) == 64
+
+
+def test_status_uses_bounded_checkpoints_after_explicit_startup_deep_verify(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, credential, store, _field, _reactions, repository = _runtime(tmp_path)
+
+    def forbidden_deep_verify(*_args, **_kwargs):
+        raise AssertionError("status polling must not perform a lifetime deep verification")
+
+    monkeypatch.setattr(SQLiteEventStore, "verify", forbidden_deep_verify)
+    monkeypatch.setattr(type(store), "verify", forbidden_deep_verify)
+    monkeypatch.setattr(type(repository), "verify", forbidden_deep_verify)
+
+    response = client.get("/v3/status", headers=_headers(credential, "bounded-status"))
+
+    assert response.status_code == 200, response.text
+    status = response.json()
+    assert status["deep_verification_state"] == "verified"
+    for field_name in (
+        "event_last_deep_verified_at_utc",
+        "field_last_deep_verified_at_utc",
+        "job_last_deep_verified_at_utc",
+    ):
+        assert status[field_name].endswith("Z")
+
+
+def test_status_does_not_overclaim_missing_field_deep_verification(tmp_path) -> None:
+    store, _field, _build, _lifecycle = _bootstrap(tmp_path / "empty-status.sqlite3")
+    checkpoint = {
+        "authority_sequence": 0,
+        "authority_digest": "0" * 64,
+        "checkpoint_digest": "a" * 64,
+        "last_deep_verified_at": "2026-08-25T18:00:00.000Z",
+    }
+    missing_field_checkpoint = {
+        "authority_sequence": 0,
+        "authority_digest": "0" * 64,
+        "projection_digest": "0" * 64,
+        "checkpoint_digest": "0" * 64,
+        "last_deep_verified_at": "1970-01-01T00:00:00.000Z",
+    }
+    gateway = object.__new__(V3ApplicationGateway)
+    gateway._services = SimpleNamespace(
+        events=SimpleNamespace(
+            database_path=store.database_path,
+            integrity_checkpoint_status=lambda: checkpoint,
+        ),
+        fields=SimpleNamespace(integrity_checkpoint_status=lambda: missing_field_checkpoint),
+        jobs=SimpleNamespace(integrity_checkpoint_status=lambda: checkpoint),
+    )
+    gateway._verified_cutover = lambda: None
+
+    status = gateway.status(SimpleNamespace())
+
+    assert status.deep_verification_state == "unavailable"
+    assert status.field_last_deep_verified_at_utc == "1970-01-01T00:00:00.000Z"
+    assert status.field_checkpoint_digest == "0" * 64
+
+
+def test_receipt_lookup_is_namespace_bound_and_uses_composite_index(tmp_path) -> None:
+    client, credential, store, field, *_rest = _runtime(tmp_path)
+    assembled = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "cross-namespace-assemble"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert assembled.status_code == 200, assembled.text
+    receipt_id = assembled.json()["receipt_id"]
+    with open_v3_connection(store.database_path) as connection:
+        connection.execute(
+            "UPDATE v3_field_receipts SET caller_namespace=?,request_identity=? WHERE receipt_id=?",
+            ("other", "command:cross-namespace", receipt_id),
+        )
+        connection.commit()
+    headers = _headers(credential, "cross-namespace-lookup")
+    by_request = client.post(
+        "/v3/receipts/lookup",
+        headers=headers,
+        json={
+            "schema_version": "strathmark-v3-receipt-lookup-request-v1",
+            "request_identity": "command:cross-namespace",
+            "receipt_id": None,
+            "deadline_ms": 250,
+        },
+    )
+    by_receipt = client.post(
+        "/v3/receipts/lookup",
+        headers={**headers, "Idempotency-Key": "cross-namespace-id"},
+        json={
+            "schema_version": "strathmark-v3-receipt-lookup-request-v1",
+            "request_identity": "command:unused",
+            "receipt_id": receipt_id,
+            "deadline_ms": 250,
+        },
+    )
+
+    assert by_request.status_code == by_receipt.status_code == 200
+    assert by_request.json()["found"] is False
+    assert by_receipt.json()["found"] is False
+    with open_v3_connection(store.database_path, read_only=True) as connection:
+        detail = " ".join(
+            str(row[3])
+            for row in connection.execute(
+                "EXPLAIN QUERY PLAN SELECT receipt_id FROM v3_field_receipts "
+                "WHERE caller_namespace=? AND request_identity=?",
+                ("api", "command:cross-namespace"),
+            )
+        )
+    assert "USING INDEX" in detail
+    assert "caller_namespace=? AND request_identity=?" in detail
+
+
+def test_status_accepts_only_explicit_verified_cutover_authority(tmp_path) -> None:
+    cutover = VerifiedV3CutoverState(
+        receipt_digest="a" * 64,
+        verified_at_utc="2026-08-25T17:59:00.000Z",
+    )
+    client, credential, *_rest = _runtime(tmp_path, verified_cutover=cutover)
+
+    status = client.get("/v3/status", headers=_headers(credential, "status")).json()
+
+    assert status["service"] == "ready"
+    assert status["v3_readiness"] == "production"
+    assert status["production_authority"] == "v3"
+    assert status["engine_authority"] == "v3"
+    assert status["cutover_receipt_digest"] == "a" * 64
+    assert status["cutover_verified_at_utc"] == "2026-08-25T17:59:00.000Z"
+    assert status["deep_verification_state"] == "verified"
+
+
 def test_prepare_card_rejects_newer_same_context_card_from_another_epoch(
     tmp_path: Path,
 ) -> None:
@@ -683,9 +850,7 @@ def test_prepare_card_rejects_newer_same_context_card_from_another_epoch(
         tmp_path, schedule_cross_epoch_decoy=True
     )
     competitor_id = str(field.ordered_assignments[0].competitor_id)
-    broad = repository.current_rolling_card_key(
-        competitor_id, field.target_context.digest
-    )
+    broad = repository.current_rolling_card_key(competitor_id, field.target_context.digest)
     assert broad is not None
     assert broad["tournament_epoch_id"] == "epoch:decoy"
 
@@ -727,9 +892,7 @@ def test_issue_finds_approved_receipt_beyond_first_64_rows_and_uses_one_snapshot
     )
     assert assembled.status_code == 200, assembled.text
     receipt_id = assembled.json()["receipt_id"]
-    page = store.approval_page(
-        tournament_id=str(field.tournament_id), offset=0, limit=1
-    )
+    page = store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=1)
     row = page.rows[0]
     store.record_approval_decision(
         ApprovalDecisionCommand.create(
@@ -755,9 +918,7 @@ def test_issue_finds_approved_receipt_beyond_first_64_rows_and_uses_one_snapshot
             submitted_at="2026-08-25T18:00:01.000Z",
         )
     )
-    current = store.approval_page(
-        tournament_id=str(field.tournament_id), offset=0, limit=1
-    )
+    current = store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=1)
     approved_row = current.rows[0]
     calls: list[tuple[str, str]] = []
 

@@ -18,11 +18,17 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from strathmark.v3.api.auth import CredentialError, ServiceCredentialRegistry
-from strathmark.v3.api.router import V3ApplicationPort, create_router
+from strathmark.v3.api.router import (
+    BlockingOperationTimeout,
+    BoundedBlockingExecutor,
+    V3ApplicationPort,
+    create_router,
+)
 from strathmark.v3.api.schemas import ErrorResponse
 
 MAX_V3_REQUEST_BODY_BYTES = 1_048_576
 MAX_V3_INFLIGHT_REQUESTS = 64
+MAX_V3_BLOCKING_OPERATIONS = 16
 _PUBLIC_PATHS = frozenset({"/v3/health"})
 _FORWARDED_HEADERS = frozenset(
     {b"forwarded", b"x-forwarded-for", b"x-forwarded-host", b"x-forwarded-proto"}
@@ -180,12 +186,18 @@ class AuthenticatedBoundedMiddleware:
         listener: ListenerSecurityPolicy,
         max_body_bytes: int,
         max_inflight: int,
+        blocking_executor: BoundedBlockingExecutor | None = None,
+        authentication_timeout_ms: int = 5_000,
     ) -> None:
         self.app = app
         self._credentials = credentials
         self._listener = listener
         self._max_body_bytes = max_body_bytes
         self._gate = _InflightGate(max_inflight)
+        self._blocking = blocking_executor or BoundedBlockingExecutor(
+            max_concurrency=min(max_inflight, MAX_V3_BLOCKING_OPERATIONS)
+        )
+        self._authentication_timeout_ms = authentication_timeout_ms
 
     async def __call__(self, scope, receive, send) -> None:
         if scope.get("type") != "http":
@@ -219,11 +231,22 @@ class AuthenticatedBoundedMiddleware:
         if not is_public:
             try:
                 authorization = headers.get(b"authorization")
-                principal = self._credentials.authenticate(
+                principal = await self._blocking.run(
+                    self._credentials.authenticate,
                     None if authorization is None else authorization.decode("ascii", "strict"),
+                    timeout_ms=self._authentication_timeout_ms,
                     require_certificate=not self._listener.is_loopback,
                     certificate_principal=self._listener.certificate_principal(scope),
                 )
+            except BlockingOperationTimeout:
+                await _send_error(
+                    send,
+                    503,
+                    "authentication_timeout",
+                    "Service credential verification did not complete before its deadline.",
+                    extra_headers=[(b"retry-after", b"1")],
+                )
+                return
             except (CredentialError, UnicodeError):
                 await _send_error(
                     send,
@@ -329,6 +352,9 @@ def create_v3_app(
     listener: ListenerSecurityPolicy | None = None,
     max_body_bytes: int = MAX_V3_REQUEST_BODY_BYTES,
     max_inflight: int = MAX_V3_INFLIGHT_REQUESTS,
+    blocking_max_concurrency: int = 4,
+    authentication_timeout_ms: int = 5_000,
+    credential_operation_timeout_ms: int = 5_000,
 ) -> FastAPI:
     """Create one independent app; no store, executor, or semaphore is module-global."""
 
@@ -346,7 +372,25 @@ def create_v3_app(
         or not 1 <= max_inflight <= MAX_V3_INFLIGHT_REQUESTS
     ):
         raise ValueError("max_inflight must be between 1 and 64")
+    if (
+        isinstance(blocking_max_concurrency, bool)
+        or not isinstance(blocking_max_concurrency, int)
+        or not 1 <= blocking_max_concurrency <= MAX_V3_BLOCKING_OPERATIONS
+    ):
+        raise ValueError("blocking_max_concurrency must be between 1 and 16")
+    for name, value in (
+        ("authentication_timeout_ms", authentication_timeout_ms),
+        ("credential_operation_timeout_ms", credential_operation_timeout_ms),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 60_000:
+            raise ValueError(f"{name} must be between 1 and 60000")
     policy = listener or ListenerSecurityPolicy()
+    blocking = BoundedBlockingExecutor(max_concurrency=blocking_max_concurrency)
+    startup_verify = getattr(gateway, "verify_startup", None)
+    if startup_verify is not None:
+        if not callable(startup_verify):
+            raise TypeError("gateway startup verification must be callable")
+        startup_verify()
     app = FastAPI(
         title="STRATHMARK V3 Service",
         version="3.0.0",
@@ -356,7 +400,14 @@ def create_v3_app(
         openapi_url=None,
         redirect_slashes=False,
     )
-    app.include_router(create_router(gateway=gateway, credentials=credentials))
+    app.include_router(
+        create_router(
+            gateway=gateway,
+            credentials=credentials,
+            blocking_executor=blocking,
+            credential_operation_timeout_ms=credential_operation_timeout_ms,
+        )
+    )
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_handler(_request: Request, _exc: RequestValidationError):
@@ -410,8 +461,11 @@ def create_v3_app(
         listener=policy,
         max_body_bytes=max_body_bytes,
         max_inflight=max_inflight,
+        blocking_executor=blocking,
+        authentication_timeout_ms=authentication_timeout_ms,
     )
     app.state.listener_security_policy = policy
+    app.state.blocking_executor = blocking
     # Interactive consumers and generated clients see the reviewed installed bytes,
     # never a silently drifted framework approximation.
     from strathmark.v3.consumer_contract import load_v3_consumer_contract

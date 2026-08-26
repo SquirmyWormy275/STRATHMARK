@@ -191,9 +191,12 @@ def test_result_batch_and_field_settlement_are_one_atomic_retryable_command(
         service.record_and_settle(command, submissions)
     with open_v3_connection(path, read_only=True) as connection:
         assert connection.execute("SELECT COUNT(*) FROM v3_result_revisions").fetchone()[0] == 0
-        assert connection.execute(
-            "SELECT COUNT(*) FROM v3_events WHERE command_id=?", (command.command_id,)
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_events WHERE command_id=?", (command.command_id,)
+            ).fetchone()[0]
+            == 0
+        )
 
     monkeypatch.setattr(lifecycle._views, "apply_events", original_apply)
     first = service.record_and_settle(command, submissions)

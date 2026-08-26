@@ -56,16 +56,10 @@ def _validate(document, schema_ref: str, value) -> None:
 def test_packaged_contract_is_canonical_checksum_verified_and_v3_only() -> None:
     raw = v3_consumer_contract_bytes()
     document = load_v3_consumer_contract()
-    assert (
-        raw
-        == (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    )
+    assert raw == (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
     assert v3_consumer_contract_digest() == hashlib.sha256(raw).hexdigest()
     assert document["openapi"] == "3.1.0"
-    assert (
-        document["info"]["x-strathmark-contract-version"]
-        == V3_CONSUMER_CONTRACT_VERSION
-    )
+    assert document["info"]["x-strathmark-contract-version"] == V3_CONSUMER_CONTRACT_VERSION
     assert set(document["paths"]) == EXPECTED_V3_CONSUMER_PATHS
     assert all(path.startswith("/v3/") for path in document["paths"])
     assert b"smv3." not in raw.lower()
@@ -126,30 +120,22 @@ def test_all_transport_object_schemas_are_closed_and_required() -> None:
     for name, schema in schemas.items():
         if schema.get("type") == "object" or "properties" in schema:
             assert schema.get("additionalProperties") is False, name
-            assert set(schema.get("required", ())) == set(
-                schema.get("properties", {})
-            ), name
+            assert set(schema.get("required", ())) == set(schema.get("properties", {})), name
 
 
-def test_command_surface_covers_every_kind_without_exposing_offline_recovery_online() -> (
-    None
-):
+def test_command_surface_covers_every_kind_without_exposing_offline_recovery_online() -> None:
     document = load_v3_consumer_contract()
     coverage = document["info"]["x-strathmark-command-coverage"]
     online = set(coverage["authenticated_application_port"])
     dedicated = set(coverage["dedicated_authenticated_routes"])
     internal = set(coverage["internal_typed_application_services"])
     offline = set(coverage["listener-stopped-offline-only"])
-    assert online | dedicated | internal | offline == {
-        item.value for item in CommandKind
-    }
+    assert online | dedicated | internal | offline == {item.value for item in CommandKind}
     assert sum(map(len, (online, dedicated, internal, offline))) == len(CommandKind)
     assert "recover_service_credential" in offline
     assert "bootstrap_service_credential" in offline
     enum_values = set(document["components"]["schemas"]["OnlineCommandKind"]["enum"])
-    assert (
-        enum_values == online == {item.value for item in GENERIC_ONLINE_COMMAND_KINDS}
-    )
+    assert enum_values == online == {item.value for item in GENERIC_ONLINE_COMMAND_KINDS}
     assert "acknowledge_batch_issue" in dedicated
     assert "settle_live_race" in dedicated
     assert "freeze_evidence_epoch" in internal
@@ -162,17 +148,27 @@ def test_command_surface_covers_every_kind_without_exposing_offline_recovery_onl
         CommandKind.FREEZE_EVIDENCE_EPOCH,
         CommandKind.EVALUATE_MODEL_CANDIDATE,
         CommandKind.ACKNOWLEDGE_ISSUE,
+        CommandKind.PROMOTE_BUNDLE,
+        CommandKind.ROLLBACK_BUNDLE,
+        CommandKind.RECORD_MONITORING,
+        CommandKind.SUSPEND_LIVE,
+        CommandKind.RESUME_LIVE,
+        CommandKind.EMERGENCY_STOP,
     }
+    assert {
+        "promote_bundle",
+        "rollback_bundle",
+        "record_monitoring",
+        "suspend_live",
+        "resume_live",
+        "emergency_stop",
+    } <= internal
 
 
-def test_freezer_rebuilds_poisoned_output_and_never_changes_v1(
-    tmp_path, monkeypatch
-) -> None:
+def test_freezer_rebuilds_poisoned_output_and_never_changes_v1(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[3]
     freezer_path = root / "scripts" / "freeze_v3_consumer_contract.py"
-    spec = importlib.util.spec_from_file_location(
-        "v3_contract_freezer_test", freezer_path
-    )
+    spec = importlib.util.spec_from_file_location("v3_contract_freezer_test", freezer_path)
     assert spec is not None and spec.loader is not None
     freezer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(freezer)
@@ -190,9 +186,7 @@ def test_freezer_rebuilds_poisoned_output_and_never_changes_v1(
     checksum.unlink()
     assert freezer.main() == 0
     assert contract.read_bytes() == pristine
-    assert (
-        checksum.read_bytes() == hashlib.sha256(pristine).hexdigest().encode() + b"\n"
-    )
+    assert checksum.read_bytes() == hashlib.sha256(pristine).hexdigest().encode() + b"\n"
     assert shadow_consumer_contract_bytes() == v1_before
 
 

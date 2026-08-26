@@ -35,6 +35,7 @@ from strathmark.v3.contracts.identifiers import (
 from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
 
 MAX_CREDENTIAL_OVERLAP_SECONDS = 900
+_CREDENTIAL_AUTHORITY_ID = "service_credential:authority"
 _TOKEN = re.compile(r"^smv3\.([A-Za-z0-9_-]{3,64})\.([A-Za-z0-9_-]{20,192})$")
 
 
@@ -279,16 +280,19 @@ class ServiceCredentialRegistry:
         self._authority = authority
         self._secrets = secret_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        state = self._state(required=False)
-        self._principal_id = None if state is None else state.principal_id
         self._state_lock = threading.RLock()
-        self._cached_state = state
+        self._cached_state: _CredentialState | None = None
+        self._cached_head: tuple[int, str] | None = None
+        self.refresh()
 
     @property
     def principal_id(self) -> StableIdentifier:
-        if self._principal_id is None:
-            raise CredentialError("service credential has not been bootstrapped")
-        return self._principal_id
+        try:
+            return self._cached(required=True).principal_id
+        except CredentialError as exc:
+            if str(exc) == "service credential authority is not bootstrapped":
+                raise CredentialError("service credential has not been bootstrapped") from exc
+            raise
 
     def bootstrap_offline(
         self,
@@ -321,9 +325,7 @@ class ServiceCredentialRegistry:
         except BaseException:
             self._secrets.delete(key_id)
             raise
-        self._principal_id = principal
-        with self._state_lock:
-            self._cached_state = _CredentialState(principal, {digest: None}, digest)
+        self.refresh()
         return IssuedServiceCredential(token, digest, principal)
 
     def rotate(
@@ -399,11 +401,7 @@ class ServiceCredentialRegistry:
         except BaseException:
             self._secrets.delete(key_id)
             raise
-        with self._state_lock:
-            refreshed = dict(state.active_until)
-            refreshed[state.current_digest] = now + timedelta(seconds=overlap_seconds)
-            refreshed[digest] = None
-            self._cached_state = _CredentialState(state.principal_id, refreshed, digest)
+        self.refresh()
         return IssuedServiceCredential(token, digest, state.principal_id)
 
     def revoke(
@@ -458,12 +456,7 @@ class ServiceCredentialRegistry:
             payload,
             command_id=command_id,
         )
-        with self._state_lock:
-            refreshed = dict(state.active_until)
-            del refreshed[key_id_digest]
-            self._cached_state = _CredentialState(
-                state.principal_id, refreshed, current_after_revoke
-            )
+        self.refresh()
         self._secrets.delete_digest(key_id_digest)
 
     def recover_offline(
@@ -501,8 +494,7 @@ class ServiceCredentialRegistry:
         except BaseException:
             self._secrets.delete(key_id)
             raise
-        with self._state_lock:
-            self._cached_state = _CredentialState(principal, {digest: None}, digest)
+        self.refresh()
         for replaced_digest in state.active_until:
             self._secrets.delete_digest(replaced_digest)
         return IssuedServiceCredential(token, digest, principal)
@@ -566,19 +558,35 @@ class ServiceCredentialRegistry:
     def refresh(self) -> None:
         """Rebuild the in-memory authentication snapshot from verified event authority."""
 
-        state = self._state(required=False)
         with self._state_lock:
+            state, head = self._stable_authority_snapshot(required=False)
             self._cached_state = state
-            self._principal_id = None if state is None else state.principal_id
+            self._cached_head = head
 
     def _cached(self, *, required: bool) -> _CredentialState:
         with self._state_lock:
+            observed_head = self._authority.aggregate_head(_CREDENTIAL_AUTHORITY_ID)
+            if observed_head != self._cached_head:
+                state, head = self._stable_authority_snapshot(required=required)
+                self._cached_state = state
+                self._cached_head = head
             state = self._cached_state
         if state is None:
             if required:
                 raise CredentialError("service credential authority is not bootstrapped")
             raise CredentialError("service credential authority is not bootstrapped")
         return state
+
+    def _stable_authority_snapshot(
+        self, *, required: bool
+    ) -> tuple[_CredentialState | None, tuple[int, str] | None]:
+        for _attempt in range(3):
+            before = self._authority.aggregate_head(_CREDENTIAL_AUTHORITY_ID)
+            state = self._state(required=required)
+            after = self._authority.aggregate_head(_CREDENTIAL_AUTHORITY_ID)
+            if before == after:
+                return state, after
+        raise CredentialError("service credential authority changed during refresh")
 
     def _state(self, *, required: bool) -> _CredentialState | None:
         principal: StableIdentifier | None = None
@@ -641,7 +649,7 @@ class ServiceCredentialRegistry:
     ) -> None:
         # One global credential-authority stream makes a competing bootstrap collide
         # atomically instead of permitting one aggregate per hostile principal.
-        aggregate = StableIdentifier("service_credential:authority")
+        aggregate = StableIdentifier(_CREDENTIAL_AUTHORITY_ID)
         head = self._authority.aggregate_head(str(aggregate))
         version = 0 if head is None else head[0]
         inline = InlinePayload.from_value(payload)

@@ -36,6 +36,7 @@ from strathmark.v3.infrastructure.integrity import (
 )
 from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
 from tests.v3.evals.test_factory_audit_isolation import DIGESTS, _candidate
+from tests.v3.evals.test_promotion_calibration_authority import _evidence
 
 NOW = "2026-08-25T10:00:00.000Z"
 ACTOR = StableIdentifier("actor:factory-service")
@@ -60,6 +61,7 @@ def _report(tmp_path, candidate, signer, *, generation: str, passed: bool = True
         metrics={"normalized_crps": 0.20 if passed else 0.30},
         observed_audit_snapshot_digest=DIGESTS[22],
         created_at=NOW,
+        promotion_evidence=_evidence(candidate.candidate_digest),
     )
 
 
@@ -251,6 +253,88 @@ def test_exact_pass_promotes_once_failed_gate_leaves_champion_and_retry_is_exact
     with pytest.raises(ArtifactError, match="failed"):
         repository.publish(loser, failed, signer=bundle_signer, created_at=NOW)
     assert service.active_bundle_digest() == installed.bundle_digest
+
+
+def test_passing_diagnostic_report_cannot_cross_manual_promotion_boundary(tmp_path) -> None:
+    service, repository, bundle_signer, evaluator_signer, _database = _service(tmp_path)
+    candidate = _candidate(name="diagnostic-only", rollback_parent_digest=ZERO)
+    harness = FrozenEvaluationHarness.create(
+        generation_id="audit:diagnostic-only",
+        audit_snapshot_digest=DIGESTS[22],
+        harness_code_digest=DIGESTS[23],
+        precommit_digest=DIGESTS[24],
+        gates=(EvaluationGate("normalized_crps", "lte", 0.25),),
+        frozen_at=NOW,
+    )
+    report = FrozenEvaluator(
+        harness,
+        AuditGenerationRegistry(tmp_path / "diagnostic-audit"),
+        signer=evaluator_signer,
+    ).evaluate(
+        candidate,
+        metrics={"normalized_crps": 0.2},
+        observed_audit_snapshot_digest=DIGESTS[22],
+        created_at=NOW,
+    )
+    service.register_candidate(
+        candidate,
+        command_id=IdempotencyKey("command:diagnostic-register"),
+        actor_id=ACTOR,
+        occurred_at_utc=NOW,
+        monotonic_elapsed_ms=1,
+    )
+    service.record_evaluation(
+        candidate,
+        report,
+        command_id=IdempotencyKey("command:diagnostic-evaluate"),
+        actor_id=ACTOR,
+        occurred_at_utc=NOW,
+        monotonic_elapsed_ms=2,
+    )
+    installed = repository.publish(candidate, report, signer=bundle_signer, created_at=NOW)
+
+    with pytest.raises(FactoryError, match="calibration authority"):
+        service.promote(
+            candidate,
+            installed,
+            command_id=IdempotencyKey("command:diagnostic-promote"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=3,
+        )
+    run_candidate = _candidate(
+        name="diagnostic-run-only",
+        dependency_digest=DIGESTS[30],
+        rollback_parent_digest=ZERO,
+    )
+    run_harness = FrozenEvaluationHarness.create(
+        generation_id="audit:diagnostic-run-only",
+        audit_snapshot_digest=DIGESTS[22],
+        harness_code_digest=DIGESTS[23],
+        precommit_digest=DIGESTS[24],
+        gates=(EvaluationGate("normalized_crps", "lte", 0.25),),
+        frozen_at=NOW,
+    )
+    run_report = FrozenEvaluator(
+        run_harness,
+        AuditGenerationRegistry(tmp_path / "diagnostic-run-audit"),
+        signer=evaluator_signer,
+    ).evaluate(
+        run_candidate,
+        metrics={"normalized_crps": 0.2},
+        observed_audit_snapshot_digest=DIGESTS[22],
+        created_at=NOW,
+    )
+    with pytest.raises(FactoryError, match="diagnostic report"):
+        service.run_candidate(
+            run_candidate,
+            run_report,
+            signer=bundle_signer,
+            request_identity="diagnostic-run",
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=4,
+        )
 
 
 def test_new_promotion_and_health_rollback_are_future_only_for_open_tournaments(tmp_path) -> None:

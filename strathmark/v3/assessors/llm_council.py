@@ -43,6 +43,15 @@ from strathmark.v3.contracts.forecasts import (
 )
 from strathmark.v3.contracts.identifiers import require_identifier
 from strathmark.v3.contracts.statuses import admit_raw_completion
+from strathmark.v3.domain.credibility import MemberWeightReceipt
+from strathmark.v3.infrastructure.integrity import (
+    IntegrityError,
+    IntegrityTrustStore,
+    P256Signer,
+    SignedManifest,
+    sign_manifest,
+    verify_manifest,
+)
 
 PROVIDER_PACKET_SCHEMA_VERSION = "strathmark-v3-llm-provider-packet-v1"
 LLM_JOB_PAYLOAD_SCHEMA_VERSION = "strathmark-v3-llm-job-payload-v1"
@@ -103,6 +112,107 @@ class PromotedCouncilAuthority:
         raise CandidatePromotionError(
             "promoted council authority can only come from the installed bundle gate"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SignedMemberWeightAuthority:
+    """Exact signed individual-member credibility authority for one evidence packet."""
+
+    manifest: SignedManifest
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest, SignedManifest) or self.manifest.kind != (
+            "llm_member_weight_authority"
+        ):
+            raise ValueError("member weight authority manifest kind differs")
+
+
+def seal_member_weight_authority(
+    receipt: MemberWeightReceipt,
+    *,
+    member_ids: tuple[str, str, str],
+    evidence_digest: str,
+    bundle_digest: str,
+    council_component_digest: str,
+    signer: P256Signer,
+    created_at: str,
+) -> SignedMemberWeightAuthority:
+    if not isinstance(receipt, MemberWeightReceipt):
+        raise ValueError("member weight authority requires a typed credibility receipt")
+    expected = tuple(item.member_id for item in receipt.members)
+    if member_ids != expected:
+        raise ValueError("member weight authority roster differs from credibility receipt")
+    for value, label in (
+        (evidence_digest, "member weight evidence"),
+        (bundle_digest, "member weight bundle"),
+        (council_component_digest, "member weight council component"),
+    ):
+        _digest(value, label)
+    return SignedMemberWeightAuthority(
+        sign_manifest(
+            "llm_member_weight_authority",
+            {
+                "schema_version": "strathmark-v3-llm-member-weight-authority-v1",
+                "member_ids": list(member_ids),
+                "evidence_digest": evidence_digest,
+                "bundle_digest": bundle_digest,
+                "council_component_digest": council_component_digest,
+                "weight_receipt": receipt.to_dict(),
+                "weight_receipt_digest": receipt.receipt_digest,
+            },
+            signer=signer,
+            created_at=created_at,
+        )
+    )
+
+
+def verify_member_weight_authority(
+    authority: SignedMemberWeightAuthority,
+    *,
+    trust_store: IntegrityTrustStore,
+    expected_member_ids: tuple[str, str, str],
+    expected_evidence_digest: str,
+    expected_bundle_digest: str,
+    expected_council_component_digest: str,
+) -> MemberWeightReceipt:
+    if not isinstance(authority, SignedMemberWeightAuthority) or not isinstance(
+        trust_store, IntegrityTrustStore
+    ):
+        raise ValueError("member weight authority requires typed signed trust")
+    try:
+        payload = verify_manifest(authority.manifest, trust_store)
+    except (IntegrityError, ValueError) as exc:
+        raise ValueError("member weight authority signature or digest differs") from exc
+    expected_fields = {
+        "schema_version",
+        "member_ids",
+        "evidence_digest",
+        "bundle_digest",
+        "council_component_digest",
+        "weight_receipt",
+        "weight_receipt_digest",
+    }
+    if set(payload) != expected_fields or payload["schema_version"] != (
+        "strathmark-v3-llm-member-weight-authority-v1"
+    ):
+        raise ValueError("member weight authority schema is not closed")
+    if (
+        payload["member_ids"] != list(expected_member_ids)
+        or payload["evidence_digest"] != expected_evidence_digest
+        or payload["bundle_digest"] != expected_bundle_digest
+        or payload["council_component_digest"] != expected_council_component_digest
+    ):
+        raise ValueError("member weight authority binding differs")
+    try:
+        receipt = MemberWeightReceipt.from_dict(payload["weight_receipt"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("member weight authority receipt differs") from exc
+    if (
+        receipt.receipt_digest != payload["weight_receipt_digest"]
+        or tuple(item.member_id for item in receipt.members) != expected_member_ids
+    ):
+        raise ValueError("member weight authority receipt binding differs")
+    return receipt
 
 
 class CouncilAvailability(str, Enum):
@@ -940,8 +1050,7 @@ def seal_claimed_llm_job(
             raise ValueError("rolling LLM evidence packet differs") from exc
         if (
             outer_payload.get("component_id") != member.member_id
-            or outer_payload.get("member_manifest_digest")
-            != _member_manifest_digest(member)
+            or outer_payload.get("member_manifest_digest") != _member_manifest_digest(member)
             or not isinstance(card_key, Mapping)
             or card_key.get("evidence_digest") != record.evidence_digest
             or card_key.get("bundle_digest") != record.bundle_digest
@@ -1657,6 +1766,7 @@ class CouncilRunner:
             executed.storage_references,
             response.provider_audit,
         )
+
     @staticmethod
     def _unavailable(
         job: object,
@@ -1837,6 +1947,7 @@ def aggregate_council(
     outcomes: Sequence[MemberOutcome],
     *,
     authority: PromotedCouncilAuthority | None = None,
+    member_weight_receipt: MemberWeightReceipt | None = None,
 ) -> OperationalCouncilMixture:
     """Aggregate numeric output only under an installed, promoted bundle authority."""
 
@@ -1853,6 +1964,19 @@ def aggregate_council(
     for outcome in frozen:
         _verify_promoted_member_outcome(outcome, authority)
     diagnostic = _aggregate_outcomes(frozen)
+    member_weights = diagnostic.member_weights
+    if member_weight_receipt is not None:
+        if not isinstance(member_weight_receipt, MemberWeightReceipt):
+            raise ValueError("operational council member-weight receipt must be typed")
+        reliability = dict(member_weight_receipt.reliability_weights)
+        context = dict(member_weight_receipt.context_weights)
+        if set(reliability) != set(by_id) or any(
+            outcome.reliability_weight != reliability[outcome.member_id]
+            or outcome.context_weight != context[outcome.member_id]
+            for outcome in frozen
+        ):
+            raise ValueError("operational council outcomes differ from member-weight receipt")
+        member_weights = member_weight_receipt.member_subweights
     return OperationalCouncilMixture(
         "installed_promoted_bundle",
         CandidateStatus.PROMOTED,
@@ -1862,7 +1986,7 @@ def aggregate_council(
         diagnostic.valid_member_count,
         diagnostic.upstream_approval_required,
         diagnostic.distribution,
-        diagnostic.member_weights,
+        member_weights,
         diagnostic.outcomes,
     )
 
@@ -1948,6 +2072,7 @@ def replay_sealed_council(
     sealed: bytes,
     *,
     authority: PromotedCouncilAuthority | None = None,
+    member_weight_receipt: MemberWeightReceipt | None = None,
     provider_call: Callable[[], object] | None = None,
 ) -> DiagnosticCouncilMixture | OperationalCouncilMixture:
     """Reconstruct a sealed council deterministically without provider calls."""
@@ -1999,7 +2124,11 @@ def replay_sealed_council(
     if operational:
         if not isinstance(authority, PromotedCouncilAuthority):
             raise ValueError("operational replay requires promoted council authority")
-        reconstructed = aggregate_council(outcomes, authority=authority)
+        reconstructed = aggregate_council(
+            outcomes,
+            authority=authority,
+            member_weight_receipt=member_weight_receipt,
+        )
     else:
         reconstructed = _aggregate_outcomes(outcomes)
     expected = _assessment_receipt_value(reconstructed)
@@ -2012,13 +2141,18 @@ def seal_council_receipt(
     assessment: DiagnosticCouncilMixture | OperationalCouncilMixture,
     *,
     authority: PromotedCouncilAuthority | None = None,
+    member_weight_receipt: MemberWeightReceipt | None = None,
 ) -> bytes:
     """Serialize one reproducible council assessment and every provider attempt."""
 
     if isinstance(assessment, OperationalCouncilMixture):
         if not isinstance(authority, PromotedCouncilAuthority):
             raise ValueError("operational receipt requires promoted council authority")
-        rebuilt = aggregate_council(assessment.outcomes, authority=authority)
+        rebuilt = aggregate_council(
+            assessment.outcomes,
+            authority=authority,
+            member_weight_receipt=member_weight_receipt,
+        )
     elif isinstance(assessment, DiagnosticCouncilMixture):
         rebuilt = _aggregate_outcomes(assessment.outcomes)
     else:
@@ -2421,6 +2555,7 @@ __all__ = [
     "ProviderObservation",
     "ProviderPacket",
     "PromotedCouncilAuthority",
+    "SignedMemberWeightAuthority",
     "RawAttempt",
     "RawOutputSink",
     "SealedLLMJob",
@@ -2445,6 +2580,8 @@ __all__ = [
     "replay_sealed_council",
     "replay_sealed_member_outcome",
     "seal_council_receipt",
+    "seal_member_weight_authority",
     "seal_member_outcome",
     "unavailable_member_outcome",
+    "verify_member_weight_authority",
 ]

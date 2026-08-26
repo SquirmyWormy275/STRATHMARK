@@ -61,7 +61,7 @@ def _ollama_generate(model: str, *, timeout: float) -> dict[str, Any]:
         {
             "model": model,
             "prompt": (
-                "Return JSON only: {\"status\":\"ok\"}. This is a bounded STRATHMARK "
+                'Return JSON only: {"status":"ok"}. This is a bounded STRATHMARK '
                 "release thermal and VRAM probe; do not add commentary."
             ),
             "stream": False,
@@ -92,7 +92,9 @@ def _ollama_generate(model: str, *, timeout: float) -> dict[str, Any]:
     }
 
 
-def _run_pytest(root: Path, selectors: list[str], base: Path, env: dict[str, str]) -> dict[str, Any]:
+def _run_pytest(
+    root: Path, selectors: list[str], base: Path, env: dict[str, str]
+) -> dict[str, Any]:
     argv = [
         str(Path(sys.executable).resolve()),
         "-m",

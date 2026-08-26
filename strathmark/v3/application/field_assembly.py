@@ -59,7 +59,11 @@ from strathmark.v3.domain.joint_dependence import (
     has_fresh_joint_generation_proof,
     regenerate_joint_uniforms_for_replay,
 )
-from strathmark.v3.domain.optimizer import OptimizationField, VerifiedOptimizerReceipt
+from strathmark.v3.domain.optimizer import (
+    OptimizationField,
+    OptimizerFallback,
+    VerifiedOptimizerReceipt,
+)
 from strathmark.v3.domain.pooling import (
     PoolMode,
     PoolResult,
@@ -2442,8 +2446,19 @@ class SealedPipelineOutput:
                 "source_receipt_digest": self.optimizer.field.source_receipt_digest,
                 "pool_receipt_digest": self.optimizer.field.pool_receipt_digest,
                 "frontier_digest": self.optimizer.receipt.frontier_digest,
+                "rounded_baseline": list(self.optimizer.receipt.rounded_baseline),
                 "selected_marks": list(self.optimizer.receipt.selected_marks),
                 "selected_objectives": self.optimizer.receipt.selected_objectives.to_dict(),
+                "fallback_reason": (
+                    None
+                    if self.optimizer.receipt.fallback_reason is None
+                    else self.optimizer.receipt.fallback_reason.value
+                ),
+                "operational_state": (
+                    "degraded_review"
+                    if self.optimizer.receipt.fallback_reason is OptimizerFallback.OPTIMIZER_FAILURE
+                    else "verified"
+                ),
                 "work_budget": self.optimizer.receipt.work_budget.to_dict(),
                 "implementation_artifact_digest": self.optimizer.receipt.implementation_artifact_digest,
                 "verification_digest": self.optimizer.verification_digest,
@@ -3073,6 +3088,8 @@ def _warnings(pipeline: SealedPipelineOutput) -> tuple[str, ...]:
         warnings.append("manual_construction_required")
     if pipeline.council_valid_count == 2:
         warnings.append("degraded_llm_council")
+    if pipeline.optimizer.receipt.fallback_reason is OptimizerFallback.OPTIMIZER_FAILURE:
+        warnings.append("degraded_optimizer_failure")
     if pipeline.zero_history_competitors:
         warnings.append("zero_history")
     if pipeline.consequence_color is ConsequenceColor.RED:

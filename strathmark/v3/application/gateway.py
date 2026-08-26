@@ -14,6 +14,7 @@ from typing import Any
 
 from strathmark.v3.api.router import RequestContext
 from strathmark.v3.api.schemas import (
+    GENERIC_ONLINE_COMMAND_KINDS,
     AssembleFieldResponse,
     ExecuteCommandResponse,
     IssueAcknowledgmentResponse,
@@ -42,6 +43,7 @@ from strathmark.v3.application.settlement import SettlementCommand, SettlementSe
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.commands import CommandEnvelope, CommandKind, InlinePayload
 from strathmark.v3.contracts.events import EventEnvelope, EventKind
+from strathmark.v3.contracts.evidence import require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import (
     StableIdentifier,
     deterministic_identifier,
@@ -93,9 +95,24 @@ class GatewayServices:
             if getattr(service, attribute, None) != database:
                 raise ValueError("gateway services must share one exact V3 database")
         if getattr(self.settlement_reactions, "database_path", None) != database:
-            raise ValueError(
-                "gateway settlement reactions must share its exact V3 database"
-            )
+            raise ValueError("gateway settlement reactions must share its exact V3 database")
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedV3CutoverState:
+    """Result supplied by a separately verified production-cutover authority."""
+
+    receipt_digest: str
+    verified_at_utc: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.receipt_digest, str)
+            or len(self.receipt_digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.receipt_digest)
+        ):
+            raise ValueError("verified cutover receipt digest is invalid")
+        require_utc_milliseconds(self.verified_at_utc)
 
 
 class V3ApplicationGateway:
@@ -107,6 +124,7 @@ class V3ApplicationGateway:
         *,
         clock: Callable[[], str],
         caller_namespace: str = "api",
+        verified_cutover: Callable[[], VerifiedV3CutoverState | None] | None = None,
     ) -> None:
         if not isinstance(services, GatewayServices) or not callable(clock):
             raise TypeError("gateway requires typed services and an injected clock")
@@ -120,11 +138,23 @@ class V3ApplicationGateway:
         self._services = services
         self._clock = clock
         self._caller_namespace = caller_namespace
+        if verified_cutover is not None and not callable(verified_cutover):
+            raise TypeError("verified cutover authority must be callable")
+        self._verified_cutover = verified_cutover or (lambda: None)
+
+    def verify_startup(self) -> None:
+        """Run the explicit deep audit once before the application begins serving."""
+
+        self._services.events.verify()
+        self._services.fields.verify()
+        self._services.jobs.verify()
 
     def execute_command(
         self, payload: dict[str, Any], context: RequestContext
     ) -> ExecuteCommandResponse:
         kind = CommandKind(payload["command_kind"])
+        if kind not in GENERIC_ONLINE_COMMAND_KINDS:
+            self._conflict("command_requires_specialized_service")
         try:
             aggregate_kind, event_kind = _COMMAND_EVENT[kind]
         except KeyError as exc:
@@ -147,10 +177,7 @@ class V3ApplicationGateway:
             kind,
             context.command_id,
             target,
-            tuple(
-                (item["aggregate_id"], item["version"])
-                for item in payload["expected_versions"]
-            ),
+            tuple((item["aggregate_id"], item["version"]) for item in payload["expected_versions"]),
             context.principal.principal_id,
             inline,
         )
@@ -219,9 +246,7 @@ class V3ApplicationGateway:
         records = self._services.jobs.records_for_card(key["card_digest"])
         if len(records) != 5:
             self._conflict("card_component_set_incomplete")
-        publication = self._services.jobs.rolling_publication_row(
-            card_digest=key["card_digest"]
-        )
+        publication = self._services.jobs.rolling_publication_row(card_digest=key["card_digest"])
         ready = publication is not None
         return PrepareCardResponse(
             job_id=min(record.job_id for record in records),
@@ -262,20 +287,25 @@ class V3ApplicationGateway:
         self, payload: dict[str, Any], _context: RequestContext
     ) -> ReceiptLookupResponse:
         receipt_id = payload["receipt_id"]
-        if receipt_id is None:
-            with open_v3_connection(
-                self._services.events.database_path, read_only=True
-            ) as connection:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            if receipt_id is None:
                 row = connection.execute(
-                    "SELECT receipt_id FROM v3_field_receipts WHERE request_identity=?",
-                    (payload["request_identity"],),
+                    "SELECT receipt_id FROM v3_field_receipts "
+                    "WHERE caller_namespace=? AND request_identity=?",
+                    (self._caller_namespace, payload["request_identity"]),
                 ).fetchone()
-            if row is None:
-                return ReceiptLookupResponse(
-                    found=False,
-                    authority_sequence=self._services.events.current_anchor().global_sequence,
-                )
-            receipt_id = str(row[0])
+            else:
+                row = connection.execute(
+                    "SELECT receipt_id FROM v3_field_receipts "
+                    "WHERE caller_namespace=? AND receipt_id=?",
+                    (self._caller_namespace, receipt_id),
+                ).fetchone()
+        if row is None:
+            return ReceiptLookupResponse(
+                found=False,
+                authority_sequence=self._services.events.current_anchor().global_sequence,
+            )
+        receipt_id = str(row[0])
         try:
             receipt = self._services.fields.verified_receipt(receipt_id)
         except KeyError:
@@ -344,9 +374,7 @@ class V3ApplicationGateway:
                     round_id,
                     str(receipt.tournament_epoch_id),
                     tuple(str(item) for item in receipt.ordered_competitor_ids),
-                    tuple(
-                        (str(item.competitor_id), item.mark) for item in receipt.marks
-                    ),
+                    tuple((str(item.competitor_id), item.mark) for item in receipt.marks),
                 )
             )
         command = IssueBatchCommand.create(
@@ -374,9 +402,7 @@ class V3ApplicationGateway:
             recovery_marker_digest=acknowledgment.result_digest,
         )
 
-    def settle_result(
-        self, payload: dict[str, Any], context: RequestContext
-    ) -> SettlementResponse:
+    def settle_result(self, payload: dict[str, Any], context: RequestContext) -> SettlementResponse:
         receipt = self._services.fields.verified_receipt(payload["receipt_id"])
         self._verify_issue_binding(payload["issue_batch_id"], payload["receipt_id"])
         tournament_id, round_id = self._field_parent(str(receipt.field_id))
@@ -389,16 +415,10 @@ class V3ApplicationGateway:
         for competitor_id, row in rows.items():
             if row["status"] in {"completion", "penalty"}:
                 completion_clocks[competitor_id] = (
-                    marks[competitor_id] * 1_000
-                    + row["raw_time_ms"]
-                    + (row["penalty_ms"] or 0)
+                    marks[competitor_id] * 1_000 + row["raw_time_ms"] + (row["penalty_ms"] or 0)
                 )
-        ordered = tuple(
-            sorted(completion_clocks, key=lambda item: (completion_clocks[item], item))
-        )
-        placing = {
-            competitor_id: index for index, competitor_id in enumerate(ordered, start=1)
-        }
+        ordered = tuple(sorted(completion_clocks, key=lambda item: (completion_clocks[item], item)))
+        placing = {competitor_id: index for index, competitor_id in enumerate(ordered, start=1)}
         winning_clock = None if not ordered else completion_clocks[ordered[0]]
         submissions = tuple(
             self._submission(
@@ -455,12 +475,10 @@ class V3ApplicationGateway:
         )
 
     def status(self, _context: RequestContext) -> StatusResponse:
-        self._services.events.verify()
-        self._services.fields.verify()
-        self._services.jobs.verify()
-        with open_v3_connection(
-            self._services.events.database_path, read_only=True
-        ) as connection:
+        event_integrity = self._services.events.integrity_checkpoint_status()
+        field_integrity = self._services.fields.integrity_checkpoint_status()
+        job_integrity = self._services.jobs.integrity_checkpoint_status()
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             open_count = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM v3_aggregate_heads head "
@@ -470,18 +488,37 @@ class V3ApplicationGateway:
                     "AND event.event_kind='tournament_opened'"
                 ).fetchone()[0]
             )
+        cutover = self._verified_cutover()
+        if cutover is not None and not isinstance(cutover, VerifiedV3CutoverState):
+            raise TypeError("verified cutover authority returned an invalid state")
+        production_authority = "v3" if cutover is not None else "v2"
+        v3_readiness = "production" if cutover is not None else "candidate"
+        field_checkpoint_unavailable = (
+            int(field_integrity["authority_sequence"]) == 0
+            and str(field_integrity["checkpoint_digest"]) == "0" * 64
+            and str(field_integrity["last_deep_verified_at"]) == "1970-01-01T00:00:00.000Z"
+        )
         return StatusResponse(
             service="ready",
-            authority_sequence=self._services.events.current_anchor().global_sequence,
-            engine_authority="v3",
+            authority_sequence=int(event_integrity["authority_sequence"]),
+            engine_authority=production_authority,
+            v3_readiness=v3_readiness,
+            production_authority=production_authority,
+            cutover_receipt_digest=None if cutover is None else cutover.receipt_digest,
+            cutover_verified_at_utc=None if cutover is None else cutover.verified_at_utc,
+            deep_verification_state=("unavailable" if field_checkpoint_unavailable else "verified"),
+            event_last_deep_verified_at_utc=str(event_integrity["last_deep_verified_at"]),
+            event_checkpoint_digest=str(event_integrity["checkpoint_digest"]),
+            field_last_deep_verified_at_utc=str(field_integrity["last_deep_verified_at"]),
+            field_checkpoint_digest=str(field_integrity["checkpoint_digest"]),
+            job_last_deep_verified_at_utc=str(job_integrity["last_deep_verified_at"]),
+            job_checkpoint_digest=str(job_integrity["checkpoint_digest"]),
             open_tournament_count=open_count,
         )
 
     def _resolve_field(self, field_id: str) -> FrozenFieldRevision:
         require_identifier(field_id, expected_namespace="field")
-        with open_v3_connection(
-            self._services.events.database_path, read_only=True
-        ) as connection:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             ingress = connection.execute(
                 "SELECT upstream_revision,tournament_id,round_id,snapshot_json "
                 "FROM v3_ingress_snapshots WHERE entity_kind='field' AND entity_id=? "
@@ -591,9 +628,7 @@ class V3ApplicationGateway:
         receipt: FieldReceipt,
         submissions: tuple[LiveResultSubmission, ...],
     ) -> tuple[str, Any] | None:
-        with open_v3_connection(
-            self._services.events.database_path, read_only=True
-        ) as connection:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             row = connection.execute(
                 "SELECT event.envelope_json FROM v3_idempotency_records record "
                 "JOIN v3_events event ON event.global_sequence=record.first_global_sequence "
@@ -617,8 +652,7 @@ class V3ApplicationGateway:
         original = value.get("result_submissions")
         settlement = value.get("settlement")
         expected_submissions = [
-            item.to_dict()
-            for item in sorted(submissions, key=lambda item: str(item.competitor_id))
+            item.to_dict() for item in sorted(submissions, key=lambda item: str(item.competitor_id))
         ]
         original_submissions = (
             [item.get("submission") for item in original if isinstance(item, dict)]
@@ -626,8 +660,7 @@ class V3ApplicationGateway:
             else None
         )
         if (
-            value.get("schema_version")
-            != "strathmark-v3-record-and-settle-live-race-v1"
+            value.get("schema_version") != "strathmark-v3-record-and-settle-live-race-v1"
             or value.get("field_id") != str(receipt.field_id)
             or value.get("field_revision") != receipt.upstream_field_revision
             or value.get("receipt_id") != str(receipt.receipt_id)
@@ -640,9 +673,7 @@ class V3ApplicationGateway:
         return str(command.target_aggregate), stored
 
     def _verify_issue_binding(self, issue_batch_id: str, receipt_id: str) -> None:
-        with open_v3_connection(
-            self._services.events.database_path, read_only=True
-        ) as connection:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             row = connection.execute(
                 "SELECT envelope_json FROM v3_events WHERE aggregate_id=? "
                 "AND event_kind='issue_batch_issued' ORDER BY global_sequence DESC LIMIT 1",
@@ -656,9 +687,7 @@ class V3ApplicationGateway:
             self._conflict("settlement_receipt_not_in_issue_batch")
 
     def _field_parent(self, field_id: str) -> tuple[str, str]:
-        with open_v3_connection(
-            self._services.events.database_path, read_only=True
-        ) as connection:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             row = connection.execute(
                 "SELECT tournament_id,round_id FROM v3_ingress_snapshots "
                 "WHERE entity_kind='field' AND entity_id=? "
@@ -670,9 +699,7 @@ class V3ApplicationGateway:
         return str(row[0]), str(row[1])
 
     def _receipt_sequence(self, receipt_id: str) -> int:
-        with open_v3_connection(
-            self._services.events.database_path, read_only=True
-        ) as connection:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             row = connection.execute(
                 "SELECT source_global_sequence FROM v3_field_receipts WHERE receipt_id=?",
                 (receipt_id,),

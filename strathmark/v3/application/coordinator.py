@@ -1257,7 +1257,7 @@ class DurableRollingPreparationCoordinator:
             published = self._decode_publication_row(existing)
             if (
                 published.key != key
-                or published.authority != authority
+                or published.authority.content_value() != authority.content_value()
                 or published.components != receipts
                 or published.availability != availability
                 or published.council_manifest_digest != council_manifest_digest

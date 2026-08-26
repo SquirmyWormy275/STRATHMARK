@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -25,7 +28,11 @@ from strathmark.v3.api.auth import (  # noqa: E402
     InMemoryCredentialSecretStore,
     ServiceCredentialRegistry,
 )
-from strathmark.v3.api.router import RequestContext  # noqa: E402
+from strathmark.v3.api.router import (  # noqa: E402
+    BlockingOperationTimeout,
+    BoundedBlockingExecutor,
+    RequestContext,
+)
 from strathmark.v3.api.schemas import (  # noqa: E402
     AssembleFieldRequest,
     AssembleFieldResponse,
@@ -46,6 +53,10 @@ from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore  # 
 class Gateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any], RequestContext]] = []
+        self.startup_verifications = 0
+
+    def verify_startup(self) -> None:
+        self.startup_verifications += 1
 
     async def prepare_card(self, payload, context):
         self.calls.append(("prepare_card", payload, context))
@@ -108,7 +119,18 @@ class Gateway:
         return StatusResponse(
             service="ready",
             authority_sequence=5,
-            engine_authority="v3",
+            engine_authority="v2",
+            v3_readiness="candidate",
+            production_authority="v2",
+            cutover_receipt_digest=None,
+            cutover_verified_at_utc=None,
+            deep_verification_state="verified",
+            event_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
+            event_checkpoint_digest="a" * 64,
+            field_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
+            field_checkpoint_digest="b" * 64,
+            job_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
+            job_checkpoint_digest="c" * 64,
             open_tournament_count=0,
         )
 
@@ -127,6 +149,11 @@ def api(tmp_path: Path):
     app = create_v3_app(gateway=gateway, credentials=registry)
     client = TestClient(app, raise_server_exceptions=False)
     return client, gateway, registry, issued
+
+
+def test_app_runs_explicit_startup_verification(api) -> None:
+    _client, gateway, _registry, _issued = api
+    assert gateway.startup_verifications == 1
 
 
 def _headers(credential: str, key: str = "heat-7") -> dict[str, str]:
@@ -258,7 +285,18 @@ def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -
     gateway.status = lambda _context: StatusResponse(
         service="ready",
         authority_sequence=1,
-        engine_authority="v3",
+        engine_authority="v2",
+        v3_readiness="candidate",
+        production_authority="v2",
+        cutover_receipt_digest=None,
+        cutover_verified_at_utc=None,
+        deep_verification_state="verified",
+        event_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
+        event_checkpoint_digest="a" * 64,
+        field_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
+        field_checkpoint_digest="b" * 64,
+        job_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
+        job_checkpoint_digest="c" * 64,
         open_tournament_count=0,
     )
     assert client.get("/v3/status", headers=_headers(issued.credential)).status_code == 200
@@ -279,15 +317,15 @@ def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -
     gateway.execute_command = wrong_identity
     command = {
         "schema_version": "strathmark-v3-command-execution-request-v1",
-        "command_kind": "suspend_live",
+        "command_kind": "change_weights",
         "target_aggregate": "weights:global",
         "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-        "payload_schema_version": "strathmark-v3-suspend-live-v1",
+        "payload_schema_version": "strathmark-v3-change-weights-v1",
         "canonical_payload_json": (
-            '{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+            '{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
         ),
         "payload_digest": hashlib.sha256(
-            b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+            b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
         ).hexdigest(),
         "deadline_ms": 1000,
     }
@@ -403,17 +441,17 @@ def test_all_consumer_operations_map_to_separate_application_port_methods(api) -
             "/v3/commands/execute",
             {
                 "schema_version": "strathmark-v3-command-execution-request-v1",
-                "command_kind": "suspend_live",
+                "command_kind": "change_weights",
                 "target_aggregate": "weights:global",
                 "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-                "payload_schema_version": "strathmark-v3-suspend-live-v1",
+                "payload_schema_version": "strathmark-v3-change-weights-v1",
                 "canonical_payload_json": (
                     '{"reason_code":"operator_hold",'
-                    '"schema_version":"strathmark-v3-suspend-live-v1"}'
+                    '"schema_version":"strathmark-v3-change-weights-v1"}'
                 ),
                 "payload_digest": hashlib.sha256(
                     b'{"reason_code":"operator_hold",'
-                    b'"schema_version":"strathmark-v3-suspend-live-v1"}'
+                    b'"schema_version":"strathmark-v3-change-weights-v1"}'
                 ).hexdigest(),
                 "deadline_ms": 1000,
             },
@@ -630,6 +668,9 @@ def test_listener_and_app_configuration_reject_invalid_bounds_and_certificate_sc
         {"credentials": object()},
         {"credentials": registry, "max_body_bytes": 1},
         {"credentials": registry, "max_inflight": 0},
+        {"credentials": registry, "blocking_max_concurrency": 0},
+        {"credentials": registry, "authentication_timeout_ms": 0},
+        {"credentials": registry, "credential_operation_timeout_ms": True},
     ):
         with pytest.raises((TypeError, ValueError)):
             create_v3_app(gateway=gateway, **arguments)  # type: ignore[arg-type]
@@ -755,6 +796,296 @@ def test_deadline_and_application_contract_failures_use_closed_errors(api) -> No
     assert response.status_code == 500
     assert response.json()["code"] == "internal_service_error"
     assert "private failure" not in response.text
+
+
+def test_bounded_blocking_executor_retains_capacity_after_timeout_or_cancellation() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked() -> str:
+        started.set()
+        release.wait(timeout=1)
+        return "finished"
+
+    async def scenario() -> None:
+        executor = BoundedBlockingExecutor(max_concurrency=1)
+        pending = asyncio.create_task(executor.run(blocked, timeout_ms=25))
+        assert await asyncio.to_thread(started.wait, 0.5)
+        with pytest.raises(BlockingOperationTimeout):
+            await pending
+        with pytest.raises(BlockingOperationTimeout):
+            await executor.run(lambda: "must-not-start", timeout_ms=25)
+        release.set()
+        for _attempt in range(100):
+            if executor.active_count == 0:
+                break
+            await asyncio.sleep(0.005)
+        assert executor.active_count == 0
+        assert await executor.run(lambda: "recovered", timeout_ms=100) == "recovered"
+
+        started.clear()
+        release.clear()
+        cancelled = asyncio.create_task(executor.run(blocked, timeout_ms=500))
+        assert await asyncio.to_thread(started.wait, 0.5)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        assert executor.active_count == 1
+        with pytest.raises(BlockingOperationTimeout):
+            await executor.run(lambda: "must-still-not-start", timeout_ms=25)
+        release.set()
+        for _attempt in range(100):
+            if executor.active_count == 0:
+                break
+            await asyncio.sleep(0.005)
+        assert executor.active_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_slow_prebody_authentication_does_not_block_public_health_or_read_body(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _client, _gateway, registry, issued = api
+    started = threading.Event()
+    release = threading.Event()
+    original = registry.authenticate
+    body_read = False
+    downstream_paths: list[str] = []
+
+    def slow_authenticate(*args, **kwargs):
+        started.set()
+        release.wait(timeout=1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "authenticate", slow_authenticate)
+
+    async def downstream(scope, receive, send):
+        downstream_paths.append(str(scope["path"]))
+        await receive()
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = AuthenticatedBoundedMiddleware(
+        downstream,
+        credentials=registry,
+        listener=ListenerSecurityPolicy(),
+        max_body_bytes=1024,
+        max_inflight=2,
+        authentication_timeout_ms=500,
+        blocking_executor=BoundedBlockingExecutor(max_concurrency=1),
+    )
+
+    async def protected_receive():
+        nonlocal body_read
+        body_read = True
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def public_receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message):
+        return None
+
+    async def scenario() -> float:
+        protected = asyncio.create_task(
+            middleware(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/v3/cards/prepare",
+                    "headers": [
+                        (b"authorization", f"Bearer {issued.credential}".encode()),
+                        (b"content-type", b"application/json"),
+                    ],
+                },
+                protected_receive,
+                send,
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 0.5)
+        before = time.monotonic()
+        await asyncio.wait_for(
+            middleware(
+                {"type": "http", "method": "GET", "path": "/v3/health", "headers": []},
+                public_receive,
+                send,
+            ),
+            timeout=0.1,
+        )
+        elapsed = time.monotonic() - before
+        assert body_read is False
+        release.set()
+        await protected
+        return elapsed
+
+    assert asyncio.run(scenario()) < 0.1
+    assert downstream_paths == ["/v3/health", "/v3/cards/prepare"]
+
+
+def test_authentication_timeout_fails_closed_before_body_receive(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _client, _gateway, registry, issued = api
+    release = threading.Event()
+    original = registry.authenticate
+    body_read = False
+
+    def slow_authenticate(*args, **kwargs):
+        release.wait(timeout=1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "authenticate", slow_authenticate)
+
+    async def downstream(_scope, _receive, _send):
+        raise AssertionError("timed-out authentication must not reach the application")
+
+    middleware = AuthenticatedBoundedMiddleware(
+        downstream,
+        credentials=registry,
+        listener=ListenerSecurityPolicy(),
+        max_body_bytes=1024,
+        max_inflight=1,
+        authentication_timeout_ms=25,
+        blocking_executor=BoundedBlockingExecutor(max_concurrency=1),
+    )
+
+    async def receive():
+        nonlocal body_read
+        body_read = True
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def scenario():
+        messages = []
+
+        async def send(message):
+            messages.append(message)
+
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/v3/cards/prepare",
+                "headers": [
+                    (b"authorization", f"Bearer {issued.credential}".encode()),
+                    (b"content-type", b"application/json"),
+                ],
+            },
+            receive,
+            send,
+        )
+        release.set()
+        return messages
+
+    messages = asyncio.run(scenario())
+    assert messages[0]["status"] == 503
+    assert b'"code":"authentication_timeout"' in messages[1]["body"]
+    assert body_read is False
+
+
+def test_timed_out_rotation_and_slow_revoke_do_not_block_health_or_weaken_retry(
+    api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _client, gateway, registry, issued = api
+    started = threading.Event()
+    release = threading.Event()
+    original = registry.rotate
+
+    def delayed_rotate(*args, **kwargs):
+        started.set()
+        release.wait(timeout=1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "rotate", delayed_rotate)
+    app = create_v3_app(
+        gateway=gateway,
+        credentials=registry,
+        blocking_max_concurrency=1,
+        authentication_timeout_ms=250,
+        credential_operation_timeout_ms=25,
+    )
+    payload = {
+        "schema_version": "strathmark-v3-credential-rotation-request-v1",
+        "overlap_seconds": 60,
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                client.post,
+                "/v3/credentials/rotate",
+                headers=_headers(issued.credential, "slow-rotation"),
+                json=payload,
+            )
+            assert started.wait(timeout=0.5)
+            before = time.monotonic()
+            health = client.get("/v3/health")
+            assert time.monotonic() - before < 0.1
+            assert health.status_code == 200
+            response = future.result(timeout=1)
+        assert response.status_code == 504
+        release.set()
+        for _attempt in range(100):
+            if (
+                registry._authority.event_count() == 2
+                and app.state.blocking_executor.active_count == 0
+            ):
+                break
+            time.sleep(0.005)
+        assert registry._authority.event_count() == 2
+        assert app.state.blocking_executor.active_count == 0
+
+    with TestClient(
+        create_v3_app(
+            gateway=gateway,
+            credentials=registry,
+            blocking_max_concurrency=1,
+            credential_operation_timeout_ms=500,
+        ),
+        raise_server_exceptions=False,
+    ) as retry_client:
+        retry = retry_client.post(
+            "/v3/credentials/rotate",
+            headers=_headers(issued.credential, "slow-rotation"),
+            json=payload,
+        )
+        assert retry.status_code == 200
+        next_credential = retry.json()["credential"]
+
+    revoke_started = threading.Event()
+    revoke_release = threading.Event()
+    original_revoke = registry.revoke
+
+    def delayed_revoke(*args, **kwargs):
+        revoke_started.set()
+        revoke_release.wait(timeout=1)
+        return original_revoke(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "revoke", delayed_revoke)
+    with TestClient(
+        create_v3_app(
+            gateway=gateway,
+            credentials=registry,
+            blocking_max_concurrency=1,
+            credential_operation_timeout_ms=500,
+        ),
+        raise_server_exceptions=False,
+    ) as revoke_client:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending_revoke = pool.submit(
+                revoke_client.post,
+                "/v3/credentials/revoke",
+                headers=_headers(next_credential, "slow-revoke"),
+                json={
+                    "schema_version": "strathmark-v3-credential-revocation-request-v1",
+                    "key_id_digest": issued.key_id_digest,
+                },
+            )
+            assert revoke_started.wait(timeout=0.5)
+            before = time.monotonic()
+            assert revoke_client.get("/v3/health").status_code == 200
+            assert time.monotonic() - before < 0.1
+            revoke_release.set()
+            assert pending_revoke.result(timeout=1).status_code == 200
 
 
 def test_method_content_encoding_and_reserved_capacity_errors_are_closed(api) -> None:
@@ -909,14 +1240,14 @@ def test_low_level_stream_failures_reject_before_application_work(api) -> None:
 
 def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_values() -> None:
     canonical_payload = (
-        '{"reason_code":"operator_hold","schema_version":"strathmark-v3-suspend-live-v1"}'
+        '{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
     )
     command = {
         "schema_version": "strathmark-v3-command-execution-request-v1",
-        "command_kind": "suspend_live",
+        "command_kind": "change_weights",
         "target_aggregate": "weights:global",
         "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-        "payload_schema_version": "strathmark-v3-suspend-live-v1",
+        "payload_schema_version": "strathmark-v3-change-weights-v1",
         "canonical_payload_json": canonical_payload,
         "payload_digest": hashlib.sha256(canonical_payload.encode()).hexdigest(),
         "deadline_ms": 1000,
@@ -926,6 +1257,12 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
         {**command, "canonical_payload_json": "{"},
         {**command, "canonical_payload_json": '{"schema_version":"wrong"}'},
         {**command, "payload_digest": "0" * 64},
+        {**command, "command_kind": "promote_bundle"},
+        {**command, "command_kind": "rollback_bundle"},
+        {**command, "command_kind": "record_monitoring"},
+        {**command, "command_kind": "suspend_live"},
+        {**command, "command_kind": "resume_live"},
+        {**command, "command_kind": "emergency_stop"},
         {
             **command,
             "expected_versions": [
@@ -941,6 +1278,37 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
     for value in invalid_commands:
         with pytest.raises(Exception):
             ExecuteCommandRequest.model_validate(value)
+
+    status = {
+        "service": "ready",
+        "authority_sequence": 1,
+        "engine_authority": "v2",
+        "v3_readiness": "candidate",
+        "production_authority": "v2",
+        "cutover_receipt_digest": None,
+        "cutover_verified_at_utc": None,
+        "deep_verification_state": "verified",
+        "event_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
+        "event_checkpoint_digest": "a" * 64,
+        "field_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
+        "field_checkpoint_digest": "b" * 64,
+        "job_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
+        "job_checkpoint_digest": "c" * 64,
+        "open_tournament_count": 0,
+    }
+    StatusResponse.model_validate(status)
+    for value in (
+        {**status, "engine_authority": "v3"},
+        {
+            **status,
+            "engine_authority": "v3",
+            "production_authority": "v3",
+            "v3_readiness": "production",
+        },
+        {**status, "cutover_receipt_digest": "a" * 64},
+    ):
+        with pytest.raises(Exception):
+            StatusResponse.model_validate(value)
 
     canonical_result = '{"ok":true}'
     result = {

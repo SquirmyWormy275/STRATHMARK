@@ -31,9 +31,7 @@ if TYPE_CHECKING:
         SignedManifest,
     )
 
-_KNOWN_PRODUCTION_IDENTIFIERS = frozenset(
-    {"iordtvxryrdhqvdkfgzf", "production", "prod"}
-)
+_KNOWN_PRODUCTION_IDENTIFIERS = frozenset({"iordtvxryrdhqvdkfgzf", "production", "prod"})
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
@@ -64,9 +62,7 @@ def resolve_runtime_config(
     test_mode = _parse_flag(source.get("STRATHMARK_TEST_DB", ""), "STRATHMARK_TEST_DB")
     default_root = Path.home() / ".strathmark" / "v3"
     database_path = _absolute_path(
-        source.get(
-            "STRATHMARK_V3_DB_PATH", str(default_root / "strathmark-v3.sqlite3")
-        ),
+        source.get("STRATHMARK_V3_DB_PATH", str(default_root / "strathmark-v3.sqlite3")),
         "STRATHMARK_V3_DB_PATH",
     )
     temp_path = _absolute_path(
@@ -83,9 +79,7 @@ def resolve_runtime_config(
         "STRATHMARK_V3_BUNDLE_ROOT",
     )
     archive_root = _absolute_path(
-        source.get(
-            "STRATHMARK_V3_ARCHIVE_ROOT", str(artifact_default_root / "archive")
-        ),
+        source.get("STRATHMARK_V3_ARCHIVE_ROOT", str(artifact_default_root / "archive")),
         "STRATHMARK_V3_ARCHIVE_ROOT",
     )
     backup_root = _absolute_path(
@@ -93,9 +87,7 @@ def resolve_runtime_config(
         "STRATHMARK_V3_BACKUP_ROOT",
     )
     recovery_root = _absolute_path(
-        source.get(
-            "STRATHMARK_V3_RECOVERY_ROOT", str(artifact_default_root / "recovery")
-        ),
+        source.get("STRATHMARK_V3_RECOVERY_ROOT", str(artifact_default_root / "recovery")),
         "STRATHMARK_V3_RECOVERY_ROOT",
     )
     integrity_key_root = _absolute_path(
@@ -124,13 +116,8 @@ def resolve_runtime_config(
         recovery_root,
         integrity_key_root,
     )
-    if (
-        len(set(mutable_paths)) != len(mutable_paths)
-        or temp_path in database_path.parents
-    ):
-        raise ConfigurationError(
-            "V3 database and mutable runtime paths must be separate"
-        )
+    if len(set(mutable_paths)) != len(mutable_paths) or temp_path in database_path.parents:
+        raise ConfigurationError("V3 database and mutable runtime paths must be separate")
     if test_mode:
         for path in mutable_paths:
             _reject_production_test_path(path)
@@ -253,9 +240,7 @@ def compose_v3_application_gateway(
         not callable(getattr(settlement_reactions, "react", None))
         or getattr(settlement_reactions, "database_path", None) != database
     ):
-        raise ValueError(
-            "V3 gateway requires settlement reactions on the configured database"
-        )
+        raise ValueError("V3 gateway requires settlement reactions on the configured database")
     if not callable(clock):
         raise TypeError("V3 gateway requires an injected UTC millisecond clock")
     lifecycle = LifecycleService(database)
@@ -310,25 +295,19 @@ def _load_production_ml_authority(
         raise ConfigurationError(
             "production ML composition rejects non-CNG or test-ephemeral identity"
         )
-    manifest_value = _read_installation_mapping(
-        root / f"ml-{role_set}-role-manifest.json", config
-    )
+    manifest_value = _read_installation_mapping(root / f"ml-{role_set}-role-manifest.json", config)
     try:
         manifest = SignedManifest.from_dict(manifest_value)
         key_name = _read_installation_key_name(root / f"ml-{role_set}-cng-key-name.txt")
         signer = P256WindowsCNGSigner.open(key_name)
     except IntegrityError as exc:
-        raise ConfigurationError(
-            "installed ML CNG authority material is invalid"
-        ) from exc
+        raise ConfigurationError("installed ML CNG authority material is invalid") from exc
     if signer.identity != identity:
         raise ConfigurationError(
             "installed ML public identity differs from the live Windows CNG key"
         )
     compose = (
-        _compose_ml_audit_authority
-        if role_set == "audit"
-        else _compose_ml_candidate_authority
+        _compose_ml_audit_authority if role_set == "audit" else _compose_ml_candidate_authority
     )
     return compose(
         manifest,
@@ -338,9 +317,7 @@ def _load_production_ml_authority(
     )
 
 
-def _read_installation_mapping(
-    path: Path, config: V3RuntimeConfig
-) -> Mapping[str, object]:
+def _read_installation_mapping(path: Path, config: V3RuntimeConfig) -> Mapping[str, object]:
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -355,13 +332,9 @@ def _read_installation_mapping(
             max_depth=config.canonical_max_depth,
         )
     except (TypeError, ValueError) as exc:
-        raise ConfigurationError(
-            "installed ML authority file is not canonical JSON"
-        ) from exc
+        raise ConfigurationError("installed ML authority file is not canonical JSON") from exc
     if not isinstance(value, Mapping) or encoded != raw:
-        raise ConfigurationError(
-            "installed ML authority file is not a canonical object"
-        )
+        raise ConfigurationError("installed ML authority file is not a canonical object")
     return value
 
 

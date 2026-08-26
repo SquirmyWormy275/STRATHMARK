@@ -22,6 +22,7 @@ from strathmark.v3.application.coordinator import CardKey
 from strathmark.v3.application.credibility_reactions import (
     SQLiteCredibilityReactionService,
     seal_credibility_policy,
+    seal_live_control_preview,
 )
 from strathmark.v3.application.field_assembly import (
     AssemblyConflict,
@@ -142,6 +143,22 @@ from tests.v3.integration.test_derivation_barrier import _bootstrap_empty_closur
 
 NOW = "2026-08-24T18:00:00.000Z"
 ACTOR = StableIdentifier("actor:manager")
+
+
+def _control_preview(service, signer, tournament, action):
+    anchor = service._events.current_anchor()
+    return seal_live_control_preview(
+        tournament_id=tournament,
+        action=action,
+        authority_sequence=anchor.global_sequence,
+        authority_digest=anchor.event_digest,
+        before_weights={"formula": "0.5", "ml": "0.5"},
+        after_weights={"formula": "0.5", "ml": "0.5"},
+        before_sheet={},
+        after_sheet={},
+        signer=signer,
+        created_at=NOW,
+    )
 
 
 def _context() -> TargetContext:
@@ -1151,6 +1168,46 @@ def _bootstrap(
         )
 
     return store, field, build, lifecycle
+
+
+def test_optimizer_failure_receipt_is_explicitly_degraded_and_preserves_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import strathmark.v3.domain.optimizer as optimizer
+
+    monkeypatch.setattr(optimizer, "_evaluate_candidates", lambda *_args, **_kwargs: 1 / 0)
+    store, field, build, _lifecycle = _bootstrap(tmp_path / "optimizer-failure.sqlite3")
+    pipeline = build(field)
+
+    result = FieldAssemblyService(store).assemble(
+        field=field,
+        caller_namespace="manager",
+        request_identity="idempotency:optimizer-failure",
+        actor_id="actor:manager",
+        occurred_at=NOW,
+        build_pipeline=lambda _field: pipeline,
+    )
+
+    optimizer_section = next(
+        section.payload.to_value()
+        for section in result.receipt.sections
+        if section.kind is ReceiptSectionKind.OPTIMIZER_FRONTIER
+    )
+    assert (
+        pipeline.optimizer.receipt.fallback_reason is optimizer.OptimizerFallback.OPTIMIZER_FAILURE
+    )
+    assert optimizer_section["receipt_digest"] == pipeline.optimizer.receipt.receipt_digest
+    assert optimizer_section["verification_digest"] == pipeline.optimizer.verification_digest
+    assert optimizer_section["fallback_reason"] == "optimizer_failure"
+    assert optimizer_section["operational_state"] == "degraded_review"
+    assert (
+        tuple(optimizer_section["rounded_baseline"]) == pipeline.optimizer.receipt.rounded_baseline
+    )
+    assert tuple(item.mark for item in result.receipt.marks) == (
+        pipeline.optimizer.receipt.rounded_baseline
+    )
+    assert "degraded_optimizer_failure" in result.receipt.warning_codes
 
 
 @pytest.mark.parametrize(
@@ -2361,6 +2418,7 @@ def test_real_u12_live_freeze_and_latest_control_are_operational_authority(
         tournament,
         action="suspend",
         reason="judge pause",
+        preview_manifest=_control_preview(credibility, signer, tournament, "suspend"),
         command_id=IdempotencyKey("command:u15-live-suspend"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,
@@ -2372,6 +2430,7 @@ def test_real_u12_live_freeze_and_latest_control_are_operational_authority(
         tournament,
         action="re_enable",
         reason="judge resumed",
+        preview_manifest=_control_preview(credibility, signer, tournament, "re_enable"),
         command_id=IdempotencyKey("command:u15-live-resume"),
         actor_id=ACTOR,
         occurred_at_utc=NOW,

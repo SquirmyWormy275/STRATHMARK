@@ -38,6 +38,336 @@ class OptimizerVerificationStatus(str, Enum):
     VERIFIED = "verified"
 
 
+@dataclass(frozen=True, slots=True)
+class DisagreementThresholds:
+    threshold_id: str
+    green_median_delta_ms: int
+    red_median_delta_ms: int
+    green_interval_endpoint_delta_ms: int
+    red_interval_endpoint_delta_ms: int
+    green_mark_delta: int
+    red_mark_delta: int
+    green_win_probability_delta: str
+    red_win_probability_delta: str
+    green_spread_delta_ms: int
+    red_spread_delta_ms: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.threshold_id, str) or not self.threshold_id.startswith(
+            "thresholds:"
+        ):
+            raise ContractError("disagreement threshold identity is invalid")
+        _validate_threshold_values(self)
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "threshold_id": self.threshold_id,
+            **{
+                name: getattr(self, name)
+                for name in self.__dataclass_fields__
+                if name != "threshold_id"
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdReplayObservation:
+    observation_id: str
+    median_delta_ms: int
+    interval_endpoint_delta_ms: int
+    mark_delta: int
+    win_probability_delta: str
+    spread_delta_ms: int
+    ordering_reversal: bool
+    expected_color: ConsequenceColor
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.observation_id, str) or not self.observation_id:
+            raise ContractError("threshold replay observation identity is required")
+        for value, label in (
+            (self.median_delta_ms, "replay median delta"),
+            (self.interval_endpoint_delta_ms, "replay interval delta"),
+            (self.mark_delta, "replay mark delta"),
+            (self.spread_delta_ms, "replay spread delta"),
+        ):
+            _nonnegative_int(value, label)
+        _probability(self.win_probability_delta, "replay win probability delta")
+        if not isinstance(self.ordering_reversal, bool) or not isinstance(
+            self.expected_color, ConsequenceColor
+        ):
+            raise ContractError("threshold replay label must be explicit and typed")
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "observation_id": self.observation_id,
+            "median_delta_ms": self.median_delta_ms,
+            "interval_endpoint_delta_ms": self.interval_endpoint_delta_ms,
+            "mark_delta": self.mark_delta,
+            "win_probability_delta": self.win_probability_delta,
+            "spread_delta_ms": self.spread_delta_ms,
+            "ordering_reversal": self.ordering_reversal,
+            "expected_color": self.expected_color.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalThresholdSelection:
+    candidates: tuple[DisagreementThresholds, ...]
+    replay_observations: tuple[ThresholdReplayObservation, ...]
+    candidate_scores: tuple[tuple[str, int], ...]
+    selected_threshold_id: str
+    selection_digest: str
+
+    def __post_init__(self) -> None:
+        if not self.candidates or self.candidates != tuple(
+            sorted(self.candidates, key=lambda item: item.threshold_id)
+        ):
+            raise ContractError("historical threshold candidates must be sorted and nonempty")
+        if not self.replay_observations or self.replay_observations != tuple(
+            sorted(self.replay_observations, key=lambda item: item.observation_id)
+        ):
+            raise ContractError("historical replay observations must be sorted and nonempty")
+        if len({item.observation_id for item in self.replay_observations}) != len(
+            self.replay_observations
+        ):
+            raise ContractError("historical replay observation identities must be unique")
+        expected_scores = _threshold_scores(self.candidates, self.replay_observations)
+        if self.candidate_scores != expected_scores:
+            raise ContractError("historical threshold scores differ from replay")
+        best_score = max(score for _identity, score in expected_scores)
+        selected = min(identity for identity, score in expected_scores if score == best_score)
+        if self.selected_threshold_id != selected:
+            raise ContractError("historical threshold selection is not deterministic")
+        _digest(self.selection_digest, "historical threshold selection")
+        if self.selection_digest != canonical_digest(self.body()):
+            raise ContractError("historical threshold selection digest differs")
+
+    @property
+    def selected_thresholds(self) -> DisagreementThresholds:
+        return next(
+            item for item in self.candidates if item.threshold_id == self.selected_threshold_id
+        )
+
+    def body(self) -> dict[str, object]:
+        return {
+            "schema_version": "strathmark-v3-historical-threshold-selection-v1",
+            "candidates": [item.to_dict() for item in self.candidates],
+            "replay_observations": [item.to_dict() for item in self.replay_observations],
+            "candidate_scores": [list(item) for item in self.candidate_scores],
+            "selected_threshold_id": self.selected_threshold_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DisjointThresholdVerification:
+    selection_digest: str
+    selected_threshold_id: str
+    training_observation_ids: tuple[str, ...]
+    holdout_observations: tuple[ThresholdReplayObservation, ...]
+    accuracy: str
+    minimum_accuracy: str
+    passed: bool
+    verification_digest: str
+
+    def __post_init__(self) -> None:
+        _digest(self.selection_digest, "threshold verification selection")
+        if set(self.training_observation_ids) & {
+            item.observation_id for item in self.holdout_observations
+        }:
+            raise ContractError("threshold holdout is not disjoint from historical replay")
+        accuracy = _probability(self.accuracy, "threshold holdout accuracy")
+        minimum = _probability(self.minimum_accuracy, "minimum threshold accuracy")
+        if self.passed is not (accuracy >= minimum):
+            raise ContractError("threshold holdout outcome differs")
+        _digest(self.verification_digest, "threshold disjoint verification")
+        if self.verification_digest != canonical_digest(self.body()):
+            raise ContractError("threshold verification digest differs")
+
+    def body(self) -> dict[str, object]:
+        return {
+            "schema_version": "strathmark-v3-disjoint-threshold-verification-v1",
+            "selection_digest": self.selection_digest,
+            "selected_threshold_id": self.selected_threshold_id,
+            "training_observation_ids": list(self.training_observation_ids),
+            "holdout_observations": [item.to_dict() for item in self.holdout_observations],
+            "accuracy": self.accuracy,
+            "minimum_accuracy": self.minimum_accuracy,
+            "passed": self.passed,
+        }
+
+
+def _validate_threshold_values(value: object) -> None:
+    pairs = (
+        (value.green_median_delta_ms, value.red_median_delta_ms),
+        (value.green_interval_endpoint_delta_ms, value.red_interval_endpoint_delta_ms),
+        (value.green_mark_delta, value.red_mark_delta),
+        (value.green_spread_delta_ms, value.red_spread_delta_ms),
+    )
+    if any(
+        isinstance(low, bool)
+        or not isinstance(low, int)
+        or isinstance(high, bool)
+        or not isinstance(high, int)
+        or low < 0
+        or high <= low
+        for low, high in pairs
+    ):
+        raise ContractError("green/red integer threshold pairs must be ordered")
+    if value.red_mark_delta < 2:
+        raise ContractError("red mark threshold cannot be below two seconds")
+    if _probability(value.red_win_probability_delta, "red win probability threshold") <= (
+        _probability(value.green_win_probability_delta, "green win probability threshold")
+    ):
+        raise ContractError("green/red probability thresholds must be ordered")
+
+
+def _classify_threshold(
+    thresholds: DisagreementThresholds, observation: ThresholdReplayObservation
+) -> ConsequenceColor:
+    red = observation.ordering_reversal or any(
+        (
+            observation.mark_delta >= thresholds.red_mark_delta,
+            Decimal(observation.win_probability_delta)
+            >= Decimal(thresholds.red_win_probability_delta),
+            observation.spread_delta_ms >= thresholds.red_spread_delta_ms,
+        )
+    )
+    green = all(
+        (
+            observation.median_delta_ms <= thresholds.green_median_delta_ms,
+            observation.interval_endpoint_delta_ms <= thresholds.green_interval_endpoint_delta_ms,
+            observation.mark_delta <= thresholds.green_mark_delta,
+            Decimal(observation.win_probability_delta)
+            <= Decimal(thresholds.green_win_probability_delta),
+            observation.spread_delta_ms <= thresholds.green_spread_delta_ms,
+        )
+    )
+    return (
+        ConsequenceColor.RED if red else ConsequenceColor.GREEN if green else ConsequenceColor.AMBER
+    )
+
+
+def _threshold_scores(
+    candidates: tuple[DisagreementThresholds, ...],
+    observations: tuple[ThresholdReplayObservation, ...],
+) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (
+            candidate.threshold_id,
+            sum(
+                _classify_threshold(candidate, observation) is observation.expected_color
+                for observation in observations
+            ),
+        )
+        for candidate in candidates
+    )
+
+
+def select_historical_thresholds(
+    candidates: tuple[DisagreementThresholds, ...],
+    replay_observations: tuple[ThresholdReplayObservation, ...],
+) -> HistoricalThresholdSelection:
+    ordered_candidates = tuple(sorted(candidates, key=lambda item: item.threshold_id))
+    ordered_replay = tuple(sorted(replay_observations, key=lambda item: item.observation_id))
+    scores = _threshold_scores(ordered_candidates, ordered_replay)
+    if not scores:
+        raise ContractError("historical threshold selection requires candidates")
+    best = max(score for _identity, score in scores)
+    selected = min(identity for identity, score in scores if score == best)
+    body = {
+        "schema_version": "strathmark-v3-historical-threshold-selection-v1",
+        "candidates": [item.to_dict() for item in ordered_candidates],
+        "replay_observations": [item.to_dict() for item in ordered_replay],
+        "candidate_scores": [list(item) for item in scores],
+        "selected_threshold_id": selected,
+    }
+    return HistoricalThresholdSelection(
+        ordered_candidates,
+        ordered_replay,
+        scores,
+        selected,
+        canonical_digest(body),
+    )
+
+
+def verify_disjoint_thresholds(
+    selection: HistoricalThresholdSelection,
+    holdout_observations: tuple[ThresholdReplayObservation, ...],
+    *,
+    minimum_accuracy: str,
+) -> DisjointThresholdVerification:
+    if not isinstance(selection, HistoricalThresholdSelection):
+        raise ContractError("threshold verification requires historical selection authority")
+    ordered = tuple(sorted(holdout_observations, key=lambda item: item.observation_id))
+    training_ids = tuple(item.observation_id for item in selection.replay_observations)
+    if not ordered or set(training_ids) & {item.observation_id for item in ordered}:
+        raise ContractError("threshold holdout must be nonempty and disjoint")
+    correct = sum(
+        _classify_threshold(selection.selected_thresholds, item) is item.expected_color
+        for item in ordered
+    )
+    accuracy = canonical_decimal_string(Decimal(correct) / Decimal(len(ordered)))
+    passed = Decimal(accuracy) >= _probability(minimum_accuracy, "minimum threshold accuracy")
+    body = {
+        "schema_version": "strathmark-v3-disjoint-threshold-verification-v1",
+        "selection_digest": selection.selection_digest,
+        "selected_threshold_id": selection.selected_threshold_id,
+        "training_observation_ids": list(training_ids),
+        "holdout_observations": [item.to_dict() for item in ordered],
+        "accuracy": accuracy,
+        "minimum_accuracy": minimum_accuracy,
+        "passed": passed,
+    }
+    return DisjointThresholdVerification(
+        selection.selection_digest,
+        selection.selected_threshold_id,
+        training_ids,
+        ordered,
+        accuracy,
+        minimum_accuracy,
+        passed,
+        canonical_digest(body),
+    )
+
+
+def freeze_disagreement_policy(
+    selection: HistoricalThresholdSelection,
+    verification: DisjointThresholdVerification,
+) -> DisagreementPolicy:
+    if (
+        not isinstance(selection, HistoricalThresholdSelection)
+        or not isinstance(verification, DisjointThresholdVerification)
+        or verification.selection_digest != selection.selection_digest
+        or verification.selected_threshold_id != selection.selected_threshold_id
+        or not verification.passed
+    ):
+        raise ContractError("disagreement policy requires passing disjoint threshold authority")
+    value = selection.selected_thresholds
+    return DisagreementPolicy(
+        "disagreement:v1",
+        value.green_median_delta_ms,
+        value.red_median_delta_ms,
+        value.green_interval_endpoint_delta_ms,
+        value.red_interval_endpoint_delta_ms,
+        value.green_mark_delta,
+        value.red_mark_delta,
+        value.green_win_probability_delta,
+        value.red_win_probability_delta,
+        value.green_spread_delta_ms,
+        value.red_spread_delta_ms,
+        selection.selection_digest,
+        verification.verification_digest,
+    )
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class CouncilMemberAudit:
     member_id: StableIdentifier
@@ -1868,6 +2198,8 @@ __all__ = [
     "ConsequenceComparison",
     "CounterfactualCompetitor",
     "CounterfactualSheet",
+    "DisagreementThresholds",
+    "DisjointThresholdVerification",
     "DisagreementDecision",
     "DisagreementPolicy",
     "ExpectedTimeOverrideReceipt",
@@ -1876,9 +2208,14 @@ __all__ = [
     "OverrideRecomputationProof",
     "OverrideScope",
     "OptimizerVerificationStatus",
+    "HistoricalThresholdSelection",
+    "ThresholdReplayObservation",
     "ZeroHistoryEstimate",
     "ZeroHistoryPolicy",
     "classify_disagreement",
     "create_override_receipt",
     "create_zero_history_estimate",
+    "freeze_disagreement_policy",
+    "select_historical_thresholds",
+    "verify_disjoint_thresholds",
 ]

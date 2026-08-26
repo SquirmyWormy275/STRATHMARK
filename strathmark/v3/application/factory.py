@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -15,7 +14,7 @@ from strathmark.v3.contracts.canonical import (
     canonical_expected_versions,
 )
 from strathmark.v3.contracts.commands import CommandEnvelope, CommandKind, InlinePayload
-from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
+from strathmark.v3.contracts.events import AggregateKind, EventKind
 from strathmark.v3.contracts.identifiers import (
     IdempotencyKey,
     StableIdentifier,
@@ -36,6 +35,7 @@ from strathmark.v3.infrastructure.sqlite.event_store import (
     SQLiteEventStore,
     StoredCommandResult,
 )
+from strathmark.v3.infrastructure.sqlite.projections import SQLiteProjectionStore
 
 ZERO_BUNDLE_DIGEST = "0" * 64
 
@@ -173,6 +173,7 @@ class FactoryService:
         if not isinstance(repository, BundleRepository):
             raise FactoryError("factory service requires an immutable bundle repository")
         self._events = SQLiteEventStore(database_path)
+        self._projections = SQLiteProjectionStore(database_path)
         self.repository = repository
 
     @property
@@ -270,6 +271,10 @@ class FactoryService:
                 evaluation,
                 None,
             )
+        if not report.promotion_authorized or report.promotion_evidence_digest is None:
+            raise FactoryError(
+                "passing diagnostic report lacks complete promotion calibration authority"
+            )
         installed = self.repository.publish(
             candidate, report, signer=signer, created_at=occurred_at_utc
         )
@@ -317,6 +322,8 @@ class FactoryService:
             "harness_digest": report.harness_digest,
             "passed": report.passed,
             "failed_gates": list(report.failed_gates),
+            "promotion_evidence_digest": report.promotion_evidence_digest,
+            "promotion_authorized": report.promotion_authorized,
         }
         return self._execute(
             CommandKind.EVALUATE_MODEL_CANDIDATE,
@@ -385,6 +392,11 @@ class FactoryService:
             raise FactoryError("promotion evaluator report differs from installed bundle")
         if evaluation.get("passed") is not True:
             raise FactoryError("failed candidate cannot be promoted")
+        if evaluation.get("promotion_authorized") is not True or not isinstance(
+            evaluation.get("promotion_evidence_digest"), str
+        ):
+            raise FactoryError("candidate lacks complete promotion calibration authority")
+        _digest(evaluation["promotion_evidence_digest"], "promotion calibration evidence")
         active = self.active_bundle_digest()
         if installed.rollback_parent_digest != active:
             raise FactoryError("promotion rollback parent is not the current healthy champion")
@@ -400,30 +412,18 @@ class FactoryService:
         )
 
     def active_bundle_digest(self) -> str:
-        active = ZERO_BUNDLE_DIGEST
-        for event in self._all_events():
-            payload = _event_payload(event)
-            if event.kind is EventKind.BUNDLE_PROMOTED:
-                parent = payload.get("rollback_parent_digest")
-                if parent != active:
-                    raise FactoryError("promotion history does not descend from active champion")
-                active = _digest(payload.get("bundle_digest"), "promoted bundle")
-            elif event.kind is EventKind.BUNDLE_ROLLED_BACK:
-                if payload.get("bundle_digest") != active:
-                    raise FactoryError("rollback history does not target the active champion")
-                active = _digest(payload.get("rollback_to_bundle_digest"), "rollback target")
-        return active
+        return self._projections.active_model_bundle_digest()
 
     def bundle_for_tournament(self, tournament_id: StableIdentifier) -> InstalledBundle:
         require_identifier(tournament_id, expected_namespace="tournament")
-        pinned: str | None = None
-        for event in self._all_events():
-            if event.aggregate_id == tournament_id and event.kind is EventKind.TOURNAMENT_OPENED:
-                bundle_id = _event_payload(event).get("bundle_id")
-                if not isinstance(bundle_id, str) or not bundle_id.startswith("bundle:"):
-                    raise FactoryError("tournament open event has an invalid bundle pin")
-                pinned = bundle_id.split(":", 1)[1]
-        digest = pinned if pinned is not None else self.active_bundle_digest()
+        pinned = self._projections.tournament_bundle_pin(tournament_id)
+        if pinned is not None and not pinned.startswith("bundle:"):
+            raise FactoryError("tournament open event has an invalid bundle pin")
+        digest = (
+            _digest(pinned.split(":", 1)[1], "tournament bundle pin")
+            if pinned is not None
+            else self.active_bundle_digest()
+        )
         if digest == ZERO_BUNDLE_DIGEST:
             raise FactoryError("no promoted bundle is available for an unopened tournament")
         purpose = (
@@ -587,7 +587,7 @@ class FactoryService:
             monotonic_elapsed_ms,
         )
         try:
-            return self._events.execute(request)
+            return self._events.execute(request, projection_hook=self._projections.apply_events)
         except EventStoreConflict:
             raced = self._lookup_retry(command_id, actor_id, kind, target, inline)
             if raced is not None:
@@ -611,24 +611,10 @@ class FactoryService:
         )
 
     def _candidate_evaluation(self, candidate_id: StableIdentifier) -> Mapping[str, Any] | None:
-        for event in reversed(self._all_events()):
-            if event.aggregate_id == candidate_id and event.kind is (
-                EventKind.MODEL_CANDIDATE_EVALUATED
-            ):
-                return _event_payload(event)
-        return None
+        return self._projections.model_candidate_evaluation(candidate_id)
 
     def _candidate_id_for_promoted_bundle(self, bundle_digest: str) -> StableIdentifier:
-        for event in reversed(self._all_events()):
-            if (
-                event.kind is EventKind.BUNDLE_PROMOTED
-                and _event_payload(event).get("bundle_digest") == bundle_digest
-            ):
-                return event.aggregate_id
-        raise FactoryError("active bundle has no promotion authority")
-
-    def _all_events(self) -> tuple[EventEnvelope, ...]:
-        return self._events.events()
+        return self._projections.candidate_for_promoted_bundle(bundle_digest)
 
 
 def _monitoring_body(value: MonitoringObservation | _MonitoringShell) -> dict[str, object]:
@@ -661,19 +647,11 @@ def _verified_report_payload(
         or payload.get("harness_digest") != report.harness_digest
         or payload.get("passed") is not report.passed
         or payload.get("failed_gates") != list(report.failed_gates)
+        or payload.get("promotion_evidence_digest") != report.promotion_evidence_digest
+        or payload.get("promotion_authorized") is not report.promotion_authorized
     ):
         raise FactoryError("candidate evaluation report binding differs")
     return payload
-
-
-def _event_payload(event: EventEnvelope) -> Mapping[str, Any]:
-    payload = event.command.payload
-    if not isinstance(payload, InlinePayload):
-        raise FactoryError("factory lifecycle event payload must remain bounded inline authority")
-    value = json.loads(payload.canonical_json)
-    if not isinstance(value, dict):
-        raise FactoryError("factory lifecycle event payload is malformed")
-    return value
 
 
 def _monitoring_receipt(result: StoredCommandResult) -> MonitoringReceipt:

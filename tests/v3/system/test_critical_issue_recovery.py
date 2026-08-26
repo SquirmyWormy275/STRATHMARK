@@ -624,8 +624,10 @@ def test_checkpoint_registry_rotation_restart_gap_and_old_checkpoint_verificatio
     new = P256EphemeralSigner.generate("integrity-key:new-checkpoint")
     root = tmp_path / "checkpoint-registry"
     registry = CheckpointRegistry(root, bootstrap_identity=old.identity)
+    projections = SQLiteProjectionStore(database)
+    projections.capture_projection_checkpoint()
     first = registry.create_checkpoint(database, signer=old, created_at=NOW)
-    assert SQLiteProjectionStore(database).rebuild_from_checkpoint_registry(registry)
+    assert projections.rebuild_from_checkpoint_registry(registry)
     registry.rotate_key(old, new.identity, created_at=NOW)
     restarted = CheckpointRegistry(root, bootstrap_identity=old.identity)
     assert restarted.verify_checkpoint(first.manifest) == first

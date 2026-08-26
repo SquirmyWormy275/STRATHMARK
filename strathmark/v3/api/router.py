@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import re
 from dataclasses import dataclass
@@ -32,6 +33,68 @@ from strathmark.v3.api.schemas import (
     StatusResponse,
 )
 from strathmark.v3.contracts.identifiers import IdempotencyKey
+
+
+class BlockingOperationTimeout(TimeoutError):
+    """Bounded blocking work did not finish within the caller's deadline."""
+
+
+class BoundedBlockingExecutor:
+    """Run blocking SQLite/OS credential work off-loop with bounded concurrency."""
+
+    def __init__(self, *, max_concurrency: int) -> None:
+        if (
+            isinstance(max_concurrency, bool)
+            or not isinstance(max_concurrency, int)
+            or not 1 <= max_concurrency <= 64
+        ):
+            raise ValueError("blocking concurrency must be an integer from 1 to 64")
+        self._slots = asyncio.Semaphore(max_concurrency)
+        self._active_count = 0
+
+    @property
+    def active_count(self) -> int:
+        return self._active_count
+
+    async def run(self, function, /, *args, timeout_ms: int, **kwargs):
+        if not callable(function):
+            raise TypeError("blocking operation must be callable")
+        if (
+            isinstance(timeout_ms, bool)
+            or not isinstance(timeout_ms, int)
+            or not 1 <= timeout_ms <= 60_000
+        ):
+            raise ValueError("blocking operation timeout must be from 1 to 60000 milliseconds")
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        try:
+            await asyncio.wait_for(self._slots.acquire(), timeout=timeout_ms / 1000)
+        except TimeoutError as exc:
+            raise BlockingOperationTimeout("blocking operation capacity deadline expired") from exc
+        self._active_count += 1
+        try:
+            task = asyncio.create_task(
+                asyncio.to_thread(functools.partial(function, *args, **kwargs))
+            )
+        except BaseException:
+            self._active_count -= 1
+            self._slots.release()
+            raise
+
+        def finished(completed: asyncio.Task) -> None:
+            self._active_count -= 1
+            self._slots.release()
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(finished)
+        remaining = timeout_ms / 1000 - (loop.time() - started_at)
+        if remaining <= 0:
+            raise BlockingOperationTimeout("blocking operation deadline expired")
+        completed, _pending = await asyncio.wait((task,), timeout=remaining)
+        if not completed:
+            raise BlockingOperationTimeout("blocking operation deadline expired")
+        return task.result()
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,9 +204,31 @@ def _context(request: Request, *, require_idempotency: bool = True) -> RequestCo
 
 
 def create_router(
-    *, gateway: V3ApplicationPort, credentials: ServiceCredentialRegistry
+    *,
+    gateway: V3ApplicationPort,
+    credentials: ServiceCredentialRegistry,
+    blocking_executor: BoundedBlockingExecutor | None = None,
+    credential_operation_timeout_ms: int = 5_000,
 ) -> APIRouter:
     router = APIRouter(prefix="/v3")
+    blocking = blocking_executor or BoundedBlockingExecutor(max_concurrency=4)
+
+    async def credential_call(function, /, *args, **kwargs):
+        from strathmark.v3.api.app import TransportError
+
+        try:
+            return await blocking.run(
+                function,
+                *args,
+                timeout_ms=credential_operation_timeout_ms,
+                **kwargs,
+            )
+        except BlockingOperationTimeout as exc:
+            raise TransportError(
+                504,
+                "operation_deadline_exceeded",
+                "V3 operation deadline expired.",
+            ) from exc
 
     @router.get("/health", response_model=HealthResponse, operation_id="v3_health")
     async def health() -> HealthResponse:
@@ -257,7 +342,8 @@ def create_router(
         payload: CredentialRotationRequest, request: Request, response: Response
     ) -> CredentialRotationResponse:
         context = _context(request)
-        issued = credentials.rotate(
+        issued = await credential_call(
+            credentials.rotate,
             context.principal,
             overlap_seconds=payload.overlap_seconds,
             command_id=context.command_id,
@@ -280,10 +366,21 @@ def create_router(
         payload: CredentialRevocationRequest, request: Request
     ) -> CredentialRevocationResponse:
         context = _context(request)
-        credentials.revoke(context.principal, payload.key_id_digest, command_id=context.command_id)
+        await credential_call(
+            credentials.revoke,
+            context.principal,
+            payload.key_id_digest,
+            command_id=context.command_id,
+        )
         return CredentialRevocationResponse(key_id_digest=payload.key_id_digest)
 
     return router
 
 
-__all__ = ["RequestContext", "V3ApplicationPort", "create_router"]
+__all__ = [
+    "BlockingOperationTimeout",
+    "BoundedBlockingExecutor",
+    "RequestContext",
+    "V3ApplicationPort",
+    "create_router",
+]

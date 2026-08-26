@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable, Mapping, Protocol, cast
@@ -80,10 +81,61 @@ from strathmark.v3.infrastructure.sqlite.event_store import (
 FORECAST_COMMIT_MANIFEST_KIND = "credibility_forecast_commit"
 CREDIBILITY_POLICY_MANIFEST_KIND = "credibility_policy"
 OPTIMIZER_EVALUATOR_AUTHORITY_MANIFEST_KIND = "optimizer_evaluator_authority"
+LIVE_CONTROL_PREVIEW_MANIFEST_KIND = "live_control_preview"
+_LIVE_CONTROL_ACTIONS = frozenset({"suspend", "re_enable", "emergency_stop"})
+_LIVE_CONTROL_ASSESSOR = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
 class CredibilityReactionError(ValueError):
     """A settlement or optimizer receipt is not causally authoritative."""
+
+
+def seal_live_control_preview(
+    *,
+    tournament_id: StableIdentifier,
+    action: str,
+    authority_sequence: int,
+    authority_digest: str,
+    before_weights: Mapping[str, str],
+    after_weights: Mapping[str, str],
+    before_sheet: Mapping[str, int],
+    after_sheet: Mapping[str, int],
+    signer: P256Signer,
+    created_at: str,
+) -> SignedManifest:
+    """Seal a bounded operator preview against the current local event authority head."""
+
+    require_identifier(tournament_id, expected_namespace="tournament")
+    if action not in _LIVE_CONTROL_ACTIONS:
+        raise CredibilityReactionError("live control preview action is unknown")
+    if (
+        isinstance(authority_sequence, bool)
+        or not isinstance(authority_sequence, int)
+        or authority_sequence < 0
+    ):
+        raise CredibilityReactionError("live control preview authority sequence is invalid")
+    _digest(authority_digest, "live control preview authority digest")
+    before = _live_control_preview_state(before_weights, before_sheet)
+    after = _live_control_preview_state(after_weights, after_sheet)
+    payload = {
+        "schema_version": "strathmark-v3-live-control-preview-v1",
+        "scope": {"kind": "tournament", "tournament_id": str(tournament_id)},
+        "action": action,
+        "authority": {
+            "global_sequence": authority_sequence,
+            "event_digest": authority_digest,
+        },
+        "before": before,
+        "after": after,
+        "before_digest": canonical_digest(before),
+        "after_digest": canonical_digest(after),
+    }
+    return sign_manifest(
+        LIVE_CONTROL_PREVIEW_MANIFEST_KIND,
+        payload,
+        signer=signer,
+        created_at=require_utc_milliseconds(created_at),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -831,6 +883,7 @@ class SQLiteCredibilityReactionService:
         *,
         action: str,
         reason: str,
+        preview_manifest: SignedManifest | None = None,
         command_id: IdempotencyKey,
         actor_id: StableIdentifier,
         occurred_at_utc: str,
@@ -848,6 +901,8 @@ class SQLiteCredibilityReactionService:
             command_kind, event_kind = mapping[action]
         except KeyError as exc:
             raise CredibilityReactionError("live control action is unknown") from exc
+        if not isinstance(preview_manifest, SignedManifest):
+            raise CredibilityReactionError("live control requires a signed before/after preview")
         target = deterministic_identifier("weights", {"tournament_id": str(tournament_id)})
         retry = self._load_live_control_retry(
             target=target,
@@ -857,6 +912,7 @@ class SQLiteCredibilityReactionService:
             command_kind=command_kind,
             command_id=command_id,
             actor_id=actor_id,
+            preview_digest=preview_manifest.body_digest,
         )
         if retry is not None:
             return retry
@@ -871,8 +927,17 @@ class SQLiteCredibilityReactionService:
             after.update(enabled=False, emergency_stopped=True)
         before_digest = canonical_digest(before)
         after_digest = canonical_digest(after)
+        anchor = self._events.current_anchor()
+        preview = _verify_live_control_preview(
+            preview_manifest,
+            trust_store=self._trust_store,
+            tournament_id=tournament_id,
+            action=action,
+            authority_sequence=anchor.global_sequence,
+            authority_digest=anchor.event_digest,
+        )
         payload = {
-            "schema_version": "strathmark-v3-live-credibility-control-v1",
+            "schema_version": "strathmark-v3-live-credibility-control-v2",
             "tournament_id": str(tournament_id),
             "action": action,
             "reason": reason.strip(),
@@ -880,6 +945,9 @@ class SQLiteCredibilityReactionService:
             "after_digest": after_digest,
             "before": before,
             "after": after,
+            "preview": preview,
+            "preview_digest": preview_manifest.body_digest,
+            "preview_manifest": preview_manifest.to_dict(),
         }
         try:
             return self._append_event(
@@ -1068,6 +1136,7 @@ class SQLiteCredibilityReactionService:
         command_kind: CommandKind,
         command_id: IdempotencyKey,
         actor_id: StableIdentifier,
+        preview_digest: str,
     ) -> StoredCommandResult | None:
         with open_v3_connection(self.database_path, read_only=True) as connection:
             row = connection.execute(
@@ -1086,10 +1155,11 @@ class SQLiteCredibilityReactionService:
         if (
             event.command.kind is not command_kind
             or str(event.command.target_aggregate) != str(target)
-            or payload.get("schema_version") != "strathmark-v3-live-credibility-control-v1"
+            or payload.get("schema_version") != "strathmark-v3-live-credibility-control-v2"
             or payload.get("tournament_id") != str(tournament_id)
             or payload.get("action") != action
             or payload.get("reason") != reason
+            or payload.get("preview_digest") != preview_digest
         ):
             raise CredibilityReactionError("live-control retry changed its original request")
         retry = self._events.lookup_exact_retry(
@@ -1148,6 +1218,17 @@ class SQLiteCredibilityReactionService:
                 before = prior_payload.get("after")
             if before != payload["before"] or canonical_digest(before) != payload["before_digest"]:
                 raise EventStoreConflict("live control before-state changed concurrently")
+            prior_head = connection.execute(
+                "SELECT global_sequence,event_digest FROM v3_events WHERE global_sequence<? "
+                "ORDER BY global_sequence DESC LIMIT 1",
+                (current.global_sequence,),
+            ).fetchone()
+            expected_head = payload["preview"]["authority"]
+            if prior_head is None or expected_head != {
+                "global_sequence": int(prior_head[0]),
+                "event_digest": str(prior_head[1]),
+            }:
+                raise EventStoreConflict("live control preview authority head changed concurrently")
 
         return guard
 
@@ -2764,6 +2845,114 @@ def _positive_int(value: int, label: str) -> None:
         raise CredibilityReactionError(f"{label} must be a positive integer")
 
 
+def _live_control_preview_state(
+    weights: Mapping[str, str], sheet: Mapping[str, int]
+) -> dict[str, Any]:
+    if not isinstance(weights, Mapping) or not 1 <= len(weights) <= 16:
+        raise CredibilityReactionError("live control preview weights must be bounded and nonempty")
+    encoded_weights: list[dict[str, str]] = []
+    total = Decimal(0)
+    for assessor, weight in sorted(weights.items()):
+        if not isinstance(assessor, str) or _LIVE_CONTROL_ASSESSOR.fullmatch(assessor) is None:
+            raise CredibilityReactionError("live control preview assessor is invalid")
+        if not isinstance(weight, str):
+            raise CredibilityReactionError("live control preview weight is not canonical")
+        try:
+            parsed = Decimal(weight)
+        except (InvalidOperation, ValueError) as exc:
+            raise CredibilityReactionError("live control preview weight is invalid") from exc
+        if (
+            not parsed.is_finite()
+            or parsed < 0
+            or format(parsed, "f") != weight
+            or ("." in weight and weight.endswith("0"))
+        ):
+            raise CredibilityReactionError("live control preview weight is not canonical")
+        total += parsed
+        encoded_weights.append({"assessor": assessor, "weight": weight})
+    if total != 1:
+        raise CredibilityReactionError("live control preview weights must sum to one")
+    if not isinstance(sheet, Mapping) or len(sheet) > 128:
+        raise CredibilityReactionError("live control preview sheet exceeds the bounded maximum")
+    encoded_sheet: list[dict[str, Any]] = []
+    for competitor_id, mark in sorted(sheet.items()):
+        try:
+            require_identifier(competitor_id, expected_namespace="competitor")
+        except (TypeError, ValueError) as exc:
+            raise CredibilityReactionError(
+                "live control preview competitor identifier is invalid"
+            ) from exc
+        if isinstance(mark, bool) or not isinstance(mark, int) or not 3 <= mark <= 600_000:
+            raise CredibilityReactionError("live control preview mark is outside safe bounds")
+        encoded_sheet.append({"competitor_id": competitor_id, "mark": mark})
+    return {"weights": encoded_weights, "sheet": encoded_sheet}
+
+
+def _verify_live_control_preview(
+    manifest: SignedManifest | None,
+    *,
+    trust_store: IntegrityTrustStore,
+    tournament_id: StableIdentifier,
+    action: str,
+    authority_sequence: int,
+    authority_digest: str,
+) -> dict[str, Any]:
+    if not isinstance(manifest, SignedManifest):
+        raise CredibilityReactionError("live control requires a signed before/after preview")
+    if manifest.kind != LIVE_CONTROL_PREVIEW_MANIFEST_KIND:
+        raise CredibilityReactionError("live control preview manifest kind differs")
+    try:
+        payload = dict(verify_manifest(manifest, trust_store))
+    except IntegrityError as exc:
+        raise CredibilityReactionError("live control preview signature is untrusted") from exc
+    if (
+        set(payload)
+        != {
+            "schema_version",
+            "scope",
+            "action",
+            "authority",
+            "before",
+            "after",
+            "before_digest",
+            "after_digest",
+        }
+        or payload.get("schema_version") != "strathmark-v3-live-control-preview-v1"
+    ):
+        raise CredibilityReactionError("live control preview payload is not closed")
+    expected_scope = {"kind": "tournament", "tournament_id": str(tournament_id)}
+    expected_authority = {
+        "global_sequence": authority_sequence,
+        "event_digest": authority_digest,
+    }
+    if payload.get("scope") != expected_scope or payload.get("action") != action:
+        raise CredibilityReactionError("live control preview scope or action differs")
+    if payload.get("authority") != expected_authority:
+        raise CredibilityReactionError("live control preview authority head is stale")
+    for name in ("before", "after"):
+        state = payload.get(name)
+        if not isinstance(state, Mapping) or set(state) != {"weights", "sheet"}:
+            raise CredibilityReactionError("live control preview state is malformed")
+        weight_rows = state["weights"]
+        sheet_rows = state["sheet"]
+        if (
+            not isinstance(weight_rows, list)
+            or not isinstance(sheet_rows, list)
+            or any(not isinstance(row, Mapping) for row in (*weight_rows, *sheet_rows))
+        ):
+            raise CredibilityReactionError("live control preview state is malformed")
+        try:
+            normalized = _live_control_preview_state(
+                {str(row["assessor"]): row["weight"] for row in weight_rows},
+                {str(row["competitor_id"]): row["mark"] for row in sheet_rows},
+            )
+        except (KeyError, TypeError) as exc:
+            raise CredibilityReactionError("live control preview state is malformed") from exc
+        if state != normalized or payload.get(f"{name}_digest") != canonical_digest(normalized):
+            raise CredibilityReactionError("live control preview state digest differs")
+    return payload
+
+
 def _positive_decimal(value: str, label: str) -> None:
     try:
         parsed = Decimal(value)
@@ -2784,9 +2973,11 @@ def _digest(value: str, label: str) -> None:
 
 __all__ = [
     "CredibilityReactionError",
+    "LIVE_CONTROL_PREVIEW_MANIFEST_KIND",
     "OptimizerConsequenceEvaluatorPort",
     "OptimizerScoringInput",
     "SQLiteCredibilityReactionService",
     "SealedForecastCommit",
     "seal_forecast_commit",
+    "seal_live_control_preview",
 ]
