@@ -11,6 +11,7 @@ import argparse
 import gc
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -745,7 +746,10 @@ def _recovery_trial(
             except _InjectedReplayFault:
                 pass
             if name in {"machine_restart", "wal_recovery"}:
-                with sqlite3.connect(database) as connection:
+                # sqlite3.Connection's transaction context does not close the
+                # handle. Windows therefore retains replay.sqlite3 through
+                # TemporaryDirectory cleanup unless ownership is explicit.
+                with closing(sqlite3.connect(database)) as connection:
                     connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         else:
             injected, v3_path_available = _inject_special_fault(name, root)
