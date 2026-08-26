@@ -13,6 +13,7 @@ import json
 import os
 import re
 import struct
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from strathmark.v3.contracts.identifiers import require_identifier
 _TOKEN = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 SIGNATURE_ALGORITHM = "ecdsa-p256-sha256"
+_REGISTRY_RECORD_MAX_BYTES = 1_048_576
+_REGISTRY_READ_ATTEMPTS = 5
 
 
 class IntegrityError(RuntimeError):
@@ -1192,7 +1195,8 @@ def _numbered_registry_paths(root: Path, label: str) -> tuple[Path, ...]:
 
 def _read_signed_registry_record(path: Path, expected_kind: str) -> SignedManifest:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        encoded = _read_registry_record_bytes(path)
+        value = json.loads(encoded.decode("utf-8"))
         if not isinstance(value, dict):
             raise IntegrityError("registry record must be a JSON object")
         manifest = SignedManifest.from_dict(value)
@@ -1202,9 +1206,28 @@ def _read_signed_registry_record(path: Path, expected_kind: str) -> SignedManife
         raise IntegrityError("signed registry record is damaged") from exc
     if manifest.kind != expected_kind:
         raise IntegrityError("signed registry record has the wrong kind")
-    if canonical_bytes(manifest.to_dict()) != path.read_bytes():
+    if canonical_bytes(manifest.to_dict()) != encoded:
         raise IntegrityError("signed registry record bytes are not canonical")
     return manifest
+
+
+def _read_registry_record_bytes(path: Path) -> bytes:
+    """Read one bounded immutable record, tolerating only transient OS read failures."""
+
+    last_error: OSError | None = None
+    for attempt in range(_REGISTRY_READ_ATTEMPTS):
+        try:
+            with path.open("rb") as handle:
+                encoded = handle.read(_REGISTRY_RECORD_MAX_BYTES + 1)
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < _REGISTRY_READ_ATTEMPTS:
+                time.sleep(0.005 * (attempt + 1))
+            continue
+        if len(encoded) > _REGISTRY_RECORD_MAX_BYTES:
+            raise IntegrityError("signed registry record exceeds the bounded size limit")
+        return encoded
+    raise IntegrityError("signed registry record is temporarily unreadable") from last_error
 
 
 def _trusted_checkpoint(manifest: SignedManifest, payload: Mapping[str, Any]) -> TrustedCheckpoint:

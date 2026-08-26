@@ -795,6 +795,57 @@ def test_concurrent_checkpoint_and_rotation_publish_exact_retry_or_material_conf
     assert sum(item is not None for item in different_rotation) == 1
 
 
+def test_registry_record_read_retries_transient_os_failure_but_remains_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import strathmark.v3.infrastructure.integrity as module
+
+    signer = P256EphemeralSigner.generate("integrity-key:registry-read")
+    database = tmp_path / "authority.sqlite3"
+    SQLiteEventStore(database)
+    root = tmp_path / "registry"
+    CheckpointRegistry(root, bootstrap_identity=signer.identity).create_checkpoint(
+        database, signer=signer, created_at=NOW
+    )
+    record = (root / "checkpoints" / "0000000000000001.json").resolve()
+    original_open = Path.open
+    transient_attempts = 0
+
+    def transient_open(path: Path, *args: object, **kwargs: object):
+        nonlocal transient_attempts
+        if path.resolve() == record and transient_attempts < 2:
+            transient_attempts += 1
+            raise PermissionError("simulated Windows sharing violation")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, "open", transient_open)
+        checkpoint = CheckpointRegistry(
+            root, bootstrap_identity=signer.identity
+        ).latest_checkpoint()
+    assert checkpoint.checkpoint_sequence == 1
+    assert transient_attempts == 2
+
+    permanent_attempts = 0
+
+    def permanently_unreadable(path: Path, *args: object, **kwargs: object):
+        nonlocal permanent_attempts
+        if path.resolve() == record:
+            permanent_attempts += 1
+            raise PermissionError("simulated permanent denial")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, "open", permanently_unreadable)
+        with pytest.raises(IntegrityError, match="temporarily unreadable"):
+            CheckpointRegistry(root, bootstrap_identity=signer.identity)
+    assert permanent_attempts == module._REGISTRY_READ_ATTEMPTS
+
+    record.write_bytes(b"x" * (module._REGISTRY_RECORD_MAX_BYTES + 1))
+    with pytest.raises(IntegrityError, match="bounded size limit"):
+        CheckpointRegistry(root, bootstrap_identity=signer.identity)
+
+
 def _manifest_with_body(
     signer: P256EphemeralSigner,
     *,
