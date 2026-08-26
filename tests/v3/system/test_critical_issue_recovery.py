@@ -7,7 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -1356,6 +1356,7 @@ def test_production_probe_and_durable_publication_failure_matrix(
             self.MoveFileExW = FakeCall(move_result)
 
     invalid_handle = ctypes.wintypes.HANDLE(-1).value
+    windows_root = PureWindowsPath("C:/")
     with monkeypatch.context() as context:
         context.setattr(module.os, "name", "nt")
         context.setattr(
@@ -1365,14 +1366,16 @@ def test_production_probe_and_durable_publication_failure_matrix(
             raising=False,
         )
         with pytest.raises(IntegrityError, match="could not open"):
-            module._physical_device_id(tmp_path)
+            module._physical_device_id(windows_root)  # type: ignore[arg-type]
     with monkeypatch.context() as context:
         context.setattr(module.os, "name", "nt")
         context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(1, 0), raising=False)
         with pytest.raises(IntegrityError, match="probe failed"):
-            module._physical_device_id(tmp_path)
-    with pytest.raises(IntegrityError, match="no probeable"):
-        module._physical_device_id(Path("relative"))
+            module._physical_device_id(windows_root)  # type: ignore[arg-type]
+    with monkeypatch.context() as context:
+        context.setattr(module.os, "name", "nt")
+        with pytest.raises(IntegrityError, match="no probeable"):
+            module._physical_device_id(Path("relative"))
     with monkeypatch.context() as context:
         context.setattr(module.os, "name", "posix")
         assert module._physical_device_id(tmp_path).startswith("posix-device:")
