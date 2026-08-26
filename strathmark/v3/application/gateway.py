@@ -15,6 +15,7 @@ from typing import Any
 from strathmark.v3.api.router import RequestContext
 from strathmark.v3.api.schemas import (
     GENERIC_ONLINE_COMMAND_KINDS,
+    ApprovalDecisionResponse,
     AssembleFieldResponse,
     ExecuteCommandResponse,
     IssueAcknowledgmentResponse,
@@ -22,6 +23,12 @@ from strathmark.v3.api.schemas import (
     ReceiptLookupResponse,
     SettlementResponse,
     StatusResponse,
+)
+from strathmark.v3.application.approval import (
+    ApprovalConflict,
+    ApprovalDecisionAction,
+    ApprovalDecisionCommand,
+    ApprovalDecisionSelection,
 )
 from strathmark.v3.application.commands import (
     _COMMAND_EVENT,
@@ -53,7 +60,7 @@ from strathmark.v3.contracts.receipts import FieldReceipt
 from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus
 from strathmark.v3.domain.evidence import LiveResultSubmission
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
-from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict, SQLiteEventStore
 from strathmark.v3.infrastructure.sqlite.jobs import DurableJobRepository
 from strathmark.v3.infrastructure.sqlite.projections import SQLiteFieldProjectionStore
 
@@ -400,6 +407,95 @@ class V3ApplicationGateway:
             receipt_ids=acknowledgment.receipt_ids,
             authority_sequence=acknowledgment.last_global_sequence,
             recovery_marker_digest=acknowledgment.result_digest,
+        )
+
+    def record_approval_decision(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> ApprovalDecisionResponse:
+        bindings = (*payload["selected"], *payload["excluded"])
+        for binding in bindings:
+            try:
+                receipt = self._services.fields.verified_receipt(binding["receipt_id"])
+            except KeyError:
+                self._conflict("approval_receipt_not_found")
+            if (
+                receipt.content_digest != binding["receipt_digest"]
+                or str(receipt.field_id) != binding["field_id"]
+            ):
+                self._conflict("approval_receipt_digest_differs")
+        receipt_bindings_digest = canonical_digest(
+            {"selected": payload["selected"], "excluded": payload["excluded"]}
+        )
+
+        def selection(value: dict[str, Any]) -> ApprovalDecisionSelection:
+            return ApprovalDecisionSelection(
+                value["field_id"],
+                value["receipt_id"],
+                value["receipt_revision"],
+                value["upstream_field_revision"],
+                value["row_digest"],
+                value["call_order"],
+            )
+
+        actor_metadata = {
+            "submitted": payload["actor_metadata"],
+            "transport": {
+                "upstream_actor_id": context.upstream_actor_id,
+                "upstream_action": context.upstream_action,
+                "upstream_trace_id": context.upstream_trace_id,
+            },
+            "receipt_bindings_digest": receipt_bindings_digest,
+        }
+        command = ApprovalDecisionCommand.create(
+            caller_namespace=self._caller_namespace,
+            request_identity=str(context.command_id),
+            tournament_id=payload["tournament_id"],
+            snapshot_id=payload["snapshot_id"],
+            action=ApprovalDecisionAction(payload["action"]),
+            selected=tuple(selection(item) for item in payload["selected"]),
+            excluded=tuple(selection(item) for item in payload["excluded"]),
+            actor_id=str(context.principal.principal_id),
+            actor_metadata=actor_metadata,
+            reason_code=payload["reason_code"],
+            superseded_receipt_id=payload["superseded_receipt_id"],
+            submitted_at=payload["decided_at_utc"],
+        )
+        try:
+            decision = self._services.fields.record_approval_decision(command)
+        except (ApprovalConflict, EventStoreConflict):
+            self._conflict("approval_decision_conflicts")
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            authority = connection.execute(
+                "SELECT source_global_sequence,command_digest,decision_digest "
+                "FROM v3_approval_command_projection WHERE tournament_id=? "
+                "AND caller_namespace=? AND request_identity=?",
+                (
+                    command.tournament_id,
+                    command.caller_namespace,
+                    command.request_identity,
+                ),
+            ).fetchone()
+        if authority is None or (
+            str(authority[1]) != command.command_digest
+            or str(authority[2]) != decision.decision_digest
+        ):
+            raise RuntimeError("approval acknowledgment differs from projection authority")
+        return ApprovalDecisionResponse(
+            command_id=str(context.command_id),
+            caller_namespace=decision.caller_namespace,
+            tournament_id=decision.tournament_id,
+            snapshot_id=decision.snapshot_id,
+            action=decision.action.value,
+            decisions=tuple(
+                {"receipt_id": receipt_id, "decision_state": state.value}
+                for receipt_id, state in decision.decisions
+            ),
+            decided_at_utc=decision.decided_at,
+            actor_metadata_digest=command.actor_metadata_digest,
+            receipt_bindings_digest=receipt_bindings_digest,
+            command_digest=decision.command_digest,
+            decision_digest=decision.decision_digest,
+            authority_sequence=int(authority[0]),
         )
 
     def settle_result(self, payload: dict[str, Any], context: RequestContext) -> SettlementResponse:

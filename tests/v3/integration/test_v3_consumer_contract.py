@@ -19,6 +19,7 @@ from strathmark.v3.api.auth import (  # noqa: E402
 )
 from strathmark.v3.api.schemas import (  # noqa: E402
     GENERIC_ONLINE_COMMAND_KINDS,
+    ApprovalDecisionRequest,
     AssembleFieldRequest,
     CredentialRevocationRequest,
     CredentialRotationRequest,
@@ -87,6 +88,7 @@ def test_frozen_contract_is_exact_fresh_generation_and_live_openapi(
 def test_every_example_validates_against_frozen_schema_and_live_request_model() -> None:
     document = load_v3_consumer_contract()
     request_models = {
+        "/v3/approvals/decide": ApprovalDecisionRequest,
         "/v3/cards/prepare": PrepareCardRequest,
         "/v3/commands/execute": ExecuteCommandRequest,
         "/v3/fields/assemble": AssembleFieldRequest,
@@ -137,6 +139,8 @@ def test_command_surface_covers_every_kind_without_exposing_offline_recovery_onl
     enum_values = set(document["components"]["schemas"]["OnlineCommandKind"]["enum"])
     assert enum_values == online == {item.value for item in GENERIC_ONLINE_COMMAND_KINDS}
     assert "acknowledge_batch_issue" in dedicated
+    assert "record_approval_decision" in dedicated
+    assert CommandKind.RECORD_APPROVAL_DECISION not in GENERIC_ONLINE_COMMAND_KINDS
     assert "settle_live_race" in dedicated
     assert "freeze_evidence_epoch" in internal
     assert "evaluate_model_candidate" in internal

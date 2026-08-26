@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, cast
 
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
@@ -94,6 +95,7 @@ _PROJECTION_TABLES = (
     "v3_model_status",
     "v3_model_candidates",
     "v3_model_tournament_pins",
+    "v3_expected_time_override_states",
 )
 
 
@@ -3909,6 +3911,65 @@ class SQLiteFieldProjectionStore:
                 raise KeyError(receipt_id)
             return self._verify_exact_receipt_row(connection, row)
 
+    def active_expected_time_override(
+        self,
+        *,
+        tournament_id: StableIdentifier,
+        field_id: StableIdentifier,
+        target_context_digest: str,
+        call_order: int,
+        competitor_id: StableIdentifier,
+    ) -> Any | None:
+        """Load the one authenticated accepted override applicable to a future field."""
+
+        from strathmark.v3.domain.disagreement import AcceptedExpectedTimeOverrideState
+
+        tournament = require_identifier(tournament_id, expected_namespace="tournament")
+        field = require_identifier(field_id, expected_namespace="field")
+        competitor = require_identifier(competitor_id, expected_namespace="competitor")
+        _require_projection_digest(target_context_digest, "override target context")
+        if isinstance(call_order, bool) or not isinstance(call_order, int) or call_order < 0:
+            raise ProjectionError("override target call order must be nonnegative")
+        matches = []
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT state_json,state_digest,source_global_sequence,source_event_digest "
+                "FROM v3_expected_time_override_states WHERE competitor_id=? "
+                "AND tournament_id=? AND active=1 AND accepted_call_order<=? "
+                "ORDER BY source_global_sequence DESC LIMIT 2",
+                (str(competitor), str(tournament), call_order),
+            ).fetchall()
+            for row in rows:
+                try:
+                    value = json.loads(str(row[0]))
+                    state = AcceptedExpectedTimeOverrideState.from_dict(value)
+                except Exception as exc:
+                    raise ProjectionError("accepted override state is malformed") from exc
+                source = connection.execute(
+                    "SELECT event_digest,event_kind FROM v3_events WHERE global_sequence=?",
+                    (int(row[2]),),
+                ).fetchone()
+                if (
+                    canonical_bytes(value).decode() != str(row[0])
+                    or state.state_digest != str(row[1])
+                    or state.accepted_global_sequence != int(row[2])
+                    or state.accepted_event_digest != str(row[3])
+                    or source is None
+                    or str(source[0]) != str(row[3])
+                    or str(source[1]) != EventKind.APPROVAL_DECISION_RECORDED.value
+                ):
+                    raise ProjectionError("accepted override state differs from event authority")
+                if state.applies_to(
+                    tournament_id=tournament,
+                    field_id=field,
+                    target_context_digest=target_context_digest,
+                    call_order=call_order,
+                ):
+                    matches.append(state)
+        if len(matches) > 1:
+            raise ProjectionError("multiple accepted overrides overlap without supersession")
+        return None if not matches else matches[0]
+
     def verify_bounded_checkpoint(self) -> str:
         """Verify the newest transactional approval checkpoint without a rebuild."""
 
@@ -7120,6 +7181,7 @@ def _rebuild_approval_decisions_connection(
     """Replay approval decision projections from canonical EventStore authority."""
 
     from strathmark.v3.application.approval import (
+        ApprovalDecisionAction,
         ApprovalDecisionCommand,
         ApprovalDecisionReceipt,
     )
@@ -7127,6 +7189,7 @@ def _rebuild_approval_decisions_connection(
 
     connection.execute("DELETE FROM v3_approval_decision_projection")
     connection.execute("DELETE FROM v3_approval_command_projection")
+    connection.execute("DELETE FROM v3_expected_time_override_states")
     latest = 0
     for stored in connection.execute(
         "SELECT envelope_json FROM v3_events WHERE event_kind=? "
@@ -7210,8 +7273,137 @@ def _rebuild_approval_decisions_connection(
                     event.global_sequence,
                 ),
             )
+        if command.action is ApprovalDecisionAction.OVERRIDE_SUBMITTED:
+            _project_accepted_expected_time_override(
+                connection,
+                event=event,
+                command=command,
+                selection=command.selected[0],
+            )
         latest = event.global_sequence
     return latest
+
+
+def _project_accepted_expected_time_override(
+    connection: sqlite3.Connection,
+    *,
+    event: EventEnvelope,
+    command: Any,
+    selection: Any,
+) -> None:
+    from strathmark.v3.contracts.receipts import ReceiptSectionKind
+    from strathmark.v3.domain.disagreement import AcceptedExpectedTimeOverrideState
+
+    stored = connection.execute(
+        "SELECT * FROM v3_field_receipts WHERE receipt_id=?",
+        (selection.receipt_id,),
+    ).fetchone()
+    if stored is None:
+        raise ProjectionError("accepted override receipt authority is missing")
+    try:
+        receipt, integrity, _receipt_event, _payload = _approval_receipt_authority(
+            connection, stored
+        )
+        validation = _approval_validation_payload(receipt)
+    except Exception as exc:
+        raise ProjectionError("accepted override receipt authority is malformed") from exc
+    prior = connection.execute(
+        "SELECT receipt_digest FROM v3_field_receipts WHERE receipt_id=?",
+        (str(receipt.supersedes_receipt_id),),
+    ).fetchone()
+    if not integrity or prior is None:
+        raise ProjectionError("accepted override predecessor authority is missing")
+    row = SimpleNamespace(
+        receipt_id=str(receipt.receipt_id),
+        receipt_revision=receipt.receipt_revision,
+        upstream_field_revision=receipt.upstream_field_revision,
+        field_id=str(receipt.field_id),
+        prior_receipt_id=str(receipt.supersedes_receipt_id),
+        prior_receipt_content_digest=str(prior[0]),
+    )
+    authority = _approval_verified_expected_time_override(connection, row)
+    if authority is None:
+        raise ProjectionError("accepted override lacks exact whole-field authority")
+    override = authority.override_receipt
+    sections = {
+        item.kind: item.payload.to_value()
+        for item in receipt.sections
+        if isinstance(item.payload, InlinePayload)
+    }
+    pooled = sections.get(ReceiptSectionKind.POOLED_DISTRIBUTION)
+    capability_revision = 0
+    if isinstance(pooled, dict) and isinstance(pooled.get("bases"), list):
+        for item in pooled["bases"]:
+            if (
+                isinstance(item, list)
+                and len(item) == 2
+                and item[0] == str(override.competitor_id)
+                and isinstance(item[1], dict)
+            ):
+                basis = item[1]
+                if basis.get("basis_kind") == "capability_pool" and isinstance(
+                    basis.get("capability_binding"), dict
+                ):
+                    capability_revision = int(basis["capability_binding"]["state_revision"])
+                elif basis.get("basis_kind") == "accepted_override_starting_estimate":
+                    capability_revision = int(basis.get("current_capability_revision", 0))
+                break
+    state = AcceptedExpectedTimeOverrideState.create(
+        override_id=override.override_id,
+        competitor_id=override.competitor_id,
+        tournament_id=require_identifier(command.tournament_id, expected_namespace="tournament"),
+        target_context_digest=override.target_context_digest,
+        expected_raw_time_ms=override.after_time_ms,
+        scope=override.scope,
+        scope_boundary_id=override.scope_boundary_id,
+        accepted_field_id=receipt.field_id,
+        accepted_round_id=require_identifier(
+            validation.get("round_id"), expected_namespace="round"
+        ),
+        accepted_call_order=validation.get("call_order"),
+        accepted_capability_revision=capability_revision,
+        actor=override.actor,
+        reason=override.reason,
+        supersedes_override_id=override.supersedes_override_id,
+        override_receipt_digest=override.receipt_digest,
+        accepted_global_sequence=event.global_sequence,
+        accepted_event_digest=event.event_digest,
+    )
+    existing = connection.execute(
+        "SELECT override_id FROM v3_expected_time_override_states "
+        "WHERE competitor_id=? AND tournament_id=? AND active=1",
+        (str(state.competitor_id), str(state.tournament_id)),
+    ).fetchall()
+    if state.supersedes_override_id is None:
+        if existing:
+            raise ProjectionError("accepted override requires explicit supersession")
+    elif len(existing) != 1 or str(existing[0][0]) != str(state.supersedes_override_id):
+        raise ProjectionError("accepted override supersession target is not current")
+    connection.execute(
+        "INSERT INTO v3_expected_time_override_states VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL)",
+        (
+            str(state.override_id),
+            str(state.competitor_id),
+            str(state.tournament_id),
+            state.target_context_digest,
+            state.scope.value,
+            str(state.scope_boundary_id),
+            str(state.accepted_field_id),
+            str(state.accepted_round_id),
+            state.accepted_call_order,
+            state.accepted_capability_revision,
+            canonical_bytes(state.to_dict()).decode(),
+            state.state_digest,
+            state.accepted_global_sequence,
+            state.accepted_event_digest,
+        ),
+    )
+    if state.supersedes_override_id is not None:
+        connection.execute(
+            "UPDATE v3_expected_time_override_states SET active=0,"
+            "superseded_by_override_id=? WHERE override_id=? AND active=1",
+            (str(state.override_id), str(state.supersedes_override_id)),
+        )
 
 
 def _prioritized_approval_conflict_fields(
@@ -7248,6 +7440,7 @@ def _approval_projection_material(connection: sqlite3.Connection) -> str | None:
         "v3_approval_decision_projection": "receipt_id",
         "v3_approval_snapshot_history": "snapshot_id",
         "v3_approval_snapshot_rows": "snapshot_id, field_id",
+        "v3_expected_time_override_states": "source_global_sequence",
     }
     material: dict[str, list[list[Any]]] = {}
     populated = False

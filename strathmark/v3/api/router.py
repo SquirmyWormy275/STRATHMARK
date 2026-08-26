@@ -13,6 +13,8 @@ from fastapi import APIRouter, Request, Response
 
 from strathmark.v3.api.auth import CredentialError, ServiceCredentialRegistry, ServicePrincipal
 from strathmark.v3.api.schemas import (
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
     AssembleFieldRequest,
     AssembleFieldResponse,
     CredentialRevocationRequest,
@@ -127,6 +129,10 @@ class V3ApplicationPort(Protocol):
     def acknowledge_issue(
         self, payload: dict[str, Any], context: RequestContext
     ) -> IssueAcknowledgmentResponse | Awaitable[IssueAcknowledgmentResponse]: ...
+
+    def record_approval_decision(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> ApprovalDecisionResponse | Awaitable[ApprovalDecisionResponse]: ...
 
     def settle_result(
         self, payload: dict[str, Any], context: RequestContext
@@ -298,6 +304,27 @@ def create_router(
             _context(request),
             deadline_ms=payload.deadline_ms,
         )
+
+    @router.post(
+        "/approvals/decide",
+        response_model=ApprovalDecisionResponse,
+        operation_id="v3_record_approval_decision",
+    )
+    async def record_approval_decision(
+        payload: ApprovalDecisionRequest, request: Request
+    ) -> ApprovalDecisionResponse:
+        context = _context(request)
+        response = await _invoke(
+            gateway.record_approval_decision,
+            payload.model_dump(mode="json"),
+            context,
+            deadline_ms=payload.deadline_ms,
+        )
+        if not isinstance(response, ApprovalDecisionResponse) or response.command_id != str(
+            context.command_id
+        ):
+            raise RuntimeError("approval result does not bind transport identity")
+        return response
 
     @router.post(
         "/issues/acknowledge",

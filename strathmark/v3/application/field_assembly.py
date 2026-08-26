@@ -39,6 +39,7 @@ from strathmark.v3.contracts.receipts import (
 )
 from strathmark.v3.domain.credibility import ContextNode
 from strathmark.v3.domain.disagreement import (
+    AcceptedExpectedTimeOverrideState,
     ConsequenceColor,
     CouncilMemberStatus,
     CounterfactualCompetitor,
@@ -1062,6 +1063,84 @@ class ZeroHistoryPriorBasis:
 
 
 @dataclass(frozen=True, slots=True)
+class OverrideStartingEstimateBasis:
+    state: AcceptedExpectedTimeOverrideState
+    distribution: PositiveTimeDistribution
+    source_basis: CapabilityPoolBasis | ZeroHistoryPriorBasis
+    current_capability_revision: int
+    later_evidence_applied: bool
+    basis_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, AcceptedExpectedTimeOverrideState) or not isinstance(
+            self.source_basis, (CapabilityPoolBasis, ZeroHistoryPriorBasis)
+        ):
+            raise AssemblyError("override starting estimate requires typed authority")
+        if not isinstance(self.distribution, PositiveTimeDistribution):
+            raise AssemblyError("override starting estimate requires a distribution")
+        expected_revision = (
+            self.source_basis.capability_binding.state_revision
+            if isinstance(self.source_basis, CapabilityPoolBasis)
+            else 0
+        )
+        if (
+            self.state.competitor_id
+            != (
+                self.source_basis.capability_binding.competitor_id
+                if isinstance(self.source_basis, CapabilityPoolBasis)
+                else self.source_basis.estimate.competitor_id
+            )
+            or self.current_capability_revision != expected_revision
+            or self.later_evidence_applied
+            != (expected_revision > self.state.accepted_capability_revision)
+            or self.distribution
+            != self.state.effective_distribution(
+                self.source_basis.distribution,
+                current_capability_revision=expected_revision,
+            )
+        ):
+            raise AssemblyError("override starting estimate differs from current evidence")
+        _digest(self.basis_digest, "override starting estimate basis")
+        if self.basis_digest != canonical_digest(self.content_value()):
+            raise AssemblyError("override starting estimate basis digest differs")
+
+    @classmethod
+    def create(
+        cls,
+        state: AcceptedExpectedTimeOverrideState,
+        source_basis: CapabilityPoolBasis | ZeroHistoryPriorBasis,
+    ) -> OverrideStartingEstimateBasis:
+        revision = (
+            source_basis.capability_binding.state_revision
+            if isinstance(source_basis, CapabilityPoolBasis)
+            else 0
+        )
+        values = {
+            "state": state,
+            "distribution": state.effective_distribution(
+                source_basis.distribution,
+                current_capability_revision=revision,
+            ),
+            "source_basis": source_basis,
+            "current_capability_revision": revision,
+            "later_evidence_applied": revision > state.accepted_capability_revision,
+        }
+        return cls(**values, basis_digest=canonical_digest(_override_basis_content(values)))
+
+    def content_value(self) -> dict[str, Any]:
+        return _override_basis_content(
+            {
+                name: getattr(self, name)
+                for name in self.__dataclass_fields__
+                if name != "basis_digest"
+            }
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.content_value(), "basis_digest": self.basis_digest}
+
+
+@dataclass(frozen=True, slots=True)
 class ManualExpectedTimeBasis:
     competitor_id: StableIdentifier
     distribution: PositiveTimeDistribution
@@ -1095,7 +1174,12 @@ class ManualExpectedTimeBasis:
         return {**self.content_value(), "basis_digest": self.basis_digest}
 
 
-PredictionBasis = CapabilityPoolBasis | ZeroHistoryPriorBasis | ManualExpectedTimeBasis
+PredictionBasis = (
+    CapabilityPoolBasis
+    | ZeroHistoryPriorBasis
+    | OverrideStartingEstimateBasis
+    | ManualExpectedTimeBasis
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1110,7 +1194,12 @@ class CompetitorPredictionEvidence:
             or not isinstance(self.publication, RollingPublicationBinding)
             or not isinstance(
                 self.basis,
-                (CapabilityPoolBasis, ZeroHistoryPriorBasis, ManualExpectedTimeBasis),
+                (
+                    CapabilityPoolBasis,
+                    ZeroHistoryPriorBasis,
+                    OverrideStartingEstimateBasis,
+                    ManualExpectedTimeBasis,
+                ),
             )
             or self.card.competitor_id != self.publication.competitor_id
             or self.card.packet_digest != self.publication.evidence_digest
@@ -1141,6 +1230,10 @@ class CompetitorPredictionEvidence:
                 )
             ):
                 raise AssemblyError("zero-history basis competitor differs")
+        elif isinstance(self.basis, OverrideStartingEstimateBasis):
+            CompetitorPredictionEvidence(self.card, self.publication, self.basis.source_basis)
+            if self.basis.state.competitor_id != self.card.competitor_id:
+                raise AssemblyError("override starting estimate competitor differs")
         elif self.basis.competitor_id != self.card.competitor_id:
             raise AssemblyError("manual basis competitor differs")
 
@@ -2025,9 +2118,9 @@ class SealedPipelineOutput:
         if identities != joint_identities or identities != optimizer_ids:
             raise AssemblyError("pool, joint, and optimizer rosters differ")
         if any(
-            item.basis.pool.receipt.weight_authority != self.weight_authority
+            capability.pool.receipt.weight_authority != self.weight_authority
             for item in self.prediction_evidence
-            if isinstance(item.basis, CapabilityPoolBasis)
+            if (capability := _capability_basis(item.basis)) is not None
         ):
             raise AssemblyError("pipeline pools do not share one frozen weight authority")
         valid_source_sets = tuple(
@@ -2159,18 +2252,7 @@ class SealedPipelineOutput:
             distribution = basis[draw.competitor_id]
             if distribution is None or draw.distribution_digest != distribution.digest:
                 raise AssemblyError("joint draws do not bind exact pooled/manual distributions")
-        basis_digests = [
-            (
-                item.basis.pool.receipt.receipt_digest
-                if isinstance(item.basis, CapabilityPoolBasis)
-                else (
-                    item.basis.authority_digest
-                    if isinstance(item.basis, ZeroHistoryPriorBasis)
-                    else item.basis.basis_digest
-                )
-            )
-            for item in self.prediction_evidence
-        ]
+        basis_digests = [_prediction_basis_digest(item.basis) for item in self.prediction_evidence]
         manual_authority_digest = (
             None if self.manual_authority is None else self.manual_authority.authority_digest
         )
@@ -2282,9 +2364,9 @@ class SealedPipelineOutput:
     @property
     def pools(self) -> tuple[CompetitorPoolEvidence, ...]:
         return tuple(
-            CompetitorPoolEvidence(item.card, item.basis.pool)
+            CompetitorPoolEvidence(item.card, capability.pool)
             for item in self.prediction_evidence
-            if isinstance(item.basis, CapabilityPoolBasis)
+            if (capability := _capability_basis(item.basis)) is not None
         )
 
     @property
@@ -2294,9 +2376,9 @@ class SealedPipelineOutput:
     @property
     def capability_bindings(self) -> tuple[RollingCapabilityBinding, ...]:
         return tuple(
-            item.basis.capability_binding
+            capability.capability_binding
             for item in self.prediction_evidence
-            if isinstance(item.basis, CapabilityPoolBasis)
+            if (capability := _capability_basis(item.basis)) is not None
         )
 
     @property
@@ -2304,7 +2386,7 @@ class SealedPipelineOutput:
         return tuple(
             item.competitor_id
             for item in self.prediction_evidence
-            if isinstance(item.basis, ZeroHistoryPriorBasis)
+            if _zero_history_basis(item.basis) is not None
         )
 
     @property
@@ -3618,6 +3700,48 @@ def _manual_field_content(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _override_basis_content(values: Mapping[str, Any]) -> dict[str, Any]:
+    source = values["source_basis"]
+    if not isinstance(source, (CapabilityPoolBasis, ZeroHistoryPriorBasis)):
+        raise AssemblyError("override starting estimate source is invalid")
+    return {
+        "basis_kind": "accepted_override_starting_estimate",
+        "override_state": values["state"].to_dict(),
+        "distribution": values["distribution"].to_dict(),
+        "source_basis": source.to_dict(),
+        "current_capability_revision": values["current_capability_revision"],
+        "later_evidence_applied": values["later_evidence_applied"],
+    }
+
+
+def _capability_basis(basis: PredictionBasis) -> CapabilityPoolBasis | None:
+    if isinstance(basis, CapabilityPoolBasis):
+        return basis
+    if isinstance(basis, OverrideStartingEstimateBasis) and isinstance(
+        basis.source_basis, CapabilityPoolBasis
+    ):
+        return basis.source_basis
+    return None
+
+
+def _zero_history_basis(basis: PredictionBasis) -> ZeroHistoryPriorBasis | None:
+    if isinstance(basis, ZeroHistoryPriorBasis):
+        return basis
+    if isinstance(basis, OverrideStartingEstimateBasis) and isinstance(
+        basis.source_basis, ZeroHistoryPriorBasis
+    ):
+        return basis.source_basis
+    return None
+
+
+def _prediction_basis_digest(basis: PredictionBasis) -> str:
+    if isinstance(basis, CapabilityPoolBasis):
+        return basis.pool.receipt.receipt_digest
+    if isinstance(basis, ZeroHistoryPriorBasis):
+        return basis.authority_digest
+    return basis.basis_digest
+
+
 def _manual_construction_submission_content(values: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "strathmark-v3-manual-construction-submission-v1",
@@ -3767,6 +3891,7 @@ __all__ = [
     "OperationalWeightAuthority",
     "OperationalWeightKind",
     "OperationalDisagreementReceipt",
+    "OverrideStartingEstimateBasis",
     "RollingCapabilityBinding",
     "RollingPublicationBinding",
     "ManualCompetitorEstimate",

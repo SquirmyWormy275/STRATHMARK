@@ -34,6 +34,7 @@ from strathmark.v3.api.router import (  # noqa: E402
     RequestContext,
 )
 from strathmark.v3.api.schemas import (  # noqa: E402
+    ApprovalDecisionResponse,
     AssembleFieldRequest,
     AssembleFieldResponse,
     ExecuteCommandRequest,
@@ -103,6 +104,26 @@ class Gateway:
             receipt_ids=("receipt:field-1",),
             authority_sequence=4,
             recovery_marker_digest="b" * 64,
+        )
+
+    async def record_approval_decision(self, payload, context):
+        self.calls.append(("record_approval_decision", payload, context))
+        return ApprovalDecisionResponse(
+            command_id=str(context.command_id),
+            caller_namespace="api",
+            tournament_id=payload["tournament_id"],
+            snapshot_id=payload["snapshot_id"],
+            action=payload["action"],
+            decisions=(
+                {"receipt_id": "receipt:field-1", "decision_state": "accepted"},
+                {"receipt_id": "receipt:field-2", "decision_state": "excluded"},
+            ),
+            decided_at_utc=payload["decided_at_utc"],
+            actor_metadata_digest="b" * 64,
+            receipt_bindings_digest="a" * 64,
+            command_digest="c" * 64,
+            decision_digest="d" * 64,
+            authority_sequence=4,
         )
 
     async def settle_result(self, payload, context):
@@ -477,6 +498,43 @@ def test_all_consumer_operations_map_to_separate_application_port_methods(api) -
                 "deadline_ms": 250,
             },
             "lookup_receipt",
+        ),
+        (
+            "/v3/approvals/decide",
+            {
+                "schema_version": "strathmark-v3-approval-decision-request-v1",
+                "tournament_id": "tournament:show",
+                "snapshot_id": f"approval_snapshot:{'a' * 64}",
+                "action": "ordinary_batch_accept",
+                "selected": [
+                    {
+                        "field_id": "field:heat-7",
+                        "receipt_id": "receipt:field-1",
+                        "receipt_digest": "b" * 64,
+                        "receipt_revision": 2,
+                        "upstream_field_revision": 3,
+                        "row_digest": "c" * 64,
+                        "call_order": 0,
+                    }
+                ],
+                "excluded": [
+                    {
+                        "field_id": "field:heat-8",
+                        "receipt_id": "receipt:field-2",
+                        "receipt_digest": "d" * 64,
+                        "receipt_revision": 1,
+                        "upstream_field_revision": 3,
+                        "row_digest": "e" * 64,
+                        "call_order": 1,
+                    }
+                ],
+                "actor_metadata": {"judge_station": "station-a"},
+                "reason_code": "judge_reviewed_batch",
+                "superseded_receipt_id": None,
+                "decided_at_utc": "2026-08-25T12:00:00.000Z",
+                "deadline_ms": 1000,
+            },
+            "record_approval_decision",
         ),
         (
             "/v3/issues/acknowledge",
@@ -1257,6 +1315,7 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
         {**command, "canonical_payload_json": "{"},
         {**command, "canonical_payload_json": '{"schema_version":"wrong"}'},
         {**command, "payload_digest": "0" * 64},
+        {**command, "command_kind": "record_approval_decision"},
         {**command, "command_kind": "promote_bundle"},
         {**command, "command_kind": "rollback_bundle"},
         {**command, "command_kind": "record_monitoring"},

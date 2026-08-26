@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -13,6 +13,9 @@ from strathmark.v3.contracts.canonical import canonical_bytes
 from strathmark.v3.contracts.commands import CommandKind
 
 _ID = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+_TOURNAMENT_ID = r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+_FIELD_ID = r"^field:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+_RECEIPT_ID = r"^receipt:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _DIGEST = r"^[0-9a-f]{64}$"
 _UTC_MS = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$"
 OFFLINE_OR_DEDICATED_CREDENTIAL_COMMANDS = frozenset(
@@ -44,7 +47,6 @@ GENERIC_ONLINE_COMMAND_KINDS = frozenset(
         CommandKind.RECORD_CAPABILITY_UPDATE,
         CommandKind.REBASE_CAPABILITY_STATE,
         CommandKind.CHANGE_WEIGHTS,
-        CommandKind.RECORD_APPROVAL_DECISION,
         CommandKind.OPTIMIZE_FIELD,
         CommandKind.SETTLE_FIELD,
         CommandKind.CREATE_MODEL_CANDIDATE,
@@ -230,6 +232,107 @@ class ReceiptLookupResponse(StrictV3Model):
 class ReceiptBinding(StrictV3Model):
     receipt_id: str = Field(pattern=_ID)
     receipt_digest: str = Field(pattern=_DIGEST)
+
+
+class ApprovalReceiptBinding(StrictV3Model):
+    field_id: str = Field(pattern=_FIELD_ID)
+    receipt_id: str = Field(pattern=_RECEIPT_ID)
+    receipt_digest: str = Field(pattern=_DIGEST)
+    receipt_revision: int = Field(ge=1)
+    upstream_field_revision: int = Field(ge=1)
+    row_digest: str = Field(pattern=_DIGEST)
+    call_order: int = Field(ge=0)
+
+
+class ApprovalDecisionRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-approval-decision-request-v1"]
+    tournament_id: str = Field(pattern=_TOURNAMENT_ID)
+    snapshot_id: str = Field(pattern=r"^approval_snapshot:[0-9a-f]{64}$")
+    action: Literal[
+        "ordinary_batch_accept",
+        "degraded_batch_accept",
+        "individual_accept",
+        "override_submitted",
+        "exclude",
+        "defer",
+    ]
+    selected: list[ApprovalReceiptBinding] = Field(max_length=100)
+    excluded: list[ApprovalReceiptBinding] = Field(max_length=100)
+    actor_metadata: dict[str, Any]
+    reason_code: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+    superseded_receipt_id: str | None = Field(pattern=_RECEIPT_ID)
+    decided_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+    @model_validator(mode="after")
+    def _closed_decision(self) -> ApprovalDecisionRequest:
+        try:
+            canonical_bytes(self.actor_metadata, max_bytes=2_048)
+        except Exception as exc:
+            raise ValueError("approval actor metadata must be a bounded JSON object") from exc
+        if not self.selected and not self.excluded:
+            raise ValueError("approval decision requires receipt bindings")
+        if len(self.selected) + len(self.excluded) > 100:
+            raise ValueError("approval decision has too many receipt bindings")
+
+        def order(item: ApprovalReceiptBinding) -> tuple[int, str, str]:
+            return item.call_order, item.field_id, item.receipt_id
+
+        if self.selected != sorted(self.selected, key=order) or self.excluded != sorted(
+            self.excluded, key=order
+        ):
+            raise ValueError("approval receipt bindings must be canonically sorted")
+        selected = tuple((item.field_id, item.receipt_id) for item in self.selected)
+        excluded = tuple((item.field_id, item.receipt_id) for item in self.excluded)
+        if (
+            len(set(selected)) != len(selected)
+            or len(set(excluded)) != len(excluded)
+            or set(selected) & set(excluded)
+        ):
+            raise ValueError("approval receipt bindings must be unique and disjoint")
+        if self.action in {"ordinary_batch_accept", "degraded_batch_accept"}:
+            if not self.selected:
+                raise ValueError("batch approval requires a selected receipt")
+        elif len(self.selected) != 1 or self.excluded:
+            raise ValueError("individual approval requires exactly one selected receipt")
+        if (self.action == "override_submitted") != (self.superseded_receipt_id is not None):
+            raise ValueError("only an override binds a superseded receipt")
+        if (
+            self.superseded_receipt_id is not None
+            and self.superseded_receipt_id == self.selected[0].receipt_id
+        ):
+            raise ValueError("override predecessor must differ from the selected receipt")
+        return self
+
+
+class ApprovalDecisionResult(StrictV3Model):
+    receipt_id: str = Field(pattern=_RECEIPT_ID)
+    decision_state: Literal["accepted", "override-submitted", "excluded", "deferred"]
+
+
+class ApprovalDecisionResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-approval-decision-response-v1"] = (
+        "strathmark-v3-approval-decision-response-v1"
+    )
+    command_id: str = Field(pattern=_ID)
+    caller_namespace: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    tournament_id: str = Field(pattern=_TOURNAMENT_ID)
+    snapshot_id: str = Field(pattern=r"^approval_snapshot:[0-9a-f]{64}$")
+    action: Literal[
+        "ordinary_batch_accept",
+        "degraded_batch_accept",
+        "individual_accept",
+        "override_submitted",
+        "exclude",
+        "defer",
+    ]
+    decisions: tuple[ApprovalDecisionResult, ...] = Field(min_length=1, max_length=100)
+    decided_at_utc: str = Field(pattern=_UTC_MS)
+    actor_metadata_digest: str = Field(pattern=_DIGEST)
+    receipt_bindings_digest: str = Field(pattern=_DIGEST)
+    command_digest: str = Field(pattern=_DIGEST)
+    decision_digest: str = Field(pattern=_DIGEST)
+    authority_sequence: int = Field(ge=1)
 
 
 class IssueAcknowledgmentRequest(StrictV3Model):

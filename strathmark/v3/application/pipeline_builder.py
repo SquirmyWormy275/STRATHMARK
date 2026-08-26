@@ -24,6 +24,7 @@ from strathmark.v3.application.field_assembly import (
     FrozenFieldRevision,
     OperationalDisagreementReceipt,
     OperationalWeightAuthority,
+    OverrideStartingEstimateBasis,
     RollingCapabilityBinding,
     RollingPublicationBinding,
     SealedPipelineOutput,
@@ -57,6 +58,7 @@ from strathmark.v3.domain.capability import (
 )
 from strathmark.v3.domain.credibility import WeightReceipt
 from strathmark.v3.domain.disagreement import (
+    AcceptedExpectedTimeOverrideState,
     CouncilAudit,
     CouncilMemberAudit,
     CouncilMemberStatus,
@@ -177,6 +179,7 @@ class RollingFieldBuildInputs:
     disagreement_policy: DisagreementPolicy
     formula_manifest: FormulaManifest | None = None
     zero_history_policy: ZeroHistoryPolicy | None = None
+    override_states: tuple[AcceptedExpectedTimeOverrideState, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -191,14 +194,21 @@ class RollingFieldBuildInputs:
                 isinstance(item, RollingCapabilityAuthority) for item in self.capability_authorities
             )
             or not isinstance(self.disagreement_policy, DisagreementPolicy)
+            or not isinstance(self.override_states, tuple)
+            or not all(
+                isinstance(item, AcceptedExpectedTimeOverrideState) for item in self.override_states
+            )
         ):
             raise AssemblyConflict("rolling field build inputs must be typed")
         card_ids = tuple(item.card.competitor_id for item in self.cards)
         capability_ids = tuple(item.state.competitor_id for item in self.capability_authorities)
+        override_ids = tuple(item.competitor_id for item in self.override_states)
         if (
             len(card_ids) != len(set(card_ids))
             or len(capability_ids) != len(set(capability_ids))
             or not set(capability_ids).issubset(set(card_ids))
+            or len(override_ids) != len(set(override_ids))
+            or not set(override_ids).issubset(set(card_ids))
         ):
             raise AssemblyConflict("rolling field capability roster differs")
         if set(card_ids) != set(capability_ids) and (
@@ -218,6 +228,7 @@ class RollingFieldInputPort(Protocol):
         field: FrozenFieldRevision,
         publications: tuple[RollingPublicationBinding, ...],
         capabilities: tuple[RollingCapabilityBinding, ...],
+        overrides: tuple[AcceptedExpectedTimeOverrideState, ...],
     ) -> None: ...
 
 
@@ -227,6 +238,14 @@ class CapabilityStateResolverPort(Protocol):
     ) -> RollingCapabilityAuthority | None: ...
 
     def verify_current(self, capabilities: tuple[RollingCapabilityBinding, ...]) -> None: ...
+
+    def resolve_override_current(
+        self, field: FrozenFieldRevision, competitor_id: StableIdentifier
+    ) -> AcceptedExpectedTimeOverrideState | None: ...
+
+    def verify_override_current(
+        self, overrides: tuple[AcceptedExpectedTimeOverrideState, ...]
+    ) -> None: ...
 
 
 class SQLiteCapabilityStateResolver:
@@ -364,6 +383,73 @@ class SQLiteCapabilityStateResolver:
                     or str(head[1]) != binding.aggregate_event_digest
                 ):
                     raise AssemblyConflict("capability authority is no longer current")
+
+    def resolve_override_current(
+        self, field: FrozenFieldRevision, competitor_id: StableIdentifier
+    ) -> AcceptedExpectedTimeOverrideState | None:
+        if not isinstance(field, FrozenFieldRevision):
+            raise AssemblyConflict("override resolver requires a frozen field")
+        competitor = StableIdentifier(str(competitor_id))
+        matches = []
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT state_json,state_digest,source_global_sequence,source_event_digest "
+                "FROM v3_expected_time_override_states WHERE competitor_id=? "
+                "AND tournament_id=? AND active=1 AND accepted_call_order<=? "
+                "ORDER BY source_global_sequence DESC LIMIT 2",
+                (str(competitor), str(field.tournament_id), field.call_order),
+            ).fetchall()
+            for row in rows:
+                try:
+                    value = json.loads(str(row[0]))
+                    state = AcceptedExpectedTimeOverrideState.from_dict(value)
+                except Exception as exc:
+                    raise AssemblyConflict("accepted override state is malformed") from exc
+                source = connection.execute(
+                    "SELECT event_digest,event_kind FROM v3_events WHERE global_sequence=?",
+                    (int(row[2]),),
+                ).fetchone()
+                if (
+                    canonical_bytes(value).decode() != str(row[0])
+                    or state.state_digest != str(row[1])
+                    or state.accepted_global_sequence != int(row[2])
+                    or state.accepted_event_digest != str(row[3])
+                    or source is None
+                    or str(source[0]) != str(row[3])
+                    or str(source[1]) != EventKind.APPROVAL_DECISION_RECORDED.value
+                ):
+                    raise AssemblyConflict("accepted override differs from event authority")
+                if state.applies_to(
+                    tournament_id=field.tournament_id,
+                    field_id=field.field_id,
+                    target_context_digest=field.target_context.digest,
+                    call_order=field.call_order,
+                ):
+                    matches.append(state)
+        if len(matches) > 1:
+            raise AssemblyConflict("accepted override scopes overlap without supersession")
+        return None if not matches else matches[0]
+
+    def verify_override_current(
+        self, overrides: tuple[AcceptedExpectedTimeOverrideState, ...]
+    ) -> None:
+        if not isinstance(overrides, tuple) or not all(
+            isinstance(item, AcceptedExpectedTimeOverrideState) for item in overrides
+        ):
+            raise AssemblyConflict("accepted override bindings are invalid")
+        with open_v3_connection(self._database_path, read_only=True) as connection:
+            for state in overrides:
+                row = connection.execute(
+                    "SELECT state_digest,source_event_digest,active "
+                    "FROM v3_expected_time_override_states WHERE override_id=?",
+                    (str(state.override_id),),
+                ).fetchone()
+                if row is None or (str(row[0]), str(row[1]), int(row[2])) != (
+                    state.state_digest,
+                    state.accepted_event_digest,
+                    1,
+                ):
+                    raise AssemblyConflict("accepted override authority is no longer current")
 
     @staticmethod
     def _decode_capability_event(connection: object, row: object) -> EventEnvelope:
@@ -559,6 +645,8 @@ class CoordinatorRollingFieldInputSource:
             or not callable(getattr(authority_verifier, "verify_dependence_authority", None))
             or not callable(getattr(capability_resolver, "resolve_current", None))
             or not callable(getattr(capability_resolver, "verify_current", None))
+            or not callable(getattr(capability_resolver, "resolve_override_current", None))
+            or not callable(getattr(capability_resolver, "verify_override_current", None))
             or not isinstance(weight_receipt, WeightReceipt)
             or not isinstance(operational_weight_authority, OperationalWeightAuthority)
             or not isinstance(dependence_artifact, DependenceArtifact)
@@ -588,6 +676,16 @@ class CoordinatorRollingFieldInputSource:
             for assignment in field.ordered_assignments
         )
         capabilities = tuple(item for item in resolved if item is not None)
+        overrides = tuple(
+            item
+            for assignment in field.ordered_assignments
+            if (
+                item := self._capability_resolver.resolve_override_current(
+                    field, assignment.competitor_id
+                )
+            )
+            is not None
+        )
         return RollingFieldBuildInputs(
             cards,
             self._weight_receipt,
@@ -597,6 +695,7 @@ class CoordinatorRollingFieldInputSource:
             self._disagreement_policy,
             self._formula_manifest,
             self._zero_history_policy,
+            overrides,
         )
 
     def verify_current(
@@ -604,6 +703,7 @@ class CoordinatorRollingFieldInputSource:
         field: FrozenFieldRevision,
         publications: tuple[RollingPublicationBinding, ...],
         capabilities: tuple[RollingCapabilityBinding, ...],
+        overrides: tuple[AcceptedExpectedTimeOverrideState, ...],
     ) -> None:
         self._verify_installed(field)
         current = tuple(
@@ -613,6 +713,7 @@ class CoordinatorRollingFieldInputSource:
         if current != publications:
             raise AssemblyConflict("rolling publication changed during field build")
         self._capability_resolver.verify_current(capabilities)
+        self._capability_resolver.verify_override_current(overrides)
 
     def _verify_installed(self, field: FrozenFieldRevision) -> None:
         self._authority_verifier.verify_current_field(field)
@@ -662,13 +763,13 @@ class RollingFieldPipelineBuilder:
         cards = self._verify_inputs(field, inputs)
         publications = tuple(item.publication for item in cards)
         capabilities = tuple(item.binding for item in inputs.capability_authorities)
-        self._source.verify_current(field, publications, capabilities)
+        self._source.verify_current(field, publications, capabilities, inputs.override_states)
         requirement = self._manual_action_requirement(field, inputs, cards)
         if requirement is not None:
-            self._source.verify_current(field, publications, capabilities)
+            self._source.verify_current(field, publications, capabilities, inputs.override_states)
             return requirement
         pipeline = self._build(field, inputs, cards, started_ns=started_ns)
-        self._source.verify_current(field, publications, capabilities)
+        self._source.verify_current(field, publications, capabilities, inputs.override_states)
         return _construct_rolling_pipeline_build(pipeline)
 
     def _verify_inputs(
@@ -744,6 +845,7 @@ class RollingFieldPipelineBuilder:
         ):
             raise AssemblyConflict("rolling weight or dependence authority differs")
         capabilities = {item.state.competitor_id: item for item in inputs.capability_authorities}
+        overrides = {item.competitor_id: item for item in inputs.override_states}
         if any(
             item.state.context_digest != field.target_context.digest
             for item in capabilities.values()
@@ -850,6 +952,7 @@ class RollingFieldPipelineBuilder:
         seed = int(crn_source_digest[:16], 16) & ((1 << 63) - 1)
         cards = {item.card.competitor_id: item.card for item in current_cards}
         capabilities = {item.state.competitor_id: item for item in inputs.capability_authorities}
+        overrides = {item.competitor_id: item for item in inputs.override_states}
         slot_basis = tuple(
             FieldCompetitorForecast(
                 assignment.competitor_id,
@@ -885,6 +988,16 @@ class RollingFieldPipelineBuilder:
                     weight_authority=authority,
                 )
                 basis = CapabilityPoolBasis(pool, capability.binding)
+            override = overrides.get(current.card.competitor_id)
+            if override is not None:
+                if not override.applies_to(
+                    tournament_id=field.tournament_id,
+                    field_id=field.field_id,
+                    target_context_digest=field.target_context.digest,
+                    call_order=field.call_order,
+                ):
+                    raise AssemblyConflict("accepted override scope differs from field")
+                basis = OverrideStartingEstimateBasis.create(override, basis)
             prediction_evidence.append(
                 CompetitorPredictionEvidence(
                     current.card,
@@ -894,9 +1007,21 @@ class RollingFieldPipelineBuilder:
             )
         prediction_evidence = tuple(prediction_evidence)
         pools = tuple(
-            CompetitorPoolEvidence(item.card, item.basis.pool)
+            CompetitorPoolEvidence(
+                item.card,
+                (
+                    item.basis.source_basis.pool
+                    if isinstance(item.basis, OverrideStartingEstimateBasis)
+                    and isinstance(item.basis.source_basis, CapabilityPoolBasis)
+                    else item.basis.pool
+                ),
+            )
             for item in prediction_evidence
             if isinstance(item.basis, CapabilityPoolBasis)
+            or (
+                isinstance(item.basis, OverrideStartingEstimateBasis)
+                and isinstance(item.basis.source_basis, CapabilityPoolBasis)
+            )
         )
         available_sets = tuple(
             tuple(
@@ -925,7 +1050,7 @@ class RollingFieldPipelineBuilder:
                 field.ordered_assignments, prediction_evidence, strict=True
             )
         )
-        if all_capability:
+        if all_capability and not inputs.override_states:
             joint = generate_joint_draws_from_pool_results(
                 forecasts,
                 tuple(item.pool for item in pools),
@@ -948,7 +1073,11 @@ class RollingFieldPipelineBuilder:
             (
                 item.basis.pool.receipt.receipt_digest
                 if isinstance(item.basis, CapabilityPoolBasis)
-                else item.basis.authority_digest
+                else (
+                    item.basis.authority_digest
+                    if isinstance(item.basis, ZeroHistoryPriorBasis)
+                    else item.basis.basis_digest
+                )
             )
             for item in prediction_evidence
         ]

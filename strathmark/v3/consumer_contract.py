@@ -8,7 +8,7 @@ import re
 from importlib.resources import files
 from typing import Any, cast
 
-V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v1"
+V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v2"
 EXPECTED_V3_CONSUMER_PATHS = frozenset(
     {
         "/v3/health",
@@ -16,6 +16,7 @@ EXPECTED_V3_CONSUMER_PATHS = frozenset(
         "/v3/cards/prepare",
         "/v3/fields/assemble",
         "/v3/receipts/lookup",
+        "/v3/approvals/decide",
         "/v3/issues/acknowledge",
         "/v3/results/settle",
         "/v3/status",
@@ -110,6 +111,59 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
             "receipt_digest": "b" * 64,
             "canonical_receipt_json": '{"schema_version":"strathmark-v3-field-receipt-v1"}',
             "authority_sequence": 11,
+        },
+    },
+    "/v3/approvals/decide": {
+        "request": {
+            "schema_version": "strathmark-v3-approval-decision-request-v1",
+            "tournament_id": "tournament:show",
+            "snapshot_id": f"approval_snapshot:{'a' * 64}",
+            "action": "ordinary_batch_accept",
+            "selected": [
+                {
+                    "field_id": "field:heat-7",
+                    "receipt_id": "receipt:field-1",
+                    "receipt_digest": "b" * 64,
+                    "receipt_revision": 2,
+                    "upstream_field_revision": 3,
+                    "row_digest": "c" * 64,
+                    "call_order": 0,
+                }
+            ],
+            "excluded": [
+                {
+                    "field_id": "field:heat-8",
+                    "receipt_id": "receipt:field-2",
+                    "receipt_digest": "d" * 64,
+                    "receipt_revision": 1,
+                    "upstream_field_revision": 3,
+                    "row_digest": "e" * 64,
+                    "call_order": 1,
+                }
+            ],
+            "actor_metadata": {"judge_station": "station-a"},
+            "reason_code": "judge_reviewed_batch",
+            "superseded_receipt_id": None,
+            "decided_at_utc": "2026-08-25T12:00:00.000Z",
+            "deadline_ms": 1000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-approval-decision-response-v1",
+            "command_id": "command:approval-example",
+            "caller_namespace": "api",
+            "tournament_id": "tournament:show",
+            "snapshot_id": f"approval_snapshot:{'a' * 64}",
+            "action": "ordinary_batch_accept",
+            "decisions": [
+                {"receipt_id": "receipt:field-1", "decision_state": "accepted"},
+                {"receipt_id": "receipt:field-2", "decision_state": "excluded"},
+            ],
+            "decided_at_utc": "2026-08-25T12:00:00.000Z",
+            "actor_metadata_digest": "f" * 64,
+            "receipt_bindings_digest": "1" * 64,
+            "command_digest": "2" * 64,
+            "decision_digest": "3" * 64,
+            "authority_sequence": 12,
         },
     },
     "/v3/issues/acknowledge": {
@@ -232,6 +286,7 @@ def build_v3_consumer_contract() -> dict[str, Any]:
     online_commands = sorted(item.value for item in OnlineCommandKind)
     dedicated_commands = {
         CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
+        CommandKind.RECORD_APPROVAL_DECISION,
         CommandKind.SETTLE_LIVE_RACE,
         CommandKind.ROTATE_SERVICE_CREDENTIAL,
         CommandKind.REVOKE_SERVICE_CREDENTIAL,

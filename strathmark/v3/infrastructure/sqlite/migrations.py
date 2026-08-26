@@ -56,6 +56,7 @@ _PINNED_CHECKSUMS: Final[dict[str, str]] = {
     "0014_manual_action_requirements.sql": "ba6933de10edfe427412eb1404e5cb66f316880af244fce4046ac8d1e3e3c2be",
     "0015_authenticated_hot_path_checkpoints.sql": "f2f1af7d1688b03190e58152b346744090a1971ba24b5cbfcd7d3c15bd33cba7",
     "0016_model_status_and_projection_restore.sql": "9eada7cfe4271334632006e6c45d57040a767f0a31b757d670d34ce6b907a082",
+    "0017_expected_time_override_state.sql": "c456188b146bc3c67b0bfe9fe7a57a087761392516259f5c0976794e8617c2ac",
 }
 _MIGRATION_NAME = re.compile(r"^(?P<version>[0-9]{4})_(?P<label>[a-z0-9_]+)\.sql$")
 _MIGRATION_ROOT = Path(__file__).resolve().parents[2] / "migrations"
@@ -116,7 +117,7 @@ _METADATA_COLUMNS = (
     ("checksum", "TEXT", 1, 0),
     ("applied_at", "TEXT", 1, 0),
 )
-EXPECTED_SCHEMA_DIGEST = "847c23144f9a4d5a8251dd44071347112c8f4faca9a8805841a973112858c0c9"
+EXPECTED_SCHEMA_DIGEST = "72e86be4e069dbe31417b4149159d07b0ffc1256102e95fff4a803c6a64f6022"
 
 
 def _ensure_metadata_table(connection: sqlite3.Connection) -> None:

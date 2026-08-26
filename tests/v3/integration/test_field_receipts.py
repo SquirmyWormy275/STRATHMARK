@@ -3872,6 +3872,7 @@ def test_production_rolling_builder_uses_current_publications_and_original_cards
         RollingFieldPipelineBuilder,
     )
     from strathmark.v3.domain.capability import CapabilityState
+    from strathmark.v3.domain.disagreement import AcceptedExpectedTimeOverrideState
 
     path = tmp_path / "production-rolling-builder.sqlite3"
     store, field, build, _lifecycle = _bootstrap(path)
@@ -3944,6 +3945,27 @@ def test_production_rolling_builder_uses_current_publications_and_original_cards
         baseline.dependence_artifact,
         tuple(capabilities),
         policy,
+        override_states=(
+            AcceptedExpectedTimeOverrideState.create(
+                override_id=StableIdentifier("override:rolling-start"),
+                competitor_id=field.ordered_assignments[0].competitor_id,
+                tournament_id=field.tournament_id,
+                target_context_digest=field.target_context.digest,
+                expected_raw_time_ms=35_000,
+                scope=OverrideScope.REMAINING_TOURNAMENT,
+                scope_boundary_id=field.tournament_id,
+                accepted_field_id=field.field_id,
+                accepted_round_id=field.round_id,
+                accepted_call_order=field.call_order,
+                accepted_capability_revision=capabilities[0].state.state_revision,
+                actor="actor:judge",
+                reason="accepted starting estimate",
+                supersedes_override_id=None,
+                override_receipt_digest="8" * 64,
+                accepted_global_sequence=1,
+                accepted_event_digest="9" * 64,
+            ),
+        ),
     )
 
     class CurrentSource:
@@ -3954,10 +3976,13 @@ def test_production_rolling_builder_uses_current_publications_and_original_cards
             assert revision == field
             return inputs
 
-        def verify_current(self, revision, publications, capability_bindings) -> None:
+        def verify_current(
+            self, revision, publications, capability_bindings, override_states
+        ) -> None:
             assert revision == field
             assert publications == tuple(item.publication for item in cards)
             assert capability_bindings == tuple(item.binding for item in capabilities)
+            assert override_states == inputs.override_states
             self.verifications += 1
 
     source = CurrentSource()
@@ -3975,6 +4000,7 @@ def test_production_rolling_builder_uses_current_publications_and_original_cards
     assert pipeline.rolling_publications == tuple(item.publication for item in cards)
     assert tuple(item.card for item in pipeline.pools) == tuple(item.card for item in cards)
     assert pipeline.disagreement is not None
+    assert pipeline.prediction_evidence[0].distribution.median_ms == 35_000
     assert pipeline.total_latency_ms == 12
     assert tuple(source for source, _receipt in pipeline.disagreement.component_optimizers) == (
         AssessorKind.FORMULA,
@@ -4119,9 +4145,10 @@ def test_production_rolling_builder_uses_signed_formula_prior_for_zero_history(
         def load_current(self, _revision):
             return inputs
 
-        def verify_current(self, _revision, publications, capability_bindings):
+        def verify_current(self, _revision, publications, capability_bindings, override_states):
             assert publications == tuple(item.publication for item in cards)
             assert capability_bindings == tuple(item.binding for item in capabilities)
+            assert override_states == ()
 
     pipeline = RollingFieldPipelineBuilder(
         Source(),
@@ -4225,9 +4252,10 @@ def test_production_rolling_builder_returns_signed_manual_action_before_draw_wor
         def load_current(self, _revision):
             return inputs
 
-        def verify_current(self, _revision, publications, capability_bindings):
+        def verify_current(self, _revision, publications, capability_bindings, override_states):
             assert publications == tuple(item.publication for item in cards)
             assert capability_bindings == tuple(item.binding for item in capabilities)
+            assert override_states == ()
 
     monkeypatch.setattr(
         "strathmark.v3.application.pipeline_builder.generate_joint_uniforms",
@@ -4389,7 +4417,9 @@ def test_production_rolling_builder_rejects_stale_or_mixed_publications_before_p
         def load_current(self, _revision):
             return inputs
 
-        def verify_current(self, _revision, _publications, _capability_bindings) -> None:
+        def verify_current(
+            self, _revision, _publications, _capability_bindings, _override_states
+        ) -> None:
             raise AssertionError("missing roster must fail before currentness hook")
 
     def forbidden_pool(*_args, **_kwargs):

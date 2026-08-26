@@ -11,7 +11,11 @@ from typing import Any
 
 from strathmark.v3.contracts.canonical import canonical_decimal_string, canonical_digest
 from strathmark.v3.contracts.errors import ContractError
-from strathmark.v3.contracts.forecasts import AssessorKind, PositiveTimeDistribution
+from strathmark.v3.contracts.forecasts import (
+    AssessorKind,
+    PositiveTimeDistribution,
+    QuantilePoint,
+)
 from strathmark.v3.contracts.identifiers import StableIdentifier, require_identifier
 
 
@@ -1433,6 +1437,279 @@ class ExpectedTimeOverrideRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class AcceptedExpectedTimeOverrideState:
+    """Durable non-evidence starting estimate with an explicit future boundary."""
+
+    override_id: StableIdentifier
+    competitor_id: StableIdentifier
+    tournament_id: StableIdentifier
+    target_context_digest: str
+    expected_raw_time_ms: int
+    scope: OverrideScope
+    scope_boundary_id: StableIdentifier
+    accepted_field_id: StableIdentifier
+    accepted_round_id: StableIdentifier
+    accepted_call_order: int
+    accepted_capability_revision: int
+    actor: str
+    reason: str
+    supersedes_override_id: StableIdentifier | None
+    override_receipt_digest: str
+    accepted_global_sequence: int
+    accepted_event_digest: str
+    is_result_evidence: bool
+    is_training_evidence: bool
+    becomes_starting_estimate: bool
+    permanently_fixed: bool
+    state_digest: str
+    schema_version: str = "strathmark-v3-accepted-expected-time-override-state-v1"
+
+    def __post_init__(self) -> None:
+        require_identifier(self.override_id, expected_namespace="override")
+        require_identifier(self.competitor_id, expected_namespace="competitor")
+        require_identifier(self.tournament_id, expected_namespace="tournament")
+        _digest(self.target_context_digest, "override state target context")
+        _positive_int(self.expected_raw_time_ms, "override state expected raw time")
+        if not isinstance(self.scope, OverrideScope):
+            raise ContractError("accepted override scope must be deliberately selected")
+        _validate_scope_boundary(self.scope, self.scope_boundary_id)
+        require_identifier(self.accepted_field_id, expected_namespace="field")
+        require_identifier(self.accepted_round_id, expected_namespace="round")
+        if (
+            isinstance(self.accepted_call_order, bool)
+            or not isinstance(self.accepted_call_order, int)
+            or self.accepted_call_order < 0
+        ):
+            raise ContractError("accepted override call order must be nonnegative")
+        if (
+            isinstance(self.accepted_capability_revision, bool)
+            or not isinstance(self.accepted_capability_revision, int)
+            or self.accepted_capability_revision < 0
+        ):
+            raise ContractError("accepted override capability revision must be nonnegative")
+        if (
+            not isinstance(self.actor, str)
+            or not self.actor.strip()
+            or self.actor != self.actor.strip()
+        ):
+            raise ContractError("accepted override actor must be canonical and nonempty")
+        if (
+            not isinstance(self.reason, str)
+            or not self.reason.strip()
+            or self.reason != self.reason.strip()
+        ):
+            raise ContractError("accepted override reason must be canonical and nonempty")
+        if self.supersedes_override_id is not None:
+            require_identifier(self.supersedes_override_id, expected_namespace="override")
+            if self.supersedes_override_id == self.override_id:
+                raise ContractError("accepted override cannot supersede itself")
+        _digest(self.override_receipt_digest, "accepted override receipt")
+        if (
+            isinstance(self.accepted_global_sequence, bool)
+            or not isinstance(self.accepted_global_sequence, int)
+            or self.accepted_global_sequence <= 0
+        ):
+            raise ContractError("accepted override sequence must be positive")
+        _digest(self.accepted_event_digest, "accepted override event")
+        if (
+            self.scope is OverrideScope.UPCOMING_RACE
+            and self.scope_boundary_id != self.accepted_field_id
+        ):
+            raise ContractError("upcoming-race override must bind its accepted field")
+        if (
+            self.scope is OverrideScope.REMAINING_TOURNAMENT
+            and self.scope_boundary_id != self.tournament_id
+        ):
+            raise ContractError("remaining-tournament override must bind its tournament")
+        if (
+            self.is_result_evidence
+            or self.is_training_evidence
+            or not self.becomes_starting_estimate
+            or self.permanently_fixed
+        ):
+            raise ContractError("accepted override evidence and lifetime flags are invalid")
+        _digest(self.state_digest, "accepted override state")
+        if (
+            self.schema_version != "strathmark-v3-accepted-expected-time-override-state-v1"
+            or self.state_digest != canonical_digest(self.content_value())
+        ):
+            raise ContractError("accepted override state digest or schema differs")
+
+    def content_value(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "override_id": str(self.override_id),
+            "competitor_id": str(self.competitor_id),
+            "tournament_id": str(self.tournament_id),
+            "target_context_digest": self.target_context_digest,
+            "expected_raw_time_ms": self.expected_raw_time_ms,
+            "scope": self.scope.value,
+            "scope_boundary_id": str(self.scope_boundary_id),
+            "accepted_field_id": str(self.accepted_field_id),
+            "accepted_round_id": str(self.accepted_round_id),
+            "accepted_call_order": self.accepted_call_order,
+            "accepted_capability_revision": self.accepted_capability_revision,
+            "actor": self.actor,
+            "reason": self.reason,
+            "supersedes_override_id": (
+                None if self.supersedes_override_id is None else str(self.supersedes_override_id)
+            ),
+            "override_receipt_digest": self.override_receipt_digest,
+            "accepted_global_sequence": self.accepted_global_sequence,
+            "accepted_event_digest": self.accepted_event_digest,
+            "is_result_evidence": self.is_result_evidence,
+            "is_training_evidence": self.is_training_evidence,
+            "becomes_starting_estimate": self.becomes_starting_estimate,
+            "permanently_fixed": self.permanently_fixed,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self.content_value(), "state_digest": self.state_digest}
+
+    @classmethod
+    def create(cls, **values: Any) -> AcceptedExpectedTimeOverrideState:
+        content = {
+            "schema_version": "strathmark-v3-accepted-expected-time-override-state-v1",
+            **{
+                key: (
+                    item.value
+                    if isinstance(item, OverrideScope)
+                    else str(item)
+                    if isinstance(item, StableIdentifier)
+                    else item
+                )
+                for key, item in values.items()
+            },
+            "supersedes_override_id": (
+                None
+                if values.get("supersedes_override_id") is None
+                else str(values["supersedes_override_id"])
+            ),
+            "is_result_evidence": False,
+            "is_training_evidence": False,
+            "becomes_starting_estimate": True,
+            "permanently_fixed": False,
+        }
+        return cls(
+            **values,
+            is_result_evidence=False,
+            is_training_evidence=False,
+            becomes_starting_estimate=True,
+            permanently_fixed=False,
+            state_digest=canonical_digest(content),
+        )
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> AcceptedExpectedTimeOverrideState:
+        expected = set(cls.__dataclass_fields__) - {"schema_version"}
+        if set(value) != expected | {"schema_version"}:
+            raise ContractError("accepted override state fields differ")
+        try:
+            scope = OverrideScope(value["scope"])
+        except (TypeError, ValueError) as exc:
+            raise ContractError("accepted override state scope is unknown") from exc
+        return cls(
+            override_id=require_identifier(value["override_id"], expected_namespace="override"),
+            competitor_id=require_identifier(
+                value["competitor_id"], expected_namespace="competitor"
+            ),
+            tournament_id=require_identifier(
+                value["tournament_id"], expected_namespace="tournament"
+            ),
+            target_context_digest=value["target_context_digest"],
+            expected_raw_time_ms=value["expected_raw_time_ms"],
+            scope=scope,
+            scope_boundary_id=require_identifier(value["scope_boundary_id"]),
+            accepted_field_id=require_identifier(
+                value["accepted_field_id"], expected_namespace="field"
+            ),
+            accepted_round_id=require_identifier(
+                value["accepted_round_id"], expected_namespace="round"
+            ),
+            accepted_call_order=value["accepted_call_order"],
+            accepted_capability_revision=value["accepted_capability_revision"],
+            actor=value["actor"],
+            reason=value["reason"],
+            supersedes_override_id=(
+                None
+                if value["supersedes_override_id"] is None
+                else require_identifier(
+                    value["supersedes_override_id"], expected_namespace="override"
+                )
+            ),
+            override_receipt_digest=value["override_receipt_digest"],
+            accepted_global_sequence=value["accepted_global_sequence"],
+            accepted_event_digest=value["accepted_event_digest"],
+            is_result_evidence=value["is_result_evidence"],
+            is_training_evidence=value["is_training_evidence"],
+            becomes_starting_estimate=value["becomes_starting_estimate"],
+            permanently_fixed=value["permanently_fixed"],
+            state_digest=value["state_digest"],
+            schema_version=value["schema_version"],
+        )
+
+    def applies_to(
+        self,
+        *,
+        tournament_id: StableIdentifier,
+        field_id: StableIdentifier,
+        target_context_digest: str,
+        call_order: int,
+    ) -> bool:
+        require_identifier(tournament_id, expected_namespace="tournament")
+        require_identifier(field_id, expected_namespace="field")
+        _digest(target_context_digest, "override target context")
+        if isinstance(call_order, bool) or not isinstance(call_order, int) or call_order < 0:
+            raise ContractError("override target call order must be nonnegative")
+        if tournament_id != self.tournament_id or call_order < self.accepted_call_order:
+            return False
+        if self.scope is OverrideScope.UPCOMING_RACE:
+            return field_id == self.accepted_field_id
+        if self.scope is OverrideScope.REMAINING_EVENT_CONFIGURATION:
+            return target_context_digest == self.target_context_digest
+        return True
+
+    def effective_distribution(
+        self,
+        baseline: object,
+        *,
+        current_capability_revision: int,
+    ) -> PositiveTimeDistribution:
+        summary = baseline
+        if not isinstance(summary, PositiveTimeDistribution):
+            quantile_summary = getattr(summary, "quantile_summary", None)
+            summary = quantile_summary() if callable(quantile_summary) else None
+        if not isinstance(summary, PositiveTimeDistribution):
+            raise ContractError("override starting estimate requires a distribution")
+        if (
+            isinstance(current_capability_revision, bool)
+            or not isinstance(current_capability_revision, int)
+            or current_capability_revision < 0
+        ):
+            raise ContractError("override current capability revision must be nonnegative")
+        if current_capability_revision > self.accepted_capability_revision:
+            return summary
+        median = summary.median_ms
+        return PositiveTimeDistribution(
+            tuple(
+                QuantilePoint(
+                    item.probability,
+                    max(
+                        1,
+                        round(
+                            Fraction(
+                                item.time_ms * self.expected_raw_time_ms,
+                                median,
+                            )
+                        ),
+                    ),
+                )
+                for item in summary.quantiles
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FieldSheetSnapshot:
     field_id: StableIdentifier
     expected_times_ms: tuple[tuple[StableIdentifier, int], ...]
@@ -2191,6 +2468,7 @@ def _digest(value: str, label: str) -> None:
 
 
 __all__ = [
+    "AcceptedExpectedTimeOverrideState",
     "CouncilAudit",
     "CouncilMemberAudit",
     "CouncilMemberStatus",

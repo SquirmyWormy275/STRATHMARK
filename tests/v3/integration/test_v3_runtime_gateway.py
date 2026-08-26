@@ -565,30 +565,68 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     page = store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=10)
     row = page.rows[0]
     if row.decision_state.value == "undecided":
-        store.record_approval_decision(
-            ApprovalDecisionCommand.create(
-                caller_namespace="manager",
-                request_identity="idempotency:runtime-approve",
-                tournament_id=str(field.tournament_id),
-                snapshot_id=page.snapshot_id,
-                action=ApprovalDecisionAction.INDIVIDUAL_ACCEPT,
-                selected=(
-                    ApprovalDecisionSelection(
-                        row.field_id,
-                        row.receipt_id,
-                        row.receipt_revision,
-                        row.upstream_field_revision,
-                        row.row_digest,
-                        row.call_order,
-                    ),
-                ),
-                excluded=(),
-                actor_id="actor:judge",
-                actor_metadata={"station": "runtime-proof"},
-                reason_code="judge-reviewed-runtime-sheet",
-                submitted_at="2026-08-25T18:00:01.000Z",
-            )
+        approval_body = {
+            "schema_version": "strathmark-v3-approval-decision-request-v1",
+            "tournament_id": str(field.tournament_id),
+            "snapshot_id": page.snapshot_id,
+            "action": "individual_accept",
+            "selected": [
+                {
+                    "field_id": row.field_id,
+                    "receipt_id": row.receipt_id,
+                    "receipt_digest": assembled.json()["receipt_digest"],
+                    "receipt_revision": row.receipt_revision,
+                    "upstream_field_revision": row.upstream_field_revision,
+                    "row_digest": row.row_digest,
+                    "call_order": row.call_order,
+                }
+            ],
+            "excluded": [],
+            "actor_metadata": {"station": "runtime-proof"},
+            "reason_code": "judge-reviewed-runtime-sheet",
+            "superseded_receipt_id": None,
+            "decided_at_utc": "2026-08-25T18:00:01.000Z",
+            "deadline_ms": 10_000,
+        }
+        approval_headers = {
+            **_headers(credential, "runtime-approve"),
+            "X-STRATHMARK-Upstream-Actor": "actor:judge",
+            "X-STRATHMARK-Upstream-Action": "approve_field",
+            "X-STRATHMARK-Upstream-Trace": "trace:runtime-approve",
+        }
+        prior_event_count = SQLiteEventStore(reactions.database_path).event_count()
+        approved = client.post("/v3/approvals/decide", headers=approval_headers, json=approval_body)
+        retried = client.post(
+            "/v3/approvals/decide",
+            headers=approval_headers,
+            json=approval_body,
         )
+        assert approved.status_code == retried.status_code == 200, approved.text
+        assert approved.json() == retried.json()
+        assert approved.json()["decisions"] == [
+            {"receipt_id": receipt_id, "decision_state": "accepted"}
+        ]
+        event_count = SQLiteEventStore(reactions.database_path).event_count()
+        assert event_count == prior_event_count + 1
+        changed_retry = client.post(
+            "/v3/approvals/decide",
+            headers=approval_headers,
+            json={**approval_body, "actor_metadata": {"station": "changed"}},
+        )
+        assert changed_retry.status_code == 409
+        assert changed_retry.json()["code"] == "approval_decision_conflicts"
+        assert SQLiteEventStore(reactions.database_path).event_count() == event_count
+        tampered = client.post(
+            "/v3/approvals/decide",
+            headers=_headers(credential, "runtime-approve-tampered"),
+            json={
+                **approval_body,
+                "selected": [{**approval_body["selected"][0], "receipt_digest": "0" * 64}],
+            },
+        )
+        assert tampered.status_code == 409
+        assert tampered.json()["code"] == "approval_receipt_digest_differs"
+        assert SQLiteEventStore(reactions.database_path).event_count() == event_count
     assert store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=10).rows[
         0
     ].decision_state.value in {"accepted", "override-submitted"}

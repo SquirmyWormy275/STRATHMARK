@@ -1303,8 +1303,8 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
         competitor_id=StableIdentifier("competitor:b"),
         target_context_digest=field.target_context.digest,
         expected_raw_time_ms=45_100,
-        scope=OverrideScope.UPCOMING_RACE,
-        scope_boundary_id=field.field_id,
+        scope=OverrideScope.REMAINING_TOURNAMENT,
+        scope_boundary_id=field.tournament_id,
         actor="actor:manager",
         reason="judge corrected the starting estimate",
         supersedes_override_id=None,
@@ -1379,6 +1379,132 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
     decision = store.record_approval_decision(command)
 
     assert decision.decisions == ((row.receipt_id, DecisionState.OVERRIDE_SUBMITTED),)
+    state = store.active_expected_time_override(
+        tournament_id=field.tournament_id,
+        field_id=StableIdentifier("field:later-round"),
+        target_context_digest="f" * 64,
+        call_order=field.call_order + 1,
+        competitor_id=StableIdentifier("competitor:b"),
+    )
+    assert state is not None
+    assert state.override_id == StableIdentifier("override:approval-competitor-b")
+    assert state.expected_raw_time_ms == 45_100
+    assert state.is_result_evidence is False
+    assert state.is_training_evidence is False
+
+    manual_medians["competitor:b"] = 45_200
+    superseding_pipeline = build(field)
+    superseding_sheet = FieldSheetSnapshot.create(
+        field_id=field.field_id,
+        expected_times_ms=tuple(
+            (item.competitor_id, item.expected_time_ms)
+            for item in superseding_pipeline.optimizer.field.competitors
+        ),
+        marks=tuple(
+            zip(
+                superseding_pipeline.optimizer.receipt.competitor_ids,
+                superseding_pipeline.optimizer.receipt.selected_marks,
+                strict=True,
+            )
+        ),
+        pool_receipt_digest=superseding_pipeline.optimizer.field.pool_receipt_digest,
+        optimizer_receipt_digest=superseding_pipeline.optimizer.receipt.receipt_digest,
+        optimizer_verification_status=OptimizerVerificationStatus.PENDING,
+    )
+    superseding_request = ExpectedTimeOverrideRequest.create(
+        override_id=StableIdentifier("override:approval-competitor-b-next"),
+        competitor_id=StableIdentifier("competitor:b"),
+        target_context_digest=field.target_context.digest,
+        expected_raw_time_ms=45_200,
+        scope=OverrideScope.REMAINING_TOURNAMENT,
+        scope_boundary_id=field.tournament_id,
+        actor="actor:manager",
+        reason="superseded starting estimate",
+        supersedes_override_id=override_receipt.override_id,
+    )
+    superseding_sections = superseding_pipeline.section_values()
+    superseding_receipt = create_override_receipt(
+        superseding_request,
+        after_sheet,
+        superseding_sheet,
+        OverrideRecomputationProof.create(after_sheet, superseding_sheet),
+        canonical_digest(
+            next(
+                value
+                for kind, value in superseding_sections.items()
+                if kind.value == "component_outputs"
+            )
+        ),
+        canonical_digest(
+            next(
+                value
+                for kind, value in superseding_sections.items()
+                if kind.value == "pooled_distribution"
+            )
+        ),
+        field.evidence_digest,
+        field.tournament_epoch_id,
+    )
+    superseding_authority = OperationalExpectedTimeOverrideAuthority.create(
+        prior_receipt_id=overridden.receipt.receipt_id,
+        prior_receipt_digest=overridden.receipt.content_digest,
+        upstream_field_revision=field.field_revision,
+        field_revision_digest=field.revision_digest,
+        override_receipt=superseding_receipt,
+        after_optimizer_verification_digest=(superseding_pipeline.optimizer.verification_digest),
+    )
+    superseded = service.submit_expected_time_override(
+        field=field,
+        caller_namespace="manager",
+        request_identity="idempotency:approval-override-supersede",
+        actor_id="actor:manager",
+        occurred_at="2026-08-24T18:00:03.000Z",
+        build_pipeline=lambda _field: _pipeline_with_supersession(
+            superseding_pipeline,
+            expected_time_override=superseding_authority,
+        ),
+    )
+    superseding_page = store.approval_page(
+        tournament_id=str(field.tournament_id), offset=0, limit=10
+    )
+    superseding_row = superseding_page.rows[0]
+    store.record_approval_decision(
+        ApprovalDecisionCommand.create(
+            caller_namespace="manager",
+            request_identity="idempotency:approval-override-supersede-decision",
+            tournament_id=str(field.tournament_id),
+            snapshot_id=superseding_page.snapshot_id,
+            action=ApprovalDecisionAction.OVERRIDE_SUBMITTED,
+            selected=(
+                ApprovalDecisionSelection(
+                    superseding_row.field_id,
+                    superseding_row.receipt_id,
+                    superseding_row.receipt_revision,
+                    superseding_row.upstream_field_revision,
+                    superseding_row.row_digest,
+                    superseding_row.call_order,
+                ),
+            ),
+            excluded=(),
+            actor_id="actor:manager",
+            actor_metadata={"station": "ring-one"},
+            reason_code="expected-time-override-superseded",
+            superseded_receipt_id=str(overridden.receipt.receipt_id),
+            submitted_at="2026-08-24T18:00:04.000Z",
+        )
+    )
+    current = store.active_expected_time_override(
+        tournament_id=field.tournament_id,
+        field_id=StableIdentifier("field:later-round"),
+        target_context_digest="f" * 64,
+        call_order=field.call_order + 1,
+        competitor_id=StableIdentifier("competitor:b"),
+    )
+    assert current is not None
+    assert current.override_id == superseding_receipt.override_id
+    assert current.supersedes_override_id == override_receipt.override_id
+    assert current.expected_raw_time_ms == 45_200
+    assert superseded.receipt.receipt_revision == 3
 
 
 def test_old_snapshot_row_tamper_is_rejected_before_stale_recovery(

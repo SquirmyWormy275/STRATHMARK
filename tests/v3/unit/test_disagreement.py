@@ -14,6 +14,7 @@ from strathmark.v3.contracts.forecasts import (
 )
 from strathmark.v3.contracts.identifiers import StableIdentifier
 from strathmark.v3.domain.disagreement import (
+    AcceptedExpectedTimeOverrideState,
     ConsequenceColor,
     ConsequenceComparison,
     CouncilAudit,
@@ -37,6 +38,125 @@ from strathmark.v3.domain.disagreement import (
 )
 
 OUTER = (AssessorKind.FORMULA, AssessorKind.ML, AssessorKind.LLM_COUNCIL)
+
+
+def test_accepted_override_is_a_temporary_starting_estimate_not_evidence() -> None:
+    baseline = PositiveTimeDistribution(
+        (
+            QuantilePoint("0.1", 30_000),
+            QuantilePoint("0.5", 40_000),
+            QuantilePoint("0.9", 50_000),
+        )
+    )
+    state = AcceptedExpectedTimeOverrideState.create(
+        override_id=StableIdentifier("override:carry-forward"),
+        competitor_id=StableIdentifier("competitor:alice"),
+        tournament_id=StableIdentifier("tournament:show"),
+        target_context_digest="1" * 64,
+        expected_raw_time_ms=36_000,
+        scope=OverrideScope.REMAINING_EVENT_CONFIGURATION,
+        scope_boundary_id=StableIdentifier("event_config:standing-300"),
+        accepted_field_id=StableIdentifier("field:heat-one"),
+        accepted_round_id=StableIdentifier("round:heat"),
+        accepted_call_order=1,
+        accepted_capability_revision=3,
+        actor="actor:judge",
+        reason="corrected starting estimate",
+        supersedes_override_id=None,
+        override_receipt_digest="2" * 64,
+        accepted_global_sequence=20,
+        accepted_event_digest="3" * 64,
+    )
+
+    carried = state.effective_distribution(baseline, current_capability_revision=3)
+    updated = state.effective_distribution(baseline, current_capability_revision=4)
+
+    assert carried.median_ms == 36_000
+    assert updated == baseline
+    assert state.becomes_starting_estimate is True
+    assert state.is_result_evidence is False
+    assert state.is_training_evidence is False
+    assert state.permanently_fixed is False
+
+
+@pytest.mark.parametrize(
+    ("scope", "boundary", "same_context", "same_tournament", "same_field", "applies"),
+    [
+        (OverrideScope.UPCOMING_RACE, "field:heat-one", True, True, True, True),
+        (OverrideScope.UPCOMING_RACE, "field:heat-one", True, True, False, False),
+        (
+            OverrideScope.REMAINING_EVENT_CONFIGURATION,
+            "event_config:standing-300",
+            True,
+            True,
+            False,
+            True,
+        ),
+        (
+            OverrideScope.REMAINING_EVENT_CONFIGURATION,
+            "event_config:standing-300",
+            False,
+            True,
+            False,
+            False,
+        ),
+        (
+            OverrideScope.REMAINING_TOURNAMENT,
+            "tournament:show",
+            False,
+            True,
+            False,
+            True,
+        ),
+        (
+            OverrideScope.REMAINING_TOURNAMENT,
+            "tournament:show",
+            True,
+            False,
+            False,
+            False,
+        ),
+    ],
+)
+def test_override_scope_matches_only_its_deliberate_boundary(
+    scope,
+    boundary,
+    same_context,
+    same_tournament,
+    same_field,
+    applies,
+) -> None:
+    state = AcceptedExpectedTimeOverrideState.create(
+        override_id=StableIdentifier("override:scope"),
+        competitor_id=StableIdentifier("competitor:alice"),
+        tournament_id=StableIdentifier("tournament:show"),
+        target_context_digest="1" * 64,
+        expected_raw_time_ms=36_000,
+        scope=scope,
+        scope_boundary_id=StableIdentifier(boundary),
+        accepted_field_id=StableIdentifier("field:heat-one"),
+        accepted_round_id=StableIdentifier("round:heat"),
+        accepted_call_order=1,
+        accepted_capability_revision=0,
+        actor="actor:judge",
+        reason="corrected starting estimate",
+        supersedes_override_id=None,
+        override_receipt_digest="2" * 64,
+        accepted_global_sequence=20,
+        accepted_event_digest="3" * 64,
+    )
+
+    assert (
+        state.applies_to(
+            tournament_id=StableIdentifier(
+                "tournament:show" if same_tournament else "tournament:other"
+            ),
+            field_id=StableIdentifier("field:heat-one" if same_field else "field:later"),
+            target_context_digest="1" * 64 if same_context else "4" * 64,
+            call_order=2,
+        )
+        is applies
+    )
 
 
 def _council_audit(sheet: CounterfactualSheet) -> CouncilAudit:
