@@ -2,12 +2,13 @@
 
 ## Authority status
 
-V3 is an implemented release candidate under whole-system verification. Its component implementation
-exists, but the checked-in **rehearsal** receipt must not be treated as current until the
-release verifier has regenerated and revalidated it against the exact candidate artifact.
-V2 remains the trusted production authority until an explicit cutover. No production
-authority has changed, no consumer endpoint has switched, and V2 remains the recovery
-authority.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. The checked-in **rehearsal** receipt
+must not be treated as current until the release verifier regenerates and revalidates it
+from the final documentation commit and exact candidate artifact. V2 remains the trusted
+production authority until an explicit cutover. No production authority has changed, no
+consumer endpoint has switched, and V2 remains the recovery authority.
+The external STRATHEX durable outbox/adapter is not implemented.
 
 This runbook distinguishes four states that must never be collapsed:
 
@@ -17,8 +18,9 @@ This runbook distinguishes four states that must never be collapsed:
 4. an explicitly authorized consumer switch has occurred.
 
 The repository is between states 1 and 2 until executable evidence is regenerated from
-the final committed candidate. The older checked-in release attestation is deliberately
+the final documentation commit. The older checked-in release attestation is deliberately
 stale, cannot reach states 3 or 4, and is not current evidence for this changed tree.
+No production CNG identity is currently provisioned.
 
 ## Mandatory safety boundaries
 
@@ -69,6 +71,12 @@ stress, backup/restore, and bundle/model integrity. A digest of test source, a
 preconstructed record, or a self-declared `passed` row is not execution evidence. Every
 result must report `authority_changed: false`; the verifier must fail while any checked-in
 receipt is stale.
+
+The separate post-format result-to-ready benchmark completed five trials on the
+designated Windows machine. Its maximum was 3.414 seconds against the 120-second limit,
+with exact source bindings and component latency retained in
+`benchmarks/v3/result_to_ready_manifest.json`. This focused measurement does not make
+the stale exact-wheel rehearsal current.
 
 Confirm the production gate fails closed:
 
@@ -122,6 +130,25 @@ no safe zero-configuration production global app. Deployment composition must:
 `GET /v3/health` is public process health, not proof that issue or settlement is safe.
 Use authenticated `GET /v3/status` plus the operation-specific readiness snapshot.
 
+### Factory and evaluator host
+
+The local factory composition and scheduler are runnable, but deployment must inject one
+concrete local-configured executor for each formula/ML/LLM family and a local evaluator
+that derives settlement metrics from authenticated settled evidence. Test doubles do not
+qualify the installation. Run the frozen evaluator through the bounded file exchange and
+an existing non-exportable CNG key:
+
+```powershell
+strathmark-v3-factory-evaluator REQUEST.json RESPONSE.json `
+  --registry C:\ProgramData\STRATHMARK\v3\factory\audit-registry `
+  --cng-key-name strathmark-v3-evaluator
+```
+
+The command does not create the key or OS boundary. Provision separate builder,
+evaluator, and signer identities; enforce their process and filesystem ACLs; deny the
+forbidden audit/signing access; and verify the boundary in exact-source evidence and CI.
+No factory process may auto-promote a bundle or change V2/API authority.
+
 ## Race-day operating sequence
 
 1. Verify the active bundle, tournament epoch, event-chain tip, projection health,
@@ -132,8 +159,10 @@ Use authenticated `GET /v3/status` plus the operation-specific readiness snapsho
 3. Freeze one epoch for every field in the current round.
 4. Assemble each final roster from compatible sealed cards; stale cards regenerate.
 5. Present the exception-first green/amber/red projection to the tournament manager.
-6. Require deliberate action for flagged sheets; no manual estimate is defaulted.
-7. Acknowledge issue atomically and retain the exact receipt set.
+6. Record the deliberate approval decision through `/v3/approvals/decide`, binding the
+   exact snapshot, selected and excluded receipt IDs/digests/revisions, actor metadata,
+   timestamp, and idempotency identity. No manual estimate is defaulted.
+7. Separately acknowledge issue atomically and retain the exact receipt set.
 8. Submit the complete issued roster and settle all valid completions and explicit
    non-completion states in one atomic command.
 9. Drive and durably close capability, invalidation, scoring, coverage, weights,
@@ -173,6 +202,10 @@ the event:
 - all eleven release-evidence classes pass on the production candidate;
 - the Windows capacity manifest is production-tier for the designated machine;
 - candidate/audit/release signing identities are live non-exportable Windows CNG keys;
+- concrete local formula/ML/LLM factory executors and the authenticated local
+  settlement-metric evaluator are installed and exercised;
+- builder/evaluator/signer OS identities, filesystem/process ACLs, and network-denial
+  policy are enforced and verified on the designated host;
 - the release verifier is given the installation-owned, operator-pinned public release
   identity through `--trusted-production-identity`; it never trusts identity metadata
   supplied by the attestation being verified;
@@ -182,7 +215,7 @@ the event:
 - explicit release authority is available for the later consumer switch.
 
 The repository intentionally contains no production private key, credential, endpoint,
-or pre-approved switch.
+pre-approved switch, or provisioned production CNG identity.
 
 ## Cutover preparation
 

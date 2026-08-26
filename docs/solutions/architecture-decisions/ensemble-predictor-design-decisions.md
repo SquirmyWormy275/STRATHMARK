@@ -18,7 +18,7 @@ source: "CEO + Eng plan-review sessions 2026-03-23; TODOS.md TODO-001..011"
 
 > **Historical lineage.** V2 superseded this pre-2.0 design. V3 later introduced a new,
 > independently specified adaptive ensemble; it does not reactivate this proposal.
-> Use [`docs/PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md) for implemented V3,
+> Use [`docs/PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md) for the V3 release candidate,
 > [`docs/PREDICTION_ENGINE_V2.md`](../../PREDICTION_ENGINE_V2.md) for preserved V2, and
 > retain this page only as decision history.
 

@@ -2,10 +2,12 @@
 
 ## Status and authority
 
-V3 is an implemented release candidate under exact-source verification. Its older
-rehearsal is stale after current source changes. V2 remains the trusted production
-authority until an explicit cutover. No production authority has changed, the consumer
-endpoint has not switched, and V2 remains runnable and writable.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. Its older rehearsal is stale and
+must be regenerated from the final documentation commit. V2 remains the trusted
+production authority until an explicit cutover. No production authority has changed,
+the consumer endpoint has not switched, and V2 remains runnable and writable.
+The external STRATHEX durable outbox/adapter is not implemented.
 
 The two engines are deliberately separate:
 
@@ -16,7 +18,7 @@ The two engines are deliberately separate:
 | Evidence boundary | exclusive historical date | historical cutoff plus tournament/round epoch |
 | Persistence | V2 ledger and shadow contract | V3 event authority and rebuildable projections |
 | Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen ten-route `/v3/*` contract |
-| Authority now | trusted production | implemented release candidate, rehearsal only |
+| Authority now | trusted production | release candidate under final audit, rehearsal only |
 
 V3 does not mutate V2 receipts or project itself through V2's five keys. Cutover is one
 explicit tournament-boundary authority change, never a request-by-request fallback.
@@ -41,16 +43,19 @@ flowchart LR
     K --> L["Fairness-frontier optimizer + Mark-3 rebase"]
     L --> M["Immutable field receipt"]
     M --> N["Green/amber/red approval projection"]
-    N --> O["Atomic issue acknowledgment"]
-    O --> P["Complete-roster atomic settlement"]
-    P --> Q["Seven durable derivation reactions"]
-    Q --> A
+    N --> O["Typed multi-receipt approval decision"]
+    O --> P["Atomic issue acknowledgment"]
+    P --> Q["Complete-roster atomic settlement"]
+    Q --> R["Seven durable derivation reactions"]
+    R --> A
 ```
 
 The circular edge does not mean a result can change its own race. All fields in a round
 share one epoch. Settled results become input only after the legal boundary to the next
 round. Capability, invalidation, scoring, coverage, weights, readiness, and credibility
 must all close before the derivation barrier opens; none inserts a judge decision.
+The approval-decision event records the tournament manager's selected and excluded
+receipt bindings. It neither authorizes a human nor acknowledges official issue.
 
 ## Layers
 
@@ -72,6 +77,16 @@ It performs no environment reads, storage, provider I/O, or background work.
 field assembly, approvals, issue, settlement, lifecycle, automated factory work,
 operational status, recovery proof, and cutover preparation. Ports make every external
 effect explicit.
+
+`application/factory_runtime.py` is the runnable local composition and scheduler for
+factory automation plus settled-evidence monitoring. It fails closed unless every
+formula/ML/LLM family executor is explicitly injected at the local-configured boundary.
+The repository also provides a bounded canonical file exchange and the installed
+`strathmark-v3-factory-evaluator` command, which opens an existing non-exportable Windows
+CNG key by name for one evaluator request. The repository script delegates to that same
+packaged entry point. These seams do not provide the concrete family
+executors, local settlement-metric evaluator, installation OS identities/ACLs, or CNG
+provisioning required for production qualification.
 
 ### Infrastructure
 
@@ -120,9 +135,10 @@ their assessor forecasts before the final roster exists. The field assembler com
 current compatible cards, validates epoch/evidence/bundle/roster revisions, pools one
 joint distribution, calculates disagreement and marks, and commits the receipt.
 
-This separates slow speculative inference from the critical call-up path. The designated
-Windows rehearsal measured field assembly below the two-second exclusive budget while
-preserving exact-retry recovery and immutable issuance.
+This separates slow speculative inference from the critical call-up path. The
+post-format, five-run designated-Windows result-to-ready benchmark measured a maximum of
+3.414 seconds against the 120-second limit while preserving exact-source digests,
+component latency, exact-retry recovery, and immutable issuance.
 
 ## Failure and readiness model
 

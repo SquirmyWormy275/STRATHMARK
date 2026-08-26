@@ -2,15 +2,18 @@
 
 ## V2/V3 boundary
 
-V3 is an implemented release candidate whose older rehearsal is stale after current
-source changes, but V2 remains the trusted production authority until an explicit
-cutover. No production authority has changed.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. Its older rehearsal is stale until
+regenerated from the final documentation commit, but V2 remains the trusted production
+authority until an explicit cutover. No production authority has changed.
 
 This directory contains the historical V1/V2 PostgreSQL/Supabase mirror migrations. V3
 does not extend these files and does not use PostgreSQL as its race-day authority. Its
 dedicated local SQLite event-store migrations are ordered, checksummed, and applied by
-`strathmark/v3/migrations/`. V3 imports V2 through a repeatable read-only snapshot and
-never makes the two schemas concurrent trusted writers.
+`strathmark/v3/migrations/`. The current V3 chain contains 17 forward migrations,
+`0001_event_authority.sql` through `0017_expected_time_override_state.sql`. V3 imports
+V2 through a repeatable read-only snapshot and never makes the two schemas concurrent
+trusted writers.
 
 Applying a file in this directory cannot activate V3. Applying a V3 local migration
 cannot switch a consumer. Existing production PostgreSQL work remains a separately

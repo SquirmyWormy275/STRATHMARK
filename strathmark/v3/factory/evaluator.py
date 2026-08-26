@@ -45,6 +45,7 @@ from strathmark.v3.infrastructure.integrity import (
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _TOKEN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
 _COMPARATORS = frozenset({"gte", "lte"})
+_MAX_AUDIT_CONSUMPTION_RECORD_BYTES = 512 * 1024
 
 
 class EvaluationError(RuntimeError):
@@ -643,8 +644,125 @@ class AuditGenerationRegistry:
         }
         return self._publish(harness.generation_id, record)
 
+    def consume_evaluation(
+        self,
+        harness: FrozenEvaluationHarness,
+        candidate: CandidateBundle,
+        report: SignedEvaluationReport,
+        *,
+        consumed_at: str,
+        request_digest: str,
+        signer: P256Signer,
+    ) -> Path:
+        """Atomically commit one-use consumption and its already-signed result."""
+
+        require_utc_milliseconds(consumed_at)
+        _digest(request_digest, "evaluator request")
+        if (
+            not isinstance(report, SignedEvaluationReport)
+            or report.candidate_digest != candidate.candidate_digest
+            or report.lineage_digest != candidate.lineage_digest
+            or report.generation_id != harness.generation_id
+            or report.harness_digest != harness.harness_digest
+            or report.manifest.key_id != signer.identity.key_id
+        ):
+            raise EvaluationError("audit result differs from its consumption authority")
+        payload = {
+            "schema_version": "strathmark-v3-audit-generation-evaluation-result-v1",
+            "generation_id": harness.generation_id,
+            "audit_snapshot_digest": harness.audit_snapshot_digest,
+            "harness_digest": harness.harness_digest,
+            "candidate_lineage_digest": candidate.lineage_digest,
+            "candidate_digest": candidate.candidate_digest,
+            "request_digest": request_digest,
+            "report_manifest": report.manifest.to_dict(),
+        }
+        authority = sign_manifest(
+            "factory_evaluation_consumption",
+            payload,
+            signer=signer,
+            created_at=consumed_at,
+        )
+        record = {
+            "schema_version": "strathmark-v3-audit-generation-evaluation-record-v1",
+            "result_manifest": authority.to_dict(),
+        }
+        return self._publish(harness.generation_id, record)
+
+    def recover_evaluation(
+        self,
+        harness: FrozenEvaluationHarness,
+        candidate: CandidateBundle,
+        *,
+        request_digest: str,
+        trust_store: IntegrityTrustStore,
+    ) -> SignedEvaluationReport | None:
+        """Recover only an exact, trusted result from the atomic consumption record."""
+
+        _digest(request_digest, "evaluator request")
+        record = self.record(harness.generation_id)
+        if record is None:
+            return None
+        if (
+            set(record) != {"schema_version", "result_manifest"}
+            or record.get("schema_version") != "strathmark-v3-audit-generation-evaluation-record-v1"
+        ):
+            raise EvaluationError("audit generation has no recoverable evaluator result")
+        expected = {
+            "schema_version",
+            "generation_id",
+            "audit_snapshot_digest",
+            "harness_digest",
+            "candidate_lineage_digest",
+            "candidate_digest",
+            "request_digest",
+            "report_manifest",
+        }
+        try:
+            authority = SignedManifest.from_dict(record["result_manifest"])
+            payload = verify_manifest(authority, trust_store)
+        except (IntegrityError, TypeError, ValueError) as exc:
+            raise EvaluationError("durable evaluator result is untrusted or malformed") from exc
+        if (
+            authority.kind != "factory_evaluation_consumption"
+            or set(payload) != expected
+            or payload.get("schema_version")
+            != "strathmark-v3-audit-generation-evaluation-result-v1"
+        ):
+            raise EvaluationError("durable evaluator result schema differs")
+        if (
+            payload["request_digest"] != request_digest
+            or payload["generation_id"] != harness.generation_id
+            or payload["audit_snapshot_digest"] != harness.audit_snapshot_digest
+            or payload["harness_digest"] != harness.harness_digest
+            or payload["candidate_lineage_digest"] != candidate.lineage_digest
+            or payload["candidate_digest"] != candidate.candidate_digest
+        ):
+            raise EvaluationError("durable evaluator result conflicts with request")
+        try:
+            manifest = SignedManifest.from_dict(payload["report_manifest"])
+            report = evaluation_report_from_manifest(manifest)
+            verified = verify_evaluation_report(
+                report,
+                trust_store=trust_store,
+                expected_candidate=candidate,
+                expected_harness=harness,
+            )
+        except (IntegrityError, EvaluationError, TypeError, ValueError) as exc:
+            raise EvaluationError("durable evaluator result is untrusted or malformed") from exc
+        if (
+            verified.candidate_digest != payload["candidate_digest"]
+            or verified.lineage_digest != payload["candidate_lineage_digest"]
+            or verified.harness_digest != payload["harness_digest"]
+            or verified.manifest.body().get("created_at") != authority.body().get("created_at")
+        ):
+            raise EvaluationError("durable evaluator result authority differs")
+        return verified
+
     def _publish(self, generation_id: str, record: Mapping[str, object]) -> Path:
         payload = canonical_bytes(record)
+        if not payload or len(payload) > _MAX_AUDIT_CONSUMPTION_RECORD_BYTES:
+            raise EvaluationError("audit consumption record exceeds its bounded size")
         destination = self.root / f"{canonical_digest({'generation_id': generation_id})}.json"
         temporary = self.root / f".{destination.name}.{uuid.uuid4().hex}.tmp"
         try:
@@ -675,13 +793,25 @@ class AuditGenerationRegistry:
     def record(self, generation_id: str) -> Mapping[str, object] | None:
         _token(generation_id, "audit generation")
         path = self.root / f"{canonical_digest({'generation_id': generation_id})}.json"
-        if not path.is_file():
-            return None
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            with path.open("rb") as handle:
+                size = os.fstat(handle.fileno()).st_size
+                if size <= 0 or size > _MAX_AUDIT_CONSUMPTION_RECORD_BYTES:
+                    raise EvaluationError("audit consumption record exceeds its bounded size")
+                raw = handle.read(_MAX_AUDIT_CONSUMPTION_RECORD_BYTES + 1)
+        except FileNotFoundError:
+            return None
+        except EvaluationError:
+            raise
         except Exception as exc:
             raise EvaluationError("audit consumption record is corrupt") from exc
-        if not isinstance(value, dict) or canonical_bytes(value) != path.read_bytes():
+        if len(raw) > _MAX_AUDIT_CONSUMPTION_RECORD_BYTES:
+            raise EvaluationError("audit consumption record exceeds its bounded size")
+        try:
+            value = json.loads(raw)
+        except Exception as exc:
+            raise EvaluationError("audit consumption record is corrupt") from exc
+        if not isinstance(value, dict) or canonical_bytes(value) != raw:
             raise EvaluationError("audit consumption record is not canonical")
         return MappingProxyType(value)
 
@@ -714,6 +844,7 @@ class FrozenEvaluator:
         observed_audit_snapshot_digest: str,
         created_at: str,
         promotion_evidence: PromotionCalibrationEvidence | None = None,
+        request_digest: str | None = None,
     ) -> SignedEvaluationReport:
         if not isinstance(candidate, CandidateBundle):
             raise EvaluationError("evaluator requires a closed candidate bundle")
@@ -731,10 +862,9 @@ class FrozenEvaluator:
         ):
             raise EvaluationError("promotion evidence candidate binding differs")
         require_utc_milliseconds(created_at)
-        # Once the sealed outcome has been opened, every result—including a failed one—is
-        # consumed. The marker lands before a report is returned, so crashes cannot probe it.
-        self.registry.consume(self.harness, candidate, consumed_at=created_at)
-        return _sign_evaluation_report(
+        if self.registry.record(self.harness.generation_id) is not None:
+            raise EvaluationError("locked audit generation was already consumed")
+        report = _sign_evaluation_report(
             self.harness,
             candidate,
             normalized,
@@ -743,6 +873,36 @@ class FrozenEvaluator:
             signer=self.signer,
             created_at=created_at,
         )
+        if request_digest is None:
+            request_digest = canonical_digest(
+                {
+                    "schema_version": "strathmark-v3-direct-evaluation-request-v1",
+                    "candidate_digest": candidate.candidate_digest,
+                    "harness_digest": self.harness.harness_digest,
+                    "metrics": {
+                        name: canonical_decimal_string(normalized[name])
+                        for name in sorted(normalized)
+                    },
+                    "observed_audit_snapshot_digest": observed_audit_snapshot_digest,
+                    "created_at": created_at,
+                    "promotion_evidence_digest": (
+                        None if promotion_evidence is None else promotion_evidence.evidence_digest
+                    ),
+                }
+            )
+        else:
+            _digest(request_digest, "evaluator request")
+        # Consumption and the exact signed result share one durable no-clobber record.
+        # A crash after this publication can recover the result without reopening audit.
+        self.registry.consume_evaluation(
+            self.harness,
+            candidate,
+            report,
+            consumed_at=created_at,
+            request_digest=request_digest,
+            signer=self.signer,
+        )
+        return report
 
     def select_cloud_champion(
         self,
@@ -907,6 +1067,33 @@ def _sign_evaluation_report(
         None if promotion_evidence is None else promotion_evidence.evidence_digest,
         promotion_evidence is not None and not failed,
     )
+
+
+def evaluation_report_from_manifest(manifest: SignedManifest) -> SignedEvaluationReport:
+    """Project a signed manifest into a typed report without trusting its signature."""
+
+    try:
+        payload = manifest.body().get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError
+        results = payload.get("gate_results")
+        if not isinstance(results, list):
+            raise ValueError
+        summary = MappingProxyType({str(item["name"]): float(item["value"]) for item in results})
+        return SignedEvaluationReport(
+            manifest,
+            payload["candidate_digest"],
+            payload["candidate_lineage_digest"],
+            payload["generation_id"],
+            payload["harness_digest"],
+            payload["passed"],
+            tuple(payload["failed_gates"]),
+            summary,
+            payload["promotion_evidence_digest"],
+            payload["promotion_authorized"],
+        )
+    except (KeyError, TypeError, ValueError, IntegrityError, EvaluationError) as exc:
+        raise EvaluationError("evaluation report manifest is malformed") from exc
 
 
 def verify_evaluation_report(
@@ -1304,6 +1491,7 @@ __all__ = [
     "CloudChampionSelection",
     "EvaluationError",
     "EvaluationGate",
+    "evaluation_report_from_manifest",
     "FactoryIsolationAttestation",
     "FactoryServiceRole",
     "FrozenEvaluationHarness",

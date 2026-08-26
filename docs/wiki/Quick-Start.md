@@ -1,7 +1,7 @@
 # Quick Start
 
-> This example uses the trusted V2 Python API. V3 is implemented separately and has a
-> release-candidate implementation under exact-source verification, but no production authority has changed and installation alone
+> This example uses the trusted V2 Python API. V3 is a separate release candidate under
+> exact-source verification, but no production authority has changed and installation alone
 > does not cut over a consumer. See [Prediction Engine V3](Prediction-Engine-V3.md).
 
 ```python

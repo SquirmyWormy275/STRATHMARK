@@ -2,7 +2,7 @@
 
 ## Version boundary
 
-V3 is implemented with numeric LLM-council forecasting and is under exact-source
+The V3 release candidate uses numeric LLM-council forecasting and is under exact-source
 verification; its older rehearsal is stale after current source changes. V2 remains the
 trusted production authority until an explicit cutover. No production authority has
 changed.

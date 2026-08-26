@@ -1,10 +1,10 @@
 # Prediction Engine V3
 
-V3 is an implemented release candidate under exact-source verification. The older
-checked-in rehearsal is stale after the current source changes and cannot verify this
-candidate. V2 remains the trusted production authority until an explicit cutover. No
-production authority has changed, no consumer endpoint has switched, and V2 is not
-audit-only.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. The older checked-in rehearsal is
+stale until regenerated from the final documentation commit. V2 remains the trusted
+production authority until an explicit cutover. No production authority has changed,
+no consumer endpoint has switched, and V2 is not audit-only.
 
 V3 independently generates transparent formula, hierarchical ML, and blind three-member
 LLM-council forecasts from the same sealed evidence. It validates every output,
@@ -16,6 +16,17 @@ Every valid completion—including both overperformance and underperformance—c
 later capability without labeling motive. One round uses one epoch. Issued sheets and
 legal winners remain immutable. Rolling cards move slow inference ahead of the live
 call-up path.
+
+The ten-route service contract includes typed multi-receipt approval decisions with
+explicit exclusions, separate from official issue acknowledgment. STRATHEX still needs
+its durable forwarding outbox. The post-format five-run Windows result-to-ready
+benchmark recorded a 3.414-second maximum against the 120-second limit.
+
+The local factory composition/scheduler and bounded production-CNG evaluator entrypoint
+exist. Production qualification still needs concrete formula/ML/LLM family executors,
+an authenticated local settlement-metric evaluator, provisioned builder/evaluator/signer
+OS identities and ACLs, provisioned CNG keys, and exact-source CI evidence. Promotion
+remains manual and signed.
 
 The live rolling request binds the promoted council, provider tokens, and deadlines and
 seals member and council receipts for exact restart replay. Result settlement accepts the

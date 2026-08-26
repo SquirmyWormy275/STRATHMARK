@@ -1,9 +1,10 @@
 # TODOs and Operational Follow-up
 
-V3 is implemented and under exact-source release verification. The older checked-in
-rehearsal is stale after the current source changes. V2 remains the trusted production
-authority until an explicit cutover. No ordinary V3 implementation item is hidden here
-as if it were production evidence.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. The older checked-in rehearsal is
+stale and must be regenerated on the final documentation commit. V2 remains the trusted
+production authority until an explicit cutover. No ordinary V3 implementation item is
+hidden here as if it were production evidence.
 
 ## Separately authorized production work
 
@@ -12,14 +13,24 @@ the code silently takes:
 
 - Provision installation-owned non-exportable Windows CNG identities for candidate,
   audit, release, backup, support, and handoff roles; record only public identities and
-  key names outside the repository.
+  key names outside the repository. Create separate builder/evaluator/signer OS
+  identities and prove their filesystem, process, and network ACL boundaries.
+- Install the concrete local formula/ML/LLM family executors and the local evaluator that
+  derives promotion metrics from authenticated settled evidence. Exercise them through
+  the existing factory composition/scheduler and bounded CNG evaluator entrypoint; test
+  executors and caller-supplied metric maps are not production qualification.
 - Run the complete production-tier evidence set on the designated installed Windows
   host and create the exact CNG-signed release attestation. Pin the public release
   identity independently and pass it to the verifier with
   `--trusted-production-identity`; do not accept identity metadata from the attestation
   itself. Do not promote the checked-in development-key rehearsal.
-- Implement and rehearse the pinned tournament-manager V3 adapter against the frozen
-  OpenAPI digest while V2 remains authoritative.
+- Run the final exact-source CI matrix against those installed components and retain its
+  receipts. A local pass or source digest alone is not CI evidence.
+- Implement STRATHEX's durable outbox forwarding and immutable acknowledgment
+  persistence against STRATHMARK's existing typed multi-receipt
+  `POST /v3/approvals/decide` endpoint. Then pin and rehearse the complete
+  tournament-manager V3 adapter against the frozen OpenAPI digest while V2 remains
+  authoritative. Do not collapse approval evidence into issue acknowledgment.
 - At zero open tournaments, prepare the signed final-V2/V3 handoff, obtain separate
   release authorization, and switch the consumer exactly once. Never enable concurrent
   V2/V3 trusted writers.

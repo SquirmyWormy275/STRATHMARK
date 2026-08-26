@@ -798,11 +798,14 @@ def _run_trial(database_path: Path, trial_ordinal: int) -> dict[str, Any]:
                 raise RuntimeError("benchmark loaded a different frozen field")
             return inputs
 
-        def verify_current(self, field, card_bindings, capability_bindings) -> None:
+        def verify_current(
+            self, field, card_bindings, capability_bindings, override_states
+        ) -> None:
             if (
                 field != final_field
                 or card_bindings != tuple(item.publication for item in cards)
                 or capability_bindings != tuple(item.binding for item in capabilities)
+                or override_states
             ):
                 raise RuntimeError("benchmark current authority changed during assembly")
 

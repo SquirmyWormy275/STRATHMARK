@@ -85,6 +85,10 @@ from strathmark.v3.infrastructure.integrity import (
     verify_manifest,
 )
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
+from strathmark.v3.infrastructure.sqlite.projections import (
+    ProjectionError,
+    verified_expected_time_override_chain,
+)
 
 _OUTER = (
     AssessorKind.FORMULA,
@@ -390,45 +394,28 @@ class SQLiteCapabilityStateResolver:
         if not isinstance(field, FrozenFieldRevision):
             raise AssemblyConflict("override resolver requires a frozen field")
         competitor = StableIdentifier(str(competitor_id))
-        matches = []
-        with open_v3_connection(self._database_path, read_only=True) as connection:
-            rows = connection.execute(
-                "SELECT state_json,state_digest,source_global_sequence,source_event_digest "
-                "FROM v3_expected_time_override_states WHERE competitor_id=? "
-                "AND tournament_id=? AND active=1 AND accepted_call_order<=? "
-                "ORDER BY source_global_sequence DESC LIMIT 2",
-                (str(competitor), str(field.tournament_id), field.call_order),
-            ).fetchall()
-            for row in rows:
-                try:
-                    value = json.loads(str(row[0]))
-                    state = AcceptedExpectedTimeOverrideState.from_dict(value)
-                except Exception as exc:
-                    raise AssemblyConflict("accepted override state is malformed") from exc
-                source = connection.execute(
-                    "SELECT event_digest,event_kind FROM v3_events WHERE global_sequence=?",
-                    (int(row[2]),),
-                ).fetchone()
-                if (
-                    canonical_bytes(value).decode() != str(row[0])
-                    or state.state_digest != str(row[1])
-                    or state.accepted_global_sequence != int(row[2])
-                    or state.accepted_event_digest != str(row[3])
-                    or source is None
-                    or str(source[0]) != str(row[3])
-                    or str(source[1]) != EventKind.APPROVAL_DECISION_RECORDED.value
-                ):
-                    raise AssemblyConflict("accepted override differs from event authority")
-                if state.applies_to(
+        try:
+            with open_v3_connection(self._database_path, read_only=True) as connection:
+                states = verified_expected_time_override_chain(
+                    connection,
+                    competitor_id=competitor,
                     tournament_id=field.tournament_id,
-                    field_id=field.field_id,
-                    target_context_digest=field.target_context.digest,
-                    call_order=field.call_order,
-                ):
-                    matches.append(state)
-        if len(matches) > 1:
-            raise AssemblyConflict("accepted override scopes overlap without supersession")
-        return None if not matches else matches[0]
+                )
+        except ProjectionError as exc:
+            raise AssemblyConflict("accepted override differs from authority") from exc
+        if not states:
+            return None
+        state = states[-1]
+        return (
+            state
+            if state.applies_to(
+                tournament_id=field.tournament_id,
+                field_id=field.field_id,
+                target_context_digest=field.target_context.digest,
+                call_order=field.call_order,
+            )
+            else None
+        )
 
     def verify_override_current(
         self, overrides: tuple[AcceptedExpectedTimeOverrideState, ...]
@@ -439,16 +426,15 @@ class SQLiteCapabilityStateResolver:
             raise AssemblyConflict("accepted override bindings are invalid")
         with open_v3_connection(self._database_path, read_only=True) as connection:
             for state in overrides:
-                row = connection.execute(
-                    "SELECT state_digest,source_event_digest,active "
-                    "FROM v3_expected_time_override_states WHERE override_id=?",
-                    (str(state.override_id),),
-                ).fetchone()
-                if row is None or (str(row[0]), str(row[1]), int(row[2])) != (
-                    state.state_digest,
-                    state.accepted_event_digest,
-                    1,
-                ):
+                try:
+                    current = verified_expected_time_override_chain(
+                        connection,
+                        competitor_id=state.competitor_id,
+                        tournament_id=state.tournament_id,
+                    )
+                except ProjectionError as exc:
+                    raise AssemblyConflict("accepted override differs from authority") from exc
+                if not current or current[-1] != state:
                     raise AssemblyConflict("accepted override authority is no longer current")
 
     @staticmethod

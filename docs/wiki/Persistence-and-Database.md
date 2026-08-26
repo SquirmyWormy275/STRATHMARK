@@ -2,7 +2,7 @@
 
 ## Authority status
 
-V3 is an implemented release candidate whose older rehearsal is stale after current
+V3 is a release candidate whose older rehearsal is stale after current
 source changes. V2 remains the trusted production authority until explicit cutover. No
 production authority has changed.
 
@@ -18,7 +18,9 @@ digest.
 Prepared cards, fields, approvals, issue acknowledgments, credentials, jobs, and
 settlements are explicit aggregates. Exact retries recover original bytes. Changed
 retries, stale versions, illegal transitions, gaps, duplicates, and tampering fail
-closed. A batch issue commits all fields or none; issued receipts never mutate. Live
+closed. A typed approval decision atomically binds selected and excluded receipt
+revisions; it remains distinct from issue authority. A batch issue commits all fields or
+none; issued receipts never mutate. Live
 settlement requires the complete issued roster and commits observations and settlement
 as one command. Seven source-bound reactions must then close durably before the
 derivation barrier opens; reaction automation never creates a judge approval decision.

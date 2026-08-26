@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -37,8 +36,6 @@ from strathmark.v3.api.schemas import (  # noqa: E402
     ApprovalDecisionResponse,
     AssembleFieldRequest,
     AssembleFieldResponse,
-    ExecuteCommandRequest,
-    ExecuteCommandResponse,
     IssueAcknowledgmentRequest,
     IssueAcknowledgmentResponse,
     PrepareCardResponse,
@@ -62,20 +59,6 @@ class Gateway:
     async def prepare_card(self, payload, context):
         self.calls.append(("prepare_card", payload, context))
         return PrepareCardResponse(job_id="job:prepare-1", status="queued", authority_sequence=2)
-
-    async def execute_command(self, payload, context):
-        self.calls.append(("execute_command", payload, context))
-        result = '{"ok":true}'
-        return ExecuteCommandResponse(
-            command_id=str(context.command_id),
-            disposition="committed",
-            result_schema_version="strathmark-v3-command-result-v1",
-            result_digest=hashlib.sha256(result.encode()).hexdigest(),
-            canonical_result_json=result,
-            first_global_sequence=2,
-            last_global_sequence=2,
-            event_set_digest="e" * 64,
-        )
 
     async def assemble_field(self, payload, context):
         self.calls.append(("assemble_field", payload, context))
@@ -322,40 +305,6 @@ def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -
     )
     assert client.get("/v3/status", headers=_headers(issued.credential)).status_code == 200
 
-    async def wrong_identity(_payload, _context):
-        result = '{"ok":true}'
-        return ExecuteCommandResponse(
-            command_id="command:wrong",
-            disposition="committed",
-            result_schema_version="strathmark-v3-command-result-v1",
-            result_digest=hashlib.sha256(result.encode()).hexdigest(),
-            canonical_result_json=result,
-            first_global_sequence=2,
-            last_global_sequence=2,
-            event_set_digest="e" * 64,
-        )
-
-    gateway.execute_command = wrong_identity
-    command = {
-        "schema_version": "strathmark-v3-command-execution-request-v1",
-        "command_kind": "change_weights",
-        "target_aggregate": "weights:global",
-        "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-        "payload_schema_version": "strathmark-v3-change-weights-v1",
-        "canonical_payload_json": (
-            '{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
-        ),
-        "payload_digest": hashlib.sha256(
-            b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
-        ).hexdigest(),
-        "deadline_ms": 1000,
-    }
-    response = client.post(
-        "/v3/commands/execute", headers=_headers(issued.credential), json=command
-    )
-    assert response.status_code == 500
-    assert response.json()["code"] == "internal_service_error"
-
     with pytest.raises(RuntimeError, match="principal"):
         router_module._context(type("Request", (), {"state": object()})())  # type: ignore[arg-type]
 
@@ -457,27 +406,15 @@ def test_media_types_routes_redirects_and_cache_policy_are_fail_closed(api) -> N
 def test_all_consumer_operations_map_to_separate_application_port_methods(api) -> None:
     client, gateway, _registry, issued = api
     headers = _headers(issued.credential)
+
+    removed = client.post(
+        "/v3/commands/execute",
+        headers=headers,
+        json={"schema_version": "strathmark-v3-command-execution-request-v1"},
+    )
+    assert removed.status_code == 404
+    assert removed.json()["code"] == "route_not_found"
     cases = [
-        (
-            "/v3/commands/execute",
-            {
-                "schema_version": "strathmark-v3-command-execution-request-v1",
-                "command_kind": "change_weights",
-                "target_aggregate": "weights:global",
-                "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-                "payload_schema_version": "strathmark-v3-change-weights-v1",
-                "canonical_payload_json": (
-                    '{"reason_code":"operator_hold",'
-                    '"schema_version":"strathmark-v3-change-weights-v1"}'
-                ),
-                "payload_digest": hashlib.sha256(
-                    b'{"reason_code":"operator_hold",'
-                    b'"schema_version":"strathmark-v3-change-weights-v1"}'
-                ).hexdigest(),
-                "deadline_ms": 1000,
-            },
-            "execute_command",
-        ),
         (
             "/v3/fields/assemble",
             {
@@ -1297,47 +1234,6 @@ def test_low_level_stream_failures_reject_before_application_work(api) -> None:
 
 
 def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_values() -> None:
-    canonical_payload = (
-        '{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
-    )
-    command = {
-        "schema_version": "strathmark-v3-command-execution-request-v1",
-        "command_kind": "change_weights",
-        "target_aggregate": "weights:global",
-        "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-        "payload_schema_version": "strathmark-v3-change-weights-v1",
-        "canonical_payload_json": canonical_payload,
-        "payload_digest": hashlib.sha256(canonical_payload.encode()).hexdigest(),
-        "deadline_ms": 1000,
-    }
-    ExecuteCommandRequest.model_validate(command)
-    invalid_commands = [
-        {**command, "canonical_payload_json": "{"},
-        {**command, "canonical_payload_json": '{"schema_version":"wrong"}'},
-        {**command, "payload_digest": "0" * 64},
-        {**command, "command_kind": "record_approval_decision"},
-        {**command, "command_kind": "promote_bundle"},
-        {**command, "command_kind": "rollback_bundle"},
-        {**command, "command_kind": "record_monitoring"},
-        {**command, "command_kind": "suspend_live"},
-        {**command, "command_kind": "resume_live"},
-        {**command, "command_kind": "emergency_stop"},
-        {
-            **command,
-            "expected_versions": [
-                {"aggregate_id": "weights:z", "version": 0},
-                {"aggregate_id": "weights:a", "version": 0},
-            ],
-        },
-        {
-            **command,
-            "expected_versions": [{"aggregate_id": "weights:other", "version": 0}],
-        },
-    ]
-    for value in invalid_commands:
-        with pytest.raises(Exception):
-            ExecuteCommandRequest.model_validate(value)
-
     status = {
         "service": "ready",
         "authority_sequence": 1,
@@ -1368,26 +1264,6 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
     ):
         with pytest.raises(Exception):
             StatusResponse.model_validate(value)
-
-    canonical_result = '{"ok":true}'
-    result = {
-        "command_id": "command:one",
-        "disposition": "committed",
-        "result_schema_version": "strathmark-v3-command-result-v1",
-        "result_digest": hashlib.sha256(canonical_result.encode()).hexdigest(),
-        "canonical_result_json": canonical_result,
-        "first_global_sequence": 2,
-        "last_global_sequence": 2,
-        "event_set_digest": "a" * 64,
-    }
-    ExecuteCommandResponse(**result)
-    for value in (
-        {**result, "canonical_result_json": "{"},
-        {**result, "result_digest": "0" * 64},
-        {**result, "first_global_sequence": 3, "last_global_sequence": 2},
-    ):
-        with pytest.raises(Exception):
-            ExecuteCommandResponse(**value)
 
     with pytest.raises(Exception, match="unique"):
         AssembleFieldRequest.model_validate(

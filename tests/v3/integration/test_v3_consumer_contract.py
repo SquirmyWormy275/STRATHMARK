@@ -18,18 +18,15 @@ from strathmark.v3.api.auth import (  # noqa: E402
     ServiceCredentialRegistry,
 )
 from strathmark.v3.api.schemas import (  # noqa: E402
-    GENERIC_ONLINE_COMMAND_KINDS,
     ApprovalDecisionRequest,
     AssembleFieldRequest,
     CredentialRevocationRequest,
     CredentialRotationRequest,
-    ExecuteCommandRequest,
     IssueAcknowledgmentRequest,
     PrepareCardRequest,
     ReceiptLookupRequest,
     SettlementRequest,
 )
-from strathmark.v3.application.commands import _COMMAND_EVENT  # noqa: E402
 from strathmark.v3.consumer_contract import (  # noqa: E402
     EXPECTED_V3_CONSUMER_PATHS,
     V3_CONSUMER_CONTRACT_VERSION,
@@ -67,6 +64,16 @@ def test_packaged_contract_is_canonical_checksum_verified_and_v3_only() -> None:
     assert b"bearer ey" not in raw.lower()
 
 
+def test_frozen_contract_has_no_non_executable_generic_command_surface() -> None:
+    document = load_v3_consumer_contract()
+
+    assert "/v3/commands/execute" not in document["paths"]
+    assert "OnlineCommandKind" not in document["components"]["schemas"]
+    assert "ExecuteCommandRequest" not in document["components"]["schemas"]
+    assert "ExecuteCommandResponse" not in document["components"]["schemas"]
+    assert document["info"]["x-strathmark-command-coverage"]["authenticated_application_port"] == []
+
+
 def test_frozen_contract_is_exact_fresh_generation_and_live_openapi(
     tmp_path: Path,
 ) -> None:
@@ -90,7 +97,6 @@ def test_every_example_validates_against_frozen_schema_and_live_request_model() 
     request_models = {
         "/v3/approvals/decide": ApprovalDecisionRequest,
         "/v3/cards/prepare": PrepareCardRequest,
-        "/v3/commands/execute": ExecuteCommandRequest,
         "/v3/fields/assemble": AssembleFieldRequest,
         "/v3/receipts/lookup": ReceiptLookupRequest,
         "/v3/issues/acknowledge": IssueAcknowledgmentRequest,
@@ -136,29 +142,14 @@ def test_command_surface_covers_every_kind_without_exposing_offline_recovery_onl
     assert sum(map(len, (online, dedicated, internal, offline))) == len(CommandKind)
     assert "recover_service_credential" in offline
     assert "bootstrap_service_credential" in offline
-    enum_values = set(document["components"]["schemas"]["OnlineCommandKind"]["enum"])
-    assert enum_values == online == {item.value for item in GENERIC_ONLINE_COMMAND_KINDS}
+    assert online == set()
+    assert "OnlineCommandKind" not in document["components"]["schemas"]
     assert "acknowledge_batch_issue" in dedicated
     assert "record_approval_decision" in dedicated
-    assert CommandKind.RECORD_APPROVAL_DECISION not in GENERIC_ONLINE_COMMAND_KINDS
     assert "settle_live_race" in dedicated
     assert "freeze_evidence_epoch" in internal
     assert "evaluate_model_candidate" in internal
     assert "revise_field_roster" in internal
-    assert GENERIC_ONLINE_COMMAND_KINDS <= set(_COMMAND_EVENT)
-    assert not GENERIC_ONLINE_COMMAND_KINDS & {
-        CommandKind.REVISE_FIELD_ROSTER,
-        CommandKind.SETTLE_LIVE_RACE,
-        CommandKind.FREEZE_EVIDENCE_EPOCH,
-        CommandKind.EVALUATE_MODEL_CANDIDATE,
-        CommandKind.ACKNOWLEDGE_ISSUE,
-        CommandKind.PROMOTE_BUNDLE,
-        CommandKind.ROLLBACK_BUNDLE,
-        CommandKind.RECORD_MONITORING,
-        CommandKind.SUSPEND_LIVE,
-        CommandKind.RESUME_LIVE,
-        CommandKind.EMERGENCY_STOP,
-    }
     assert {
         "promote_bundle",
         "rollback_bundle",

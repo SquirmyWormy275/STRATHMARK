@@ -6,7 +6,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable, Mapping, Protocol, cast
@@ -40,6 +40,7 @@ from strathmark.v3.contracts.identifiers import (
     deterministic_identifier,
     require_identifier,
 )
+from strathmark.v3.contracts.receipts import ReceiptSectionKind
 from strathmark.v3.contracts.statuses import admit_raw_completion
 from strathmark.v3.domain.credibility import (
     ConsequenceStatus,
@@ -73,9 +74,15 @@ from strathmark.v3.infrastructure.integrity import (
 )
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
 from strathmark.v3.infrastructure.sqlite.event_store import (
+    AuthorityAnchor,
     EventStoreConflict,
     SQLiteEventStore,
     StoredCommandResult,
+)
+from strathmark.v3.infrastructure.sqlite.projections import (
+    ProjectionError,
+    verified_field_receipt_issue_sequence,
+    verified_field_receipt_projection,
 )
 
 FORECAST_COMMIT_MANIFEST_KIND = "credibility_forecast_commit"
@@ -877,6 +884,224 @@ class SQLiteCredibilityReactionService:
             ).fetchone()
         return row is not None and str(row[0]) == "completed"
 
+    def seal_current_live_control_preview(
+        self,
+        tournament_id: StableIdentifier,
+        *,
+        action: str,
+        signer: P256Signer,
+        created_at: str,
+    ) -> SignedManifest:
+        """Seal the exact persisted operational weights and next unissued sheet."""
+
+        require_identifier(tournament_id, expected_namespace="tournament")
+        state, anchor = self._current_live_control_preview_authority(tournament_id)
+        weights = {str(row["assessor"]): str(row["weight"]) for row in state["weights"]}
+        sheet = {str(row["competitor_id"]): int(row["mark"]) for row in state["sheet"]}
+        return seal_live_control_preview(
+            tournament_id=tournament_id,
+            action=action,
+            authority_sequence=anchor.global_sequence,
+            authority_digest=anchor.event_digest,
+            before_weights=weights,
+            after_weights=weights,
+            before_sheet=sheet,
+            after_sheet=sheet,
+            signer=signer,
+            created_at=created_at,
+        )
+
+    def _current_live_control_preview_authority(
+        self, tournament_id: StableIdentifier
+    ) -> tuple[dict[str, Any], AuthorityAnchor]:
+        """Read preview material and its verified head from one SQLite snapshot."""
+
+        verified_anchor = self._events.verify_bounded_head()
+        with open_v3_connection(self.database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
+            head = connection.execute(
+                "SELECT global_sequence,event_digest FROM v3_events "
+                "ORDER BY global_sequence DESC LIMIT 1"
+            ).fetchone()
+            observed_anchor = (
+                AuthorityAnchor(0, "0" * 64)
+                if head is None
+                else AuthorityAnchor(int(head[0]), str(head[1]))
+            )
+            if observed_anchor != verified_anchor:
+                raise CredibilityReactionError(
+                    "live control preview conflicted with concurrent authority"
+                )
+            return (
+                self._current_live_control_preview_state_connection(
+                    connection, tournament_id=tournament_id
+                ),
+                observed_anchor,
+            )
+
+    def _current_live_control_preview_state_connection(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        tournament_id: StableIdentifier,
+    ) -> dict[str, Any]:
+        authority = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT event_kind FROM v3_events WHERE aggregate_id=?",
+                (str(tournament_id),),
+            ).fetchall()
+        }
+        if EventKind.TOURNAMENT_OPENED.value not in authority:
+            raise CredibilityReactionError("live control preview lacks open tournament authority")
+        if EventKind.TOURNAMENT_CLOSED.value in authority:
+            raise CredibilityReactionError("live control preview expired at tournament close")
+        receipt_state = self._current_unissued_receipt_preview(
+            connection, tournament_id=tournament_id
+        )
+        if receipt_state is not None:
+            return receipt_state
+        weight_state = self._current_persisted_weight_preview(
+            connection, tournament_id=tournament_id
+        )
+        if weight_state is None:
+            raise CredibilityReactionError(
+                "live control preview lacks persisted tournament weight authority"
+            )
+        return weight_state
+
+    def _current_unissued_receipt_preview(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        tournament_id: StableIdentifier,
+    ) -> dict[str, Any] | None:
+        rows = connection.execute(
+            "SELECT receipt.*,ingress.snapshot_json AS field_snapshot_json "
+            "FROM v3_field_receipts receipt "
+            "JOIN v3_ingress_snapshots ingress "
+            "ON ingress.entity_kind='field' AND ingress.entity_id=receipt.field_id "
+            "AND ingress.upstream_revision=receipt.upstream_field_revision "
+            "WHERE ingress.tournament_id=? AND receipt.superseded_by_sequence IS NULL "
+            "AND ingress.upstream_revision=(SELECT MAX(current.upstream_revision) "
+            "FROM v3_ingress_snapshots current WHERE current.entity_kind='field' "
+            "AND current.entity_id=receipt.field_id) "
+            "ORDER BY receipt.field_id LIMIT 129",
+            (str(tournament_id),),
+        ).fetchall()
+        if len(rows) > 128:
+            raise CredibilityReactionError(
+                "live control preview exceeds the bounded tournament field maximum"
+            )
+        ordered: list[tuple[int, int, int, str, tuple[sqlite3.Row, Any]]] = []
+        for row in rows:
+            try:
+                snapshot = json.loads(str(row["field_snapshot_json"]))
+                call_order = snapshot["call_order"]
+                receipt, _event, _payload = verified_field_receipt_projection(connection, row)
+                issued_sequence = verified_field_receipt_issue_sequence(
+                    connection,
+                    receipt,
+                    receipt_source_global_sequence=int(row["source_global_sequence"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise CredibilityReactionError(
+                    "live control preview field authority is malformed"
+                ) from exc
+            except ProjectionError as exc:
+                raise CredibilityReactionError(
+                    "live control preview receipt authority cannot be verified"
+                ) from exc
+            if isinstance(call_order, bool) or not isinstance(call_order, int) or call_order < 0:
+                raise CredibilityReactionError("live control preview field authority is malformed")
+            ordered.append(
+                (
+                    int(issued_sequence is not None),
+                    call_order,
+                    0 if issued_sequence is None else issued_sequence,
+                    str(row["field_id"]),
+                    (row, receipt),
+                )
+            )
+        if not ordered:
+            return None
+        row, receipt = _select_live_control_receipt_row(ordered)
+        sections = [
+            item for item in receipt.sections if item.kind is ReceiptSectionKind.CREDIBILITY
+        ]
+        if len(sections) != 1 or not isinstance(sections[0].payload, InlinePayload):
+            raise CredibilityReactionError(
+                "live control preview credibility authority is unavailable"
+            )
+        credibility = sections[0].payload.to_value()
+        binding = credibility.get("weight_authority") if isinstance(credibility, Mapping) else None
+        weights = binding.get("weights") if isinstance(binding, Mapping) else None
+        if not isinstance(weights, list):
+            raise CredibilityReactionError(
+                "live control preview credibility authority is malformed"
+            )
+        try:
+            weight_map = {str(item[0]): str(item[1]) for item in weights}
+        except (IndexError, TypeError) as exc:
+            raise CredibilityReactionError(
+                "live control preview credibility authority is malformed"
+            ) from exc
+        return _live_control_preview_state(
+            weight_map,
+            {str(item.competitor_id): item.mark for item in receipt.marks},
+        )
+
+    def _current_persisted_weight_preview(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        tournament_id: StableIdentifier,
+    ) -> dict[str, Any] | None:
+        target = deterministic_identifier("weights", {"tournament_id": str(tournament_id)})
+        rows = connection.execute(
+            "SELECT envelope_json,event_digest FROM v3_events WHERE aggregate_id=? "
+            "AND event_kind=? ORDER BY global_sequence DESC LIMIT 129",
+            (str(target), EventKind.WEIGHTS_CHANGED.value),
+        ).fetchall()
+        if len(rows) > 128:
+            raise CredibilityReactionError(
+                "live control preview weight history exceeds the bounded lookup window"
+            )
+        for row in rows:
+            try:
+                event = EventEnvelope.from_dict(json.loads(str(row[0])))
+                payload = cast(InlinePayload, event.command.payload).to_value()
+            except Exception as exc:
+                raise CredibilityReactionError(
+                    "live control preview weight event cannot be verified"
+                ) from exc
+            if event.event_digest != str(row[1]):
+                raise CredibilityReactionError(
+                    "live control preview weight event differs from persisted authority"
+                )
+            schema = payload.get("schema_version")
+            if schema == "strathmark-v3-live-round-weight-freeze-v1":
+                if payload.get("tournament_id") != str(tournament_id):
+                    continue
+                weights = payload.get("weights")
+            elif schema == "strathmark-v3-tournament-baseline-snapshot-v1":
+                if payload.get("tournament_id") != str(tournament_id):
+                    continue
+                receipt = payload.get("receipt")
+                weights = receipt.get("weights") if isinstance(receipt, Mapping) else None
+            else:
+                continue
+            if not isinstance(weights, list):
+                raise CredibilityReactionError("live control preview weight authority is malformed")
+            try:
+                weight_map = {str(item[0]): str(item[1]) for item in weights}
+            except (IndexError, TypeError) as exc:
+                raise CredibilityReactionError(
+                    "live control preview weight authority is malformed"
+                ) from exc
+            return _live_control_preview_state(weight_map, {})
+        return None
+
     def record_live_control(
         self,
         tournament_id: StableIdentifier,
@@ -927,7 +1152,7 @@ class SQLiteCredibilityReactionService:
             after.update(enabled=False, emergency_stopped=True)
         before_digest = canonical_digest(before)
         after_digest = canonical_digest(after)
-        anchor = self._events.current_anchor()
+        expected_preview_state, anchor = self._current_live_control_preview_authority(tournament_id)
         preview = _verify_live_control_preview(
             preview_manifest,
             trust_store=self._trust_store,
@@ -936,6 +1161,14 @@ class SQLiteCredibilityReactionService:
             authority_sequence=anchor.global_sequence,
             authority_digest=anchor.event_digest,
         )
+        if preview["before"] != expected_preview_state:
+            raise CredibilityReactionError(
+                "live control preview differs from persisted tournament authority"
+            )
+        # Suspend, re-enable, and emergency-stop alter control state only. They do
+        # not rewrite already frozen weights or a sealed next-field start sheet.
+        if preview["after"] != expected_preview_state:
+            raise CredibilityReactionError("live control preview action result differs")
         payload = {
             "schema_version": "strathmark-v3-live-credibility-control-v2",
             "tournament_id": str(tournament_id),
@@ -1218,6 +1451,16 @@ class SQLiteCredibilityReactionService:
                 before = prior_payload.get("after")
             if before != payload["before"] or canonical_digest(before) != payload["before_digest"]:
                 raise EventStoreConflict("live control before-state changed concurrently")
+            try:
+                preview_state = self._current_live_control_preview_state_connection(
+                    connection, tournament_id=tournament_id
+                )
+            except CredibilityReactionError as exc:
+                raise EventStoreConflict(
+                    "live control preview authority changed before append"
+                ) from exc
+            if preview_state != payload["preview"]["before"]:
+                raise EventStoreConflict("live control preview material changed before append")
             prior_head = connection.execute(
                 "SELECT global_sequence,event_digest FROM v3_events WHERE global_sequence<? "
                 "ORDER BY global_sequence DESC LIMIT 1",
@@ -2845,6 +3088,17 @@ def _positive_int(value: int, label: str) -> None:
         raise CredibilityReactionError(f"{label} must be a positive integer")
 
 
+def _select_live_control_receipt_row(
+    candidates: list[tuple[int, int, int, str, Any]],
+) -> Any:
+    """Choose the next unissued sheet, or the most recently issued sheet."""
+
+    unissued = [item for item in candidates if item[0] == 0]
+    if unissued:
+        return min(unissued, key=lambda item: (item[1], item[3]))[4]
+    return max(candidates, key=lambda item: (item[2], item[3]))[4]
+
+
 def _live_control_preview_state(
     weights: Mapping[str, str], sheet: Mapping[str, int]
 ) -> dict[str, Any]:
@@ -2855,7 +3109,7 @@ def _live_control_preview_state(
     for assessor, weight in sorted(weights.items()):
         if not isinstance(assessor, str) or _LIVE_CONTROL_ASSESSOR.fullmatch(assessor) is None:
             raise CredibilityReactionError("live control preview assessor is invalid")
-        if not isinstance(weight, str):
+        if not isinstance(weight, str) or len(weight) > 128:
             raise CredibilityReactionError("live control preview weight is not canonical")
         try:
             parsed = Decimal(weight)
@@ -2868,7 +3122,9 @@ def _live_control_preview_state(
             or ("." in weight and weight.endswith("0"))
         ):
             raise CredibilityReactionError("live control preview weight is not canonical")
-        total += parsed
+        with localcontext() as decimal_context:
+            decimal_context.prec = 2_048
+            total += parsed
         encoded_weights.append({"assessor": assessor, "weight": weight})
     if total != 1:
         raise CredibilityReactionError("live control preview weights must sum to one")

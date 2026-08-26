@@ -60,6 +60,7 @@ from strathmark.v3.infrastructure.integrity import (
     IntegrityTrustStore,
     P256EphemeralSigner,
     sign_manifest,
+    verify_manifest,
 )
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
 from tests.v3.integration.test_derivation_barrier import (
@@ -245,16 +246,26 @@ def _empty_live_authority(tmp_path):
 
 
 def _live_control_preview(credibility, signer, tournament, action):
-    anchor = credibility._events.current_anchor()
-    return seal_live_control_preview(
+    try:
+        return credibility.seal_current_live_control_preview(
+            tournament_id=tournament,
+            action=action,
+            signer=signer,
+            created_at=NOW,
+        )
+    except CredibilityReactionError as exc:
+        if "lacks persisted tournament weight authority" not in str(exc):
+            raise
+    credibility._tournament_baseline(
+        tournament,
+        ContextNode(),
+        actor_id=ACTOR,
+        occurred_at_utc=NOW,
+        monotonic_elapsed_ms=5,
+    )
+    return credibility.seal_current_live_control_preview(
         tournament_id=tournament,
         action=action,
-        authority_sequence=anchor.global_sequence,
-        authority_digest=anchor.event_digest,
-        before_weights={"formula": "0.5", "ml": "0.5"},
-        after_weights={"formula": "0.5", "ml": "0.5"},
-        before_sheet={"competitor:a": 3, "competitor:b": 5},
-        after_sheet={"competitor:a": 3, "competitor:b": 5},
         signer=signer,
         created_at=NOW,
     )
@@ -2214,10 +2225,8 @@ def test_live_control_preview_is_signed_bounded_current_and_persisted_fail_close
         "kind": "tournament",
         "tournament_id": str(tournament),
     }
-    assert payload["preview"]["before"]["sheet"] == [
-        {"competitor_id": "competitor:a", "mark": 3},
-        {"competitor_id": "competitor:b", "mark": 5},
-    ]
+    assert payload["preview"]["before"]["sheet"] == []
+    assert payload["preview"]["after"] == payload["preview"]["before"]
 
     stale = _live_control_preview(credibility, signer, tournament, "re_enable")
     credibility._append_event(
@@ -2257,6 +2266,136 @@ def test_live_control_preview_is_signed_bounded_current_and_persisted_fail_close
             occurred_at_utc=NOW,
             monotonic_elapsed_ms=5,
         )
+
+
+def test_live_control_rejects_trusted_preview_unrelated_to_persisted_authority(tmp_path):
+    _lifecycle, credibility, signer, tournament, _completed, _successor = _empty_live_authority(
+        tmp_path
+    )
+    _live_control_preview(credibility, signer, tournament, "suspend")
+    anchor = credibility._events.current_anchor()
+    unrelated = seal_live_control_preview(
+        tournament_id=tournament,
+        action="suspend",
+        authority_sequence=anchor.global_sequence,
+        authority_digest=anchor.event_digest,
+        before_weights={"formula": "0.5", "ml": "0.5"},
+        after_weights={"formula": "0.5", "ml": "0.5"},
+        before_sheet={"competitor:unrelated-a": 3, "competitor:unrelated-b": 5},
+        after_sheet={"competitor:unrelated-a": 3, "competitor:unrelated-b": 5},
+        signer=signer,
+        created_at=NOW,
+    )
+
+    with pytest.raises(CredibilityReactionError, match="persisted tournament authority"):
+        credibility.record_live_control(
+            tournament,
+            action="suspend",
+            reason="unrelated trusted preview",
+            preview_manifest=unrelated,
+            command_id=IdempotencyKey("command:unrelated-trusted-preview"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=6,
+        )
+
+
+def test_live_control_rejects_trusted_preview_with_fabricated_action_result(tmp_path):
+    _lifecycle, credibility, signer, tournament, _completed, _successor = _empty_live_authority(
+        tmp_path
+    )
+    valid = _live_control_preview(credibility, signer, tournament, "emergency_stop")
+    valid_payload = verify_manifest(valid, IntegrityTrustStore((signer.identity,)))
+    before = valid_payload["before"]
+    fabricated = seal_live_control_preview(
+        tournament_id=tournament,
+        action="emergency_stop",
+        authority_sequence=valid_payload["authority"]["global_sequence"],
+        authority_digest=valid_payload["authority"]["event_digest"],
+        before_weights={item["assessor"]: item["weight"] for item in before["weights"]},
+        after_weights={"formula": "0.4", "ml": "0.6"},
+        before_sheet={item["competitor_id"]: item["mark"] for item in before["sheet"]},
+        after_sheet={"competitor:fabricated": 7},
+        signer=signer,
+        created_at=NOW,
+    )
+
+    with pytest.raises(CredibilityReactionError, match="action result"):
+        credibility.record_live_control(
+            tournament,
+            action="emergency_stop",
+            reason="fabricated consequence",
+            preview_manifest=fabricated,
+            command_id=IdempotencyKey("command:fabricated-action-result"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=7,
+        )
+
+
+def test_live_control_preview_selects_next_unissued_or_latest_issued_sheet():
+    candidates = [
+        (1, 1, 90, "field:one", "issued-one"),
+        (0, 4, 0, "field:four", "unissued-four"),
+        (0, 3, 0, "field:three", "unissued-three"),
+        (1, 5, 40, "field:five", "issued-five"),
+    ]
+
+    assert reactions._select_live_control_receipt_row(candidates) == "unissued-three"
+    assert (
+        reactions._select_live_control_receipt_row([item for item in candidates if item[0] == 1])
+        == "issued-one"
+    )
+
+
+def test_live_control_append_rechecks_receipt_projection_under_writer_lock(tmp_path, monkeypatch):
+    from tests.v3.integration.test_v3_runtime_gateway import (
+        _assemble_approve_and_issue,
+        _runtime,
+    )
+
+    client, credential, store, field, _reactions, _repository = _runtime(tmp_path)
+    _assemble_approve_and_issue(client, credential, store, field, key="preview-drift")
+    signer = store._signer
+    credibility = SQLiteCredibilityReactionService(
+        store.database_path,
+        trust_store=store._trust_store,
+        consequence_evaluator=None,
+        policy_manifest=_policy(signer),
+    )
+    tournament = field.tournament_id
+    preview = _live_control_preview(credibility, signer, tournament, "suspend")
+    original = credibility._append_event
+
+    def tamper_before_append(**arguments):
+        if arguments["payload"].get("schema_version") == (
+            "strathmark-v3-live-credibility-control-v2"
+        ):
+            with open_v3_connection(credibility.database_path) as connection:
+                connection.execute(
+                    "UPDATE v3_field_receipts SET receipt_json='{}' WHERE field_id=?",
+                    (str(field.field_id),),
+                )
+        return original(**arguments)
+
+    monkeypatch.setattr(credibility, "_append_event", tamper_before_append)
+    with pytest.raises(CredibilityReactionError, match="concurrent authority"):
+        credibility.record_live_control(
+            tournament,
+            action="suspend",
+            reason="projection changed after preview",
+            preview_manifest=preview,
+            command_id=IdempotencyKey("command:projection-drift-live-control"),
+            actor_id=ACTOR,
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=8,
+        )
+    with open_v3_connection(store.database_path, read_only=True) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM v3_events WHERE event_kind=?",
+            (EventKind.LIVE_SUSPENDED.value,),
+        ).fetchone()
+    assert count is not None and int(count[0]) == 0
 
 
 def test_round_freeze_is_atomically_unique_across_threads_and_restart(tmp_path, monkeypatch):

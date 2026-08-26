@@ -8,11 +8,10 @@ import re
 from importlib.resources import files
 from typing import Any, cast
 
-V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v2"
+V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v3"
 EXPECTED_V3_CONSUMER_PATHS = frozenset(
     {
         "/v3/health",
-        "/v3/commands/execute",
         "/v3/cards/prepare",
         "/v3/fields/assemble",
         "/v3/receipts/lookup",
@@ -35,33 +34,6 @@ class V3ConsumerContractIntegrityError(RuntimeError):
 
 _EXAMPLES: dict[str, dict[str, Any]] = {
     "/v3/health": {"response": {"schema_version": "strathmark-v3-health-v1", "status": "ok"}},
-    "/v3/commands/execute": {
-        "request": {
-            "schema_version": "strathmark-v3-command-execution-request-v1",
-            "command_kind": "change_weights",
-            "target_aggregate": "weights:global",
-            "expected_versions": [{"aggregate_id": "weights:global", "version": 4}],
-            "payload_schema_version": "strathmark-v3-change-weights-v1",
-            "canonical_payload_json": (
-                '{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
-            ),
-            "payload_digest": hashlib.sha256(
-                b'{"reason_code":"operator_hold","schema_version":"strathmark-v3-change-weights-v1"}'
-            ).hexdigest(),
-            "deadline_ms": 1000,
-        },
-        "response": {
-            "schema_version": "strathmark-v3-command-execution-response-v1",
-            "command_id": "command:example-command",
-            "disposition": "committed",
-            "result_schema_version": "strathmark-v3-command-result-v1",
-            "result_digest": hashlib.sha256(b'{"ok":true}').hexdigest(),
-            "canonical_result_json": '{"ok":true}',
-            "first_global_sequence": 14,
-            "last_global_sequence": 14,
-            "event_set_digest": "e" * 64,
-        },
-    },
     "/v3/cards/prepare": {
         "request": {
             "schema_version": "strathmark-v3-card-preparation-request-v1",
@@ -260,7 +232,7 @@ def build_v3_consumer_contract() -> dict[str, Any]:
     from fastapi import FastAPI
 
     from strathmark.v3.api.router import V3ApplicationPort, create_router
-    from strathmark.v3.api.schemas import ErrorResponse, OnlineCommandKind
+    from strathmark.v3.api.schemas import ErrorResponse
     from strathmark.v3.contracts.commands import CommandKind
 
     app = FastAPI(
@@ -283,7 +255,7 @@ def build_v3_consumer_contract() -> dict[str, Any]:
     document["info"]["description"] = (
         "Frozen V3 tournament-manager boundary. V2 remains separate and is never a V3 fallback."
     )
-    online_commands = sorted(item.value for item in OnlineCommandKind)
+    online_commands: list[str] = []
     dedicated_commands = {
         CommandKind.ACKNOWLEDGE_BATCH_ISSUE,
         CommandKind.RECORD_APPROVAL_DECISION,

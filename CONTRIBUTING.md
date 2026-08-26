@@ -1,9 +1,11 @@
 # Contributing to STRATHMARK
 
-STRATHMARK supplies numeric handicap evidence to tournament software. V3 is implemented
-and its checked-in evidence is rehearsal-tier; V2 remains the trusted production
-authority until explicit cutover. Changes here can affect live start sheets, so domain,
-causality, authority, isolation, and recovery evidence are mandatory.
+STRATHMARK supplies numeric handicap evidence to tournament software. V3.0.0rc1 is an
+a release candidate that tracks all 232 in-repository requirements;
+implementation is under final audit. Its checked-in evidence is stale rehearsal
+evidence until regenerated on the final documentation commit. V2 remains the trusted
+production authority until explicit cutover. Changes here can affect live start sheets,
+so domain, causality, authority, isolation, and recovery evidence are mandatory.
 
 Read [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md), then
 [`ONBOARDING.md`](ONBOARDING.md), before changing prediction or mark behavior.

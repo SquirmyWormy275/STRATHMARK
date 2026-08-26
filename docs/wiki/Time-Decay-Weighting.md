@@ -1,6 +1,6 @@
 # Prior-Only Recency and Competitor State
 
-> **V2-specific behavior.** V3 is implemented with historical cutoffs plus frozen
+> **V2-specific behavior.** The V3 release candidate uses historical cutoffs plus frozen
 > tournament/round epochs and a different capability mechanism. Its checked-in evidence
 > is rehearsal-tier; V2 remains production authority until explicit cutover.
 

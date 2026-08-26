@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from strathmark.v3.contracts.canonical import canonical_bytes
-from strathmark.v3.contracts.commands import CommandKind
 
 _ID = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _TOURNAMENT_ID = r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
@@ -18,55 +14,6 @@ _FIELD_ID = r"^field:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _RECEIPT_ID = r"^receipt:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _DIGEST = r"^[0-9a-f]{64}$"
 _UTC_MS = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$"
-OFFLINE_OR_DEDICATED_CREDENTIAL_COMMANDS = frozenset(
-    {
-        CommandKind.BOOTSTRAP_SERVICE_CREDENTIAL,
-        CommandKind.ROTATE_SERVICE_CREDENTIAL,
-        CommandKind.REVOKE_SERVICE_CREDENTIAL,
-        CommandKind.RECOVER_SERVICE_CREDENTIAL,
-    }
-)
-GENERIC_ONLINE_COMMAND_KINDS = frozenset(
-    {
-        CommandKind.REVISE_TOURNAMENT_SNAPSHOT,
-        CommandKind.REVISE_ROUND_SNAPSHOT,
-        CommandKind.CONFIGURE_TOURNAMENT,
-        CommandKind.OPEN_TOURNAMENT,
-        CommandKind.CLOSE_TOURNAMENT,
-        CommandKind.CONFIGURE_ROUND,
-        CommandKind.FREEZE_ROUND,
-        CommandKind.BEGIN_ROUND_CLOSING,
-        CommandKind.CLOSE_ROUND,
-        CommandKind.SUPERSEDE_FIELD,
-        CommandKind.REGENERATE_FIELD,
-        CommandKind.RECORD_RESULT,
-        CommandKind.CORRECT_RESULT,
-        CommandKind.VOID_RESULT,
-        CommandKind.COMPLETE_DERIVATION_REACTION,
-        CommandKind.COMPLETE_DERIVATION_SEQUENCE,
-        CommandKind.RECORD_CAPABILITY_UPDATE,
-        CommandKind.REBASE_CAPABILITY_STATE,
-        CommandKind.CHANGE_WEIGHTS,
-        CommandKind.OPTIMIZE_FIELD,
-        CommandKind.SETTLE_FIELD,
-        CommandKind.CREATE_MODEL_CANDIDATE,
-        CommandKind.QUEUE_JOB,
-        CommandKind.LEASE_JOB,
-        CommandKind.SUCCEED_JOB,
-        CommandKind.INVALIDATE_JOB,
-        CommandKind.RECORD_RETRYABLE_JOB_FAILURE,
-        CommandKind.REQUEUE_JOB,
-        CommandKind.MARK_JOB_STALE,
-        CommandKind.RECORD_PERMANENT_JOB_FAILURE,
-        CommandKind.CANCEL_JOB,
-    }
-)
-OnlineCommandKind = Enum(
-    "OnlineCommandKind",
-    {item.name: item.value for item in CommandKind if item in GENERIC_ONLINE_COMMAND_KINDS},
-    type=str,
-    module=__name__,
-)
 
 
 class StrictV3Model(BaseModel):
@@ -93,77 +40,6 @@ class PrepareCardRequest(StrictV3Model):
     source_revision: int = Field(ge=1)
     target_context_digest: str = Field(pattern=_DIGEST)
     deadline_ms: int = Field(ge=25, le=60_000)
-
-
-class ExpectedVersion(StrictV3Model):
-    aggregate_id: str = Field(pattern=_ID)
-    version: int = Field(ge=0)
-
-
-class ExecuteCommandRequest(StrictV3Model):
-    schema_version: Literal["strathmark-v3-command-execution-request-v1"]
-    command_kind: Annotated[OnlineCommandKind, Field(strict=False)]
-    target_aggregate: str = Field(pattern=_ID)
-    expected_versions: list[ExpectedVersion] = Field(min_length=1, max_length=128)
-    payload_schema_version: str = Field(
-        pattern=r"^strathmark-v3-[a-z0-9][a-z0-9-]{0,94}-v[1-9][0-9]*$"
-    )
-    canonical_payload_json: str = Field(min_length=2, max_length=65_536)
-    payload_digest: str = Field(pattern=_DIGEST)
-    deadline_ms: int = Field(ge=25, le=60_000)
-
-    @model_validator(mode="after")
-    def _canonical_command(self) -> ExecuteCommandRequest:
-        try:
-            parsed = json.loads(self.canonical_payload_json)
-            encoded = canonical_bytes(parsed, max_bytes=65_536)
-        except Exception as exc:
-            raise ValueError("command payload must be bounded canonical JSON") from exc
-        if not isinstance(parsed, dict) or encoded.decode("utf-8") != self.canonical_payload_json:
-            raise ValueError("command payload must be a canonical JSON object")
-        if parsed.get("schema_version") != self.payload_schema_version:
-            raise ValueError("command payload schema version does not match its envelope")
-        if hashlib.sha256(encoded).hexdigest() != self.payload_digest:
-            raise ValueError("command payload digest does not match canonical bytes")
-        versions = tuple((item.aggregate_id, item.version) for item in self.expected_versions)
-        if versions != tuple(sorted(versions)) or len({item[0] for item in versions}) != len(
-            versions
-        ):
-            raise ValueError("expected versions must be unique and sorted")
-        if self.target_aggregate not in {item[0] for item in versions}:
-            raise ValueError("expected versions must include the target aggregate")
-        return self
-
-
-class ExecuteCommandResponse(StrictV3Model):
-    schema_version: Literal["strathmark-v3-command-execution-response-v1"] = (
-        "strathmark-v3-command-execution-response-v1"
-    )
-    command_id: str = Field(pattern=_ID)
-    disposition: Literal["committed", "recovered"]
-    result_schema_version: str = Field(
-        pattern=r"^strathmark-v3-[a-z0-9][a-z0-9-]{0,94}-v[1-9][0-9]*$"
-    )
-    result_digest: str = Field(pattern=_DIGEST)
-    canonical_result_json: str = Field(min_length=2, max_length=1_048_576)
-    first_global_sequence: int = Field(ge=1)
-    last_global_sequence: int = Field(ge=1)
-    event_set_digest: str = Field(pattern=_DIGEST)
-
-    @model_validator(mode="after")
-    def _canonical_result(self) -> ExecuteCommandResponse:
-        try:
-            parsed = json.loads(self.canonical_result_json)
-            encoded = canonical_bytes(parsed, max_bytes=1_048_576)
-        except Exception as exc:
-            raise ValueError("command result must be bounded canonical JSON") from exc
-        if not isinstance(parsed, dict) or encoded.decode("utf-8") != self.canonical_result_json:
-            raise ValueError("command result must be a canonical JSON object")
-        if hashlib.sha256(encoded).hexdigest() != self.result_digest:
-            raise ValueError("command result digest does not match canonical bytes")
-        if self.last_global_sequence < self.first_global_sequence:
-            raise ValueError("command result sequence range is invalid")
-        return self
 
 
 class PrepareCardResponse(StrictV3Model):

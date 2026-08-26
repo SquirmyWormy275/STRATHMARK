@@ -2,10 +2,11 @@
 
 ## Is V3 live?
 
-No. V3 is an implemented release candidate under exact-source verification, but V2
-remains the trusted production authority until an explicit cutover. The older rehearsal
-is stale after current source changes. No production authority has changed and no
-consumer endpoint has switched.
+No. V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. V2 remains the trusted production
+authority until an explicit cutover. The older rehearsal is stale until regenerated
+from the final documentation commit. No production authority has changed and no
+consumer endpoint has switched. No production CNG identity is provisioned.
 
 ## Why build formula, ML, and LLM forecasts?
 
@@ -35,7 +36,9 @@ motive or declare somebody dishonest.
 
 The tournament manager owns human login, roles, official issue, results, and payouts.
 STRATHMARK authenticates one upstream service and returns numeric evidence plus a
-green/amber/red review projection. Actor headers are audit metadata, not permissions.
+green/amber/red review projection. The typed batch-approval endpoint records selected
+and excluded receipt bindings; the separate issue endpoint freezes official issue.
+Actor headers are audit metadata, not permissions.
 
 ## What if an assessor or network is unavailable?
 
@@ -55,3 +58,13 @@ A current rehearsal proves that its exact committed source, built and installed 
 machine, dependencies, commands, and eleven executable proof classes passed. It uses a
 development ephemeral signing key and cannot authorize production. It becomes stale
 when the source changes, and the production verifier deliberately rejects it.
+
+The focused five-run result-to-ready benchmark recorded a post-format 3.414-second
+maximum. The full rehearsal remains stale because documentation and contract bytes have
+changed since its source commit.
+
+## Is STRATHEX ready to consume V3 approvals?
+
+Not yet. STRATHMARK's typed multi-receipt endpoint exists, but STRATHEX still needs a
+durable outbox that commits the upstream decision with its delivery record, forwards the
+exact request idempotently, and stores the immutable acknowledgment.

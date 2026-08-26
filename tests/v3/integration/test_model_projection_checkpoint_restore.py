@@ -90,6 +90,36 @@ def test_model_projection_tamper_fails_closed(tmp_path) -> None:
         SQLiteProjectionStore(database).active_model_bundle_digest()
 
 
+def test_rolling_projection_verify_and_offline_rebuild_preserve_promoted_model_status(
+    tmp_path,
+) -> None:
+    service, repository, bundle_signer, evaluator_signer, database = _service(tmp_path)
+    candidate = _candidate(name="rolling-rebuild-champion", rollback_parent_digest=ZERO)
+    report = _report(tmp_path, candidate, evaluator_signer, generation="rolling-rebuild-audit")
+    installed, _receipt = _register_evaluate_promote(
+        service,
+        repository,
+        candidate,
+        report,
+        bundle_signer,
+        key="rolling-rebuild",
+    )
+    projections = SQLiteProjectionStore(database)
+    anchor = SQLiteEventStore(database).current_anchor()
+    with open_v3_connection(database, read_only=True) as connection:
+        before = projections.model_status_digest(connection)
+
+    projections.verify_rolling_reaction_projection(anchor.global_sequence, anchor.event_digest)
+    rebuilt_anchor = projections.rebuild_rolling_reaction_projection_offline(
+        anchor.global_sequence, anchor.event_digest
+    )
+
+    assert rebuilt_anchor == (anchor.global_sequence, anchor.event_digest)
+    with open_v3_connection(database, read_only=True) as connection:
+        assert projections.model_status_digest(connection) == before
+    assert projections.active_model_bundle_digest() == installed.bundle_digest
+
+
 def _ingest_tournament_snapshot(database, *, revision: int) -> None:
     tournament_id = StableIdentifier("tournament:checkpoint-restore")
     LifecycleService(database).ingest_snapshot(

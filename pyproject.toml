@@ -83,6 +83,9 @@ dev = [
 "Documentation" = "https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki"
 "Changelog" = "https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CHANGELOG.md"
 
+[project.scripts]
+strathmark-v3-factory-evaluator = "strathmark.v3.factory.evaluator_cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["strathmark"]
 

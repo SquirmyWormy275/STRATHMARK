@@ -2,20 +2,22 @@
 
 ## Release and authority status
 
-V3 is an implemented release candidate in the `strathmark.v3` namespace and is under
-exact-source verification. The older checked-in rehearsal attestation is stale after the current
-source changes and cannot verify this candidate. A fresh rehearsal, when generated, is
-signed by an ephemeral development key. V2 remains the trusted production authority
-until an explicit cutover. No production authority has changed, no consumer endpoint
-has switched, and V2 is not audit-only.
+V3.0.0rc1 is a release candidate in the `strathmark.v3` namespace that
+tracks all 232 requirements in the in-repository V3 plan. Implementation is under final
+audit. The older checked-in rehearsal attestation is stale and must be regenerated from
+the final documentation commit. A fresh rehearsal, when generated, is signed by an
+ephemeral development key. V2 remains the trusted production authority until an
+explicit cutover. No production authority has changed, no consumer endpoint has
+switched, and V2 is not audit-only.
 
 This distinction is intentional. A production release requires a live, non-exportable
 Windows CNG signing identity, an exact production evidence set, a zero-open-tournament
 V2 freeze, an initialized V3 installation, an isolated consumer rehearsal, and separate
 release authorization. The rehearsal artifact cannot satisfy those gates.
+No production CNG identity is currently provisioned.
 
 Read [`wiki/Handicap-Mark-Math.md`](wiki/Handicap-Mark-Math.md) first. It controls domain
-meaning. This page controls the implemented V3 mechanism.
+meaning. This page controls the V3 release-candidate mechanism under final audit.
 
 ## Why V3 exists
 
@@ -106,10 +108,12 @@ change only at legal boundaries. The original component forecasts and weights re
 the receipt, so a pooled answer is always decomposable.
 
 Disagreement is classified by the consequence for the sheet, not by prose or one raw
-distance alone. Green work can be scanned and batch-approved. Amber and red work exposes
-the counterfactual marks, assessor differences, uncertainty, and required deliberate
-operator action. There is no default manual estimate: the judge must deliberately choose
-a permitted action, and that action is signed and auditable.
+distance alone. Normal green and amber work can be scanned and batch-approved, with
+amber flagged visibly. Red work is excluded from ordinary batching, and degraded work
+uses its separate deliberate lane. Counterfactual marks, assessor differences,
+uncertainty, and required actions remain visible. There is no default manual estimate:
+the judge must deliberately choose a permitted action, and that action is signed and
+auditable.
 
 ### Field optimization
 
@@ -178,7 +182,7 @@ Its SHA-256 is stored beside it and mechanically checked. Unknown request fields
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v3/cards/prepare` | Prepare or recover a rolling competitor card |
-| `POST` | `/v3/commands/execute` | Execute an OpenAPI-enumerated single-event expected-version command |
+| `POST` | `/v3/approvals/decide` | Record one exact multi-receipt approval decision and explicit exclusions |
 | `POST` | `/v3/credentials/revoke` | Revoke a service credential |
 | `POST` | `/v3/credentials/rotate` | Rotate a service credential with bounded overlap |
 | `POST` | `/v3/fields/assemble` | Assemble or recover one field receipt |
@@ -192,12 +196,17 @@ Every trusted POST requires `Authorization: Bearer <service credential>` and an
 `Idempotency-Key`. Credential bootstrap is an offline listener-stopped operation.
 Credential rotation and revocation are themselves audited commands.
 
-The generic command route advertises only command kinds that the concrete gateway can
-append as one atomic event. Multi-event operations and commands requiring a typed
-application service are intentionally absent from `OnlineCommandKind`; use the
-dedicated card, field, issue, settlement, or credential workflow instead. The frozen
-contract's command-coverage extension classifies every internal `CommandKind` without
-pretending every internal command is a public generic operation.
+The approval route binds one immutable approval snapshot, selected and excluded receipt
+IDs, receipt digests, receipt/upstream revisions, row digests, decision timestamp, actor
+metadata, and caller-scoped idempotency. It invokes the approval projection authority
+atomically. It does not implement RBAC, originate authorization, or replace
+`/v3/issues/acknowledge`. STRATHEX must still forward it durably through its own outbox;
+that external outbox is not implemented in this repository.
+
+The consumer boundary exposes only dedicated typed workflows. Internal command kinds
+remain behind their typed application services and are not advertised through a generic
+event-mutation route. The frozen contract's command-coverage extension classifies every
+internal `CommandKind` without pretending every command is a public operation.
 
 ## Live cadence contract
 
@@ -216,6 +225,29 @@ records the exact machine, wheel, dependencies, commands, bounded Ollama probes,
 thermal observations, and memory/storage pressure results for the committed candidate.
 An older machine receipt cannot establish capacity for changed source. No rehearsal is a
 universal hardware guarantee or a production attestation.
+
+The post-format five-run designated-Windows result-to-ready benchmark completed all
+trials and recorded a maximum of 3.414 seconds against the 120-second limit, with exact
+source bindings and per-component latency retained in
+`benchmarks/v3/result_to_ready_manifest.json`. This focused performance result does not
+substitute for regeneration of the complete exact-wheel release evidence on the final
+documentation commit.
+
+## Factory runtime boundary
+
+`compose_local_factory_runtime()` supplies a runnable local scheduler for factory
+automation and continuous settled-evidence monitoring. It accepts only the complete,
+ordered formula/ML/LLM executor family at the configured-local boundary and retains the
+existing manual, signed promotion authority. The bounded canonical evaluator exchange
+can run in a separate process; the installed `strathmark-v3-factory-evaluator` command
+opens an already provisioned Windows CNG key by name and evaluates one request with
+exact-retry checks. The repository script is a thin delegate to that packaged command.
+
+This is a composition boundary, not a production factory declaration. Concrete family
+executors, the local evaluator that derives settlement metrics from authoritative local
+facts, OS accounts and ACL separation for builder/evaluator/signer, and non-exportable
+CNG key provisioning remain installation work. The final exact-source evidence and CI
+must exercise those real components before promotion or cutover evidence is accepted.
 
 ## Reproducible proof
 

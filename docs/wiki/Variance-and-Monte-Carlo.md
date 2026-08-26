@@ -1,6 +1,6 @@
 # Uncertainty, Variance, and Simulation
 
-> **V2-specific definitions below.** V3 is implemented with immutable component
+> **V2-specific definitions below.** The V3 release candidate uses immutable component
 > distributions, pooled uncertainty, joint dependence, and consequence disagreement.
 > Its evidence is rehearsal-tier; V2 remains production authority until explicit cutover.
 

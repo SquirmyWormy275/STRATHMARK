@@ -21,8 +21,6 @@ from strathmark.v3.api.schemas import (
     CredentialRevocationResponse,
     CredentialRotationRequest,
     CredentialRotationResponse,
-    ExecuteCommandRequest,
-    ExecuteCommandResponse,
     HealthResponse,
     IssueAcknowledgmentRequest,
     IssueAcknowledgmentResponse,
@@ -110,10 +108,6 @@ class RequestContext:
 
 
 class V3ApplicationPort(Protocol):
-    def execute_command(
-        self, payload: dict[str, Any], context: RequestContext
-    ) -> ExecuteCommandResponse | Awaitable[ExecuteCommandResponse]: ...
-
     def prepare_card(
         self, payload: dict[str, Any], context: RequestContext
     ) -> PrepareCardResponse | Awaitable[PrepareCardResponse]: ...
@@ -239,27 +233,6 @@ def create_router(
     @router.get("/health", response_model=HealthResponse, operation_id="v3_health")
     async def health() -> HealthResponse:
         return HealthResponse()
-
-    @router.post(
-        "/commands/execute",
-        response_model=ExecuteCommandResponse,
-        operation_id="v3_execute_command",
-    )
-    async def execute_command(
-        payload: ExecuteCommandRequest, request: Request
-    ) -> ExecuteCommandResponse:
-        context = _context(request)
-        response = await _invoke(
-            gateway.execute_command,
-            payload.model_dump(mode="json"),
-            context,
-            deadline_ms=payload.deadline_ms,
-        )
-        if not isinstance(response, ExecuteCommandResponse) or response.command_id != str(
-            context.command_id
-        ):
-            raise RuntimeError("application command result does not bind transport identity")
-        return response
 
     @router.post(
         "/cards/prepare",

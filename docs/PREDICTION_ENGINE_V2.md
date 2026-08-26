@@ -1,6 +1,6 @@
 # Prediction Engine V2
 
-> **Preserved production contract.** V3 is implemented as a separate successor and its
+> **Preserved production contract.** V3 is a separate successor release candidate and its
 > older rehearsal evidence is stale after current source changes. V2 remains the trusted production authority
 > until an explicit cutover. This page is canonical for V2 receipts and behavior; use
 > [`PREDICTION_ENGINE_V3.md`](PREDICTION_ENGINE_V3.md) for V3.

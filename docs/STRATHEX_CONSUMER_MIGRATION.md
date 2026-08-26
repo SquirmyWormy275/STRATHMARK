@@ -2,10 +2,15 @@
 
 ## Current status
 
-V3 is an implemented release candidate under exact-source verification. The older
-installed-consumer rehearsal is stale after current source changes. V2 remains the
-trusted production authority until an explicit cutover. No production authority has
-changed, no STRATHEX endpoint has switched, and V2 is not audit-only.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. The older installed-consumer
+rehearsal is stale and must be regenerated from the final documentation commit. V2
+remains the trusted production authority until an explicit cutover. No production
+authority has changed, no STRATHEX endpoint has switched, and V2 is not audit-only.
+
+STRATHMARK now exposes the typed batch-approval prerequisite. STRATHEX's durable outbox
+forwarder and immutable local acknowledgment persistence are not yet implemented; this
+document specifies that remaining external work.
 
 This document is a migration contract, not authorization to modify STRATHEX or a live
 tournament.
@@ -48,7 +53,7 @@ Pin all of the following to one authorized source release:
 - the production release-attestation digest when one exists.
 
 The current OpenAPI SHA-256 is
-`d498a8f12d13eaa645502cc0348898805511237dfe40c81eef48f87fa79b3699`.
+`5dfd135a0ea18316753b0107e50bf0cdd811bb0ec042b6b57206fb2022708fc3`.
 Consumers must verify the file bytes rather than copy this prose value alone.
 
 ## V3 route mapping
@@ -58,7 +63,7 @@ Consumers must verify the file bytes rather than copy this prose value alone.
 | process liveness | `GET /v3/health` |
 | trusted authority/readiness state | `GET /v3/status` |
 | prepare rolling competitor context | `POST /v3/cards/prepare` |
-| execute an enumerated single-event command | `POST /v3/commands/execute` |
+| record exact selected/excluded receipt approvals | `POST /v3/approvals/decide` |
 | assemble/recover complete field | `POST /v3/fields/assemble` |
 | recover immutable receipt | `POST /v3/receipts/lookup` |
 | bind official upstream issue to receipts | `POST /v3/issues/acknowledge` |
@@ -71,10 +76,9 @@ must reuse the same canonical request. A changed request under the same key is a
 Unknown fields, duplicate singleton headers, stale expected versions, and illegal state
 transitions fail closed.
 
-Do not send an internal `CommandKind` to the generic route merely because it exists in
-the Python enum. The request schema's `OnlineCommandKind` is the public allow-list.
-Multi-event issue, settlement, epoch, field-roster, and model-evaluation work remains
-behind typed application services and dedicated routes.
+Internal `CommandKind` values are not a public mutation surface. Issue, settlement,
+epoch, field-roster, model-evaluation, and other authority-changing work remains behind
+typed application services and the dedicated routes present in the frozen contract.
 
 ## Required STRATHEX workflow
 
@@ -95,10 +99,15 @@ behind typed application services and dedicated routes.
 4. When the final roster is known, assemble the complete field. Never copy displayed marks
    from qualifying heats.
 5. Render the approval projection exception-first: green rows compact and batchable;
-   amber/red rows expanded with assessor and counterfactual consequences.
+   normal amber rows flagged but batch-eligible, and red rows expanded with assessor and
+   counterfactual consequences.
 6. Require the judge to deliberately choose each flagged action. There is no default
    manual estimate.
-7. Acknowledge the complete issued receipt set atomically before publication.
+7. Persist the human decision and a durable outbox row in one STRATHEX transaction.
+   Forward the exact approval snapshot, selected and excluded receipt bindings, actor
+   metadata, timestamp, and idempotency identity to `/v3/approvals/decide`. Store the
+   returned immutable acknowledgment before considering the outbox item delivered.
+8. Separately acknowledge the complete issued receipt set atomically before publication.
 
 ### After the race
 
@@ -116,7 +125,8 @@ turnaround. STRATHEX should display:
 
 - one compact row per field with state, SLA, receipt revision, epoch, and issue status;
 - one mass-approve action for currently eligible green sheets;
-- amber/red sheets singled out with exact reason codes and counterfactual mark impact;
+- normal amber sheets flagged but batch-eligible, and red sheets singled out with exact
+  reason codes and counterfactual mark impact;
 - stale/superseded work excluded from mass action;
 - a deliberate action and reason requirement for every exception;
 - an immutable issued state; and
@@ -148,6 +158,10 @@ stale/corrected requests, credential rotation/revocation, and all documented err
 Its digest must match the V3 initialization snapshot used for cutover preparation.
 
 Passing the adapter rehearsal changes no authority.
+
+The current repository provides the STRATHMARK endpoint and contract tests only. The
+external STRATHEX outbox implementation, dependency pin, and end-to-end acknowledgment
+replay remain required before this rehearsal can pass.
 
 ## Cutover boundary
 

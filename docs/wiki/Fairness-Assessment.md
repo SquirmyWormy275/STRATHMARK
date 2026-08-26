@@ -1,6 +1,6 @@
 # Fairness Assessment
 
-> **Version boundary.** V3 is implemented with separate equity, manipulation, and
+> **Version boundary.** The V3 release candidate has separate equity, manipulation, and
 > consequence evidence; its older rehearsal is stale after current source changes. V2 remains the
 > trusted production authority until explicit cutover. The V2 metrics below remain
 > historical/current-V2 evidence, not the complete V3 fairness contract.

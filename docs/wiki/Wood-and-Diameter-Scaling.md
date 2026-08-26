@@ -1,6 +1,6 @@
 # Wood and Diameter in V2
 
-> **V2-specific behavior.** V3 is implemented with versioned event, diameter,
+> **V2-specific behavior.** The V3 release candidate uses versioned event, diameter,
 > species/material, property, taxonomy, and conversion evidence. Its checked-in evidence
 > is rehearsal-tier; V2 remains production authority until explicit cutover.
 

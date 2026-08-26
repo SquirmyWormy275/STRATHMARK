@@ -5,25 +5,33 @@
 # STRATHMARK
 
 STRATHMARK is an offline-capable woodchopping prediction and handicap-mark engine.
-It preserves the released V2 engine and contains the implemented V3 adaptive ensemble.
+It preserves the released V2 engine and contains the V3 adaptive ensemble release candidate.
 
 ## Current release state
 
-V3 is an implemented release candidate under whole-system verification. Its executable
-evidence must be regenerated after the candidate source is committed; the older
-checked-in attestation is intentionally stale and cannot verify the current tree. V2
-remains the trusted production authority until an explicit cutover. No production
-authority has changed, no endpoint has switched, and V2 is not audit-only.
+V3 is a `3.0.0rc1` release candidate that tracks all 232 requirements in
+the V3 plan. Implementation is under final audit, and exact-source evidence must be
+regenerated from the final documentation commit; the older checked-in attestation is
+intentionally stale and cannot verify the current tree. V2 remains the trusted
+production authority until an explicit cutover. No production authority has changed,
+no endpoint has switched, and V2 is not audit-only.
+The external STRATHEX durable outbox/adapter is not implemented.
 
 The distinction matters:
 
 - **V2.0.0** is the immutable released and currently trusted production engine.
-- **V3 release candidate** has separate code, contracts, storage, and tests. Exact-wheel
-  Windows evidence and a development-key rehearsal attestation are candidate outputs,
-  not permanent claims that survive a source change.
+- **V3.0.0rc1** has separate code, contracts, storage, and tests. The formatted
+  five-run Windows result-to-ready benchmark completed with a maximum of **3.414
+  seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
+  development-key rehearsal attestation are candidate outputs, not permanent claims
+  that survive a source change.
+- **Factory qualification** has a runnable local composition/scheduler and a bounded
+  production-CNG evaluator entrypoint. Concrete formula/ML/LLM family executors, the
+  local settled-evidence metric evaluator, installation OS identities and ACLs, and CNG
+  provisioning are still deployment gates; their absence cannot be replaced by mocks.
 - **Production V3** does not exist until a non-exportable Windows CNG identity signs the
   exact production evidence and a separately authorized zero-open-tournament handoff is
-  completed.
+  completed. That production identity has not been provisioned.
 
 Start with the mandatory domain source of truth,
 [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md). It explains why a
@@ -84,6 +92,14 @@ This remains V2 behavior: one prior-only model, a deterministic joint optimizer,
 exclusive historical date cutoff, and five compatibility keys. Numeric LLM output is
 retired in V2. These are versioned V2 facts, not V3 constraints.
 
+V2 was the right correction for the evidence available in 2026: it removed temporal
+leakage, unsafe cascade labels, and uncalibrated confidence while keeping race-day work
+deterministic and offline. The pivot happened when the product contract expanded to a
+live multi-round process that must compare independent methods, learn between rounds,
+preserve component disagreement, and prepare the next field inside the show cadence.
+Those requirements conflict with V2's deliberately single-authority, date-only receipt
+shape, so V3 is a separate engine rather than a silent patch to V2.
+
 ## What V3 changes
 
 V3 generates and preserves three independent numeric views of the same sealed evidence:
@@ -110,7 +126,10 @@ mechanism, pivot rationale, REST surface, recovery rules, and cutover gate.
 
 V3 exposes a separate ten-route `/v3/*` service contract. The canonical installed
 artifact is `strathmark/v3/contracts/v3_consumer.openapi.json`; its sibling SHA-256 file
-freezes exact bytes. The tournament manager must pin both.
+freezes exact bytes. The tournament manager must pin both. The dedicated
+`POST /v3/approvals/decide` route records one authenticated, idempotent decision over
+multiple exact receipt ID/digest/revision bindings plus explicit exclusions. It is
+separate from official issue acknowledgment.
 
 STRATHMARK authenticates the calling service, not human roles. Upstream actor headers are
 audit metadata. Human login, RBAC, official issue, results, publication, and payouts stay
@@ -119,6 +138,8 @@ requires pinned mutual TLS.
 
 See [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md). Do not
 switch a live consumer merely because the V3 endpoints import or the rehearsal passes.
+STRATHMARK now supplies the typed batch-approval endpoint, but STRATHEX still needs its
+durable outbox forwarder and immutable acknowledgment persistence.
 
 ## Reproduce the V3 rehearsal
 

@@ -22,7 +22,6 @@ from strathmark.v3.application.coordinator import CardKey
 from strathmark.v3.application.credibility_reactions import (
     SQLiteCredibilityReactionService,
     seal_credibility_policy,
-    seal_live_control_preview,
 )
 from strathmark.v3.application.field_assembly import (
     AssemblyConflict,
@@ -146,16 +145,9 @@ ACTOR = StableIdentifier("actor:manager")
 
 
 def _control_preview(service, signer, tournament, action):
-    anchor = service._events.current_anchor()
-    return seal_live_control_preview(
+    return service.seal_current_live_control_preview(
         tournament_id=tournament,
         action=action,
-        authority_sequence=anchor.global_sequence,
-        authority_digest=anchor.event_digest,
-        before_weights={"formula": "0.5", "ml": "0.5"},
-        after_weights={"formula": "0.5", "ml": "0.5"},
-        before_sheet={},
-        after_sheet={},
         signer=signer,
         created_at=NOW,
     )

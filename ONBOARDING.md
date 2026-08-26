@@ -2,11 +2,13 @@
 
 ## Current status
 
-V3 is an implemented release candidate in a separate namespace and is undergoing
-exact-source verification. The older checked-in rehearsal is stale after the current source changes
-and is not evidence for this tree. V2 remains the trusted production authority until an
-explicit cutover. No production authority has changed, no endpoint has switched, and V2
-is not audit-only. Never turn a rehearsal attestation into a production-readiness claim.
+V3 is a `3.0.0rc1` release candidate in a separate namespace that tracks
+all 232 in-repository requirements. Implementation is under final audit. The older
+checked-in rehearsal is stale and must be regenerated from the final documentation
+commit. V2 remains the trusted production authority until an explicit cutover. No
+production authority has changed, no endpoint has switched, and V2 is not audit-only.
+No production CNG identity is provisioned. Never turn a rehearsal attestation into a
+production-readiness claim.
 
 ## Mandatory domain gate
 
@@ -21,7 +23,7 @@ foundation.
 
 1. [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md) — timeless domain meaning.
 2. [`README.md`](README.md) — repository status and entry points.
-3. [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) — implemented V3 contract and pivot.
+3. [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) — V3 release-candidate contract and pivot.
 4. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — V2/V3 boundaries and data flow.
 5. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — rehearsal, recovery, and cutover gates.
 6. [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md) — consumer handoff.
@@ -33,16 +35,25 @@ V2 is the currently trusted production engine. It uses one prior-only statistica
 one exclusive date cutoff, an optional residual, five compatibility keys, and a joint
 mark optimizer. Those constraints remain exact for V2 and its receipts.
 
-V3 is the implemented successor. Formula, hierarchical ML, and a three-member LLM
+V3 is the successor release candidate. Formula, hierarchical ML, and a three-member LLM
 council independently forecast the same sealed evidence. Accuracy-earned credibility
 weights pool the valid distributions. Every race is reconstructed and rebased to Mark 3;
 one round shares one frozen evidence epoch; every valid completion becomes eligible at
 the next round boundary. Consequential disagreement is surfaced as green, amber, or red
 for deliberate judge action.
 
+The local factory composition/scheduler is runnable, and its bounded evaluator
+entrypoint opens an existing production CNG key by name. Concrete formula/ML/LLM family
+executors, the local settled-evidence metric evaluator, installation OS identities and
+ACLs, and provisioned CNG keys are not supplied by that composition. Promotion remains
+manual and signed.
+
 V3 authenticates one calling service, not human roles. Tournament-manager login, RBAC,
 official issue, results, publication, and payouts remain upstream. Once inside STRATHMARK,
 the authenticated service principal has full V3 authority; actor headers are audit data.
+The frozen ten-route contract includes a typed multi-receipt approval-decision route;
+it records approval evidence but does not issue a sheet. STRATHEX has not yet implemented
+the durable outbox that must forward and persist those acknowledgments.
 
 ## Code map
 
@@ -100,6 +111,10 @@ models installed. The ordinary verifier must reject missing, stale, failed, subs
 or tampered evidence. After a fresh rehearsal is emitted, the last command must still
 refuse it. A passing production-required check is valid only with a separately created
 production CNG-backed attestation and does not itself switch consumer authority.
+
+The source-bound, post-format five-run Windows result-to-ready benchmark recorded a
+maximum of 3.414 seconds against the 120-second limit. That component result does not
+replace the final exact-wheel, rehearsal, production-identity, or cutover gates.
 
 For the preserved V2 suite, use another unique database and base directory:
 

@@ -45,7 +45,7 @@ from strathmark.v3.contracts.receipts import (
     ReceiptSection,
     ReceiptSectionKind,
 )
-from strathmark.v3.domain.disagreement import ConsequenceColor
+from strathmark.v3.domain.disagreement import ConsequenceColor, OverrideScope
 from strathmark.v3.infrastructure.sqlite.connection import (
     immediate_transaction,
     open_v3_connection,
@@ -1232,8 +1232,17 @@ def test_constructed_zero_assessor_receipt_can_be_approved_as_a_separate_act(
     assert decision.decisions == ((row.receipt_id, DecisionState.ACCEPTED),)
 
 
+@pytest.mark.parametrize(
+    "scope",
+    (
+        OverrideScope.UPCOMING_RACE,
+        OverrideScope.REMAINING_EVENT_CONFIGURATION,
+        OverrideScope.REMAINING_TOURNAMENT,
+    ),
+)
 def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
     tmp_path: Path,
+    scope: OverrideScope,
 ) -> None:
     from strathmark.v3.application.field_assembly import (
         OperationalExpectedTimeOverrideAuthority,
@@ -1243,7 +1252,6 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
         FieldSheetSnapshot,
         OptimizerVerificationStatus,
         OverrideRecomputationProof,
-        OverrideScope,
         create_override_receipt,
     )
     from tests.v3.integration.test_field_receipts import (
@@ -1253,11 +1261,40 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
     )
 
     manual_medians = {"competitor:b": 45_000, "competitor:a": 55_000}
+    path = tmp_path / f"approval-raw-time-override-{scope.value}.sqlite3"
     store, field, build, _lifecycle = _bootstrap(
-        tmp_path / "approval-raw-time-override.sqlite3",
+        path,
         available_assessors=(),
         manual_medians=manual_medians,
     )
+    scope_boundary_id = {
+        OverrideScope.UPCOMING_RACE: field.field_id,
+        OverrideScope.REMAINING_EVENT_CONFIGURATION: StableIdentifier(
+            "event_config:approval-underhand-300-pine"
+        ),
+        OverrideScope.REMAINING_TOURNAMENT: field.tournament_id,
+    }[scope]
+
+    def applicable_override(
+        projection: SQLiteFieldProjectionStore, *, in_scope: bool
+    ) -> object | None:
+        tournament_id = field.tournament_id
+        field_id = StableIdentifier("field:later-round")
+        target_context_digest = field.target_context.digest
+        if scope is OverrideScope.UPCOMING_RACE:
+            field_id = field.field_id if in_scope else StableIdentifier("field:later-round")
+        elif scope is OverrideScope.REMAINING_EVENT_CONFIGURATION:
+            target_context_digest = field.target_context.digest if in_scope else "f" * 64
+        elif not in_scope:
+            tournament_id = StableIdentifier("tournament:other")
+        return projection.active_expected_time_override(
+            tournament_id=tournament_id,
+            field_id=field_id,
+            target_context_digest=target_context_digest,
+            call_order=field.call_order + 1,
+            competitor_id=StableIdentifier("competitor:b"),
+        )
+
     service = FieldAssemblyService(store)
     before_pipeline = build(field)
     before = service.assemble(
@@ -1303,8 +1340,8 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
         competitor_id=StableIdentifier("competitor:b"),
         target_context_digest=field.target_context.digest,
         expected_raw_time_ms=45_100,
-        scope=OverrideScope.REMAINING_TOURNAMENT,
-        scope_boundary_id=field.tournament_id,
+        scope=scope,
+        scope_boundary_id=scope_boundary_id,
         actor="actor:manager",
         reason="judge corrected the starting estimate",
         supersedes_override_id=None,
@@ -1379,13 +1416,7 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
     decision = store.record_approval_decision(command)
 
     assert decision.decisions == ((row.receipt_id, DecisionState.OVERRIDE_SUBMITTED),)
-    state = store.active_expected_time_override(
-        tournament_id=field.tournament_id,
-        field_id=StableIdentifier("field:later-round"),
-        target_context_digest="f" * 64,
-        call_order=field.call_order + 1,
-        competitor_id=StableIdentifier("competitor:b"),
-    )
+    state = applicable_override(store, in_scope=True)
     assert state is not None
     assert state.override_id == StableIdentifier("override:approval-competitor-b")
     assert state.expected_raw_time_ms == 45_100
@@ -1416,8 +1447,8 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
         competitor_id=StableIdentifier("competitor:b"),
         target_context_digest=field.target_context.digest,
         expected_raw_time_ms=45_200,
-        scope=OverrideScope.REMAINING_TOURNAMENT,
-        scope_boundary_id=field.tournament_id,
+        scope=scope,
+        scope_boundary_id=scope_boundary_id,
         actor="actor:manager",
         reason="superseded starting estimate",
         supersedes_override_id=override_receipt.override_id,
@@ -1493,18 +1524,92 @@ def test_raw_time_override_with_unchanged_mark_uses_exact_typed_authority(
             submitted_at="2026-08-24T18:00:04.000Z",
         )
     )
-    current = store.active_expected_time_override(
-        tournament_id=field.tournament_id,
-        field_id=StableIdentifier("field:later-round"),
-        target_context_digest="f" * 64,
-        call_order=field.call_order + 1,
-        competitor_id=StableIdentifier("competitor:b"),
-    )
+    current = applicable_override(store, in_scope=True)
     assert current is not None
     assert current.override_id == superseding_receipt.override_id
     assert current.supersedes_override_id == override_receipt.override_id
     assert current.expected_raw_time_ms == 45_200
     assert superseded.receipt.receipt_revision == 3
+
+    restarted = SQLiteFieldProjectionStore(
+        path, signer=store._signer, trust_store=store._trust_store
+    )
+    restarted_in_scope = applicable_override(restarted, in_scope=True)
+    assert restarted_in_scope is not None
+    assert restarted_in_scope.override_id == superseding_receipt.override_id
+    assert restarted_in_scope.supersedes_override_id == override_receipt.override_id
+    assert applicable_override(restarted, in_scope=False) is None
+    with open_v3_connection(path, read_only=True) as connection:
+        before_rebuild_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT override_id,active,superseded_by_override_id,state_digest "
+                "FROM v3_expected_time_override_states ORDER BY source_global_sequence"
+            )
+        )
+    assert tuple(row[:3] for row in before_rebuild_rows) == (
+        (
+            str(override_receipt.override_id),
+            0,
+            str(superseding_receipt.override_id),
+        ),
+        (
+            str(superseding_receipt.override_id),
+            1,
+            None,
+        ),
+    )
+    assert all(len(str(row[3])) == 64 for row in before_rebuild_rows)
+    before_rebuild_in_scope = restarted_in_scope.to_dict()
+
+    restarted.rebuild_approval_projection(
+        tournament_id=str(field.tournament_id),
+        rebuilt_at="2026-08-24T18:01:00.000Z",
+    )
+
+    rebuilt_in_scope = applicable_override(restarted, in_scope=True)
+    assert rebuilt_in_scope is not None
+    assert rebuilt_in_scope.to_dict() == before_rebuild_in_scope
+    assert applicable_override(restarted, in_scope=False) is None
+    with open_v3_connection(path, read_only=True) as connection:
+        after_rebuild_rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT override_id,active,superseded_by_override_id,state_digest "
+                "FROM v3_expected_time_override_states ORDER BY source_global_sequence"
+            )
+        )
+    assert after_rebuild_rows == before_rebuild_rows
+
+    from strathmark.v3.application.field_assembly import AssemblyConflict
+    from strathmark.v3.application.pipeline_builder import SQLiteCapabilityStateResolver
+
+    resolver = SQLiteCapabilityStateResolver(path, trust_store=store._trust_store)
+    assert (
+        resolver.resolve_override_current(field, StableIdentifier("competitor:b"))
+        == rebuilt_in_scope
+    )
+
+    forged = rebuilt_in_scope.to_dict()
+    forged["expected_raw_time_ms"] += 12_345
+    forged["state_digest"] = canonical_digest(
+        {key: value for key, value in forged.items() if key != "state_digest"}
+    )
+    with open_v3_connection(path) as connection:
+        connection.execute(
+            "UPDATE v3_expected_time_override_states SET state_json=?,state_digest=? "
+            "WHERE override_id=?",
+            (
+                canonical_bytes(forged).decode(),
+                forged["state_digest"],
+                forged["override_id"],
+            ),
+        )
+
+    with pytest.raises(ProjectionError, match="override.*authority"):
+        applicable_override(restarted, in_scope=True)
+    with pytest.raises(AssemblyConflict, match="override.*authority"):
+        resolver.resolve_override_current(field, StableIdentifier("competitor:b"))
 
 
 def test_old_snapshot_row_tamper_is_rejected_before_stale_recovery(

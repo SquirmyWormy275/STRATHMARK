@@ -14,10 +14,8 @@ from typing import Any
 
 from strathmark.v3.api.router import RequestContext
 from strathmark.v3.api.schemas import (
-    GENERIC_ONLINE_COMMAND_KINDS,
     ApprovalDecisionResponse,
     AssembleFieldResponse,
-    ExecuteCommandResponse,
     IssueAcknowledgmentResponse,
     PrepareCardResponse,
     ReceiptLookupResponse,
@@ -29,11 +27,6 @@ from strathmark.v3.application.approval import (
     ApprovalDecisionAction,
     ApprovalDecisionCommand,
     ApprovalDecisionSelection,
-)
-from strathmark.v3.application.commands import (
-    _COMMAND_EVENT,
-    CommandRequest,
-    EventIntent,
 )
 from strathmark.v3.application.field_assembly import (
     FieldAssemblyService,
@@ -48,7 +41,7 @@ from strathmark.v3.application.issuance import (
 from strathmark.v3.application.lifecycle import LifecycleService
 from strathmark.v3.application.settlement import SettlementCommand, SettlementService
 from strathmark.v3.contracts.canonical import canonical_digest
-from strathmark.v3.contracts.commands import CommandEnvelope, CommandKind, InlinePayload
+from strathmark.v3.contracts.commands import CommandKind
 from strathmark.v3.contracts.events import EventEnvelope, EventKind
 from strathmark.v3.contracts.evidence import require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import (
@@ -155,78 +148,6 @@ class V3ApplicationGateway:
         self._services.events.verify()
         self._services.fields.verify()
         self._services.jobs.verify()
-
-    def execute_command(
-        self, payload: dict[str, Any], context: RequestContext
-    ) -> ExecuteCommandResponse:
-        kind = CommandKind(payload["command_kind"])
-        if kind not in GENERIC_ONLINE_COMMAND_KINDS:
-            self._conflict("command_requires_specialized_service")
-        try:
-            aggregate_kind, event_kind = _COMMAND_EVENT[kind]
-        except KeyError as exc:
-            self._conflict("command_requires_specialized_service")
-            raise AssertionError from exc
-        target = require_identifier(
-            payload["target_aggregate"], expected_namespace=aggregate_kind.value
-        )
-        inline = InlinePayload(
-            payload["canonical_payload_json"],
-            payload["payload_digest"],
-        )
-        inline_value = inline.to_value()
-        if (
-            not isinstance(inline_value, dict)
-            or inline_value.get("schema_version") != payload["payload_schema_version"]
-        ):
-            self._conflict("command_payload_schema_version_differs")
-        command = CommandEnvelope(
-            kind,
-            context.command_id,
-            target,
-            tuple((item["aggregate_id"], item["version"]) for item in payload["expected_versions"]),
-            context.principal.principal_id,
-            inline,
-        )
-        result_value = {
-            "schema_version": "strathmark-v3-command-result-v1",
-            "accepted": True,
-            "command_kind": kind.value,
-            "target_aggregate": str(target),
-            "payload_digest": inline.digest,
-        }
-        prior = self._services.events.lookup_exact_retry(
-            principal_id=str(context.principal.principal_id),
-            idempotency_key=str(context.command_id),
-            command_kind=kind,
-            target_aggregate=str(target),
-            payload_digest=inline.digest,
-        )
-        stored = prior
-        if stored is None:
-            stored = self._services.events.execute(
-                CommandRequest(
-                    context.principal.principal_id,
-                    command,
-                    (EventIntent(aggregate_kind, target, event_kind),),
-                    "strathmark-v3-command-result-v1",
-                    result_value,
-                    self._clock(),
-                    0,
-                ),
-                projection_hook=self._services.lifecycle.projections.apply_events,
-            )
-        canonical_result = stored.result_bytes.decode("utf-8")
-        return ExecuteCommandResponse(
-            command_id=str(context.command_id),
-            disposition="recovered" if prior is not None else "committed",
-            result_schema_version=stored.result_schema_version,
-            result_digest=stored.result_digest,
-            canonical_result_json=canonical_result,
-            first_global_sequence=stored.first_global_sequence,
-            last_global_sequence=stored.last_global_sequence,
-            event_set_digest=stored.event_set_digest,
-        )
 
     def prepare_card(
         self, payload: dict[str, Any], _context: RequestContext

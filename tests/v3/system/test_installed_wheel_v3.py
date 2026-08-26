@@ -32,12 +32,20 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     assert wheel.name.startswith("strathmark-3.0.0rc1-")
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
+        entry_points_name = next(
+            name for name in names if name.endswith(".dist-info/entry_points.txt")
+        )
+        entry_points = archive.read(entry_points_name).decode("utf-8")
     assert "strathmark/v3/contracts/v3_consumer.openapi.json" in names
     assert "strathmark/v3/contracts/v3_consumer.openapi.sha256" in names
     assert "strathmark/v3/contracts/windows_capacity_manifest.json" in names
     assert "strathmark/v3/contracts/v3_release_attestation.json" not in names
     assert "strathmark/v3/contracts/v3-release.lock" in names
     assert "strathmark/contracts/shadow_consumer_v1.openapi.json" in names
+    assert "strathmark/v3/factory/evaluator_cli.py" in names
+    assert (
+        "strathmark-v3-factory-evaluator = strathmark.v3.factory.evaluator_cli:main" in entry_points
+    )
 
     installed_root = tmp_path / "installed"
     installation = subprocess.run(
@@ -82,11 +90,19 @@ from strathmark.v3.application.operations import (
 from importlib.resources import files
 import json
 import re
-from importlib.metadata import version
+from importlib.metadata import distribution, version
 import strathmark
 v3 = load_v3_consumer_contract()
 assert strathmark.__version__ == "3.0.0rc1"
 assert version("strathmark") == "3.0.0rc1"
+console_scripts = {
+    item.name: item.value
+    for item in distribution("strathmark").entry_points
+    if item.group == "console_scripts"
+}
+assert console_scripts["strathmark-v3-factory-evaluator"] == (
+    "strathmark.v3.factory.evaluator_cli:main"
+)
 assert set(v3["paths"]) == EXPECTED_V3_CONSUMER_PATHS
 assert all(path.startswith("/v3/") for path in v3["paths"])
 assert len(v3_consumer_contract_digest()) == 64

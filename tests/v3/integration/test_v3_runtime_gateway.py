@@ -10,7 +10,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from strathmark.v3.api.app import TransportError, create_v3_app  # noqa: E402
+from strathmark.v3.api.app import create_v3_app  # noqa: E402
 from strathmark.v3.api.auth import (  # noqa: E402
     InMemoryCredentialSecretStore,
     ServiceCredentialRegistry,
@@ -520,8 +520,8 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
         headers=_headers(credential, "suspend-runtime"),
         json=command_body,
     )
-    assert command.status_code == 422, command.text
-    assert command.json()["code"] == "request_validation_failed"
+    assert command.status_code == 404, command.text
+    assert command.json()["code"] == "route_not_found"
     assert all(
         event.command.kind.value != "suspend_live"
         for event in SQLiteEventStore(reactions.database_path).events()
@@ -709,22 +709,6 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
         ]
         == 1
     )
-
-
-@pytest.mark.parametrize("command_kind", ("promote_bundle", "rollback_bundle", "record_monitoring"))
-def test_gateway_defense_in_depth_rejects_factory_control_commands(
-    command_kind: str,
-) -> None:
-    gateway = object.__new__(V3ApplicationGateway)
-
-    with pytest.raises(TransportError) as raised:
-        gateway.execute_command(
-            {"command_kind": command_kind},
-            SimpleNamespace(),
-        )
-
-    assert getattr(raised.value, "status_code", None) == 409
-    assert getattr(raised.value, "code", None) == "command_requires_specialized_service"
 
 
 def test_status_separates_candidate_health_from_production_authority(tmp_path) -> None:

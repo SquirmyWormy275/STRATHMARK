@@ -4,7 +4,7 @@ Read [Woodchopping Handicap Foundations](Handicap-Mark-Math.md) first. It is the
 source of truth. Rulebooks govern their competitions; versioned STRATHMARK documents
 govern product behavior.
 
-V3 is an implemented release candidate whose older rehearsal is stale after current
+V3 is a release candidate whose older rehearsal is stale after current
 source changes. V2 remains the trusted production authority until explicit cutover. No
 production authority has changed.
 
