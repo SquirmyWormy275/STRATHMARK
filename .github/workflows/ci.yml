@@ -43,10 +43,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install complete test dependencies
-        run: |
-          pip install -e ".[dev,api]"
-          pip install -r requirements/v3-release.lock
+      - name: Install portable test dependencies
+        run: pip install -e ".[dev,api]"
+
+      # The exact release lock describes the designated Python 3.13 rehearsal
+      # machine; it is not a cross-version constraints file (for example, its
+      # NumPy pin intentionally has no Python 3.10 build).
+      - name: Install designated release lock
+        if: matrix.python-version == '3.13'
+        run: pip install -r requirements/v3-release.lock
 
       - name: Check dependency consistency
         run: pip check
@@ -68,7 +73,11 @@ jobs:
           STRATHMARK_V3_RECOVERY_ROOT: ${{ runner.temp }}/strathmark-v3-recovery
           STRATHMARK_V3_INTEGRITY_KEY_ROOT: ${{ runner.temp }}/strathmark-v3-integrity-keys
           STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
-        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider
+        # Exact-lock verifier tests run on both operating systems under the
+        # designated 3.13 runtime (and again in v3-ocean-boil). Other supported
+        # interpreters execute every portable test against resolved compatible
+        # dependencies.
+        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider ${{ matrix.python-version != '3.13' && '--ignore=tests/v3/system/test_release_verifier.py' || '' }}
 
   v3-ocean-boil:
     name: V3 ocean-boil rehearsal (${{ matrix.os }} / Python 3.13)
