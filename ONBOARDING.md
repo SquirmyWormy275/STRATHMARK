@@ -3,9 +3,9 @@
 ## Current status
 
 V3 is a `3.0.0rc1` release candidate in a separate namespace that tracks
-all 232 in-repository requirements. Implementation is under final audit. The older
-checked-in rehearsal is stale and must be regenerated from the final documentation
-commit. V2 remains the trusted production authority until an explicit cutover. No
+all 232 in-repository requirements. Repository implementation and audit are complete for
+this candidate. The checked-in development-key rehearsal is source-bound and must pass
+the release verifier; it is not production evidence. V2 remains the trusted production authority until an explicit cutover. No
 production authority has changed, no endpoint has switched, and V2 is not audit-only.
 No production CNG identity is provisioned. Never turn a rehearsal attestation into a
 production-readiness claim.

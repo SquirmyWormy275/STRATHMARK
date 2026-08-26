@@ -1,7 +1,7 @@
 # Prediction Engine V2
 
-> **Preserved V2 contract.** V3 is a separate release candidate and its older rehearsal is
-> stale after current source changes. V2 remains the trusted production authority until explicit cutover.
+> **Preserved V2 contract.** V3 is a separate release candidate whose rehearsal is
+> source-bound and does not change authority. V2 remains the trusted production authority until explicit cutover.
 > Everything below remains exact for V2 receipts and must not be generalized into V3.
 
 STRATHMARK 2.0.0 uses one robust hierarchical log-time model, not a numeric

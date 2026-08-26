@@ -3,8 +3,8 @@
 ## Current authority status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. The older checked-in rehearsal is
-stale and must be regenerated from the final documentation commit. V2 remains the
+requirements. Repository implementation and audit are complete for this candidate. The
+checked-in development-key rehearsal is source-bound and must pass the release verifier. V2 remains the
 trusted production authority until an explicit cutover. No production authority has
 changed, no consumer endpoint has switched, and V2 is not audit-only. No production CNG
 identity is provisioned. The external STRATHEX durable outbox/adapter is not implemented.
@@ -39,7 +39,7 @@ identities/ACLs and CNG keys, and exercise that boundary in exact-source CI befo
 accepting factory evidence.
 
 The focused post-format result-to-ready benchmark completed five Windows trials with a
-3.414-second maximum against the 120-second limit. Complete release evidence is still
-stale until regenerated on the final documentation commit.
+3.414-second maximum against the 120-second limit. It is one part of the complete
+source-bound release evidence.
 
 See the canonical [deployment runbook](../DEPLOYMENT.md).

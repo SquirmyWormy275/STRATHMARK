@@ -37,7 +37,7 @@ def test_public_guides_share_one_explicit_release_and_authority_status() -> None
         "implemented",
         "release candidate",
         "rehearsal",
-        "stale",
+        "source-bound",
         "V2 remains the trusted production authority until an explicit cutover",
         "no production authority has changed",
     )

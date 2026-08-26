@@ -1,8 +1,8 @@
 # Testing and Release Proof
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. Its older rehearsal is stale until
-regenerated from the final documentation commit. V2 remains the trusted production
+requirements. Repository implementation and audit are complete for this candidate. Its
+checked-in development-key rehearsal is source-bound and must pass the release verifier. V2 remains the trusted production
 authority until explicit cutover. No production authority has changed. Tests and
 verifiers never switch authority.
 
@@ -47,8 +47,7 @@ those real installed components.
 
 The separate post-format result-to-ready manifest records five completed Windows trials
 and a 3.414-second maximum against the 120-second limit. It retains exact source digests
-and per-component timing but does not make the stale exact-wheel release evidence
-current.
+and per-component timing as one component of the exact-wheel release evidence.
 
 The preserved V2 suite uses another isolated database and remains authoritative evidence
 for V2 behavior. Optional-provider live smokes are opt-in and cannot replace deterministic

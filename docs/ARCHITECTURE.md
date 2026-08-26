@@ -3,8 +3,8 @@
 ## Status and authority
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. Its older rehearsal is stale and
-must be regenerated from the final documentation commit. V2 remains the trusted
+requirements. Repository implementation and audit are complete for this candidate. Its
+checked-in development-key rehearsal is source-bound and does not change authority. V2 remains the trusted
 production authority until an explicit cutover. No production authority has changed,
 the consumer endpoint has not switched, and V2 remains runnable and writable.
 The external STRATHEX durable outbox/adapter is not implemented.
@@ -18,7 +18,7 @@ The two engines are deliberately separate:
 | Evidence boundary | exclusive historical date | historical cutoff plus tournament/round epoch |
 | Persistence | V2 ledger and shadow contract | V3 event authority and rebuildable projections |
 | Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen ten-route `/v3/*` contract |
-| Authority now | trusted production | release candidate under final audit, rehearsal only |
+| Authority now | trusted production | audited release candidate, rehearsal only |
 
 V3 does not mutate V2 receipts or project itself through V2's five keys. Cutover is one
 explicit tournament-boundary authority change, never a request-by-request fallback.

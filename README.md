@@ -10,9 +10,9 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 ## Current release state
 
 V3 is a `3.0.0rc1` release candidate that tracks all 232 requirements in
-the V3 plan. Implementation is under final audit, and exact-source evidence must be
-regenerated from the final documentation commit; the older checked-in attestation is
-intentionally stale and cannot verify the current tree. V2 remains the trusted
+the V3 plan. Repository implementation and audit are complete for this candidate. The
+checked-in development-key rehearsal is valid only for the source commit and digests it
+names and must pass the release verifier; it is not production evidence. V2 remains the trusted
 production authority until an explicit cutover. No production authority has changed,
 no endpoint has switched, and V2 is not audit-only.
 The external STRATHEX durable outbox/adapter is not implemented.
@@ -158,11 +158,11 @@ python scripts/verify_v3_release.py --require-production
 ```
 
 Run the evidence command only from the exact committed candidate with the two pinned
-local models installed. It builds and installs the wheel, executes all eleven proof
+local models installed. It builds and installs the wheel, executes all twelve proof
 classes, and signs a source-bound evidence envelope. The ordinary verifier must then
 pass. The production-required verifier must reject the ephemeral rehearsal with
 `production_attestation_required`. These commands leave authority unchanged. Against the
-current stale or missing artifacts, even the ordinary verifier must fail closed.
+missing, stale, failed, or tampered artifacts, even the ordinary verifier must fail closed.
 
 ## Documentation
 

@@ -7,8 +7,8 @@ after the matching repository documentation is merged and separately authorized.
 [Prediction Engine V3](Prediction-Engine-V3.md) routes to the successor release candidate.
 [Prediction Engine V2](Prediction-Engine-V2.md) preserves the trusted production contract
 until explicit cutover. V3.0.0rc1 is a release candidate that tracks all
-232 in-repository requirements; implementation is under final audit. Its older rehearsal
-is stale until regenerated from the final documentation commit; no production authority
+232 in-repository requirements. Repository implementation and audit are complete for
+this candidate. Its development-key rehearsal is source-bound; no production authority
 has changed.
 
 Pages that retain V2 formulas or compatibility behavior must label them as V2-specific.

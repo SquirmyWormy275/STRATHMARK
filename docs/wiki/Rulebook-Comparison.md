@@ -4,8 +4,8 @@ Read [Woodchopping Handicap Foundations](Handicap-Mark-Math.md) first. It is the
 source of truth. Rulebooks govern their competitions; versioned STRATHMARK documents
 govern product behavior.
 
-V3 is a release candidate whose older rehearsal is stale after current
-source changes. V2 remains the trusted production authority until explicit cutover. No
+V3 is a release candidate whose source-bound rehearsal does not change authority. V2
+remains the trusted production authority until explicit cutover. No
 production authority has changed.
 
 Universal domain meaning includes staggered starts, smaller marks starting earlier,

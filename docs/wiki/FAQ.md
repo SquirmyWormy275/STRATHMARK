@@ -3,9 +3,9 @@
 ## Is V3 live?
 
 No. V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. V2 remains the trusted production
-authority until an explicit cutover. The older rehearsal is stale until regenerated
-from the final documentation commit. No production authority has changed and no
+requirements. Repository implementation and audit are complete for this candidate. V2 remains the trusted production
+authority until an explicit cutover. The checked-in development-key rehearsal is
+source-bound and must pass the release verifier. No production authority has changed and no
 consumer endpoint has switched. No production CNG identity is provisioned.
 
 ## Why build formula, ML, and LLM forecasts?
@@ -55,13 +55,12 @@ compatibility keys, and narrative-only LLM integration. Those are V2 facts, pres
 ## What does the rehearsal prove?
 
 A current rehearsal proves that its exact committed source, built and installed wheel,
-machine, dependencies, commands, and eleven executable proof classes passed. It uses a
+machine, dependencies, commands, and twelve executable proof classes passed. It uses a
 development ephemeral signing key and cannot authorize production. It becomes stale
 when the source changes, and the production verifier deliberately rejects it.
 
 The focused five-run result-to-ready benchmark recorded a post-format 3.414-second
-maximum. The full rehearsal remains stale because documentation and contract bytes have
-changed since its source commit.
+maximum. It is one source-bound component of the full rehearsal.
 
 ## Is STRATHEX ready to consume V3 approvals?
 

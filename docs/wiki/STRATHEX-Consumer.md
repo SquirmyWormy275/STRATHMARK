@@ -3,8 +3,9 @@
 ## Current authority status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. The older installed-adapter rehearsal
-is stale until regenerated from the final documentation commit. V2 remains the trusted
+requirements. STRATHMARK repository implementation and audit are complete for this
+candidate. No installed-adapter rehearsal exists until STRATHEX implements the durable
+adapter; the STRATHMARK development-key rehearsal is source-bound. V2 remains the trusted
 production authority until an explicit cutover. No production authority has changed, no
 STRATHEX endpoint has switched, and V2 is not audit-only.
 

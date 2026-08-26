@@ -3,9 +3,9 @@
 ## Authority status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. The checked-in **rehearsal** receipt
-must not be treated as current until the release verifier regenerates and revalidates it
-from the final documentation commit and exact candidate artifact. V2 remains the trusted
+requirements. Repository implementation and audit are complete for this candidate. The
+checked-in **rehearsal** receipt is source-bound and valid only for the source commit, wheel, dependencies,
+and digests it names and must pass the release verifier. V2 remains the trusted
 production authority until an explicit cutover. No production authority has changed, no
 consumer endpoint has switched, and V2 remains the recovery authority.
 The external STRATHEX durable outbox/adapter is not implemented.
@@ -17,9 +17,8 @@ This runbook distinguishes four states that must never be collapsed:
 3. production CNG-backed cutover preparation is ready;
 4. an explicitly authorized consumer switch has occurred.
 
-The repository is between states 1 and 2 until executable evidence is regenerated from
-the final documentation commit. The older checked-in release attestation is deliberately
-stale, cannot reach states 3 or 4, and is not current evidence for this changed tree.
+The checked-in development-key rehearsal satisfies state 2 only when the ordinary
+verifier passes for its exact source and artifacts. It cannot reach states 3 or 4.
 No production CNG identity is currently provisioned.
 
 Use Python 3.13 and install `requirements/v3-release.lock` for every V3 rehearsal,
@@ -83,8 +82,8 @@ receipt is stale.
 The separate post-format result-to-ready benchmark completed five trials on the
 designated Windows machine. Its maximum was 3.414 seconds against the 120-second limit,
 with exact source bindings and component latency retained in
-`benchmarks/v3/result_to_ready_manifest.json`. This focused measurement does not make
-the stale exact-wheel rehearsal current.
+`benchmarks/v3/result_to_ready_manifest.json`. This focused measurement is only one
+part of the complete exact-wheel rehearsal.
 
 Confirm the production gate fails closed:
 

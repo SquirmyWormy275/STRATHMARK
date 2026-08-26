@@ -2,8 +2,8 @@
 
 ## Authority status
 
-V3 is a release candidate whose older rehearsal is stale after current
-source changes. V2 remains the trusted production authority until explicit cutover. No
+V3 is a release candidate whose source-bound rehearsal does not change authority. V2
+remains the trusted production authority until explicit cutover. No
 production authority has changed.
 
 V2 uses the local result store, trusted prediction ledger, shadow receipts, and optional

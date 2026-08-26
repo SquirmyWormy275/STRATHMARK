@@ -1,8 +1,8 @@
 # Prediction Engine V3
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. The older checked-in rehearsal is
-stale until regenerated from the final documentation commit. V2 remains the trusted
+requirements. Repository implementation and audit are complete for this candidate. The
+checked-in development-key rehearsal is source-bound and must pass the release verifier. V2 remains the trusted
 production authority until an explicit cutover. No production authority has changed,
 no consumer endpoint has switched, and V2 is not audit-only.
 

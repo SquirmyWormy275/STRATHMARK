@@ -3,10 +3,9 @@
 ## Release and authority status
 
 V3.0.0rc1 is a release candidate in the `strathmark.v3` namespace that
-tracks all 232 requirements in the in-repository V3 plan. Implementation is under final
-audit. The older checked-in rehearsal attestation is stale and must be regenerated from
-the final documentation commit. A fresh rehearsal, when generated, is signed by an
-ephemeral development key. V2 remains the trusted production authority until an
+tracks all 232 requirements in the in-repository V3 plan. Repository implementation and
+audit are complete for this candidate. The checked-in rehearsal attestation is source-bound to
+its named source and artifacts and is signed by an ephemeral development key. V2 remains the trusted production authority until an
 explicit cutover. No production authority has changed, no consumer endpoint has
 switched, and V2 is not audit-only.
 
@@ -23,7 +22,7 @@ Their bundled SQLite versions can reject V3's JSON expression indexes while
 `trusted_schema=OFF`; weakening that security setting is prohibited.
 
 Read [`wiki/Handicap-Mark-Math.md`](wiki/Handicap-Mark-Math.md) first. It controls domain
-meaning. This page controls the V3 release-candidate mechanism under final audit.
+meaning. This page controls the audited V3 release-candidate mechanism.
 
 ## Why V3 exists
 
@@ -272,7 +271,7 @@ python scripts/verify_v3_release.py --require-production
 ```
 
 The evidence runner must start from an unchanged committed tree and builds and installs
-the exact wheel before executing all eleven required proof classes. Evidence is kept
+the exact wheel before executing all twelve required proof classes. Evidence is kept
 outside the wheel so its digest cannot depend circularly on its own attestation. The
 ordinary verifier must fail for a missing artifact, changed source or tree, failed
 command, source-only substitution, signature mismatch, or canonical-byte tamper. After

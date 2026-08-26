@@ -1,7 +1,7 @@
 # Offline Evidence Snapshot Runbook
 
 > **V2 runbook.** The V3 release candidate has a separate event authority and evidence epoch;
-> its older rehearsal evidence is stale after current source changes. V2 remains production authority until
+> its source-bound rehearsal does not change authority. V2 remains production authority until
 > explicit cutover. This snapshot workflow remains exact for the V2 shadow consumer.
 
 Use this runbook before a trusted shadow event. It provisions the dated prior

@@ -3,8 +3,8 @@
 ## Current authority status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements; implementation is under final audit. Its older rehearsal is stale and
-must be regenerated from the final documentation commit. V2 remains the trusted
+requirements. Repository implementation and audit are complete for this candidate. Its
+checked-in development-key rehearsal is source-bound and does not change authority. V2 remains the trusted
 production authority until an explicit cutover. No production authority has changed,
 no consumer endpoint has switched, and V2 is not audit-only.
 The external STRATHEX durable outbox/adapter is not implemented.
