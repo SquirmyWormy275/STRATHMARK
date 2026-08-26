@@ -35,8 +35,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
-    env:
-      STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-test.sqlite3
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +54,8 @@ jobs:
         # skip by default. ML predictor paths fall back to baseline when
         # xgboost/lightgbm/sklearn are not installed (they live in the [ml]
         # extra and are not pulled in by [dev]).
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-test.sqlite3
         run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider
 
   v3-ocean-boil:
@@ -66,8 +66,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    env:
-      STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-rehearsal.sqlite3
     steps:
       - uses: actions/checkout@v4
 
@@ -85,11 +83,19 @@ jobs:
         run: pip check
 
       - name: Verify replay, Windows manifest pins, and rehearsal attestation
+        env:
+          STRATHMARK_TEST_DB: "1"
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-rehearsal.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-rehearsal.sqlite3
         run: |
           python scripts/replay_v3.py
           python scripts/verify_v3_release.py
 
       - name: Run V3 suite with isolated databases and artifact roots
+        env:
+          STRATHMARK_TEST_DB: "1"
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-tests.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-tests.sqlite3
         run: pytest tests/v3 -v --tb=short --basetemp=${{ runner.temp }}/strathmark-v3-ocean-boil -p no:cacheprovider
 
   api:
