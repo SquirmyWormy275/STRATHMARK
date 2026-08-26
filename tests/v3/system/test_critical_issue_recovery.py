@@ -1357,6 +1357,7 @@ def test_production_probe_and_durable_publication_failure_matrix(
 
     invalid_handle = ctypes.wintypes.HANDLE(-1).value
     with monkeypatch.context() as context:
+        context.setattr(module.os, "name", "nt")
         context.setattr(
             ctypes,
             "WinDLL",
@@ -1366,6 +1367,7 @@ def test_production_probe_and_durable_publication_failure_matrix(
         with pytest.raises(IntegrityError, match="could not open"):
             module._physical_device_id(tmp_path)
     with monkeypatch.context() as context:
+        context.setattr(module.os, "name", "nt")
         context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(1, 0), raising=False)
         with pytest.raises(IntegrityError, match="probe failed"):
             module._physical_device_id(tmp_path)
@@ -1384,7 +1386,7 @@ def test_production_probe_and_durable_publication_failure_matrix(
             lambda *_args, **_kwargs: FakeKernel(1, 1, 0),
             raising=False,
         )
-        context.setattr(ctypes, "get_last_error", lambda: 80)
+        context.setattr(ctypes, "get_last_error", lambda: 80, raising=False)
         assert module._windows_write_through_no_clobber(source, tmp_path / "destination") is False
     with monkeypatch.context() as context:
         context.setattr(
@@ -1393,7 +1395,7 @@ def test_production_probe_and_durable_publication_failure_matrix(
             lambda *_args, **_kwargs: FakeKernel(1, 1, 0),
             raising=False,
         )
-        context.setattr(ctypes, "get_last_error", lambda: 5)
+        context.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
         with pytest.raises(IntegrityError, match="rename failed"):
             module._windows_write_through_no_clobber(source, tmp_path / "destination")
 

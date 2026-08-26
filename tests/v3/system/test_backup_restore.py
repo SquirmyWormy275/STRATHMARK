@@ -1246,7 +1246,7 @@ def test_backup_helper_collection_host_and_platform_durability_matrix(
     source.write_bytes(b"source")
     with monkeypatch.context() as context:
         context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(0), raising=False)
-        context.setattr(ctypes, "get_last_error", lambda: 5)
+        context.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
         with pytest.raises(BackupError, match="rename failed"):
             module._durable_replace(source, tmp_path / "target")
         with pytest.raises(BackupError, match="activation failed"):
@@ -1255,7 +1255,7 @@ def test_backup_helper_collection_host_and_platform_durability_matrix(
             module._publish_generation(source, tmp_path / "generation")
     with monkeypatch.context() as context:
         context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(0), raising=False)
-        context.setattr(ctypes, "get_last_error", lambda: 80)
+        context.setattr(ctypes, "get_last_error", lambda: 80, raising=False)
         with pytest.raises(BackupError, match="already exists"):
             module._publish_restore_database(source, tmp_path / "restore")
         with pytest.raises(BackupError, match="already exists"):

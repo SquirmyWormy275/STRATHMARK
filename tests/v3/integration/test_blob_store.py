@@ -342,6 +342,6 @@ def test_windows_blob_rename_failure_is_not_claimed_durable(
     source = tmp_path / "source"
     source.write_bytes(b"x")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel(), raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     with pytest.raises(BlobStoreError, match="rename failed"):
         module._atomic_replace(source, tmp_path / "destination")
