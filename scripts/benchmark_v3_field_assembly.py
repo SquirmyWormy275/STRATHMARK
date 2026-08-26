@@ -387,11 +387,13 @@ def _prepare_current_rolling_builder(
             revision: Any,
             publications: tuple[Any, ...],
             capability_bindings: tuple[Any, ...],
+            override_states: tuple[Any, ...],
         ) -> None:
             if (
                 revision != field
                 or publications != tuple(item.publication for item in cards)
                 or capability_bindings != tuple(item.binding for item in capabilities)
+                or override_states != inputs.override_states
             ):
                 raise RuntimeError("rolling benchmark current authority changed")
             self.verifications += 1
