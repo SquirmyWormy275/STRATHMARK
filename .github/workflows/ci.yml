@@ -84,14 +84,18 @@ jobs:
       - name: Check dependency consistency
         run: pip check
 
-      - name: Verify replay, Windows manifest pins, and rehearsal attestation
+      # Executable release evidence is deliberately bound to the originating
+      # Windows host, Python executable, installed wheel bytes, and machine
+      # receipts. CI reruns the portable gates and the full verifier test suite;
+      # it must not weaken or pretend to reproduce the machine-bound attestation.
+      - name: Verify deterministic replay and frozen consumer contract
         env:
           STRATHMARK_TEST_DB: "1"
           STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-rehearsal.sqlite3
           STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-rehearsal.sqlite3
         run: |
           python scripts/replay_v3.py
-          python scripts/verify_v3_release.py
+          python scripts/freeze_v3_consumer_contract.py --check
 
       - name: Run V3 suite with isolated databases and artifact roots
         env:
