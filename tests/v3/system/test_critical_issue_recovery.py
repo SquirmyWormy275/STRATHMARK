@@ -1365,11 +1365,13 @@ def test_production_probe_and_durable_publication_failure_matrix(
             lambda *_args, **_kwargs: FakeKernel(invalid_handle, 0),
             raising=False,
         )
+        context.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
         with pytest.raises(IntegrityError, match="could not open"):
             module._physical_device_id(windows_root)  # type: ignore[arg-type]
     with monkeypatch.context() as context:
         context.setattr(module.os, "name", "nt")
         context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(1, 0), raising=False)
+        context.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
         with pytest.raises(IntegrityError, match="probe failed"):
             module._physical_device_id(windows_root)  # type: ignore[arg-type]
     with monkeypatch.context() as context:
