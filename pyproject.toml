@@ -67,6 +67,7 @@ security = [
     "cryptography>=43,<47",
 ]
 dev = [
+    "build>=1.2",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "hypothesis>=6.100",

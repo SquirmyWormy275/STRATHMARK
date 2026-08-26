@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import sys
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from scripts import benchmark_v3_result_to_ready as benchmark
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32", reason="formal result-to-ready authority uses Windows"
+)
 
 
 def _keys(value: object) -> set[str]:

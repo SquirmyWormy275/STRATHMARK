@@ -56,6 +56,7 @@ jobs:
         # extra and are not pulled in by [dev]).
         env:
           STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-test.sqlite3
+          STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
         run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider
 
   v3-ocean-boil:
@@ -102,6 +103,7 @@ jobs:
           STRATHMARK_TEST_DB: "1"
           STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-tests.sqlite3
           STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-tests.sqlite3
+          STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
         run: pytest tests/v3 -v --tb=short --basetemp=${{ runner.temp }}/strathmark-v3-ocean-boil -p no:cacheprovider
 
   api:

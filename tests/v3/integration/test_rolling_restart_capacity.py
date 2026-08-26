@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import replace
@@ -824,6 +825,7 @@ def _sqlite_material_bytes(database: Path) -> int:
     )
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="formal RSS authority uses Windows APIs")
 def test_declared_capacity_checkpoint_writer_p99_rss_and_growth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

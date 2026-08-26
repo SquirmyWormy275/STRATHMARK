@@ -1245,7 +1245,7 @@ def test_backup_helper_collection_host_and_platform_durability_matrix(
     source = tmp_path / "source"
     source.write_bytes(b"source")
     with monkeypatch.context() as context:
-        context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(0))
+        context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(0), raising=False)
         context.setattr(ctypes, "get_last_error", lambda: 5)
         with pytest.raises(BackupError, match="rename failed"):
             module._durable_replace(source, tmp_path / "target")
@@ -1254,7 +1254,7 @@ def test_backup_helper_collection_host_and_platform_durability_matrix(
         with pytest.raises(BackupError, match="publication failed"):
             module._publish_generation(source, tmp_path / "generation")
     with monkeypatch.context() as context:
-        context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(0))
+        context.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel(0), raising=False)
         context.setattr(ctypes, "get_last_error", lambda: 80)
         with pytest.raises(BackupError, match="already exists"):
             module._publish_restore_database(source, tmp_path / "restore")
@@ -1988,6 +1988,7 @@ def test_backup_receipt_fallback_open_archive_host_and_size_boundaries(
         QueryValueEx=lambda *_args: ("", 0),
     )
     with monkeypatch.context() as context:
+        context.setattr(module.os, "name", "nt")
         context.setitem(sys.modules, "winreg", failing_winreg)
         with pytest.raises(ArchiveEligibilityError, match="cannot be proven"):
             module._os_host_id()
@@ -1999,6 +2000,7 @@ def test_backup_receipt_fallback_open_archive_host_and_size_boundaries(
         QueryValueEx=lambda *_args: ("", 0),
     )
     with monkeypatch.context() as context:
+        context.setattr(module.os, "name", "nt")
         context.setitem(sys.modules, "winreg", empty_winreg)
         with pytest.raises(ArchiveEligibilityError, match="cannot be proven"):
             module._os_host_id()
