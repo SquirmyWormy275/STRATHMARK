@@ -6,6 +6,12 @@ regenerated from the final documentation commit. V2 remains the trusted producti
 authority until explicit cutover. No production authority has changed. Tests and
 verifiers never switch authority.
 
+Run V3 tests and release proof only in the designated Python 3.13 environment with the
+exact V3 release lock installed. The package and V2 compatibility matrix remains Python
+3.10-3.13; those older interpreters intentionally exclude `tests/v3`. Enabling SQLite
+`trusted_schema` to make an older bundled SQLite accept V3's expression indexes is not a
+valid compatibility fix.
+
 Every run must use isolated V2 and V3 databases and a unique pytest base directory:
 
     $env:STRATHMARK_TEST_DB = '1'

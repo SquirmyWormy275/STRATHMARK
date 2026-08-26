@@ -22,6 +22,12 @@ the final documentation commit. The older checked-in release attestation is deli
 stale, cannot reach states 3 or 4, and is not current evidence for this changed tree.
 No production CNG identity is currently provisioned.
 
+Use Python 3.13 and install `requirements/v3-release.lock` for every V3 rehearsal,
+deployment, migration, recovery drill, and release-verification run. Python 3.10-3.12
+remain supported for the normal package and V2, not for V3 authority. Do not enable
+SQLite `trusted_schema` to bypass older bundled SQLite rejection of V3's JSON expression
+indexes; that changes the security contract instead of satisfying it.
+
 ## Mandatory safety boundaries
 
 - Read [`wiki/Handicap-Mark-Math.md`](wiki/Handicap-Mark-Math.md) before operating marks.
@@ -39,6 +45,8 @@ No production CNG identity is currently provisioned.
 - No verifier, test, or signed pre-switch handoff performs the final endpoint switch.
 
 ## Isolated rehearsal
+
+Confirm `python --version` reports Python 3.13 before running these commands.
 
 ```powershell
 $env:STRATHMARK_TEST_DB = '1'

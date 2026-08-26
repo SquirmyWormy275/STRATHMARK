@@ -9,6 +9,11 @@ trusted production authority until an explicit cutover. No production authority 
 changed, no consumer endpoint has switched, and V2 is not audit-only. No production CNG
 identity is provisioned. The external STRATHEX durable outbox/adapter is not implemented.
 
+V3 deployment and rehearsal require Python 3.13 with the exact V3 release lock. The
+normal package and trusted V2 engine continue to support Python 3.10-3.13. Do not weaken
+SQLite `trusted_schema` to make an older interpreter's bundled SQLite accept V3 schema
+objects.
+
 Use isolated V2/V3 database paths and STRATHMARK_TEST_DB=1 for every test or rehearsal.
 Generate executable evidence only from the exact committed candidate, its built and
 installed wheel, and the pinned local models. The ordinary verifier must reject stale or

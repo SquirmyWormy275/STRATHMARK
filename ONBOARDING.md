@@ -10,6 +10,11 @@ production authority has changed, no endpoint has switched, and V2 is not audit-
 No production CNG identity is provisioned. Never turn a rehearsal attestation into a
 production-readiness claim.
 
+The normal package and trusted V2 engine support Python 3.10-3.13. V3 race-day
+execution, migrations, tests, and release evidence require the designated Python 3.13
+environment and exact V3 release lock. Do not run V3 authority on an older interpreter
+or enable SQLite `trusted_schema` to work around an incompatible bundled SQLite build.
+
 ## Mandatory domain gate
 
 Read [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md) in full before

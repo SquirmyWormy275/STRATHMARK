@@ -1278,8 +1278,11 @@ worker threads are forbidden in V3.
 ### Distribution and artifact topology
 
 - The normal Python wheel/sdist remains the code artifact and continues cross-platform
-  CI on Python 3.10-3.13. A dedicated Windows V3 runtime job additionally installs the
-  exact hashed runtime lock and runs the installed-wheel contract outside the checkout.
+  package/V2 CI on Python 3.10-3.13. V3 authority, migrations, and release evidence use
+  the designated Python 3.13 runtime because older bundled SQLite versions reject its
+  JSON expression indexes with `trusted_schema=OFF`; that security boundary is never
+  weakened for compatibility. Dedicated Windows and Ubuntu V3 runtime jobs install the
+  exact hashed runtime lock, and installed-wheel proof runs outside the checkout.
 - Optional extras separate deterministic V3 core, ML training/runtime, local Ollama
   adapter, and each cloud provider. Importing `strathmark` or deterministic V2/V3 core
   never imports native ML, cloud SDK, or Ollama dependencies.

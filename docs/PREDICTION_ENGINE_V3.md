@@ -16,6 +16,12 @@ V2 freeze, an initialized V3 installation, an isolated consumer rehearsal, and s
 release authorization. The rehearsal artifact cannot satisfy those gates.
 No production CNG identity is currently provisioned.
 
+V3's supported rehearsal and race-day runtime is the designated Python 3.13 environment
+with `requirements/v3-release.lock`. The package and V2 remain compatible with Python
+3.10-3.13, but those older interpreter environments are not V3 authority environments.
+Their bundled SQLite versions can reject V3's JSON expression indexes while
+`trusted_schema=OFF`; weakening that security setting is prohibited.
+
 Read [`wiki/Handicap-Mark-Math.md`](wiki/Handicap-Mark-Math.md) first. It controls domain
 meaning. This page controls the V3 release-candidate mechanism under final audit.
 

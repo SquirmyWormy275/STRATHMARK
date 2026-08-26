@@ -56,6 +56,9 @@ jobs:
       - name: Check dependency consistency
         run: pip check
 
+      - name: Verify distribution imports
+        run: python -c "import strathmark; import strathmark.v3"
+
       - name: Run pytest with coverage
         # Supabase-backed db tests are gated behind STRATHMARK_TEST_DB and
         # skip by default. ML predictor paths fall back to baseline when
@@ -73,11 +76,13 @@ jobs:
           STRATHMARK_V3_RECOVERY_ROOT: ${{ runner.temp }}/strathmark-v3-recovery
           STRATHMARK_V3_INTEGRITY_KEY_ROOT: ${{ runner.temp }}/strathmark-v3-integrity-keys
           STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
-        # Exact-lock verifier tests run on both operating systems under the
-        # designated 3.13 runtime (and again in v3-ocean-boil). Other supported
-        # interpreters execute every portable test against resolved compatible
-        # dependencies.
-        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider ${{ matrix.python-version != '3.13' && '--ignore=tests/v3/system/test_release_verifier.py' || '' }}
+        # The normal distribution and trusted V2 engine remain supported on
+        # Python 3.10-3.13. V3's SQLite authority and exact release lock are a
+        # designated Python 3.13 runtime contract: older bundled SQLite builds
+        # reject its JSON expression indexes when trusted_schema is correctly
+        # disabled. Python 3.13 runs the complete suite here and again in the
+        # dedicated V3 rehearsal; older interpreters run every non-V3 test.
+        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider ${{ matrix.python-version != '3.13' && '--ignore=tests/v3' || '' }}
 
   v3-ocean-boil:
     name: V3 ocean-boil rehearsal (${{ matrix.os }} / Python 3.13)
