@@ -1,0 +1,187 @@
+{
+  "schema_version": "strathmark-v3-result-to-ready-benchmark-v1",
+  "status": "passed",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python_version": "3.13.3",
+  "repetitions": 5,
+  "limits": {
+    "result_to_ready_ms_inclusive": 120000
+  },
+  "gates": {
+    "formal_repetition_count": true,
+    "result_to_ready_within_budget": true,
+    "all_trials_completed": true,
+    "exact_source_bindings": true
+  },
+  "maximum_measured_result_to_ready_ms": 4024,
+  "source_bindings": {
+    "scripts/benchmark_v3_result_to_ready.py": "247898b2881f7b38caf1b79c1deab353a490c11f6c8bad6a451f4e7d92bc9508",
+    "strathmark/v3/application/lifecycle.py": "c27ff5bcda8e4176b4b087c2721813a8c6f967be6bfe2659c97d6ae5419128b5",
+    "strathmark/v3/application/settlement.py": "d4c7cb47f9cbac2f1808a798bbaaa5c6a7d2dd2392f36bd7fe5851089d0dfe64",
+    "strathmark/v3/application/coordinator.py": "fc84f38cbc5fd72fe790bcbf92c8ff9a091c752c99d310e9e4743d2ce7cb6efb",
+    "strathmark/v3/application/pipeline_builder.py": "26be4a6a10895147c32eb0223b287c7cebcb27783c6d58ce509f595c5cf6e268",
+    "strathmark/v3/application/field_assembly.py": "53866eca8abd119788ff982e783dbf10a5c898575b42690c5b23d2780e3affca",
+    "strathmark/v3/application/approval.py": "5134771842443d5ffe9ccf65a304a99a806cbe9fef0a13fa974bcd2e62ac5532",
+    "strathmark/v3/domain/optimizer.py": "7a39a285e8492e905a9143b68698b3967b900a782d89b9a4061ac1feb026969d",
+    "strathmark/v3/infrastructure/sqlite/event_store.py": "bfd1459eaf994e44b0fd7d2e7532b7664736e3a8bb28e706a62efa83a9461993",
+    "strathmark/v3/infrastructure/sqlite/jobs.py": "e9396161faa324cd248f0ca1843655ce6327af9383d041f3670ba8087718399b",
+    "strathmark/v3/infrastructure/sqlite/projections.py": "18716f71c073a6f92ba46ab059bf9391a0dc6971e890e9464506f5b568342d7c",
+    "tests/v3/integration/test_field_receipts.py": "9193db3c4c60aacd4ab4dbbb236c2b29e6d8e00ce6b46ad5e32b8bfb3036e992",
+    "tests/v3/integration/test_rolling_preparation.py": "2b688fa07521847a8c29fa0756364fb145e83f62804df8c4ca4004a20fd00fce",
+    "benchmarks/v3/job_capacity_manifest.json": "af131df28d0ef26f0b9ea5b303ada25f47109b3e3c8cd1fc31f66c1df6ce669e"
+  },
+  "source_bindings_digest": "fa981fe2f41783773e9f8ee3e891fbe43da73314ec2c217315c2cb0b6036d520",
+  "trials": [
+    {
+      "trial_ordinal": 1,
+      "measured_result_to_ready_ms": 4024,
+      "component_latency_ms": {
+        "final_heat_settlement": 274,
+        "deliberate_round_close": 2019,
+        "newly_affected_cards": 1152,
+        "gate_optimizer": 76,
+        "receipt_commit": 288,
+        "approval_projection": 5
+      },
+      "settlement_result_digest": "383e398817288a1027e602ffa8e63baefcfe6f0f10a974aa1bdc05b206401e89",
+      "settlement_event_set_digest": "54b1ba16e07f594de57bb4bcc0bb7050af6ec522e112e82b27ae17ef78abfb27",
+      "round_closure_id": "round_closure:66c32a0575fe3d6ff4d9daefb8bea375de494f8099ec5d070c68ab2020edcdf9",
+      "round_close_event_set_digest": "42c7ec55eb396234981736040cf236ff0d5b9db1d5e89a9893254125a93876db",
+      "round_close_event_digest": "299647cd35cb61e2ff52d43adb62cd9ad7fb998de6acbfa2485f8cf76d29e353",
+      "successor_epoch_digest": "a9ad3a41264103b497bf5db902b5ed69ed1231e4ce5f91726ac6d36df90b6e26",
+      "successor_epoch_event_set_digest": "1bade131e4e45dd8abef658dcf7013480e5b22e92229eb29647a2d388c9061c0",
+      "newly_affected_card_count": 2,
+      "newly_affected_card_publication_digests": [
+        "6f233ca148e06c254f4145d18911e83ed52da2e967118fe911595a94b3211c33",
+        "bdf0df488bfccdd28aab363c7195a0339cff7418d3e919409ac7f29a5bcfe38d"
+      ],
+      "optimizer_receipt_digest": "1b1ee09720adda37930105697640850ec2dcc331c0c79e1adf2e4a50b17f3a8e",
+      "optimizer_verification_digest": "3e736e02644776bbbcabb07d6ecf9bcf2b517cac4b1a7aca64d652ceb0403fe2",
+      "field_receipt_id": "receipt:e1c26f2b5a454215fd8622aced0658ef602a4f76c9d8b253faa93df8f510027c",
+      "field_receipt_digest": "205ac6e5a3b86d7f87c6fe8c75cf18e0c9d20cf52768f8d873b1bc9d329cfa37",
+      "approval_snapshot_id": "approval_snapshot:2f6cddfc061565e07a555fbe05450dc240c4172f16a43d22a351e0a3ae8534d9",
+      "approval_row_digest": "75ba5a8593fae09ad71f42298e5170b760569a0011c3c7e3da59721517b0f4b8"
+    },
+    {
+      "trial_ordinal": 2,
+      "measured_result_to_ready_ms": 3423,
+      "component_latency_ms": {
+        "final_heat_settlement": 227,
+        "deliberate_round_close": 1352,
+        "newly_affected_cards": 1204,
+        "gate_optimizer": 73,
+        "receipt_commit": 278,
+        "approval_projection": 8
+      },
+      "settlement_result_digest": "aab0c491ecd1d96234f497a53dc86fc7c479f281d0f22c0b783671c79dd54b9a",
+      "settlement_event_set_digest": "2fb93fea7817c348c5041273d53cb1b02040ff9771171e4a3502a7b09c9f240c",
+      "round_closure_id": "round_closure:66c32a0575fe3d6ff4d9daefb8bea375de494f8099ec5d070c68ab2020edcdf9",
+      "round_close_event_set_digest": "14d230ee6363d6e671617f3eba4180f4cb608ef37b592fbbe79bbfd27cfecd98",
+      "round_close_event_digest": "8eb5130bfcfffc583579ba6b1cf6015e9af37b54e741e0b9ada4d3f6b0aa2fd5",
+      "successor_epoch_digest": "a9ad3a41264103b497bf5db902b5ed69ed1231e4ce5f91726ac6d36df90b6e26",
+      "successor_epoch_event_set_digest": "7cda79c621071faa53e901cc1c886c8bbd47f0f212755cf2af5539a7714f6343",
+      "newly_affected_card_count": 2,
+      "newly_affected_card_publication_digests": [
+        "f2da114603267a2c5add093e1629aff8eca19e305e09f4207bb9fd741f872fd9",
+        "87a70a7bb5cb3a4624a4ee6f4682bc8a4697dd335732f3c83c68219136dcd157"
+      ],
+      "optimizer_receipt_digest": "7bc7cd28f08065156b1fa1cdff0229d9b150911e13ff78aa65678805b8a71b1d",
+      "optimizer_verification_digest": "f8d175dfe5283ca9a7716161aaa6a61c3eadae4734669f8777bd9370cce73c17",
+      "field_receipt_id": "receipt:86dc4a2828313cdb05217f6bdd1b7b8d2402d50fe20972b2119145405d556bb8",
+      "field_receipt_digest": "2a1380e6720e3f16b099fd78a18bd0c510c97f07254fdb8f607dad1cd4dacbc6",
+      "approval_snapshot_id": "approval_snapshot:6a253cd73e2c5a152367c5ba1063fe265c64aa8ccd021dfc991cb6d2418f0875",
+      "approval_row_digest": "acffb1e678a1c9f82b72eff0d18a03779a61a9374a7e917014aabf0b3d623a90"
+    },
+    {
+      "trial_ordinal": 3,
+      "measured_result_to_ready_ms": 3456,
+      "component_latency_ms": {
+        "final_heat_settlement": 172,
+        "deliberate_round_close": 1176,
+        "newly_affected_cards": 1260,
+        "gate_optimizer": 77,
+        "receipt_commit": 558,
+        "approval_projection": 6
+      },
+      "settlement_result_digest": "224eae998963fca5bc3f7a96ecb089feaa8aac53b6eac388ab78e55b4fb00270",
+      "settlement_event_set_digest": "7f08eddd3e6b532db03b3da04727717f6659dc314f2758eda9b163b9a1792655",
+      "round_closure_id": "round_closure:66c32a0575fe3d6ff4d9daefb8bea375de494f8099ec5d070c68ab2020edcdf9",
+      "round_close_event_set_digest": "a5901cee1785a74d3be0f9947ff8dd4ebe63d26d8edb2b62cc578967b1a5e127",
+      "round_close_event_digest": "fe8ce408c9fda2cafbb31f367d91d5811347c984c81345d16d09c327cb64877c",
+      "successor_epoch_digest": "a9ad3a41264103b497bf5db902b5ed69ed1231e4ce5f91726ac6d36df90b6e26",
+      "successor_epoch_event_set_digest": "8085964a719f0f7a028ec8faa81fcfea84e4314c3b79996a646b5885b7740231",
+      "newly_affected_card_count": 2,
+      "newly_affected_card_publication_digests": [
+        "65edc7d5e27487fe1166c2e89c0a96a678ef3bfc48aad02b5a5cd9a02403c7b8",
+        "099ba1d0bb4111844b34bef8e65e65fe6192385ed1a2ffbc4612f6919471afbf"
+      ],
+      "optimizer_receipt_digest": "a3706526fe4782fbbf8ce9fbd09cf88e43514f439fc686f485bc4a4b54f97a14",
+      "optimizer_verification_digest": "7b34acceb95d72eac7cd5730e0020b93ad34055336161a7b6f06f244280f8c68",
+      "field_receipt_id": "receipt:dd626ce2c051b440c71b1f1f6fd2d3eea998019ef7a3d7b69ddbaa238c8c0194",
+      "field_receipt_digest": "31458dcebca13d048cf151efaf90596e748be490b42e6ceaad929ef4b083a386",
+      "approval_snapshot_id": "approval_snapshot:70d28aa0a0d341e0175c19f9f0bc9d1ec85e3198fd74d8cafee035bd4a9f0bf9",
+      "approval_row_digest": "288434d42096e0b787565d8d5ee511e55fcd3c9ef4c477e58e4bae9fb6af3759"
+    },
+    {
+      "trial_ordinal": 4,
+      "measured_result_to_ready_ms": 3486,
+      "component_latency_ms": {
+        "final_heat_settlement": 193,
+        "deliberate_round_close": 1415,
+        "newly_affected_cards": 1288,
+        "gate_optimizer": 86,
+        "receipt_commit": 301,
+        "approval_projection": 5
+      },
+      "settlement_result_digest": "3a5af170baeb430ed63d82421525f01c68ed4f8f6c818baba82ccb4f841160dc",
+      "settlement_event_set_digest": "3a92caee89e8e0a59b41413a41b74f1b84d4474a29bf30db55f908690c7001c9",
+      "round_closure_id": "round_closure:66c32a0575fe3d6ff4d9daefb8bea375de494f8099ec5d070c68ab2020edcdf9",
+      "round_close_event_set_digest": "048e06c5a87b99c7ef2496e5f3ab5422ff3ea8a72c65291aac852feae42c3e67",
+      "round_close_event_digest": "b84ee9e420fbc9757f690f219f8a8c47784eec6f06f4132096ea67d87082bef5",
+      "successor_epoch_digest": "a9ad3a41264103b497bf5db902b5ed69ed1231e4ce5f91726ac6d36df90b6e26",
+      "successor_epoch_event_set_digest": "c2e02184ee6754e00223ebfede4d811b422896461a7986e5f01b7e23602c28fa",
+      "newly_affected_card_count": 2,
+      "newly_affected_card_publication_digests": [
+        "3a4ecdcf00157929fd2ca97737621e92bf99a35a6ca4170f72cc6f7d3a265af7",
+        "c914618698b7c4dc027741c4fc0e6a344819f2cd6cd06c9bf47802955b601597"
+      ],
+      "optimizer_receipt_digest": "0e24e5d551fa3a39164ca6f606d2ec8e6c6785561a0c2d4418af83133fd8b9d4",
+      "optimizer_verification_digest": "6fc7c7d7831033cf008d22fcd9e20f06b8e45b88e8b5a15befe7670cf99f4ed4",
+      "field_receipt_id": "receipt:3948d251665ba26f1e21931f876549fef0d5b531cf9bd7c659ee1773126869e5",
+      "field_receipt_digest": "db5001d8add27aaac993ddd157c9174b956faf86112a9b1eabcedcd6a68b4225",
+      "approval_snapshot_id": "approval_snapshot:3b0545f25b78dcfda57fa605fd6b5702f91d73f972939ff21b602cd5d3f4acb2",
+      "approval_row_digest": "0ba4192fd8e08c68d2959dfa53ae2b84db0f12f150c35bf86bca4f3b849f6b2d"
+    },
+    {
+      "trial_ordinal": 5,
+      "measured_result_to_ready_ms": 3837,
+      "component_latency_ms": {
+        "final_heat_settlement": 166,
+        "deliberate_round_close": 1504,
+        "newly_affected_cards": 1559,
+        "gate_optimizer": 131,
+        "receipt_commit": 265,
+        "approval_projection": 8
+      },
+      "settlement_result_digest": "d71cb1549cee1e7c0d53b13110ab2040d6ea87f20815b580ca37913b608b440f",
+      "settlement_event_set_digest": "afdbcb1ad1eb58ba564404a19fe715ea161005e7c311e9a15b5b0d6496ec1932",
+      "round_closure_id": "round_closure:66c32a0575fe3d6ff4d9daefb8bea375de494f8099ec5d070c68ab2020edcdf9",
+      "round_close_event_set_digest": "a11ace65680256078b015570e867e4de7553c6b1d391d27f49a781ddfaffd2ac",
+      "round_close_event_digest": "f487a55c977e2972a90d5fb15dee47bea6b69edcf8a71e3ee36049502604e332",
+      "successor_epoch_digest": "a9ad3a41264103b497bf5db902b5ed69ed1231e4ce5f91726ac6d36df90b6e26",
+      "successor_epoch_event_set_digest": "4ca903e957cbc92fe1fcd006a77c0762f63ae7cee9e24226bf3761ac6d59c072",
+      "newly_affected_card_count": 2,
+      "newly_affected_card_publication_digests": [
+        "f8cb7745bc6beb55b734a163246b467c5a0d848d0eddf3364a1738aea0d0ad9d",
+        "8c833ebb2ab17876d5c7aaee856311b3769d5b960f00ba9044de526aa99a9741"
+      ],
+      "optimizer_receipt_digest": "62d1c8d95e9ddb9449cd6e3f4021d1c726d10469bfc9072f5b7dcccba45c7d27",
+      "optimizer_verification_digest": "a5a2a6e500cd69d16420fed909e7040cf6e3f541398eb4bddee6fbe52c8c0838",
+      "field_receipt_id": "receipt:3b16be3468ec8af577015d12cb839199c943636a1a69b9e20f84c880ac630477",
+      "field_receipt_digest": "38e56692667a3a5970fcc66b19bdfa87d2c51646fb7f73916fd9142ce0f6f692",
+      "approval_snapshot_id": "approval_snapshot:7025508c3d32cc65b2a7a1ba305b98c06337e4a5863dd29122a0113262da88c5",
+      "approval_row_digest": "f2c41ce93d94183fa57eb8733d82d9f512b52e7f5a89cfc9894b1a35139fcecf"
+    }
+  ],
+  "manifest_digest": "e9d1eae3ac81945a83b7846fdec9be0d7c3b021d2dfd015b45e5b33f53b655c0"
+}

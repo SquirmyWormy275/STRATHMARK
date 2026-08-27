@@ -1,5 +1,10 @@
 # Legacy Prediction Keys in V2
 
+> **Historical/current-V2 page.** V3 is a separate formula/ML/LLM release candidate
+> ensemble and contract. The V3 rehearsal is source-bound and does not change authority; V2 remains the
+> trusted production authority until explicit cutover. The mapping below applies only to
+> V2 compatibility and is not V3 architecture.
+
 The pre-2.0 numeric cascade is superseded. STRATHMARK now runs one Prediction Engine V2
 bundle and projects its results into the five keys older consumers expect.
 

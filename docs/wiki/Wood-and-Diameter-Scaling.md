@@ -1,5 +1,9 @@
 # Wood and Diameter in V2
 
+> **V2-specific behavior.** The V3 release candidate uses versioned event, diameter,
+> species/material, property, taxonomy, and conversion evidence. Its checked-in evidence
+> is rehearsal-tier; V2 remains production authority until explicit cutover.
+
 V2 uses target/historical diameter and species joined to six physical properties:
 Janka hardness, specific gravity, crush strength, shear strength, modulus of rupture,
 and modulus of elasticity. Diameter enters as a clamped log ratio to the model reference

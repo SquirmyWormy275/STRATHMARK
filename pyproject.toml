@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "2.0.0"
-description = "Woodchopping handicap engine — pip-installable calculation core extracted from STRATHEX"
+version = "3.0.0rc1"
+description = "Offline woodchopping handicap engine with trusted V2 and an auditable V3 adaptive-ensemble release candidate"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -13,9 +13,9 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Alex Kaper", email = "alex.j.kaper@gmail.com" }
 ]
-keywords = ["woodchopping", "handicap", "axemen", "sports", "monte-carlo"]
+keywords = ["woodchopping", "handicap", "axemen", "sports", "ensemble", "audit"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -45,6 +45,7 @@ api = [
     "httpx>=0.27,<1",
     "httpx2>=2.0",
     "uvicorn[standard]>=0.29",
+    "cryptography>=43,<47",
 ]
 llm = [
     "ollama>=0.3",
@@ -61,12 +62,20 @@ ml = [
 db = [
     "supabase>=2.0",
 ]
+security = [
+    # Loaded lazily by V3 integrity adapters; core V2 imports remain dependency-free.
+    "cryptography>=43,<47",
+]
 dev = [
+    "build>=1.2",
+    "hatchling>=1.27",
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "hypothesis>=6.100",
     "jsonschema>=4.18",
     "ruff>=0.4",
     "openpyxl>=3.1",
+    "cryptography>=43,<47",
 ]
 
 [project.urls]
@@ -76,6 +85,9 @@ dev = [
 "Documentation" = "https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs/wiki"
 "Changelog" = "https://github.com/SquirmyWormy275/STRATHMARK/blob/main/CHANGELOG.md"
 
+[project.scripts]
+strathmark-v3-factory-evaluator = "strathmark.v3.factory.evaluator_cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["strathmark"]
 
@@ -83,6 +95,13 @@ packages = ["strathmark"]
 "strathmark/models/prediction_v2_core.json" = "strathmark/models/prediction_v2_core.json"
 "strathmark/contracts/shadow_consumer_v1.openapi.json" = "strathmark/contracts/shadow_consumer_v1.openapi.json"
 "strathmark/contracts/shadow_consumer_v1.openapi.sha256" = "strathmark/contracts/shadow_consumer_v1.openapi.sha256"
+"strathmark/v3/native/optimizer_kernel.rs" = "strathmark/v3/native/optimizer_kernel.rs"
+"strathmark/v3/native/optimizer_kernel_manifest.json" = "strathmark/v3/native/optimizer_kernel_manifest.json"
+"strathmark/v3/native/strathmark_v3_optimizer_kernel.dll" = "strathmark/v3/native/strathmark_v3_optimizer_kernel.dll"
+"strathmark/v3/contracts/v3_consumer.openapi.json" = "strathmark/v3/contracts/v3_consumer.openapi.json"
+"strathmark/v3/contracts/v3_consumer.openapi.sha256" = "strathmark/v3/contracts/v3_consumer.openapi.sha256"
+"benchmarks/v3/windows_capacity_manifest.json" = "strathmark/v3/contracts/windows_capacity_manifest.json"
+"requirements/v3-release.lock" = "strathmark/v3/contracts/v3-release.lock"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

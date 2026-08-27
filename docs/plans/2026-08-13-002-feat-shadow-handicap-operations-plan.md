@@ -11,6 +11,11 @@ execution: code
 
 # Trusted Shadow Handicap Operations - Plan
 
+> **Preserved V2 shadow contract.** This plan remains exact for the V2 consumer. V3 uses
+> a separate contract and cutover boundary defined by
+> [`2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md`](2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md).
+> No V3 production cutover is implied.
+
 ## Goal Capsule
 
 Build the next operational layer around the released Prediction Engine V2: prove

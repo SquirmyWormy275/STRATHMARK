@@ -43,18 +43,93 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package with dev extras
-        run: pip install -e ".[dev]"
+      - name: Install portable test dependencies
+        run: pip install -e ".[dev,api]"
+
+      # The exact release lock describes the designated Python 3.13 rehearsal
+      # machine; it is not a cross-version constraints file (for example, its
+      # NumPy pin intentionally has no Python 3.10 build).
+      - name: Install designated release lock
+        if: matrix.python-version == '3.13'
+        run: pip install -r requirements/v3-release.lock
 
       - name: Check dependency consistency
         run: pip check
+
+      - name: Verify distribution imports
+        run: python -c "import strathmark; import strathmark.v3"
 
       - name: Run pytest with coverage
         # Supabase-backed db tests are gated behind STRATHMARK_TEST_DB and
         # skip by default. ML predictor paths fall back to baseline when
         # xgboost/lightgbm/sklearn are not installed (they live in the [ml]
         # extra and are not pulled in by [dev]).
-        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing
+        env:
+          STRATHMARK_TEST_DB: "1"
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-test.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-test.sqlite3
+          STRATHMARK_V3_TEMP_PATH: ${{ runner.temp }}/strathmark-v3-runtime
+          STRATHMARK_V3_BLOB_ROOT: ${{ runner.temp }}/strathmark-v3-blobs
+          STRATHMARK_V3_BUNDLE_ROOT: ${{ runner.temp }}/strathmark-v3-bundles
+          STRATHMARK_V3_ARCHIVE_ROOT: ${{ runner.temp }}/strathmark-v3-archive
+          STRATHMARK_V3_BACKUP_ROOT: ${{ runner.temp }}/strathmark-v3-backup
+          STRATHMARK_V3_RECOVERY_ROOT: ${{ runner.temp }}/strathmark-v3-recovery
+          STRATHMARK_V3_INTEGRITY_KEY_ROOT: ${{ runner.temp }}/strathmark-v3-integrity-keys
+          STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
+        # The normal distribution and trusted V2 engine remain supported on
+        # Python 3.10-3.13. V3's SQLite authority and exact release lock are a
+        # designated Python 3.13 runtime contract: older bundled SQLite builds
+        # reject its JSON expression indexes when trusted_schema is correctly
+        # disabled. Python 3.13 runs the complete suite here and again in the
+        # dedicated V3 rehearsal; older interpreters run every non-V3 test.
+        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ runner.temp }}/strathmark-tests -p no:cacheprovider ${{ matrix.python-version != '3.13' && '--ignore=tests/v3' || '' }}
+
+  v3-ocean-boil:
+    name: V3 ocean-boil rehearsal (${{ matrix.os }} / Python 3.13)
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install complete V3 test dependencies
+        run: |
+          pip install -e ".[dev,api]"
+          pip install -r requirements/v3-release.lock
+
+      - name: Check dependency consistency
+        run: pip check
+
+      # Executable release evidence is deliberately bound to the originating
+      # Windows host, Python executable, installed wheel bytes, and machine
+      # receipts. CI reruns the portable gates and the full verifier test suite;
+      # it must not weaken or pretend to reproduce the machine-bound attestation.
+      - name: Verify deterministic replay and frozen consumer contract
+        env:
+          STRATHMARK_TEST_DB: "1"
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-rehearsal.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-rehearsal.sqlite3
+        run: |
+          python scripts/replay_v3.py
+          python scripts/freeze_v3_consumer_contract.py --check
+
+      - name: Run V3 suite with isolated databases and artifact roots
+        env:
+          STRATHMARK_TEST_DB: "1"
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-v3-tests.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-tests.sqlite3
+          STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
+        run: pytest tests/v3 -v --tb=short --basetemp=${{ runner.temp }}/strathmark-v3-ocean-boil -p no:cacheprovider
 
   api:
     name: API contract (${{ matrix.compatible-set }})
@@ -226,7 +301,7 @@ jobs:
   build:
     name: Installed ${{ matrix.kind }} (${{ matrix.os }} / Python 3.12)
     runs-on: ${{ matrix.os }}
-    needs: [lint, test, api, optional-ml, validation-artifact, golden, optimizer-capacity, postgres-migration-rehearsal]
+    needs: [lint, test, v3-ocean-boil, api, optional-ml, validation-artifact, golden, optimizer-capacity, postgres-migration-rehearsal]
     strategy:
       fail-fast: false
       matrix:

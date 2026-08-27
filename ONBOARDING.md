@@ -1,127 +1,142 @@
 # Onboarding
 
-STRATHMARK 2.0.0 is an offline-capable woodchopping prediction and handicap-mark
-engine. Start with the current mechanism, not the historical cascade documents.
+## Current status
 
-## First five minutes
+V3 is a `3.0.0rc1` release candidate in a separate namespace that tracks
+all 232 in-repository requirements. Repository implementation and audit are complete for
+this candidate. The checked-in development-key rehearsal is source-bound and must pass
+the release verifier; it is not production evidence. V2 remains the trusted production authority until an explicit cutover. No
+production authority has changed, no endpoint has switched, and V2 is not audit-only.
+No production CNG identity is provisioned. Never turn a rehearsal attestation into a
+production-readiness claim.
 
-```bash
-pip install -e ".[dev,api]"
-pytest tests -q
-python train_model.py
-```
+The normal package and trusted V2 engine support Python 3.10-3.13. V3 race-day
+execution, migrations, tests, and release evidence require the designated Python 3.13
+environment and exact V3 release lock. Do not run V3 authority on an older interpreter
+or enable SQLite `trusted_schema` to work around an incompatible bundled SQLite build.
 
-The last command verifies the published V2 report and packaged model checksum. It does
-not retrain or reopen the locked test.
+## Mandatory domain gate
 
-Read in this order:
+Read [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md) in full before
+analyzing or changing predictions, marks, sheets, simulations, results, or their
+documentation. It defines the sport: smaller marks start earlier, marks are start counts,
+rebasing is a field-wide translation, and marks copied from independently rebased fields
+are not comparable ability evidence. Association-specific procedures do not replace that
+foundation.
 
-1. [`README.md`](README.md) — install and public usage.
-2. [`docs/PREDICTION_ENGINE_V2.md`](docs/PREDICTION_ENGINE_V2.md) — active evidence,
-   model, uncertainty, optimizer, ledger, and migration contract.
-3. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module and request data flow.
-4. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — race-day runbook and rollback.
-5. [`docs/SHADOW_CONSUMER_CONTRACT.md`](docs/SHADOW_CONSUMER_CONTRACT.md) — the
-   frozen six-route trusted-shadow boundary, dual authentication, readiness, and
-   recovery contract.
+## Read in this order
+
+1. [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md) — timeless domain meaning.
+2. [`README.md`](README.md) — repository status and entry points.
+3. [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) — V3 release-candidate contract and pivot.
+4. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — V2/V3 boundaries and data flow.
+5. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — rehearsal, recovery, and cutover gates.
+6. [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md) — consumer handoff.
+7. [`docs/PREDICTION_ENGINE_V2.md`](docs/PREDICTION_ENGINE_V2.md) — preserved V2 contract.
 
 ## Mental model
 
-One request captures one exclusive UTC cutoff and one immutable model bundle. V2 uses
-only stable identity/history, event, dated strictly prior results, diameter, species
-physical properties, and gender including missingness. It predicts a positive finish
-time and calibrated interval. A deterministic 2,048-sample joint optimizer then assigns
-marks for the whole field.
+V2 is the currently trusted production engine. It uses one prior-only statistical core,
+one exclusive date cutoff, an optional residual, five compatibility keys, and a joint
+mark optimizer. Those constraints remain exact for V2 and its receipts.
 
-Manual time overrides are operator instructions and have no calibrated interval. The
-numeric LLM tier is retired. The compatibility key `llm` remains but is always `None`;
-LLM modules are narrative-only.
+V3 is the successor release candidate. Formula, hierarchical ML, and a three-member LLM
+council independently forecast the same sealed evidence. Accuracy-earned credibility
+weights pool the valid distributions. Every race is reconstructed and rebased to Mark 3;
+one round shares one frozen evidence epoch; every valid completion becomes eligible at
+the next round boundary. Consequential disagreement is surfaced as green, amber, or red
+for deliberate judge action.
 
-## Non-negotiable rules
+The local factory composition/scheduler is runnable, and its bounded evaluator
+entrypoint opens an existing production CNG key by name. Concrete formula/ML/LLM family
+executors, the local settled-evidence metric evaluator, installation OS identities and
+ACLs, and provisioned CNG keys are not supplied by that composition. Promotion remains
+manual and signed.
 
-- Mark floor 3 and system ceiling 183; an event may use a lower ceiling.
-- Same-day, future, invalid-date, and undated rows never enter V2 evidence.
-- Forecast intervals are not race-performance `std_dev`.
-- Inactive context fields are numeric no-ops; never infer or backfill them.
-- One bundle snapshot serves the whole field.
-- Trusted prediction writes require stable competitor IDs and an idempotency key.
-- Public `/calculate` and `/predict` remain stateless.
-- Database or mirror failure must not block a valid race-day calculation.
-- Trusted `/v1/shadow/calculate` requires a durable single-writer topology and a
-  current verified local evidence snapshot; never claim either from an ephemeral
-  deployment.
-- Every `/v1/shadow/*` request uses both a scoped service bearer credential and a
-  short-lived v2 actor attestation bound to the exact canonical request digest.
-- Receipt-bound settlement and void remain available when current evidence becomes
-  stale or unavailable, so incorrect numeric evidence can still be retracted.
-- Tests must use temporary, isolated databases and never production.
+V3 authenticates one calling service, not human roles. Tournament-manager login, RBAC,
+official issue, results, publication, and payouts remain upstream. Once inside STRATHMARK,
+the authenticated service principal has full V3 authority; actor headers are audit data.
+The frozen ten-route contract includes a typed multi-receipt approval-decision route;
+it records approval evidence but does not issue a sheet. STRATHEX has not yet implemented
+the durable outbox that must forward and persist those acknowledgments.
 
 ## Code map
 
-| Responsibility | Source | Primary tests |
-| --- | --- | --- |
-| Prior-only allowlist and exclusions | `strathmark/features.py` | `tests/test_features.py` |
-| Hierarchical core and calibration | `strathmark/prediction_v2.py` | `tests/test_prediction_v2.py`, `tests/test_validation.py` |
-| Optional residual gate | `strathmark/residual.py` | `tests/test_residual.py` |
-| Compatibility projection/provider | `strathmark/predictor.py` | `tests/test_predictor*.py` |
-| Field orchestration | `strathmark/calculator.py` | `tests/test_calculator*.py` |
-| Joint mark optimizer | `strathmark/mark_optimizer.py` | `tests/test_mark_optimizer.py` |
-| Trusted append-only ledger | `strathmark/ledger.py` | `tests/test_ledger.py` |
-| REST routes and auth | `strathmark/api.py` | `tests/test_api.py` |
-| Trusted shadow receipts and status | `strathmark/shadow.py`, `strathmark/auth.py` | `tests/test_shadow_api.py`, `tests/test_shadow_consumer_contract.py` |
-| Release validation | `scripts/validate_v2.py` | `tests/test_validate_v2.py` |
-| Packaged artifact | `strathmark/models/prediction_v2_core.json` | artifact and wheel tests |
+| Responsibility | Source |
+| --- | --- |
+| Closed contracts and canonicalization | `strathmark/v3/contracts/` |
+| Formula, ML, council, validation | `strathmark/v3/assessors/` |
+| Capability, credibility, pooling, disagreement, optimization | `strathmark/v3/domain/` |
+| Commands, rolling cards, approval, issue, settlement, factory | `strathmark/v3/application/` |
+| Live Formula/ML/LLM execution and durable replay | `strathmark/v3/application/forecast_runtime.py` |
+| Atomic settlement reaction closure | `strathmark/v3/application/settlement_reactions.py` |
+| SQLite authority, providers, artifacts, backup/recovery | `strathmark/v3/infrastructure/` |
+| Service auth and frozen REST surface | `strathmark/v3/api/` |
+| Side-effect-free environment snapshot | `strathmark/v3/composition.py` |
+| V3 local migrations | `strathmark/v3/migrations/` |
+| Rehearsal and release verification | `scripts/replay_v3.py`, `scripts/run_v3_release_evidence.py`, `scripts/verify_v3_release.py` |
+| Historical production engine | `strathmark/prediction_v2.py`, `strathmark/calculator.py` |
 
-## Common changes
+Importing `strathmark.v3` performs no I/O, opens no database, loads no model, starts no
+thread, and makes no network request. Runtime construction is explicit and injected.
 
-### Fix a prediction bug
+## Non-negotiable rules
 
-Reproduce it with a test. If the result looks impossible despite matching source, clear
-stale `__pycache__` directories before deeper diagnosis. Preserve the cutoff and active
-feature allowlist; a fix must not make an inactive legacy field numerically active.
+- Never write a test, replay, training run, or rehearsal against production data.
+- Set unique `STRATHMARK_DB_PATH`, `STRATHMARK_V3_DB_PATH`, and pytest `--basetemp`
+  before collection; set `STRATHMARK_TEST_DB=1`.
+- Preserve V2 receipts and behavior. V3 never rewrites them or hides behind V2 keys.
+- Do not copy displayed marks between fields. Reconstruct and rebase the complete field.
+- Same-round fields share one epoch; results affect only a later round.
+- Both overperformance and underperformance update capability without inferring motive.
+- Issued marks and legal winners are immutable.
+- An unavailable assessor abstains. Never relabel or silently substitute it.
+- Local numeric authority must not depend on Ollama, cloud, or archive availability.
+- Rehearsal keys and ephemeral signers cannot authorize production.
+- A failed cutover preparation resumes V2 or declares traditional/manual authority.
+- No code, document, test result, or model output grants official competition authority.
 
-### Add a factor
+## Isolated verification
 
-Do not add a coefficient directly. A factor needs provenance-backed capture, a versioned
-allowlist/schema change, prior-only folding, leakage tests, frozen temporal comparison,
-calibration review, docs, and a new artifact. Division, heat, venue, lane, run order,
-material identity, quality/moisture, weather, equipment, fatigue, and penalty/DNF are
-specifically deferred.
-
-### Change the optimizer
-
-Preserve determinism, 2,048 common-random samples, bounded integer marks, monotonicity,
-input-order ties, at least one Mark 3, and the "not worse than rounded-gap" guard unless
-a new versioned contract and benchmark explicitly replaces them.
-
-### Change persistence
-
-Local SQLite is the trusted race-day authority. Keep ledger rows append-only, retain
-idempotency and stable-ID checks, and use a checked-in migration for Supabase changes.
-Public stateless routes must not acquire writes.
-
-## Release checks
-
-```bash
-pytest tests -q
-ruff check .
-ruff format --check .
-python train_model.py
-python -m build
+```powershell
+$env:STRATHMARK_TEST_DB = '1'
+$env:STRATHMARK_DB_PATH = "$PWD\.tmp\onboarding-v2.sqlite3"
+$env:STRATHMARK_V3_DB_PATH = "$PWD\.tmp\onboarding-v3.sqlite3"
+python -m pytest tests/v3 -q --basetemp .tmp/onboarding-v3 -p no:cacheprovider
+python scripts/replay_v3.py
+python scripts/run_v3_release_evidence.py --local-model qwen3.5:9b --local-model ministral-3:8b
+$source = (git rev-parse HEAD).Trim()
+python scripts/verify_v3_release.py --evidence benchmarks/v3/v3_executable_evidence.json --emit-rehearsal $source --output-attestation benchmarks/v3/v3_release_attestation.json
+python scripts/verify_v3_release.py
+python scripts/verify_v3_release.py --require-production
 ```
 
-The optional-ML CI job installs CatBoost and tests safe residual artifacts. An installed
-library is not enough to activate the residual model; promotion evidence is required.
+Generate evidence only from a committed, unchanged candidate with the pinned local
+models installed. The ordinary verifier must reject missing, stale, failed, substituted,
+or tampered evidence. After a fresh rehearsal is emitted, the last command must still
+refuse it. A passing production-required check is valid only with a separately created
+production CNG-backed attestation and does not itself switch consumer authority.
 
-Do not run `python train_model.py --open-locked-test` for the existing 2.0.0 benchmark.
-The role has already been opened once, and the checked-in final report intentionally
-prevents a rerun.
+The source-bound, post-format five-run Windows result-to-ready benchmark recorded a
+maximum of 3.414 seconds against the 120-second limit. That component result does not
+replace the final exact-wheel, rehearsal, production-identity, or cutover gates.
 
-## Operations
+For the preserved V2 suite, use another unique database and base directory:
 
-- Deployment and recovery: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
-- API examples: [`docs/wiki/REST-API.md`](docs/wiki/REST-API.md)
-- Frozen shadow boundary: [`docs/SHADOW_CONSUMER_CONTRACT.md`](docs/SHADOW_CONSUMER_CONTRACT.md)
-- Persistence and privacy: [`docs/wiki/Persistence-and-Database.md`](docs/wiki/Persistence-and-Database.md)
-- Historical decisions: [`docs/solutions/`](docs/solutions/) — check each page's status;
-  the old numeric cascade and same-tournament weighting are superseded.
+```powershell
+$env:STRATHMARK_DB_PATH = "$PWD\.tmp\onboarding-v2-suite.sqlite3"
+python -m pytest tests -q --ignore=tests/v3 --basetemp .tmp/onboarding-v2-suite -p no:cacheprovider
+```
+
+## Common work
+
+When changing a contract, update the frozen OpenAPI document and checksum, installed-
+wheel proof, examples, consumer migration, and release evidence together. When changing
+prediction behavior, add RED evidence first and preserve causal cutoffs, immutable source
+forecasts, deterministic replay, and the domain invariants above. When changing storage,
+keep the event log authoritative, projections rebuildable, exact retry idempotent, and
+the optional archive non-blocking.
+
+The dated plans and `docs/solutions/` explain historical decisions. Check their status:
+V2's retired numeric cascade and V2-only limitations are evidence about their versions,
+not unqualified statements about V3.

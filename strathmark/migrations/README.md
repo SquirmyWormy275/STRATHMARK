@@ -1,5 +1,24 @@
 # STRATHMARK Migrations
 
+## V2/V3 boundary
+
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. Its older rehearsal is stale until
+regenerated from the final documentation commit, but V2 remains the trusted production
+authority until an explicit cutover. No production authority has changed.
+
+This directory contains the historical V1/V2 PostgreSQL/Supabase mirror migrations. V3
+does not extend these files and does not use PostgreSQL as its race-day authority. Its
+dedicated local SQLite event-store migrations are ordered, checksummed, and applied by
+`strathmark/v3/migrations/`. The current V3 chain contains 17 forward migrations,
+`0001_event_authority.sql` through `0017_expected_time_override_state.sql`. V3 imports
+V2 through a repeatable read-only snapshot and never makes the two schemas concurrent
+trusted writers.
+
+Applying a file in this directory cannot activate V3. Applying a V3 local migration
+cannot switch a consumer. Existing production PostgreSQL work remains a separately
+authorized operation.
+
 This directory holds checked-in SQL migration files for the STRATHMARK Supabase
 schema. From 2026-05-04 forward, every schema change goes through a file here.
 No more ad-hoc DDL via the dashboard SQL editor without leaving a migration
@@ -43,9 +62,9 @@ Production migrations are NOT applied automatically. The accepted production pro
 today is:
 
 1. The author writes the file and gets it merged.
-2. An operator with Supabase dashboard access pastes the forward block into
-   the SQL editor for the target project (currently `iordtvxryrdhqvdkfgzf`)
-   and runs it.
+2. An operator with separately authorized Supabase access applies the forward block to
+   the explicitly verified target project. Production identifiers do not belong in this
+   repository runbook.
 3. The operator records the application timestamp and any notes in
    `docs/migration-log.md` (created on first use; not present yet).
 

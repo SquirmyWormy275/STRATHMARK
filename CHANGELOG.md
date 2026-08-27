@@ -4,6 +4,61 @@ All notable changes to STRATHMARK will be documented in this file.
 
 ## [Unreleased]
 
+No unreleased changes are recorded after the V3 release-candidate cut.
+
+## [3.0.0rc1] - 2026-08-25
+
+### V3 adaptive ensemble release candidate
+
+- Built V3 as a separate release-candidate namespace, contract, event authority, model
+  factory, and cutover boundary while preserving V2 receipts and runtime behavior.
+- Added the independent formula, hierarchical ML, three-member numeric LLM council,
+  deterministic validation, credibility, pooling, and disagreement components, plus the
+  executable rolling prepare-to-card composition with separately sealed member and
+  council receipts and exact restart replay.
+- Added dual-state capability updates from every valid completion, including both
+  overperformance and underperformance, without inferring motive or altering an issued
+  winner.
+- Added same-round frozen evidence epochs, between-round updates, full-field
+  rehandicapping, Mark-3 rebasing, rolling card preparation, sub-two-second field
+  assembly, exception-first approval, atomic issue, complete-roster atomic settlement,
+  and a restart-safe barrier across all seven mandatory derivation reactions without an
+  implicit judge decision.
+- Added the dedicated SQLite event authority, hash-chained exact-retry commands,
+  rebuildable projections, content-addressed blobs, durable jobs/outbox, signed backup,
+  recovery-device support, and deterministic redacted support bundles.
+- Added authenticated `/v3/*` service routes with closed schemas, pre-body bounds,
+  loopback default, pinned mutual TLS for non-loopback operation, credential rotation and
+  revocation, and a frozen installed eleven-route OpenAPI contract. The dedicated batch-
+  approval route binds multiple exact receipt IDs, digests, and revisions plus explicit
+  exclusions without conflating approval evidence with official issue acknowledgment.
+- Added automated formula/ML/LLM candidate evaluation, signed promotion and rollback,
+  Windows CNG production-key enforcement, and refusal of ephemeral identities in
+  production roles.
+- Added a runnable local factory composition/scheduler and bounded separate-process CNG
+  evaluator entrypoint. Production qualification still requires concrete family
+  executors, authoritative local settlement metrics, provisioned OS identities/ACLs and
+  CNG keys, plus final exact-source CI evidence; the seams do not auto-promote.
+- Added release-proof harnesses for race-day replay, manipulation/equity, provider
+  failure, recovery, backup/restore, installed-wheel, and designated-Windows capacity.
+  Class-specific execution receipts and current-source performance pins remain required;
+  hashes of test source or self-declared rows are not accepted as completed evidence.
+- Tracks all 232 requirements in the V3 plan; implementation remains under final audit.
+  The five-run Windows result-to-ready benchmark executed after formatting and recorded
+  a maximum of 3.414 seconds against the 120-second requirement.
+- Added a development-key **rehearsal** attestation format. The checked-in receipt must be
+  regenerated on the final documentation commit and is not production evidence:
+  V2 remains the trusted production authority, no endpoint has switched, and V2 is not
+  audit-only. Production cutover still requires a CNG-backed attestation, zero-open-
+  tournament signed handoff, and separate release authorization; no production CNG
+  identity is currently provisioned.
+- Added the STRATHMARK-side typed approval-decision prerequisite for STRATHEX. The
+  external STRATHEX durable outbox forwarder and immutable acknowledgment persistence
+  remain integration work and are not part of this candidate.
+- Reconciled README, onboarding, architecture, deployment, consumer migration, wiki,
+  migration guidance, package metadata, and documentation checks around that authority
+  boundary; final exact-artifact reconciliation remains a release gate.
+
 ## [2.0.0] - 2026-08-18
 
 Prediction Engine V2 replaces the numeric Manual/LLM/ML/baseline cascade with one

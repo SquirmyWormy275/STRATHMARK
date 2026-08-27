@@ -7,6 +7,11 @@ superseded_by: docs/PREDICTION_ENGINE_V2.md
 
 # Tournament Weighting and Decay — V2 Status
 
+> V3 supersedes this as future architecture with frozen round epochs, between-round
+> updates, capability state, and accuracy-earned credibility. See
+> [`../../PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md). The rules below remain
+> exact for V2, which retains production authority until explicit cutover.
+
 The pre-2.0 graduated 65/80/90/97% same-tournament blend is retired. Existing history
 does not prove round/heat identity or same-tournament provenance well enough to use it
 as numeric evidence. `tournament_time`, tournament results, heat IDs, and round counts

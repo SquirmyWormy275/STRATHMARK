@@ -1,5 +1,9 @@
 # Uncertainty, Variance, and Simulation
 
+> **V2-specific definitions below.** The V3 release candidate uses immutable component
+> distributions, pooled uncertainty, joint dependence, and consequence disagreement.
+> Its evidence is rehearsal-tier; V2 remains production authority until explicit cutover.
+
 STRATHMARK exposes three related but distinct concepts:
 
 1. `PredictionInterval`: chronological conformal uncertainty around the V2 median.

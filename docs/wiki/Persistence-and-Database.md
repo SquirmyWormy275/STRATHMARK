@@ -1,53 +1,36 @@
 # Persistence and Database
 
-STRATHMARK separates result history from trusted prediction evidence.
+## Authority status
 
-## Local result store
+V3 is a release candidate whose source-bound rehearsal does not change authority. V2
+remains the trusted production authority until explicit cutover. No
+production authority has changed.
 
-`ResultStore` keeps application history in SQLite. It supports offline prediction input
-and the protected `/results` routes. It is not automatically trusted model-evaluation
-evidence.
+V2 uses the local result store, trusted prediction ledger, shadow receipts, and optional
+Supabase mirror documented by the V2 contract.
 
-## Trusted V2 ledger
+V3 uses a separate local SQLite event authority. Events are closed, canonical,
+hash-chained, consecutively versioned, and appended through idempotent expected-version
+commands. Projections are disposable views rebuilt from the log. Large canonical
+evidence, forecasts, and bundles live in content-addressed blob storage and are bound by
+digest.
 
-`PredictionLedger` adds append-only tables to `STRATHMARK_DB_PATH` (default
-`~/.strathmark/results.db`). Trusted `/ledger/calculate` requires a stable competitor ID
-for every row plus a caller/request idempotency key. A complete field is committed in
-one transaction after marks are final.
+Prepared cards, fields, approvals, issue acknowledgments, credentials, jobs, and
+settlements are explicit aggregates. Exact retries recover original bytes. Changed
+retries, stale versions, illegal transitions, gaps, duplicates, and tampering fail
+closed. A typed approval decision atomically binds selected and excluded receipt
+revisions; it remains distinct from issue authority. A batch issue commits all fields or
+none; issued receipts never mutate. Live
+settlement requires the complete issued roster and commits observations and settlement
+as one command. Seven source-bound reactions must then close durably before the
+derivation barrier opens; reaction automation never creates a judge approval decision.
 
-The ledger retains a canonical calculation hash, stable IDs, cutoff, prediction and artifact
-versions, median, interval, source, mark, ignored factors, warnings, numeric allowlisted
-features, and optimizer metadata. It does not retain display names, narrative notes, or
-the raw request body. Manual, broad-prior, legacy-rollback, and degraded predictions are
-not training eligible.
+The optional mirror/archive is best-effort and asynchronous. It is not required for
+calculation, issue, lookup, settlement, recovery, or model scoring. V2 import is a
+repeatable read-only snapshot; V2 and V3 never become concurrent trusted writers.
 
-An identical retry returns original prediction IDs. Changed inputs or deterministic
-prediction outputs under the same key conflict. Settlements verify prediction/competitor/event, deduplicate exact
-retries, and append attributed correction revisions rather than updating rows.
+Tests and rehearsals must set STRATHMARK_TEST_DB=1 plus unique V2 and V3 database and
+base paths. Known production identifiers and default operator paths are rejected.
 
-## Cloud mirror
-
-Migration `20260811_005_prediction_v2.sql` defines the optional V2 mirror,
-`20260813_006_prediction_hash_algorithm.sql` adds explicit `raw-v1`/`active-v2` request
-hash compatibility, and `20260813_007_shadow_mirror_contract.sql` adds the closed
-immutable shadow receipt and numeric-revision mirror. Apply 005, then 006, then 007 only
-after the exact sequence and guarded rollback/refusal behavior pass against disposable
-PostgreSQL and a production change is separately authorized. They force RLS, revoke
-browser roles, reject UPDATE/DELETE, and grant the append RPC only to `service_role`.
-Their presence in the repository is not proof that a live project has them.
-
-SQLite is authoritative. Cloud mirroring is best-effort and cannot block marks. Keep
-the service key server-side. A sanitized local outbox is committed with each trusted
-field or settlement and an identical retry replays failed delivery. Public `/predict`
-and `/calculate` remain stateless.
-
-The durable outbox is append-only and intentionally uncapped: deleting undelivered
-evidence to enforce a hard row limit would violate local authority and nonblocking
-mirror behavior. Work per request is still bounded through input cardinality, keyset
-scan pages, replay batch limits, concurrency slots, and deadlines. Until a reviewed
-archive/compaction and finite-capacity policy exists, monitor pending count and oldest
-age, provision disk or disable mirroring, and treat unavailable delivery as
-`retryable-failed`; `permanent-failed` is not implemented.
-
-MNEMEX and older Supabase ML-state tables are separate integration/history concerns;
-they are not the V2 race-day ledger authority.
+See the canonical [architecture](../ARCHITECTURE.md) and
+[deployment runbook](../DEPLOYMENT.md).

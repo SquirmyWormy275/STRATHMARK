@@ -1,5 +1,10 @@
 # Fairness Assessment
 
+> **Version boundary.** The V3 release candidate has separate equity, manipulation, and
+> consequence evidence; its source-bound rehearsal does not change authority. V2 remains the
+> trusted production authority until explicit cutover. The V2 metrics below remain
+> historical/current-V2 evidence, not the complete V3 fairness contract.
+
 V2 optimizes marks toward equal model-implied win probabilities, then lower expected
 finish spread. This is a transparent model objective—not proof that people will have
 equal real-world outcomes.
@@ -7,6 +12,11 @@ equal real-world outcomes.
 The prediction benchmark measures time accuracy and interval coverage. The separate
 Monte Carlo simulator audits a chosen mark sheet under assumed performance variability.
 Neither substitutes for settled-field outcome evidence.
+
+V3 additionally preserves each independent assessor distribution, accuracy-earned
+weights, capability state, counterfactual sheets, and cohort/equity slices. It detects
+surprising performance and reduces the future value of coasting without inferring motive
+or changing an issued winner. See [Prediction Engine V3](Prediction-Engine-V3.md).
 
 Responsible assessment should report:
 

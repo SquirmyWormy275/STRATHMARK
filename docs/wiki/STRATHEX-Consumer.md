@@ -1,35 +1,32 @@
-# STRATHEX Consumer
+# STRATHEX Consumer Contract
 
-STRATHEX 7.0 uses STRATHMARK 2.0 as the sole authority for numeric field predictions
-and marks.
+## Current authority status
 
-## Connection
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements. STRATHMARK repository implementation and audit are complete for this
+candidate. No installed-adapter rehearsal exists until STRATHEX implements the durable
+adapter; the STRATHMARK development-key rehearsal is source-bound. V2 remains the trusted
+production authority until an explicit cutover. No production authority has changed, no
+STRATHEX endpoint has switched, and V2 is not audit-only.
 
-- Direct Python calculation is the offline race-day default.
-- An explicitly selected REST mode sends one stateless `POST /calculate` request for
-  the entire field.
-- Both modes use the same exact STRATHMARK commit and persisted exclusive cutoff.
-- REST mode fails closed; there is no silent transport fallback.
+Until cutover, STRATHEX continues to use the frozen V2 shadow contract. The V3 adapter is
+a separate dependency pinned to one exact commit, wheel, OpenAPI digest, release
+evidence digest, and service identity. STRATHEX owns human authentication/RBAC, roster,
+schedule, issue permissions, official results, publication, and payouts. STRATHMARK owns
+numeric evidence, field receipts, and settlement evidence.
 
-STRATHEX sends stable competitor IDs and the complete eligible dated history on every
-calculation. It does not call `/predict` competitor by competitor or convert model
-outputs into manual overrides.
+The V3 workflow prepares rolling cards early, assembles each complete field against one
+same-round epoch, surfaces normal green/amber sheets for ordinary batch approval and red
+or degraded sheets for the appropriate deliberate lane, records exact selected and
+excluded receipt approvals, acknowledges issue separately and atomically, settles the
+complete issued roster atomically, closes all seven derivation reactions without
+inventing an approval decision, and advances evidence only at the next round boundary.
+Displayed marks are never copied between fields.
 
-## V2 behavior
+STRATHMARK's typed `POST /v3/approvals/decide` endpoint now exists. STRATHEX's durable
+outbox forwarder and immutable local acknowledgment persistence are not implemented;
+they remain a cutover blocker.
 
-V2 owns the complete field calculation and joint mark optimization. Numeric LLM,
-legacy XGBoost input, three-method expected-error selection, same-tournament weighting,
-and numeric quality adjustment are retired or inactive. Manual overrides remain real
-operator authority.
-
-STRATHEX carries the returned interval, uncertainty, version, cutoff, optimizer,
-warning, degraded, provenance, and ignored-factor metadata to its operator display.
-
-## Persistence
-
-Public Python and REST calculations are stateless. STRATHEX's workbook, STRATHMARK's
-local `ResultStore`, and the protected `PredictionLedger` have distinct jobs; a public
-calculation does not automatically read or write either STRATHMARK store.
-
-See the full [consumer migration contract](../STRATHEX_CONSUMER_MIGRATION.md).
-
+A production-CNG-signed pre-switch handoff still declares V2 current and requires a
+separate release authorization. See the canonical
+[consumer migration](../STRATHEX_CONSUMER_MIGRATION.md).

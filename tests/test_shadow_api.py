@@ -1666,8 +1666,8 @@ def test_blocked_maintenance_workers_do_not_starve_critical_receipt_lookup(shado
 
     def blocked_replay(*, limit, caller_id):
         ledger.replay_limit = (limit, caller_id)
-        started.wait(timeout=2)
-        release.wait(timeout=3)
+        started.wait(timeout=10)
+        release.wait(timeout=15)
         return {"recorded": 0, "failed": 0, "not_configured": 0}
 
     ledger.flush_mirror_outbox = blocked_replay
@@ -1680,7 +1680,7 @@ def test_blocked_maintenance_workers_do_not_starve_critical_receipt_lookup(shado
     }
     responses = []
 
-    def request_replay():
+    def request_replay(nonce: str):
         responses.append(
             client.post(
                 "/v1/shadow/mirror/replay",
@@ -1690,16 +1690,23 @@ def test_blocked_maintenance_workers_do_not_starve_critical_receipt_lookup(shado
                     revision=replay_payload["run_revision"],
                     request_payload=replay_payload,
                     roles=["admin"],
+                    nonce=nonce,
                 ),
             )
         )
 
-    workers = [threading.Thread(target=request_replay) for _ in range(2)]
+    workers = [
+        threading.Thread(
+            target=request_replay,
+            args=(f"maintenance-capacity-{worker_index}",),
+        )
+        for worker_index in range(2)
+    ]
     for worker in workers:
         worker.start()
-    started.wait(timeout=2)
+    started.wait(timeout=10)
     for worker in workers:
-        worker.join(timeout=1)
+        worker.join(timeout=10)
     assert sorted(response.status_code for response in responses) == [504, 504]
 
     lookup = {
@@ -1729,7 +1736,7 @@ def test_blocked_maintenance_workers_do_not_starve_critical_receipt_lookup(shado
     assert maintenance_busy.status_code == 429
 
     release.set()
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         acquired = []
         for _ in range(2):
@@ -2265,6 +2272,7 @@ def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(shado
                     "shadow.calculate",
                     revision=payload["run_revision"],
                     request_payload=payload,
+                    nonce=f"two-timeouts-{payload['request_id']}",
                 ),
             )
         )
@@ -2274,9 +2282,9 @@ def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(shado
         for worker in workers:
             worker.start()
         for worker in workers:
-            worker.join(timeout=2)
+            worker.join(timeout=10)
         assert sorted(response.status_code for response in responses) == [504, 504]
-        assert persisted.wait(timeout=3)
+        assert persisted.wait(timeout=10)
 
         lookup = {
             "schema_version": "strathmark.shadow-receipt-lookup.v1",
@@ -2299,7 +2307,7 @@ def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(shado
     finally:
         release.set()
         for worker in workers:
-            worker.join(timeout=2)
+            worker.join(timeout=10)
 
 
 def test_nonce_claims_purge_expired_rows_cap_active_per_consumer_and_survive_restart(

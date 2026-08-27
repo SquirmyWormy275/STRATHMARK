@@ -1,30 +1,12 @@
-**STRATHMARK 2.0**
+**STRATHMARK**
 
-- [Home](Home)
-- [Prediction Engine V2](Prediction-Engine-V2)
-
-**Getting started**
-
-- [Installation](Installation)
-- [Quick Start](Quick-Start)
-- [REST API](REST-API)
-- [STRATHEX Consumer](STRATHEX-Consumer)
-
-**How it works**
-
-- [Architecture Overview](Architecture-Overview)
-- [Legacy Key Mapping](Prediction-Cascade)
-- [Handicap Mark Math](Handicap-Mark-Math)
-- [Wood and Diameter](Wood-and-Diameter-Scaling)
-- [Prior-Only Recency](Time-Decay-Weighting)
-- [Variance and Monte Carlo](Variance-and-Monte-Carlo)
-- [Fairness Assessment](Fairness-Assessment)
-
-**Operations**
-
-- [Deployment](Deployment)
-- [Persistence and Database](Persistence-and-Database)
-- [LLM Narrative Features](LLM-Integration)
-- [Testing](Testing)
-- [Rulebook Comparison](Rulebook-Comparison)
-- [FAQ](FAQ)
+- [Home](Home.md)
+- [Handicap Foundations](Handicap-Mark-Math.md)
+- [Prediction Engine V3](Prediction-Engine-V3.md)
+- [Architecture](Architecture-Overview.md)
+- [Deployment](Deployment.md)
+- [REST API](REST-API.md)
+- [STRATHEX Consumer](STRATHEX-Consumer.md)
+- [Testing](Testing.md)
+- [Historical V2 Engine](Prediction-Engine-V2.md)
+- [FAQ](FAQ.md)

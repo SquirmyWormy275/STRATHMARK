@@ -1,6 +1,13 @@
 # Installation
 
-Python 3.10 or newer is required.
+> **Authority status.** The commands below install the trusted V2.0.0 release. The V3
+> release candidate is in later source and is under exact-source verification, but no production authority
+> has changed. Installing a V3-capable wheel does not switch a consumer.
+
+Python 3.10 or newer is required for the normal package and trusted V2 engine. V3
+rehearsal and race-day authority require the designated Python 3.13 environment plus
+`requirements/v3-release.lock`; Python 3.10-3.12 are not supported V3 authority
+environments. Never enable SQLite `trusted_schema` to bypass that boundary.
 
 ```bash
 python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"

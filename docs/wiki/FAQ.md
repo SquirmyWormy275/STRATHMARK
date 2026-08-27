@@ -1,61 +1,69 @@
 # FAQ
 
-## Is V2 still an LLM/ML/baseline cascade?
+## Is V3 live?
 
-No. One hierarchical V2 core is authoritative. The old five keys remain for API
-compatibility; numeric `llm` is always `None`, and `ml` exists only for a promoted
-residual correction.
+No. V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements. Repository implementation and audit are complete for this candidate. V2 remains the trusted production
+authority until an explicit cutover. The checked-in development-key rehearsal is
+source-bound and must pass the release verifier. No production authority has changed and no
+consumer endpoint has switched. No production CNG identity is provisioned.
 
-## Which factors affect a number?
+## Why build formula, ML, and LLM forecasts?
 
-Stable identity/prior history, event, strictly prior result dates, diameter, species
-physical properties, and gender including missingness. Division, heat, venue, lane,
-run order, material identity, quality/moisture, weather, equipment, fatigue,
-penalty/DNF, same-tournament weighting, and field strength do not.
+They are independent views of the same sealed evidence. V3 compares and preserves all
+three, learns which is accurate in context, and retains disagreement instead of hiding
+it behind one selected number.
 
-## Why did changing quality or division do nothing?
+## Do marks carry from a heat into a final?
 
-That is intentional. Those compatible fields lack current provenance-backed evidence.
-They remain numeric no-ops until a future model validates them.
+No. A displayed mark is relative to its field. V3 reconstructs every race from the
+underlying evidence and rebases the slowest expected competitor in that field to Mark 3.
+All heats in one round share one epoch; results become eligible at the next boundary.
 
-## What happens with no history?
+## Does V3 change the winner after the race?
 
-A compatible core returns a wide conditional population prior. Without a compatible
-core artifact, STRATHMARK returns a labeled broad event prior and degraded warning.
+Never. Once a sheet is issued, its marks are immutable and the first legal completion
+wins. V3 updates future capability evidence, not the placing.
 
-## Is the interval the same as std_dev?
+## How does V3 address foxing or coasting?
 
-No. The interval is calibrated uncertainty about the predicted time. `std_dev` is
-performance variability used in race simulation.
+Every valid completion counts, including overperformance and underperformance and work
+by eliminated competitors. A surprising result changes uncertainty, review state, and
+future capability through an auditable bounded mechanism. V3 does not claim to infer
+motive or declare somebody dishonest.
 
-## Why is the residual inactive?
+## Who approves a sheet?
 
-No optional candidate was frozen before the 2.0.0 locked test. CatBoost is available as
-tooling but cannot activate without passing the prospective promotion gate.
+The tournament manager owns human login, roles, official issue, results, and payouts.
+STRATHMARK authenticates one upstream service and returns numeric evidence plus a
+green/amber/red review projection. The typed batch-approval endpoint records selected
+and excluded receipt bindings; the separate issue endpoint freezes official issue.
+Actor headers are audit metadata, not permissions.
 
-## Can I rerun the locked benchmark?
+## What if an assessor or network is unavailable?
 
-Use `python train_model.py` to verify it. Do not delete the final report or rerun
-`--open-locked-test`; a future model needs a new prospective locked split.
+The assessor abstains. Prepared valid evidence may still support a sheet, or the judge
+must deliberately select a permitted non-predictive action. Local issue, lookup, and
+settlement never require cloud or archive access.
 
-## Why are my marks not exactly 3 + rounded gap?
+## What remains true about V2?
 
-V2 normally optimizes the full field from joint posterior samples. Rounded gap is the
-safe fallback and tie anchor. Inspect `optimizer` and `optimizer_metadata`.
+V2 still uses its prior-only core, exclusive date cutoff, optional residual, five
+compatibility keys, and narrative-only LLM integration. Those are V2 facts, preserved in
+[Prediction Engine V2](Prediction-Engine-V2.md), not restrictions on V3.
 
-## Does calculation require the cloud?
+## What does the rehearsal prove?
 
-No. The model and local SQLite work offline. Cloud mirroring is optional and
-best-effort through a replayable local outbox, and delivery does not delay the
-calculation response.
+A current rehearsal proves that its exact committed source, built and installed wheel,
+machine, dependencies, commands, and twelve executable proof classes passed. It uses a
+development ephemeral signing key and cannot authorize production. It becomes stale
+when the source changes, and the production verifier deliberately rejects it.
 
-## How do I record trusted predictions?
+The focused five-run result-to-ready benchmark recorded a post-format 3.414-second
+maximum. It is one source-bound component of the full rehearsal.
 
-Use authenticated `/ledger/calculate` with a durable request ID and stable competitor
-IDs. Public `/calculate` and `/predict` are deliberately stateless.
+## Is STRATHEX ready to consume V3 approvals?
 
-## How do I roll back?
-
-Temporarily set `STRATHMARK_PREDICTION_ENGINE=legacy` and restart. It selects a
-deterministic baseline-only path, still excludes non-prior rows, and never uses a
-numeric LLM.
+Not yet. STRATHMARK's typed multi-receipt endpoint exists, but STRATHEX still needs a
+durable outbox that commits the upstream decision with its delivery record, forwards the
+exact request idempotently, and stores the immutable acknowledgment.

@@ -1,30 +1,28 @@
-# Rulebook and Model Boundaries
+# Rulebook and Product Boundaries
 
-STRATHMARK enforces the repository's AAA-compatible calculation invariants: a 3-second
-minimum mark, a system ceiling of 183 seconds (with lower event ceilings allowed),
-integer marks, and a deterministic bounded fallback.
+Read [Woodchopping Handicap Foundations](Handicap-Mark-Math.md) first. It is the domain
+source of truth. Rulebooks govern their competitions; versioned STRATHMARK documents
+govern product behavior.
 
-Rulebooks define competition authority and procedures. Prediction Engine V2 is a
-statistical aid for the handicapper; it does not replace show officials or add rules for
-draws, divisions, eligibility, penalties, equipment, or result validity.
+V3 is a release candidate whose source-bound rehearsal does not change authority. V2
+remains the trusted production authority until explicit cutover. No
+production authority has changed.
 
-## What is model policy, not a rulebook rule
+Universal domain meaning includes staggered starts, smaller marks starting earlier,
+completion on mark plus raw time, field-wide rebasing, context-aware ability comparison,
+and the separation of prediction from judging and official results.
 
-- strict exclusive-date evidence and partial pooling;
-- chronological conformal intervals;
-- the 2,048-sample equal-win-probability mark objective;
-- manual override provenance;
-- the closed active-feature allowlist;
-- the decision to make unverified context numeric no-ops.
+Association-specific penalty tables, conversion scales, draw procedures, panel marks,
+book administration, eligibility, protests, and committee practices are not universal
+STRATHMARK requirements. A consuming competition may supply them through a versioned
+adapter, but the model must not silently invent them.
 
-Division, round/heat, venue, lane/stand, run order, exact material identity,
-quality/moisture, weather, equipment, fatigue, and penalty/DNF status are not active V2
-factors. A tournament application may still use them for administration; STRATHMARK
-does not claim the current model has learned their effects.
+V2 product policy includes its exclusive-date evidence, prior-only model, 3/183 bounds,
+and deterministic optimizer. V3 product policy includes its sealed tournament epochs,
+independent assessor ensemble, capability and credibility mechanisms, consequence review,
+fairness frontier, event authority, and cutover protocol. Neither policy is itself a
+sporting rule.
 
-The handicapper can always supply a manual time. It is clearly labeled, has no model
-interval, and does not become training evidence. The model's default mark sheet is
-model-implied equalization, not a guarantee of equal actual finishes.
-
-Consult the governing association's current official rulebook for event operation. This
-page intentionally avoids reproducing potentially changing rule text.
+Judges determine legal completion and placings. The tournament manager owns official
+issue, eligibility, protests, publication, and payouts. STRATHMARK supplies auditable
+numeric evidence and never acquires competition authority by producing a mark.

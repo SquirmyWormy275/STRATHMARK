@@ -1,0 +1,42 @@
+{
+  "schema_version": "strathmark-v3-rolling-restart-capacity-benchmark-v1",
+  "recorded_at": "2026-08-24T21:29:59.287Z",
+  "platform": "designated-windows-native-python-3.13",
+  "source_commit": "7978589",
+  "controlled_profile": true,
+  "operational_gate": "certified_green",
+  "capacity": {
+    "aggregate_heads": 1024,
+    "active_jobs": 384,
+    "hot_transitions": 200
+  },
+  "latency": {
+    "writer_wall_p99_ms": 12.463,
+    "caller_wall_p99_ms": 46.919,
+    "writer_service_p99_ms": 15.625,
+    "service_active_p99_ms": 15.625,
+    "critical_restart_seconds": 1.026,
+    "job_projection_rebuild_seconds": 1.085
+  },
+  "storage": {
+    "latest_checkpoint_bytes": 2165,
+    "database_growth_per_transition_bytes": 8683,
+    "rss_growth_bytes": 1388544
+  },
+  "limits": {
+    "writer_wall_p99_ms": 100,
+    "caller_wall_p99_ms": 100,
+    "critical_restart_seconds": 5,
+    "job_projection_rebuild_seconds": 30,
+    "rss_growth_bytes": 268435456
+  },
+  "authority_pins": {
+    "migration_0013_sha256": "3ff5f1ba0465752d0e85930394b1763c9fa48dc5c71179e1813b20116bed01f5",
+    "schema_digest": "0ae48cb5307aa4fc21202912f78c27e6bf4572b1b841cd141306a79f7361e53f"
+  },
+  "verification": {
+    "test": "tests/v3/integration/test_rolling_restart_capacity.py::test_declared_capacity_checkpoint_writer_p99_rss_and_growth",
+    "environment": "STRATHMARK_V3_CONTROLLED_PERF_GATE=1",
+    "result": "1 passed in 37.31s"
+  }
+}

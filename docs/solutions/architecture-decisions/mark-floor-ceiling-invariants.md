@@ -10,27 +10,45 @@ tags:
 confidence: high
 created: 2026-04-15
 source: "internal knowledge"
-last_updated: 2026-04-21
+last_updated: 2026-08-22
 ---
 
 # Mark Floor and Ceiling Invariants
 
 ## Context
-STRATHMARK computes handicap marks for woodchopping competitions. The mark system has domain-imposed bounds that must never be violated: marks are seconds-of-head-start assigned by a human panel of experts, and the bounds are fixed by competition rules, not by algorithmic choice.
+STRATHMARK computes handicap marks for woodchopping competitions. The current V2 engine has
+load-bearing mark bounds, but their authority differs. The 3-second floor matches the
+reviewed AAA/QAA handicap context. The 183-second ceiling is a STRATHMARK safety policy
+derived from the 180-second event-duration boundary plus the 3-second displayed base;
+it is not stated as a universal rulebook maximum. Read
+[`../../wiki/Handicap-Mark-Math.md`](../../wiki/Handicap-Mark-Math.md) for the domain
+meaning of a mark and common-offset rebasing.
 
 ## Pattern
-- **Mark floor: 3 seconds** — the slowest predicted competitor gets mark 3; no competitor ever gets a mark below 3. Do not lower this floor under any circumstance.
-- **Mark ceiling: 183 seconds system-wide** — the event time limit is 180s plus the 3s minimum mark. No valid mark can exceed 183.
-- **Gap logic**: `gap = predicted_time(competitor) - predicted_time(front_marker); mark = 3 + round(gap); mark = min(mark, 183)`. Rounding is standard half-to-even (banker's rounding).
-- **Variance**: absolute ±3 seconds only. Proportional variance is FORBIDDEN.
+- **Mark floor: 3 seconds** — the slowest predicted competitor gets Mark 3; no
+  competitor receives a mark below 3 in STRATHMARK.
+- **Mark ceiling: 183 seconds system-wide** — STRATHMARK's event time limit is 180
+  seconds plus the 3-second displayed base. No valid engine mark exceeds 183.
+- **Gap logic**: `gap = predicted_time(frontmarker) - predicted_time(competitor); mark = 3 + round(gap); mark = min(mark, 183)`. The frontmarker is the slowest predicted competitor, so a faster competitor receives a larger mark and waits longer. Rounding is standard half-to-even (banker's rounding).
+- **V2 variance**: the legacy/current V2 fallback uses an absolute ±3-second rule;
+  proportional fallback variance is forbidden within that contract. This is not a
+  universal statistical law and does not constrain a separately validated future
+  distributional engine.
 
 ## Rationale
-The floor exists because no competitor can reasonably react and start in under ~3 seconds; any mark below 3 is physically meaningless. The ceiling exists because a mark > 183 would mean the competitor starts after the event has already timed out. Proportional variance is forbidden because woodchopping variance is dominated by strike-by-strike noise that does NOT scale with total time — a 20s chop and a 60s chop have similar absolute variance.
+The 3-second floor is STRATHMARK's reviewed displayed-base policy and leaves a practical
+starter-count buffer; it is not a claim that every association must use 3 or that a
+smaller number is physically impossible. The ceiling keeps the configured 180-second
+raw event-duration boundary within a sheet rebased to the 3-second base. Proportional
+fallback variance was prohibited in the V2 design because its available evidence did not
+justify assuming uncertainty scaled mechanically with predicted time. A 20-second chop
+and a 60-second chop can have similar absolute strike-by-strike variation; any successor
+must learn and validate its uncertainty rather than inheriting an unsupported percentage.
 
 ## Examples
 ```python
 # Design rules
-gap = predicted_time(competitor) - predicted_time(front_marker)
+gap = predicted_time(frontmarker) - predicted_time(competitor)
 mark = 3 + round(gap)  # round half-to-even
 mark = min(mark, 183)  # system-wide ceiling
 ```
@@ -39,4 +57,7 @@ Integration test `test_all_marks_at_most_183` was changed from 180 to 183 in com
 
 Prior behavior (pre-v0.3.0): mark computation used `math.ceil(gap)`, which systematically inflated every non-integer-gap mark by ~0.5s on average. The switch to `round()` (half-to-even) landed in v0.3.0 Phase 4 alongside the Monte Carlo tuning. See [`../best-practices/llm-cascade-and-monte-carlo-tuning-2026-04-21.md`](../best-practices/llm-cascade-and-monte-carlo-tuning-2026-04-21.md) for the v0.3.0 hardening narrative.
 
-Any code that introduces proportional variance (e.g., `std = predicted * 0.12`) in a Monte Carlo or mark calculation violates the design rule. Variance scaling exists for the DEFAULT estimate only (when no real history is available) — actual variance from history MUST use absolute std-dev.
+Any change that introduces proportional variance (for example,
+`std = predicted * 0.12`) into the V2 Monte Carlo or mark calculation violates the V2
+contract. A successor engine may use heteroscedastic distributions only through its own
+versioned, causally validated, calibrated uncertainty contract.

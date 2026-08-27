@@ -1,51 +1,63 @@
-# TODOs
+# TODOs and Operational Follow-up
 
-Prediction Engine V2 superseded the pre-2.0 numeric cascade and the proposed
-ensemble backlog. The historical design discussion remains available under
-`docs/solutions/architecture-decisions/ensemble-predictor-design-decisions.md`,
-but TODO-001 through TODO-011 are closed and must not be treated as active work.
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements; implementation is under final audit. The older checked-in rehearsal is
+stale and must be regenerated on the final documentation commit. V2 remains the trusted
+production authority until an explicit cutover. No ordinary V3 implementation item is
+hidden here as if it were production evidence.
 
-## Active follow-up: tournament-management evidence
+## Separately authorized production work
 
-Division, round/heat, venue, lane/stand, run order, exact material identity, wood
-quality/moisture, weather, equipment, rest/fatigue, and penalty/DNF state remain
-numeric no-ops. Future tournament-management software may activate them only after
-it captures provenance-backed values over multiple seasons and a new model version
-passes prospectively frozen temporal validation.
+These are installation, integration, and authority decisions—not missing shortcuts that
+the code silently takes:
 
-## Active follow-up: operational evidence
+- Provision installation-owned non-exportable Windows CNG identities for candidate,
+  audit, release, backup, support, and handoff roles; record only public identities and
+  key names outside the repository. Create separate builder/evaluator/signer OS
+  identities and prove their filesystem, process, and network ACL boundaries.
+- Install the concrete local formula/ML/LLM family executors and the local evaluator that
+  derives promotion metrics from authenticated settled evidence. Exercise them through
+  the existing factory composition/scheduler and bounded CNG evaluator entrypoint; test
+  executors and caller-supplied metric maps are not production qualification.
+- Run the complete production-tier evidence set on the designated installed Windows
+  host and create the exact CNG-signed release attestation. Pin the public release
+  identity independently and pass it to the verifier with
+  `--trusted-production-identity`; do not accept identity metadata from the attestation
+  itself. Do not promote the checked-in development-key rehearsal.
+- Run the final exact-source CI matrix against those installed components and retain its
+  receipts. A local pass or source digest alone is not CI evidence.
+- Implement STRATHEX's durable outbox forwarding and immutable acknowledgment
+  persistence against STRATHMARK's existing typed multi-receipt
+  `POST /v3/approvals/decide` endpoint. Then pin and rehearse the complete
+  tournament-manager V3 adapter against the frozen OpenAPI digest while V2 remains
+  authoritative. Do not collapse approval evidence into issue acknowledgment.
+- At zero open tournaments, prepare the signed final-V2/V3 handoff, obtain separate
+  release authorization, and switch the consumer exactly once. Never enable concurrent
+  V2/V3 trusted writers.
+- After cutover, operate the signed backup/recovery and model-factory lifecycle; collect
+  prospective settled evidence and reassess accuracy, calibration, equity, capacity, and
+  provider choices through new versioned manifests.
 
-- Apply `strathmark/migrations/20260811_005_prediction_v2.sql` followed by
-  `strathmark/migrations/20260813_006_prediction_hash_algorithm.sql`, then
-  `strathmark/migrations/20260813_007_shadow_mirror_contract.sql` to production only
-  through a separately authorized deployment. First rehearse the exact sequence and
-  guarded rollback/refusal behavior against disposable PostgreSQL. Local and CI
-  validation never apply them to a live database.
-- Design and approve a durable mirror-outbox lifecycle before claiming finite storage:
-  archive/compaction rules, a capacity policy that cannot discard undelivered evidence,
-  and explicit terminal/permanent-failure classification plus operator recovery. The
-  current append-only queue has bounded scans, replay batches, and request concurrency,
-  but intentionally has no destructive hard cap and reports unavailable delivery as
-  retryable failure.
-- Accumulate trusted, settled V2 predictions before considering a residual learner,
-  new drift thresholds, or changes to the mark objective. Manual, degraded,
-  broad-prior, and provenance-incomplete rows are not training evidence.
-- A future accuracy claim requires a new dated manifest, pre-lock record, untouched
-  future test role, final report, and versioned artifact. The published locked role
-  is never reopened for tuning.
+Existing V2 PostgreSQL/Supabase migrations remain separate optional mirror work. Apply
+them only through their own authorized runbook if the V2 shadow deployment still needs
+them. They do not initialize or qualify V3.
 
-## Closed pre-2.0 backlog
+## Preserved research boundary
 
-- Cascade MAE measurement and inverse-MAE/logistic ensemble experiments: replaced by
-  the frozen prior-only V2 comparison and strict residual-promotion gate.
-- Name/date-based prediction ledger key: replaced by stable competitor, request, and
-  prediction IDs in the append-only V2 ledger.
-- `select_best_prediction()` reconciliation and all-method execution: numeric LLM and
-  legacy ensemble selection are retired; V2 uses manual override, promoted residual,
-  core, then labeled broad fallback.
-- Same-tournament weighting audit: closed. The retired 65/80/90/97 percent blend is
-  inactive because current data cannot prove round or tournament provenance.
-- Result-hook settlement: replaced by explicit settlement using `prediction_id` and
-  immutable correction revisions.
-- Ensemble activation/shadow sample/effort tasks: superseded by prospective V2
-  validation, the trusted ledger, and the no-hot-path-training boundary.
+New event/material properties, provider candidates, formula coefficients, ML features,
+prompts, priors, thresholds, and optimizer objectives enter only through the versioned
+factory, causal replay, signed promotion, and contract process. Do not edit a production
+bundle in place or reopen a locked benchmark for tuning.
+
+## Closed historical backlog
+
+- The pre-2.0 first-valid cascade, name/date ledger, fixed 65/80/90/97 same-tournament
+  blend, and hidden ML/LLM selection are retired.
+- V2 replaced that architecture with one prior-only core and a strict residual gate.
+- V3 is a separate blind formula/ML/LLM ensemble with immutable component forecasts,
+  accuracy-earned weights, tournament epochs, dual-state capability, and event authority.
+- V3 does not reactivate the old cascade or rewrite V2 receipts.
+
+Historical rationale remains under `docs/solutions/`; current V3 behavior and gates are
+in [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) and
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).

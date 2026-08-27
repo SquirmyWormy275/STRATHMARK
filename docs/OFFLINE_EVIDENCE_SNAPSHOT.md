@@ -1,5 +1,9 @@
 # Offline Evidence Snapshot Runbook
 
+> **V2 runbook.** The V3 release candidate has a separate event authority and evidence epoch;
+> its source-bound rehearsal does not change authority. V2 remains production authority until
+> explicit cutover. This snapshot workflow remains exact for the V2 shadow consumer.
+
 Use this runbook before a trusted shadow event. It provisions the dated prior
 history that STRATHMARK will use while offline. A model artifact is not a history
 snapshot: both must be present locally before race-day operation.

@@ -1,170 +1,280 @@
-# Deployment Runbook
+# Deployment, Recovery, and V2-to-V3 Cutover
 
-Use this runbook for STRATHMARK 2.0.0 race-day Python or REST deployments. The default
-prediction path is offline V2. Database, cloud, CatBoost, and Ollama availability are
-not prerequisites for numeric marks.
+## Authority status
 
-## 1. Prepare
+V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+requirements. Repository implementation and audit are complete for this candidate. The
+checked-in **rehearsal** receipt is source-bound and valid only for the source commit, wheel, dependencies,
+and digests it names and must pass the release verifier. V2 remains the trusted
+production authority until an explicit cutover. No production authority has changed, no
+consumer endpoint has switched, and V2 remains the recovery authority.
+The external STRATHEX durable outbox/adapter is not implemented.
 
-Install the immutable release tag and only the extras the host actually needs:
+This runbook distinguishes four states that must never be collapsed:
 
-```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"  # REST host only
+1. code and tests exist;
+2. development-key rehearsal passes;
+3. production CNG-backed cutover preparation is ready;
+4. an explicitly authorized consumer switch has occurred.
+
+The checked-in development-key rehearsal satisfies state 2 only when the ordinary
+verifier passes for its exact source and artifacts. It cannot reach states 3 or 4.
+No production CNG identity is currently provisioned.
+
+Use Python 3.13 and install `requirements/v3-release.lock` for every V3 rehearsal,
+deployment, migration, recovery drill, and release-verification run. Python 3.10-3.12
+remain supported for the normal package and V2, not for V3 authority. Do not enable
+SQLite `trusted_schema` to bypass older bundled SQLite rejection of V3's JSON expression
+indexes; that changes the security contract instead of satisfying it.
+
+## Mandatory safety boundaries
+
+- Read [`wiki/Handicap-Mark-Math.md`](wiki/Handicap-Mark-Math.md) before operating marks.
+- Never run tests, replay, migration rehearsal, factory evaluation, or recovery drills on
+  a production or operator database.
+- Keep V2 and V3 database paths separate. Never configure concurrent trusted writers.
+- Preserve issued receipts and official results. Recovery may rebuild projections but
+  cannot rewrite authority history.
+- Do not require cloud, Ollama, or an archive for issue, receipt lookup, or settlement.
+- Bootstrap and last-key recovery are offline operations and require the listener to be
+  stopped. Ordinary authenticated key rotation is online: install the next credential,
+  verify overlap, move clients, then revoke the old credential.
+- Do not bind V3 outside loopback without pinned mutual TLS and expected-host validation.
+- Never copy a development private key or ephemeral signer into a production role.
+- No verifier, test, or signed pre-switch handoff performs the final endpoint switch.
+
+## Isolated rehearsal
+
+Confirm `python --version` reports Python 3.13 before running these commands.
+
+```powershell
+$env:STRATHMARK_TEST_DB = '1'
+$env:STRATHMARK_DB_PATH = "$PWD\.tmp\deployment-v2.sqlite3"
+$env:STRATHMARK_V3_DB_PATH = "$PWD\.tmp\deployment-v3.sqlite3"
+$env:STRATHMARK_V3_TEMP_PATH = "$PWD\.tmp\deployment-runtime"
+$env:STRATHMARK_V3_BLOB_ROOT = "$PWD\.tmp\deployment-blobs"
+$env:STRATHMARK_V3_BUNDLE_ROOT = "$PWD\.tmp\deployment-bundles"
+$env:STRATHMARK_V3_ARCHIVE_ROOT = "$PWD\.tmp\deployment-archive"
+$env:STRATHMARK_V3_BACKUP_ROOT = "$PWD\.tmp\deployment-backup"
+$env:STRATHMARK_V3_RECOVERY_ROOT = "$PWD\.tmp\deployment-recovery"
+$env:STRATHMARK_V3_INTEGRITY_KEY_ROOT = "$PWD\.tmp\deployment-keys"
+
+python -m pytest tests/v3 -q --basetemp .tmp/deployment-pytest -p no:cacheprovider
+python scripts/replay_v3.py
+python scripts/run_v3_release_evidence.py --local-model qwen3.5:9b --local-model ministral-3:8b
+$source = (git rev-parse HEAD).Trim()
+python scripts/verify_v3_release.py --evidence benchmarks/v3/v3_executable_evidence.json --emit-rehearsal $source --output-attestation benchmarks/v3/v3_release_attestation.json
+python scripts/verify_v3_release.py
 ```
 
-The `v2.0.0` Git tag and GitHub release are the supported distribution. There is no
-PyPI distribution for this version. High-assurance consumers may pin the exact commit
-behind the release tag.
+`resolve_runtime_config()` validates the snapshot without creating directories, opening
+storage, loading models, or starting workers. Test mode rejects known production
+identifiers and default operator paths.
 
-The validated core artifact is packaged at
-`strathmark/models/prediction_v2_core.json`. Do not download or train a model during an
-event.
+The release verifier must execute or validate a class-specific result receipt for the
+exact dependency lock, installed wheel, frozen consumer contract, causal replay,
+equity/manipulation slices, provider failures, race-day recovery, Windows capacity and
+stress, backup/restore, and bundle/model integrity. A digest of test source, a
+preconstructed record, or a self-declared `passed` row is not execution evidence. Every
+result must report `authority_changed: false`; the verifier must fail while any checked-in
+receipt is stale.
 
-Optional environment variables:
+The separate post-format result-to-ready benchmark completed five trials on the
+designated Windows machine. Its maximum was 3.414 seconds against the 120-second limit,
+with exact source bindings and component latency retained in
+`benchmarks/v3/result_to_ready_manifest.json`. This focused measurement is only one
+part of the complete exact-wheel rehearsal.
+
+Confirm the production gate fails closed:
+
+```powershell
+python scripts/verify_v3_release.py --require-production
+```
+
+Before fresh evidence exists, the ordinary verifier must fail closed for missing or
+stale evidence. After fresh rehearsal evidence is emitted, the expected production-gate
+result is exit code 2 with `production_attestation_required` and
+`authority_changed: false`.
+
+## Runtime storage
+
+V3 uses a dedicated local SQLite event authority plus content-addressed blob and bundle
+roots. The default non-test root is `%USERPROFILE%\.strathmark\v3`, but an installation
+should set explicit absolute paths on durable local storage:
 
 | Variable | Purpose |
 | --- | --- |
-| `STRATHMARK_PREDICTION_CORE_ARTIFACT` | operator-approved safe JSON core override |
-| `STRATHMARK_PREDICTION_RESIDUAL_ARTIFACT` | optional promoted residual directory |
-| `STRATHMARK_PREDICTION_ENGINE=legacy` | temporary deterministic baseline-only rollback |
-| `STRATHMARK_DB_PATH` | local result store and ledger SQLite path |
-| `STRATHMARK_API_TOKEN` | enables protected result and trusted-ledger routes |
-| `STRATHMARK_LEDGER_CALLER` | trusted request caller namespace; default `api` |
-| `STRATHMARK_LEDGER_ACTOR` | settlement actor label; default `api` |
-| `STRATHMARK_SUPABASE_URL`, `STRATHMARK_SUPABASE_KEY` | optional best-effort cloud mirror |
+| `STRATHMARK_V3_DB_PATH` | authoritative local event database |
+| `STRATHMARK_V3_TEMP_PATH` | non-authoritative runtime scratch |
+| `STRATHMARK_V3_BLOB_ROOT` | content-addressed large values |
+| `STRATHMARK_V3_BUNDLE_ROOT` | installed immutable bundles |
+| `STRATHMARK_V3_ARCHIVE_ROOT` | optional asynchronous archive material |
+| `STRATHMARK_V3_BACKUP_ROOT` | verified backup sets |
+| `STRATHMARK_V3_RECOVERY_ROOT` | recovery-device exchange |
+| `STRATHMARK_V3_INTEGRITY_KEY_ROOT` | public identities and CNG key references |
+| `STRATHMARK_V3_CANONICAL_MAX_BYTES` | canonical object byte bound |
+| `STRATHMARK_V3_CANONICAL_MAX_DEPTH` | canonical object depth bound |
 
-Ollama/Gemini variables affect narrative features only. They cannot change a V2 median
-or mark.
+Database, temp, and artifact paths must be distinct. Backups include a consistent event
+database, blob inventory, projection/version metadata, and signed manifest. Restore
+verification checks digests and event chains before any authority declaration.
 
-## 2. Verify before the event
+## Service deployment
 
-From the release checkout:
+The V3 FastAPI app is created with injected application and credential ports. There is
+no safe zero-configuration production global app. Deployment composition must:
 
-```bash
-python train_model.py
-pytest tests/test_deployment_fallbacks.py tests/test_api.py -q
-python scripts/validate_deployment.py
-```
+1. resolve one immutable runtime configuration;
+2. open and migrate the dedicated V3 event store;
+3. verify event/global chains and rebuild projections if required;
+4. verify bundle, blob, optimizer, and model identities;
+5. open installation-owned CNG keys by name, never by exported private bytes;
+6. construct the service credential registry;
+7. inject the V3 application gateway;
+8. bind loopback at `127.0.0.1:8787`, or provide the complete non-loopback mTLS policy;
+9. check dependency-specific readiness before accepting trusted work.
 
-`python train_model.py` is verify-only: it checks the published report, source checksum,
-manifest, and packaged artifact without reopening the locked test.
+`GET /v3/health` is public process health, not proof that issue or settlement is safe.
+Use authenticated `GET /v3/status` plus the operation-specific readiness snapshot.
 
-Do not run `python train_model.py --open-locked-test`. The 2.0.0 locked role has already
-been opened once. Do not remove its final report to rerun it.
+### Factory and evaluator host
 
-For the REST service:
-
-```bash
-uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
-```
-
-Check `GET /health` (or `GET /health?prediction_as_of=YYYY-MM-DD` for a backdated field).
-Before accepting calculations, confirm:
-
-- `prediction_engine.core.available` is true;
-- `prediction_engine.core.compatible_with_cutoff` is true for the intended cutoff;
-- calibration is available;
-- expected core/calibration versions are shown;
-- `source` is the intended environment, local, or package source;
-- `degraded` is false and warnings are understood.
-
-Residual `active=false` is expected for the 2.0.0 packaged release. Ollama unavailable
-is acceptable for numeric calculation.
-
-## 3. Make requests safely
-
-Always send an explicit `prediction_as_of` date for reproducible operations. V2 treats
-it as an exclusive UTC cutoff. Same-day and later results cannot influence that request.
-
-Use `/calculate` when marks should be stateless. Use `/ledger/calculate` only when the
-caller can supply a stable `competitor_id` for every competitor and a durable unique
-`request_id`. The protected route also requires `Authorization: Bearer
-<STRATHMARK_API_TOKEN>`.
-
-Legacy fields such as division, tournament results, heat ID, field strength, and wood
-quality may still be accepted, but they are numeric no-ops in V2. Do not promise that
-they affect marks.
-
-One response item should expose interval and engine/model/calibration versions. Treat
-`interval` as forecast uncertainty and `std_dev` as simulation variability. Inspect
-`warnings`, `degraded`, `optimizer`, and `optimizer_metadata` before printing a start
-sheet.
-
-## 4. Trusted-ledger behavior
-
-The local SQLite file from `STRATHMARK_DB_PATH` (default
-`~/.strathmark/results.db`) is the race-day authority. A complete field is recorded in
-one transaction after marks are final. Identical retries return original prediction
-IDs; a request-key payload conflict returns HTTP 409.
-
-Cloud mirroring is best-effort and off the calculation response path.
-`ledger_status=recorded_cloud_pending` means local trust evidence and a replayable mirror
-outbox entry exist. The ledger's single bounded background worker reclaims overflowed
-and restart-surviving rows; `flush_mirror_outbox()` remains an explicit bounded replay.
-Shadow receipts and numeric outcome revisions use a versioned delivery envelope. The
-cloud copy contains the immutable receipt core, identity namespace, observation
-fingerprint, eligible numeric settle/void rows, and delivery metadata only. Operational
-DNF/DQ/penalty/context history, names, narrative notes, and secrets remain outside the
-STRATHMARK mirror. A mirror outage never weakens a committed local receipt.
-`ledger_recorded=false`
-means marks are still valid but no trusted local record was made; preserve the request
-and investigate disk/path/permission state before settlement.
-
-Settlements must reference the returned `prediction_id`, matching competitor ID and
-event. Corrections require a reason and append a new revision. Never edit ledger rows.
-
-## 5. Degraded and fallback states
-
-| Symptom | Meaning | Action |
-| --- | --- | --- |
-| `core_artifact_missing` | no environment/local/package core found | verify wheel contents and override path; result uses broad event prior |
-| `core_artifact_invalid` | JSON/schema/checksum/size check failed | remove the bad override and restart; packaged core should load |
-| `artifact_newer_than_prediction_cutoff` | backdated request cannot use this core | use a compatible historical artifact or accept labeled broad prior |
-| `residual_*` warning | optional residual absent/incompatible | continue with core; do not activate without promotion evidence |
-| `calibration_unavailable` | core has no usable calibrator | treat interval as degraded; restore validated artifact |
-| `core_prediction_failed` | request could not be evaluated by core | inspect request and artifact; broad event prior remains available |
-| optimizer `rounded_gap_fallback` | joint search unavailable or rejected | marks remain bounded and deterministic; record fallback reason |
-| `ledger_status=write_failed` | trusted local write failed | marks remain usable; retain request externally and repair storage |
-
-## 6. Rollback
-
-If a verified V2 regression affects operations, set the explicit selector and restart
-the process:
+The local factory composition and scheduler are runnable, but deployment must inject one
+concrete local-configured executor for each formula/ML/LLM family and a local evaluator
+that derives settlement metrics from authenticated settled evidence. Test doubles do not
+qualify the installation. Run the frozen evaluator through the bounded file exchange and
+an existing non-exportable CNG key:
 
 ```powershell
-$env:STRATHMARK_PREDICTION_ENGINE = "legacy"
+strathmark-v3-factory-evaluator REQUEST.json RESPONSE.json `
+  --registry C:\ProgramData\STRATHMARK\v3\factory\audit-registry `
+  --cng-key-name strathmark-v3-evaluator
 ```
 
-This uses the deterministic legacy baseline only. It removes inactive context, applies
-the same exclusive cutoff, and never calls an LLM for a number. Confirm `/health` and a
-known fixture, document when and why rollback began, and open an incident. Remove the
-variable and restart to return to V2.
+The command does not create the key or OS boundary. Provision separate builder,
+evaluator, and signer identities; enforce their process and filesystem ACLs; deny the
+forbidden audit/signing access; and verify the boundary in exact-source evidence and CI.
+No factory process may auto-promote a bundle or change V2/API authority.
 
-Do not hot-swap artifact files within an active field. The request snapshot prevents a
-mixed field, but operational changes belong between fields and must be logged.
+## Race-day operating sequence
 
-## 7. Post-event
+1. Verify the active bundle, tournament epoch, event-chain tip, projection health,
+   backup age, job queue, assessor availability, and SLA risk.
+2. Prepare rolling competitor cards as soon as future context is plausible. The live
+   scheduler must bind the promoted council, card-scoped provider tokens, and deadlines;
+   a generic symbolic schedule is not an executable live request.
+3. Freeze one epoch for every field in the current round.
+4. Assemble each final roster from compatible sealed cards; stale cards regenerate.
+5. Present the exception-first green/amber/red projection to the tournament manager.
+6. Record the deliberate approval decision through `/v3/approvals/decide`, binding the
+   exact snapshot, selected and excluded receipt IDs/digests/revisions, actor metadata,
+   timestamp, and idempotency identity. No manual estimate is defaulted.
+7. Separately acknowledge issue atomically and retain the exact receipt set.
+8. Submit the complete issued roster and settle all valid completions and explicit
+   non-completion states in one atomic command.
+9. Drive and durably close capability, invalidation, scoring, coverage, weights,
+   readiness, and credibility reactions. Do not infer or insert an approval decision.
+10. Close the round, advance the epoch, and prepare the next round. Never recalculate an
+    issued sheet or alter the legal winner.
 
-1. Settle trusted predictions using official positive measured times and returned IDs.
-2. Include an actor and a reason for every correction.
-3. Retain the local SQLite file before syncing or maintenance.
-4. Review warnings, degraded results, optimizer fallbacks, and cloud failures.
-5. Run drift analysis off the hot path. Drift is advisory; it never auto-activates,
-   retrains, or disables a model.
-6. Train only on rows explicitly marked eligible; manual, broad-prior, legacy-rollback,
-   and degraded rows are excluded.
+The live contract is a heat every ten minutes, a sheet ready within two minutes of a
+result, field assembly under two seconds, and a five-minute final call-up path.
 
-Supabase migrations 005, 006, and 007 must be reviewed and applied in order, separately from
-the application release, before cloud mirroring. Migration 006 preserves old request
-rows as `raw-v1` while recording new active-evidence hashes as `active-v2`. The ledger
-schema forces RLS and grants its append RPC only to `service_role`; never expose the
-service key to browser or mobile clients.
-Migration 005 rejects explicit active-v2 payloads until 006 is installed, leaving them
-in the durable local outbox. The guarded 006 down migration restores the old RPC but
-aborts once any active-v2 cloud row exists; do not use it after active mirroring begins.
-Migration 007 adds the separate shadow evidence RPC/tables without rewriting 005/006
-rows. Its down file refuses once any shadow delivery exists. After that point, repair
-forward or restore from the durable local ledger. A disposable PostgreSQL rehearsal is
-required before a separately authorized production window; this repository change does
-not apply or authorize a production migration.
+## Recovery matrix
+
+| Failure | Required response |
+| --- | --- |
+| Process or worker crash | restart, reconcile leased/ambiguous jobs, recover exact command result |
+| Machine or power loss | open durable store, verify WAL/event chains, rebuild projections, reconcile external work |
+| Ollama unavailable/OOM | mark local assessor unavailable; use already sealed valid cards or deliberate non-predictive action |
+| Cloud unavailable | abstain cloud member; never block local authority or relabel a forecast |
+| Blob missing/tampered | fail affected operation closed; recover verified blob before use |
+| Disk reserve breached | stop factory/backfill and speculative work; preserve critical open-tournament writes; block new tournaments |
+| Queue saturation | reject bounded work with explicit capacity status; preserve exact retries |
+| Primary machine unavailable | use only a verified recovery-device package and authority procedure |
+| Trusted V3 cannot recover | keep/resume V2 before cutover; after cutover declare traditional/manual authority explicitly |
+
+Support exports are deterministic, size-bounded, signed, and redacted. They contain
+allowlisted operational facts and metrics, not credentials, raw evidence, free text, or
+private keys.
+
+## Production qualification prerequisites
+
+Before cutover preparation, all of these must be true on the installation that will run
+the event:
+
+- the source commit and dependency lock are frozen;
+- the installed wheel and all required artifacts match their digests;
+- the frozen OpenAPI checksum matches the consumer adapter;
+- all eleven release-evidence classes pass on the production candidate;
+- the Windows capacity manifest is production-tier for the designated machine;
+- candidate/audit/release signing identities are live non-exportable Windows CNG keys;
+- concrete local formula/ML/LLM factory executors and the authenticated local
+  settlement-metric evaluator are installed and exercised;
+- builder/evaluator/signer OS identities, filesystem/process ACLs, and network-denial
+  policy are enforced and verified on the designated host;
+- the release verifier is given the installation-owned, operator-pinned public release
+  identity through `--trusted-production-identity`; it never trusts identity metadata
+  supplied by the attestation being verified;
+- model and bundle promotion manifests verify under their installed trust stores;
+- backup/restore and recovery-device rehearsals pass;
+- no tournament is open in either authority boundary;
+- explicit release authority is available for the later consumer switch.
+
+The repository intentionally contains no production private key, credential, endpoint,
+pre-approved switch, or provisioned production CNG identity.
+
+## Cutover preparation
+
+Cutover is a zero-open-tournament state machine:
+
+1. Freeze V2 trusted writes.
+2. Verify `open_tournaments=0`.
+3. Drain in-flight requests and resolve every ambiguous operation.
+4. Sign and verify the final V2 authority manifest.
+5. Verify the production-tier V3 release attestation against the separately pinned
+   installation identity:
+
+   ```powershell
+   python scripts/verify_v3_release.py --require-production --trusted-production-identity C:\ProgramData\STRATHMARK\v3\keys\release-public-identity.json
+   ```
+
+   The identity file is operator-controlled public material outside the attestation. A
+   self-supplied or merely relabeled `production_cng` identity is not trusted.
+6. Verify initialized V3 database, bundle, consumer-contract, and rehearsal digests.
+7. Run the installed tournament-manager adapter rehearsal and match its digest.
+8. Sign the pre-switch authority handoff using the production CNG identity.
+
+The handoff is only valid when it still says:
+
+```text
+status=cutover_ready
+current_authority=v2
+next_authority=v3
+endpoint_switched=false
+v2_audit_only=false
+requires_explicit_release_authorization=true
+```
+
+Any failure resumes V2. If V2 cannot resume, stop and declare traditional/manual
+authority. Never infer permission to switch from a successful preparation.
+
+## Explicit consumer switch and rollback
+
+The final consumer endpoint/contract switch is a separate, explicitly authorized
+operation owned with the tournament manager. It must occur once, at the verified
+boundary, with an immutable receipt. Afterward V2 becomes audit-only and must not accept
+trusted writes.
+
+There is no automatic numeric fallback from V3 to V2 after cutover. A failed V3 service
+must be recovered from its authoritative event log or the competition must deliberately
+enter traditional/manual authority. Re-enabling V2 trusted writes would be another
+signed authority migration, not a runtime retry.
+
+## Historical V2 deployment
+
+V2 deployment and shadow behavior remain defined by
+[`PREDICTION_ENGINE_V2.md`](PREDICTION_ENGINE_V2.md) and
+[`SHADOW_CONSUMER_CONTRACT.md`](SHADOW_CONSUMER_CONTRACT.md). Existing PostgreSQL mirror
+migrations remain separately authorized operational work and do not establish V3
+authority.

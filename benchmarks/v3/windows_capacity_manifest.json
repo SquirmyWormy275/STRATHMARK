@@ -1,0 +1,63 @@
+{
+  "schema_version": "strathmark-v3-windows-capacity-manifest-v1",
+  "recorded_at": "2026-08-25T20:00:00.000Z",
+  "candidate_tier": "rehearsal",
+  "machine": {
+    "operating_system": "Windows-11-10.0.26200-SP0",
+    "architecture": "x86_64",
+    "python": "3.13.3",
+    "processor": "Intel(R) Core(TM) Ultra 9 185H",
+    "logical_cpu_count": 22,
+    "memory_total_bytes": 33765298176,
+    "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+    "gpu_vram_mib": 8188
+  },
+  "declared_envelope": {
+    "max_open_tournaments": 1,
+    "max_round_entrants": 48,
+    "max_field_entrants": 12,
+    "max_plausible_qualifiers": 48,
+    "max_context_cards": 48,
+    "max_queued_jobs": 384,
+    "heat_cadence_ms": 600000,
+    "final_turnaround_ms": 300000,
+    "result_to_ready_ms": 120000,
+    "field_assembly_ms_exclusive": 2000
+  },
+  "measured": {
+    "field_assembly_runs": 100,
+    "field_assembly_failures": 0,
+    "field_assembly_cold_ms": 1301.414,
+    "field_assembly_p99_ms": 1853.092,
+    "field_assembly_worst_ms": 1880.194,
+    "saturated_recovery_p99_ms": 1.065,
+    "saturated_recovery_worst_ms": 36.872,
+    "critical_restart_worst_ms": 1848.641,
+    "writer_wall_p99_ms": 12.463,
+    "caller_wall_p99_ms": 46.919,
+    "projection_rebuild_ms": 1085,
+    "rss_growth_bytes": 1388544
+  },
+  "stress_matrix": [
+    {"name": "warm_start", "method": "measured", "result": "passed"},
+    {"name": "cold_start", "method": "measured", "result": "passed"},
+    {"name": "thermal", "method": "hardware_telemetry_and_deadline_gate", "result": "passed"},
+    {"name": "oom", "method": "bounded_admission_failure_injection", "result": "passed"},
+    {"name": "paging", "method": "rss_limit_and_failure_injection", "result": "passed"},
+    {"name": "vram", "method": "sequential_local_model_budget", "result": "passed"},
+    {"name": "wal", "method": "checkpoint_restart_and_corruption_injection", "result": "passed"},
+    {"name": "blob", "method": "digest_corruption_and_missing_blob_injection", "result": "passed"},
+    {"name": "queue", "method": "declared_capacity_saturation", "result": "passed"},
+    {"name": "disk_reserve", "method": "four_tier_admission_boundary", "result": "passed"}
+  ],
+  "artifact_pins": {
+    "field_assembly_manifest_sha256": "7eef35e701f797840b138fd1a28bb66ddffd8772582f4c3234b3e7bef4e95edb",
+    "rolling_restart_manifest_sha256": "179f94cfa511be3c5252c53ca2783456334a4593b8d85e0b47ce9e00b4b4a0b4",
+    "job_capacity_manifest_sha256": "af131df28d0ef26f0b9ea5b303ada25f47109b3e3c8cd1fc31f66c1df6ce669e"
+  },
+  "limitations": [
+    "This checked-in artifact is rehearsal evidence, not a production authority handoff.",
+    "Production attestation must be regenerated from the exact installed release artifact and signed by an OS-attested non-exportable Windows CNG key.",
+    "OOM and paging are proven with bounded failure injection; the verifier never deliberately exhausts the operator machine."
+  ]
+}

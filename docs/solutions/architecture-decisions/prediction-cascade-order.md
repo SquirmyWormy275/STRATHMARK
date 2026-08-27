@@ -10,6 +10,10 @@ superseded_by: docs/PREDICTION_ENGINE_V2.md
 This decision records the pre-2.0 Manual > LLM > ML > baseline > panel design. It is not
 the active numeric architecture.
 
+V3 is a separate blind formula/ML/LLM ensemble and contract, not a restoration of this
+first-valid cascade. See [`../../PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md).
+V2 remains trusted production authority until explicit cutover.
+
 Prediction Engine V2 uses one prior-only hierarchical core. `get_all_predictions()`
 keeps the five keys only for compatibility:
 

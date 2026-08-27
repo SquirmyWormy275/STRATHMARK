@@ -10,6 +10,11 @@ superseded_by: docs/PREDICTION_ENGINE_V2.md
 This page previously documented v0.3-era numeric LLM and cascade hardening. Those
 mechanisms are superseded in STRATHMARK 2.0.0.
 
+V3 later introduced a separately designed, validated, and audited numeric LLM council.
+That is not this legacy cascade. See
+[`../../PREDICTION_ENGINE_V3.md`](../../PREDICTION_ENGINE_V3.md). The bullets below are
+V2-specific and remain exact while V2 retains production authority.
+
 - LLMs cannot generate, select, or adjust numeric predictions or marks.
 - The legacy `llm` compatibility key is always `None`.
 - The authoritative model is the prior-only hierarchical V2 core.
