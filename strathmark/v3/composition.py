@@ -200,6 +200,7 @@ def compose_v3_application_gateway(
     job_repository: object,
     issue_coordinator: object,
     settlement_reactions: object,
+    rolling_reactions: object | None = None,
     clock: object,
     caller_namespace: str = "api",
 ):
@@ -243,7 +244,12 @@ def compose_v3_application_gateway(
         raise ValueError("V3 gateway requires settlement reactions on the configured database")
     if not callable(clock):
         raise TypeError("V3 gateway requires an injected UTC millisecond clock")
-    lifecycle = LifecycleService(database)
+    if rolling_reactions is not None and (
+        not callable(getattr(rolling_reactions, "react", None))
+        or getattr(rolling_reactions, "database_path", None) != database
+    ):
+        raise ValueError("V3 gateway rolling reactions must share the configured database")
+    lifecycle = LifecycleService(database, reaction_port=rolling_reactions)
     fields = SQLiteFieldProjectionStore(
         database,
         signer=signer,

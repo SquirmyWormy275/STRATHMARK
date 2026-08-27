@@ -1374,10 +1374,41 @@ class SQLiteProjectionStore:
             "snapshot_digest",
         }
         if (
-            set(value) != required
+            frozenset(value)
+            not in {frozenset(required), frozenset({*required, "engine_selection"})}
             or value["schema_version"] != "strathmark-v3-upstream-snapshot-v1"
         ):
             raise ProjectionError("upstream snapshot payload is not closed")
+        if "engine_selection" in value:
+            selection_value = value["engine_selection"]
+            if not isinstance(selection_value, dict):
+                raise ProjectionError("snapshot engine selection is malformed")
+            try:
+                selection = CompetitionEngineSelection.from_dict(selection_value)
+            except ContractError as exc:
+                raise ProjectionError("snapshot engine selection is invalid") from exc
+            if str(selection.scope_id) != value["tournament_id"] or selection.engine.value != "v3":
+                raise ProjectionConflict("snapshot engine selection differs from V3 scope")
+        opened_row = connection.execute(
+            "SELECT envelope_json FROM v3_events WHERE aggregate_id=? "
+            "AND event_kind=? AND global_sequence<? ORDER BY global_sequence DESC LIMIT 1",
+            (
+                value["tournament_id"],
+                EventKind.TOURNAMENT_OPENED.value,
+                event.global_sequence,
+            ),
+        ).fetchone()
+        if opened_row is not None:
+            opened = EventEnvelope.from_dict(json.loads(str(opened_row[0])))
+            opened_selection = (
+                cast(InlinePayload, opened.command.payload).to_value().get("engine_selection")
+            )
+            if opened_selection is not None and value.get("engine_selection") != opened_selection:
+                raise ProjectionConflict(
+                    "selected tournament requires its exact engine selection on every snapshot"
+                )
+            if opened_selection is None and "engine_selection" in value:
+                raise ProjectionConflict("legacy tournament cannot acquire selection by snapshot")
         revision = value["upstream_revision"]
         if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
             raise ProjectionError("upstream revision must be positive")

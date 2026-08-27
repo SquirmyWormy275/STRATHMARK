@@ -92,6 +92,7 @@ class UpstreamSnapshot:
     tournament_id: StableIdentifier
     round_id: StableIdentifier | None
     content: Mapping[str, Any]
+    engine_selection: CompetitionEngineSelection | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SnapshotKind):
@@ -115,6 +116,13 @@ class UpstreamSnapshot:
             raise ContractError("upstream revision must be positive")
         if not isinstance(self.content, Mapping):
             raise ContractError("snapshot content must be a mapping")
+        if self.engine_selection is not None:
+            if not isinstance(self.engine_selection, CompetitionEngineSelection):
+                raise ContractError("snapshot engine selection is invalid")
+            if self.engine_selection.scope_id != self.tournament_id:
+                raise ContractError("snapshot engine selection scope does not match tournament")
+            if self.engine_selection.engine is not PredictionEngine.V3:
+                raise ContractError("V2-selected scope cannot enter V3 snapshot ingress")
         canonical = InlinePayload.from_value(self.content).to_value()
         allowed = {
             SnapshotKind.TOURNAMENT: {"bundle_id", "historical_cutoff_key"},
@@ -201,7 +209,7 @@ class UpstreamSnapshot:
         object.__setattr__(self, "content", _deep_freeze(canonical))
 
     def payload(self) -> dict[str, Any]:
-        return {
+        value = {
             "schema_version": "strathmark-v3-upstream-snapshot-v1",
             "entity_kind": self.kind.value,
             "entity_id": str(self.entity_id),
@@ -211,6 +219,9 @@ class UpstreamSnapshot:
             "snapshot": _deep_thaw(self.content),
             "snapshot_digest": canonical_digest(_deep_thaw(self.content)),
         }
+        if self.engine_selection is not None:
+            value["engine_selection"] = self.engine_selection.to_dict()
+        return value
 
 
 class LifecycleService:
@@ -317,12 +328,31 @@ class LifecycleService:
                 )
             if engine_selection.scope_id != tournament_id:
                 raise ContractError("engine selection scope identity does not match tournament")
-            if engine_selection.selected_by_actor_id != actor_id:
-                raise ContractError("engine selection actor does not match tournament opener")
             if engine_selection.selected_at_utc > occurred_at_utc:
                 raise ContractError("engine selection cannot occur after tournament open")
             if engine_selection.engine is not PredictionEngine.V3:
                 raise ContractError("V2-selected scope cannot enter the V3 lifecycle")
+            with open_v3_connection(self._events.database_path, read_only=True) as connection:
+                rows = connection.execute(
+                    "SELECT entity_kind,entity_id,source_global_sequence "
+                    "FROM v3_ingress_snapshots WHERE tournament_id=? "
+                    "ORDER BY entity_kind,entity_id,upstream_revision DESC",
+                    (str(tournament_id),),
+                ).fetchall()
+            latest: dict[tuple[str, str], int] = {}
+            for row in rows:
+                latest.setdefault((str(row[0]), str(row[1])), int(row[2]))
+            required = {("tournament", str(tournament_id)), *(("round", item) for item in roots)}
+            if not required.issubset(latest):
+                raise ContractError("selected scope requires bound tournament and root snapshots")
+            for sequence in latest.values():
+                event_selection = (
+                    self._events.event_at(sequence)
+                    .command.payload.to_value()
+                    .get("engine_selection")
+                )
+                if event_selection != engine_selection.to_dict():
+                    raise ContractError("scope snapshots do not bind the exact engine selection")
         payload: dict[str, Any] = {
             "schema_version": "strathmark-v3-tournament-open-v1",
             "bundle_id": str(bundle_id),

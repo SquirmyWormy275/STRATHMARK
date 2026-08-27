@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from strathmark.v3.application.capacity import (
@@ -2043,6 +2044,15 @@ class RollingLifecycleReactionService:
         ):
             raise DurableJobError("rolling lifecycle command result is invalid")
         self.recover_pending()
+
+    @property
+    def database_path(self) -> Path:
+        """Expose the exact durable authority for safe composition checks."""
+
+        value = getattr(self._reaction_store, "database_path", None)
+        if not isinstance(value, Path):
+            raise DurableJobError("rolling reaction store lacks a typed database authority")
+        return value
 
     def recover_pending(self) -> int:
         total = 0

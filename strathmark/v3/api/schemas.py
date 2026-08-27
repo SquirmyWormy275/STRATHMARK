@@ -10,6 +10,7 @@ from strathmark.v3.contracts.canonical import canonical_bytes
 
 _ID = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _TOURNAMENT_ID = r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+_ROUND_ID = r"^round:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _FIELD_ID = r"^field:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _RECEIPT_ID = r"^receipt:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _DIGEST = r"^[0-9a-f]{64}$"
@@ -29,6 +30,185 @@ class ErrorResponse(StrictV3Model):
 class HealthResponse(StrictV3Model):
     schema_version: Literal["strathmark-v3-health-v1"] = "strathmark-v3-health-v1"
     status: Literal["ok"] = "ok"
+
+
+class CompetitionEngineSelectionInput(StrictV3Model):
+    schema_version: Literal["strathmark-v3-competition-engine-selection-v1"]
+    scope_id: str = Field(pattern=_TOURNAMENT_ID)
+    engine: Literal["v3"]
+    mode: Literal["rehearsal", "production"]
+    selected_by_actor_id: str = Field(pattern=r"^actor:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    selected_at_utc: str = Field(pattern=_UTC_MS)
+    reason_code: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    consumer_contract_digest: str = Field(pattern=_DIGEST)
+    source_commit: str = Field(pattern=r"^[0-9a-f]{7,40}$")
+
+
+class ScopeOpenRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-scope-open-request-v1"]
+    scope_id: str = Field(pattern=_TOURNAMENT_ID)
+    bundle_id: str = Field(pattern=r"^bundle:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    historical_cutoff_key: str = Field(pattern=r"^history:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    root_round_ids: list[str] = Field(min_length=1, max_length=128)
+    engine_selection: CompetitionEngineSelectionInput
+    opened_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+    @model_validator(mode="after")
+    def _scope_identity(self) -> ScopeOpenRequest:
+        if self.engine_selection.scope_id != self.scope_id:
+            raise ValueError("engine selection scope must match opened scope")
+        if self.engine_selection.selected_at_utc > self.opened_at_utc:
+            raise ValueError("engine selection cannot follow scope open")
+        if len(set(self.root_round_ids)) != len(self.root_round_ids) or any(
+            __import__("re").fullmatch(_ROUND_ID, value) is None for value in self.root_round_ids
+        ):
+            raise ValueError("root round IDs must be unique round identifiers")
+        return self
+
+
+class ScopeOpenResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-scope-open-response-v1"] = (
+        "strathmark-v3-scope-open-response-v1"
+    )
+    scope_id: str = Field(pattern=_TOURNAMENT_ID)
+    selection_digest: str = Field(pattern=_DIGEST)
+    authority_sequence: int = Field(ge=1)
+    status: Literal["opened", "recovered"]
+
+
+class SnapshotSyncRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-snapshot-sync-request-v1"]
+    entity_kind: Literal["tournament", "round", "field"]
+    entity_id: str = Field(pattern=_ID)
+    upstream_revision: int = Field(ge=1)
+    tournament_id: str = Field(pattern=_TOURNAMENT_ID)
+    round_id: str | None = Field(pattern=_ROUND_ID)
+    snapshot: dict[str, Any]
+    engine_selection: CompetitionEngineSelectionInput
+    synchronized_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+    @model_validator(mode="after")
+    def _closed_snapshot(self) -> SnapshotSyncRequest:
+        from strathmark.v3.application.lifecycle import SnapshotKind, UpstreamSnapshot
+        from strathmark.v3.contracts.events import CompetitionEngineSelection
+        from strathmark.v3.contracts.identifiers import StableIdentifier
+
+        if self.engine_selection.selected_at_utc > self.synchronized_at_utc:
+            raise ValueError("engine selection cannot follow snapshot synchronization")
+        try:
+            UpstreamSnapshot(
+                SnapshotKind(self.entity_kind),
+                StableIdentifier(self.entity_id),
+                self.upstream_revision,
+                StableIdentifier(self.tournament_id),
+                None if self.round_id is None else StableIdentifier(self.round_id),
+                self.snapshot,
+                CompetitionEngineSelection.from_dict(self.engine_selection.model_dump(mode="json")),
+            )
+        except Exception as exc:
+            raise ValueError("snapshot is not a closed data-minimized V3 snapshot") from exc
+        return self
+
+
+class SnapshotSyncResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-snapshot-sync-response-v1"] = (
+        "strathmark-v3-snapshot-sync-response-v1"
+    )
+    entity_id: str = Field(pattern=_ID)
+    upstream_revision: int = Field(ge=1)
+    snapshot_digest: str = Field(pattern=_DIGEST)
+    authority_sequence: int = Field(ge=1)
+    status: Literal["synchronized", "recovered"]
+
+
+class RoundFreezeRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-round-freeze-request-v1"]
+    round_id: str = Field(pattern=_ROUND_ID)
+    epoch_revision: int = Field(ge=1)
+    historical_cutoff_key: str = Field(pattern=r"^history:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    closure_ids: list[str] = Field(max_length=128)
+    frozen_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+    @model_validator(mode="after")
+    def _closed_closures(self) -> RoundFreezeRequest:
+        pattern = r"^round_closure:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+        if len(set(self.closure_ids)) != len(self.closure_ids) or any(
+            __import__("re").fullmatch(pattern, value) is None for value in self.closure_ids
+        ):
+            raise ValueError("closure IDs must be unique round-closure identifiers")
+        return self
+
+
+class RoundFreezeResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-round-freeze-response-v1"] = (
+        "strathmark-v3-round-freeze-response-v1"
+    )
+    round_id: str = Field(pattern=_ROUND_ID)
+    epoch_id: str = Field(pattern=r"^epoch:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    epoch_revision: int = Field(ge=1)
+    authority_sequence: int = Field(ge=1)
+    status: Literal["frozen", "recovered"]
+
+
+class ApprovalPageResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-approval-page-response-v1"] = (
+        "strathmark-v3-approval-page-response-v1"
+    )
+    tournament_id: str = Field(pattern=_TOURNAMENT_ID)
+    snapshot_id: str = Field(pattern=r"^approval_snapshot:[0-9a-f]{64}$")
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=100)
+    total: int = Field(ge=0)
+    lifecycle_state: str = Field(min_length=1, max_length=64)
+    rows: list[dict[str, Any]] = Field(max_length=100)
+    authority_sequence: int = Field(ge=0)
+
+
+class ApprovalDetailResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-approval-detail-response-v1"] = (
+        "strathmark-v3-approval-detail-response-v1"
+    )
+    tournament_id: str = Field(pattern=_TOURNAMENT_ID)
+    snapshot_id: str = Field(pattern=r"^approval_snapshot:[0-9a-f]{64}$")
+    receipt_id: str = Field(pattern=_RECEIPT_ID)
+    detail: dict[str, Any]
+    authority_sequence: int = Field(ge=1)
+
+
+class RoundCloseRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-round-close-request-v1"]
+    round_id: str = Field(pattern=_ROUND_ID)
+    closed_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+
+class RoundCloseResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-round-close-response-v1"] = (
+        "strathmark-v3-round-close-response-v1"
+    )
+    round_id: str = Field(pattern=_ROUND_ID)
+    closure_id: str = Field(pattern=r"^round_closure:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    authority_sequence: int = Field(ge=1)
+    status: Literal["closed", "recovered"]
+
+
+class ScopeCloseRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-scope-close-request-v1"]
+    scope_id: str = Field(pattern=_TOURNAMENT_ID)
+    closed_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+
+class ScopeCloseResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-scope-close-response-v1"] = (
+        "strathmark-v3-scope-close-response-v1"
+    )
+    scope_id: str = Field(pattern=_TOURNAMENT_ID)
+    authority_sequence: int = Field(ge=1)
+    status: Literal["closed", "recovered"]
 
 
 class PrepareCardRequest(StrictV3Model):

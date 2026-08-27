@@ -48,6 +48,7 @@ from strathmark.v3.application.pipeline_builder import (  # noqa: E402
 from strathmark.v3.assessors.formula import FormulaManifest  # noqa: E402
 from strathmark.v3.composition import compose_v3_application_gateway  # noqa: E402
 from strathmark.v3.contracts.canonical import canonical_digest  # noqa: E402
+from strathmark.v3.contracts.events import EventKind  # noqa: E402
 from strathmark.v3.contracts.evidence import (
     EvidencePacket,
     ResultObservation,
@@ -711,6 +712,168 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     )
 
 
+def test_concrete_gateway_exposes_scope_snapshot_freeze_and_close_lifecycle(
+    tmp_path: Path,
+) -> None:
+    client, credential, *_rest = _runtime(tmp_path)
+    scope_id = "tournament:public-lifecycle"
+    round_id = "round:public-root"
+    selection = {
+        "schema_version": "strathmark-v3-competition-engine-selection-v1",
+        "scope_id": scope_id,
+        "engine": "v3",
+        "mode": "rehearsal",
+        "selected_by_actor_id": "actor:judge-seven",
+        "selected_at_utc": "2026-08-25T17:59:54.000Z",
+        "reason_code": "new_competition",
+        "consumer_contract_digest": "a" * 64,
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    }
+    common = {
+        "upstream_revision": 1,
+        "tournament_id": scope_id,
+        "synchronized_at_utc": "2026-08-25T17:59:55.000Z",
+        "deadline_ms": 10_000,
+    }
+    snapshots = (
+        {
+            **common,
+            "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+            "entity_kind": "tournament",
+            "entity_id": scope_id,
+            "round_id": None,
+            "engine_selection": selection,
+            "snapshot": {
+                "bundle_id": "bundle:public-current",
+                "historical_cutoff_key": "history:public-cutoff",
+            },
+        },
+        {
+            **common,
+            "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+            "entity_kind": "round",
+            "entity_id": round_id,
+            "round_id": round_id,
+            "engine_selection": selection,
+            "snapshot": {
+                "round_ordinal": 1,
+                "predecessor_round_ids": [],
+                "successor_round_ids": [],
+            },
+        },
+    )
+    unbound = {key: value for key, value in snapshots[0].items() if key != "engine_selection"}
+    rejected = client.post(
+        "/v3/snapshots/synchronize",
+        headers=_headers(credential, "public-unbound-snapshot"),
+        json=unbound,
+    )
+    assert rejected.status_code == 422
+    with open_v3_connection(_rest[2].database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM v3_ingress_snapshots WHERE entity_id=?", (scope_id,)
+            ).fetchone()
+            is None
+        )
+    for index, payload in enumerate(snapshots):
+        response = client.post(
+            "/v3/snapshots/synchronize",
+            headers=_headers(credential, f"public-snapshot-{index}"),
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+
+    open_payload = {
+        "schema_version": "strathmark-v3-scope-open-request-v1",
+        "scope_id": scope_id,
+        "bundle_id": "bundle:public-current",
+        "historical_cutoff_key": "history:public-cutoff",
+        "root_round_ids": [round_id],
+        "engine_selection": selection,
+        "opened_at_utc": "2026-08-25T17:59:58.000Z",
+        "deadline_ms": 10_000,
+    }
+    mismatched = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "public-open-mismatch"),
+        json={
+            **open_payload,
+            "engine_selection": {**selection, "reason_code": "pre_lock_correction"},
+        },
+    )
+    assert mismatched.status_code == 409
+    with open_v3_connection(_rest[2].database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM v3_aggregate_heads "
+                "WHERE aggregate_kind='tournament' AND aggregate_id=?",
+                (scope_id,),
+            ).fetchone()
+            is None
+        )
+    opened = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "public-open"),
+        json=open_payload,
+    )
+    assert opened.status_code == 200, opened.text
+    opened_event = next(
+        event
+        for event in SQLiteEventStore(_rest[2].database_path).events()
+        if event.kind is EventKind.TOURNAMENT_OPENED and str(event.aggregate_id) == scope_id
+    )
+    assert str(opened_event.command.actor_id) == "actor:tournament-manager"
+    assert (
+        opened_event.command.payload.to_value()["engine_selection"]["selected_by_actor_id"]
+        == "actor:judge-seven"
+    )
+    frozen = client.post(
+        "/v3/rounds/freeze",
+        headers=_headers(credential, "public-freeze"),
+        json={
+            "schema_version": "strathmark-v3-round-freeze-request-v1",
+            "round_id": round_id,
+            "epoch_revision": 1,
+            "historical_cutoff_key": "history:public-cutoff",
+            "closure_ids": [],
+            "frozen_at_utc": "2026-08-25T17:59:59.000Z",
+            "deadline_ms": 10_000,
+        },
+    )
+    assert frozen.status_code == 200, frozen.text
+    page = client.get(
+        f"/v3/approvals/page?tournament_id={scope_id}&offset=0&limit=25",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    assert page.status_code == 200, page.text
+    assert page.json()["rows"] == []
+    for path, key, body in (
+        (
+            "/v3/rounds/close",
+            "public-close-round",
+            {
+                "schema_version": "strathmark-v3-round-close-request-v1",
+                "round_id": round_id,
+                "closed_at_utc": "2026-08-25T18:00:04.000Z",
+                "deadline_ms": 10_000,
+            },
+        ),
+        (
+            "/v3/scopes/close",
+            "public-close-scope",
+            {
+                "schema_version": "strathmark-v3-scope-close-request-v1",
+                "scope_id": scope_id,
+                "closed_at_utc": "2026-08-25T18:00:05.000Z",
+                "deadline_ms": 10_000,
+            },
+        ),
+    ):
+        response = client.post(path, headers=_headers(credential, key), json=body)
+        assert response.status_code == 200, response.text
+
+
 def test_status_separates_candidate_health_from_production_authority(tmp_path) -> None:
     client, credential, *_rest = _runtime(tmp_path)
 
@@ -726,6 +889,45 @@ def test_status_separates_candidate_health_from_production_authority(tmp_path) -
     assert len(status["event_checkpoint_digest"]) == 64
     assert len(status["field_checkpoint_digest"]) == 64
     assert len(status["job_checkpoint_digest"]) == 64
+
+
+def test_public_approval_page_and_detail_share_one_projection_identity(tmp_path: Path) -> None:
+    client, credential, store, field, *_rest = _runtime(tmp_path)
+    assembled = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "public-approval-assemble"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert assembled.status_code == 200, assembled.text
+    page = client.get(
+        f"/v3/approvals/page?tournament_id={field.tournament_id}&offset=0&limit=25",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    assert page.status_code == 200, page.text
+    row = next(
+        item for item in page.json()["rows"] if item["receipt_id"] == assembled.json()["receipt_id"]
+    )
+    detail = client.get(
+        "/v3/approvals/detail"
+        f"?tournament_id={field.tournament_id}&snapshot_id={page.json()['snapshot_id']}"
+        f"&receipt_id={row['receipt_id']}",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["snapshot_id"] == page.json()["snapshot_id"]
+    assert detail.json()["detail"]["row"] == row
+    assert (
+        store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=25).snapshot_id
+        == page.json()["snapshot_id"]
+    )
 
 
 def test_status_uses_bounded_checkpoints_after_explicit_startup_deep_verify(
@@ -1107,3 +1309,43 @@ def test_gateway_composition_requires_same_database_settlement_reactions(
             settlement_reactions=None,
             clock=lambda: "2026-08-25T18:00:00.000Z",
         )
+
+    wrong_rolling = _TrackingSettlementReactions(tmp_path / "wrong-rolling.sqlite3")
+    with pytest.raises(ValueError, match="rolling reactions"):
+        compose_v3_application_gateway(
+            database_path=store.database_path,
+            signer=store._signer,
+            trust_store=store._trust_store,
+            pipeline_builder=lambda _field: None,
+            job_repository=repository,
+            issue_coordinator=CriticalIssueCoordinator.for_rehearsal(
+                CriticalJournal(
+                    tmp_path / "wrong-rolling-journal",
+                    signer=store._signer,
+                    trust_store=store._trust_store,
+                )
+            ),
+            settlement_reactions=_TrackingSettlementReactions(store.database_path),
+            rolling_reactions=wrong_rolling,
+            clock=lambda: "2026-08-25T18:00:00.000Z",
+        )
+
+    rolling = _TrackingSettlementReactions(store.database_path)
+    gateway = compose_v3_application_gateway(
+        database_path=store.database_path,
+        signer=store._signer,
+        trust_store=store._trust_store,
+        pipeline_builder=lambda _field: None,
+        job_repository=repository,
+        issue_coordinator=CriticalIssueCoordinator.for_rehearsal(
+            CriticalJournal(
+                tmp_path / "rolling-wired-journal",
+                signer=store._signer,
+                trust_store=store._trust_store,
+            )
+        ),
+        settlement_reactions=_TrackingSettlementReactions(store.database_path),
+        rolling_reactions=rolling,
+        clock=lambda: "2026-08-25T18:00:00.000Z",
+    )
+    assert gateway._services.lifecycle._reaction_port is rolling

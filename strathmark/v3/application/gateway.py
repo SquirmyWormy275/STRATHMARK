@@ -15,11 +15,18 @@ from typing import Any
 from strathmark.v3.api.router import RequestContext
 from strathmark.v3.api.schemas import (
     ApprovalDecisionResponse,
+    ApprovalDetailResponse,
+    ApprovalPageResponse,
     AssembleFieldResponse,
     IssueAcknowledgmentResponse,
     PrepareCardResponse,
     ReceiptLookupResponse,
+    RoundCloseResponse,
+    RoundFreezeResponse,
+    ScopeCloseResponse,
+    ScopeOpenResponse,
     SettlementResponse,
+    SnapshotSyncResponse,
     StatusResponse,
 )
 from strathmark.v3.application.approval import (
@@ -38,13 +45,23 @@ from strathmark.v3.application.issuance import (
     IssueBatchCommand,
     IssueFieldSelection,
 )
-from strathmark.v3.application.lifecycle import LifecycleService
+from strathmark.v3.application.lifecycle import (
+    LifecycleService,
+    SnapshotKind,
+    UpstreamSnapshot,
+)
 from strathmark.v3.application.settlement import SettlementCommand, SettlementService
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.commands import CommandKind
-from strathmark.v3.contracts.events import EventEnvelope, EventKind
+from strathmark.v3.contracts.events import (
+    AggregateKind,
+    CompetitionEngineSelection,
+    EventEnvelope,
+    EventKind,
+)
 from strathmark.v3.contracts.evidence import require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import (
+    IdempotencyKey,
     StableIdentifier,
     deterministic_identifier,
     require_identifier,
@@ -148,6 +165,237 @@ class V3ApplicationGateway:
         self._services.events.verify()
         self._services.fields.verify()
         self._services.jobs.verify()
+
+    def open_scope(self, payload: dict[str, Any], context: RequestContext) -> ScopeOpenResponse:
+        selection = CompetitionEngineSelection.from_dict(payload["engine_selection"])
+        self._verify_scope_snapshot_selection(payload, selection)
+        configure_id = IdempotencyKey(
+            str(
+                deterministic_identifier(
+                    "command",
+                    {"public_command_id": str(context.command_id), "phase": "configure_scope"},
+                )
+            )
+        )
+        self._services.lifecycle._execute(
+            CommandKind.CONFIGURE_TOURNAMENT,
+            EventKind.TOURNAMENT_CONFIGURED,
+            AggregateKind.TOURNAMENT,
+            StableIdentifier(payload["scope_id"]),
+            {"configured": True},
+            configure_id,
+            context.principal.principal_id,
+            payload["opened_at_utc"],
+            0,
+        )
+        stored = self._services.lifecycle.open_tournament(
+            StableIdentifier(payload["scope_id"]),
+            bundle_id=StableIdentifier(payload["bundle_id"]),
+            historical_cutoff_key=payload["historical_cutoff_key"],
+            root_round_ids=tuple(StableIdentifier(item) for item in payload["root_round_ids"]),
+            command_id=context.command_id,
+            actor_id=context.principal.principal_id,
+            occurred_at_utc=payload["opened_at_utc"],
+            monotonic_elapsed_ms=0,
+            engine_selection=selection,
+        )
+        return ScopeOpenResponse(
+            scope_id=payload["scope_id"],
+            selection_digest=selection.selection_digest,
+            authority_sequence=stored.last_global_sequence,
+            status="opened",
+        )
+
+    def synchronize_snapshot(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> SnapshotSyncResponse:
+        snapshot = UpstreamSnapshot(
+            SnapshotKind(payload["entity_kind"]),
+            StableIdentifier(payload["entity_id"]),
+            payload["upstream_revision"],
+            StableIdentifier(payload["tournament_id"]),
+            None if payload["round_id"] is None else StableIdentifier(payload["round_id"]),
+            payload["snapshot"],
+            CompetitionEngineSelection.from_dict(payload["engine_selection"]),
+        )
+        stored = self._services.lifecycle.ingest_snapshot(
+            snapshot,
+            command_id=context.command_id,
+            actor_id=context.principal.principal_id,
+            occurred_at_utc=payload["synchronized_at_utc"],
+            monotonic_elapsed_ms=0,
+        )
+        return SnapshotSyncResponse(
+            entity_id=payload["entity_id"],
+            upstream_revision=payload["upstream_revision"],
+            snapshot_digest=canonical_digest(payload["snapshot"]),
+            authority_sequence=stored.last_global_sequence,
+            status="synchronized",
+        )
+
+    def freeze_round(self, payload: dict[str, Any], context: RequestContext) -> RoundFreezeResponse:
+        if self._round_state(payload["round_id"]) is None:
+            configure_id = IdempotencyKey(
+                str(
+                    deterministic_identifier(
+                        "command",
+                        {
+                            "public_command_id": str(context.command_id),
+                            "phase": "configure_round",
+                        },
+                    )
+                )
+            )
+            self._services.lifecycle._execute(
+                CommandKind.CONFIGURE_ROUND,
+                EventKind.ROUND_CONFIGURED,
+                AggregateKind.ROUND,
+                StableIdentifier(payload["round_id"]),
+                {"configured": True},
+                configure_id,
+                context.principal.principal_id,
+                payload["frozen_at_utc"],
+                0,
+            )
+        epoch, stored = self._services.lifecycle.freeze_round_epoch(
+            StableIdentifier(payload["round_id"]),
+            epoch_revision=payload["epoch_revision"],
+            historical_cutoff_key=payload["historical_cutoff_key"],
+            closure_ids=tuple(StableIdentifier(item) for item in payload["closure_ids"]),
+            command_id=context.command_id,
+            actor_id=context.principal.principal_id,
+            occurred_at_utc=payload["frozen_at_utc"],
+            monotonic_elapsed_ms=0,
+        )
+        return RoundFreezeResponse(
+            round_id=payload["round_id"],
+            epoch_id=str(epoch.epoch_id),
+            epoch_revision=payload["epoch_revision"],
+            authority_sequence=stored.last_global_sequence,
+            status="frozen",
+        )
+
+    def approval_page(
+        self, payload: dict[str, Any], _context: RequestContext
+    ) -> ApprovalPageResponse:
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            meta = connection.execute(
+                "SELECT 1 FROM v3_approval_projection_meta WHERE tournament_id=?",
+                (payload["tournament_id"],),
+            ).fetchone()
+            opened = connection.execute(
+                "SELECT MAX(global_sequence) FROM v3_events "
+                "WHERE aggregate_id=? AND event_kind='tournament_opened'",
+                (payload["tournament_id"],),
+            ).fetchone()
+            field_count = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT entity_id) FROM v3_ingress_snapshots "
+                    "WHERE entity_kind='field' AND tournament_id=?",
+                    (payload["tournament_id"],),
+                ).fetchone()[0]
+            )
+        if meta is None:
+            if opened is None or opened[0] is None:
+                self._not_found("approval_scope_not_found")
+            if field_count:
+                raise RuntimeError("approval projection missing for configured fields")
+            sequence = int(opened[0])
+            snapshot_id = f"approval_snapshot:{canonical_digest({'tournament_id': payload['tournament_id'], 'source_global_sequence': sequence, 'fields': []})}"
+            return ApprovalPageResponse(
+                tournament_id=payload["tournament_id"],
+                snapshot_id=snapshot_id,
+                offset=payload["offset"],
+                limit=payload["limit"],
+                total=0,
+                lifecycle_state="no_scheduled_fields",
+                rows=[],
+                authority_sequence=sequence,
+            )
+        page = self._services.fields.approval_page(**payload)
+        return ApprovalPageResponse(
+            tournament_id=page.tournament_id,
+            snapshot_id=page.snapshot_id,
+            offset=page.offset,
+            limit=page.limit,
+            total=page.total,
+            lifecycle_state=page.lifecycle_state,
+            rows=[item.to_dict() for item in page.rows],
+            authority_sequence=max(page.source_global_sequence, page.decision_global_sequence),
+        )
+
+    def approval_detail(
+        self, payload: dict[str, Any], _context: RequestContext
+    ) -> ApprovalDetailResponse:
+        detail = self._services.fields.approval_detail(**payload)
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT source_global_sequence FROM v3_approval_details "
+                "WHERE tournament_id=? AND receipt_id=?",
+                (payload["tournament_id"], payload["receipt_id"]),
+            ).fetchone()
+        if row is None:
+            self._not_found("approval_detail_not_found")
+        source = int(row[0])
+        return ApprovalDetailResponse(
+            tournament_id=payload["tournament_id"],
+            snapshot_id=payload["snapshot_id"],
+            receipt_id=payload["receipt_id"],
+            detail=detail,
+            authority_sequence=source,
+        )
+
+    def close_round(self, payload: dict[str, Any], context: RequestContext) -> RoundCloseResponse:
+        if self._round_state(payload["round_id"]) == "round_frozen":
+            begin_id = IdempotencyKey(
+                str(
+                    deterministic_identifier(
+                        "command",
+                        {
+                            "public_command_id": str(context.command_id),
+                            "phase": "begin_round_closing",
+                        },
+                    )
+                )
+            )
+            self._services.lifecycle._execute(
+                CommandKind.BEGIN_ROUND_CLOSING,
+                EventKind.ROUND_CLOSING_STARTED,
+                AggregateKind.ROUND,
+                StableIdentifier(payload["round_id"]),
+                {"closing": True},
+                begin_id,
+                context.principal.principal_id,
+                payload["closed_at_utc"],
+                0,
+            )
+        closure_id, stored = self._services.lifecycle.close_evidence_round(
+            StableIdentifier(payload["round_id"]),
+            command_id=context.command_id,
+            actor_id=context.principal.principal_id,
+            occurred_at_utc=payload["closed_at_utc"],
+            monotonic_elapsed_ms=0,
+        )
+        return RoundCloseResponse(
+            round_id=payload["round_id"],
+            closure_id=str(closure_id),
+            authority_sequence=stored.last_global_sequence,
+            status="closed",
+        )
+
+    def close_scope(self, payload: dict[str, Any], context: RequestContext) -> ScopeCloseResponse:
+        stored = self._services.lifecycle.close_tournament(
+            StableIdentifier(payload["scope_id"]),
+            command_id=context.command_id,
+            actor_id=context.principal.principal_id,
+            occurred_at_utc=payload["closed_at_utc"],
+            monotonic_elapsed_ms=0,
+        )
+        return ScopeCloseResponse(
+            scope_id=payload["scope_id"],
+            authority_sequence=stored.last_global_sequence,
+            status="closed",
+        )
 
     def prepare_card(
         self, payload: dict[str, Any], _context: RequestContext
@@ -583,6 +831,43 @@ class V3ApplicationGateway:
             scheduled_at=snapshot["scheduled_at"],
             deadline_at=snapshot["deadline_at"],
         )
+
+    def _round_state(self, round_id: str) -> str | None:
+        require_identifier(round_id, expected_namespace="round")
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT lifecycle_status FROM v3_aggregate_heads "
+                "WHERE aggregate_kind='round' AND aggregate_id=?",
+                (round_id,),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
+    def _verify_scope_snapshot_selection(
+        self, payload: Mapping[str, Any], selection: CompetitionEngineSelection
+    ) -> None:
+        roots = tuple(payload["root_round_ids"])
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT entity_kind,entity_id,source_global_sequence "
+                "FROM v3_ingress_snapshots WHERE tournament_id=? "
+                "ORDER BY entity_kind,entity_id,upstream_revision DESC",
+                (payload["scope_id"],),
+            ).fetchall()
+        latest: dict[tuple[str, str], int] = {}
+        for row in rows:
+            latest.setdefault((str(row[0]), str(row[1])), int(row[2]))
+        required = {("tournament", payload["scope_id"]), *(("round", item) for item in roots)}
+        if not required.issubset(latest):
+            self._conflict("scope_requires_bound_initial_snapshots")
+        expected = selection.to_dict()
+        if any(
+            self._services.events.event_at(sequence)
+            .command.payload.to_value()
+            .get("engine_selection")
+            != expected
+            for sequence in latest.values()
+        ):
+            self._conflict("scope_snapshot_selection_differs")
 
     def _submission(
         self,

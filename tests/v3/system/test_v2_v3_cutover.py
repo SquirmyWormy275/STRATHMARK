@@ -34,7 +34,8 @@ from strathmark.v3.infrastructure.integrity import (
     SignedManifest,
     sign_manifest,
 )
-from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict, SQLiteEventStore
+from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+from strathmark.v3.infrastructure.sqlite.projections import ProjectionConflict
 
 NOW = "2026-08-25T20:00:00.000Z"
 DIGEST = "a" * 64
@@ -70,6 +71,7 @@ def test_v3_tournament_open_binds_one_immutable_scope_selection(tmp_path) -> Non
                 "bundle_id": "bundle:v3-current",
                 "historical_cutoff_key": "history:before-show",
             },
+            selection,
         ),
         command_id=IdempotencyKey("command:selected-tournament-snapshot"),
         actor_id=StableIdentifier("actor:tournament-manager"),
@@ -88,6 +90,7 @@ def test_v3_tournament_open_binds_one_immutable_scope_selection(tmp_path) -> Non
                 "predecessor_round_ids": [],
                 "successor_round_ids": [],
             },
+            selection,
         ),
         command_id=IdempotencyKey("command:selected-round-snapshot"),
         actor_id=StableIdentifier("actor:tournament-manager"),
@@ -131,8 +134,88 @@ def test_v3_tournament_open_binds_one_immutable_scope_selection(tmp_path) -> Non
 
     changed = _selection(str(tournament), PredictionEngine.V3)
     changed = replace(changed, reason_code="pre_lock_correction")
-    with pytest.raises(EventStoreConflict):
+    with pytest.raises(ContractError, match="exact engine selection"):
         lifecycle.open_tournament(tournament, **{**arguments, "engine_selection": changed})
+
+    with pytest.raises(ProjectionConflict, match="exact engine selection"):
+        lifecycle.ingest_snapshot(
+            UpstreamSnapshot(
+                SnapshotKind.ROUND,
+                round_id,
+                2,
+                tournament,
+                round_id,
+                {
+                    "round_ordinal": 1,
+                    "predecessor_round_ids": [],
+                    "successor_round_ids": [],
+                },
+            ),
+            command_id=IdempotencyKey("command:unbound-selected-round-revision"),
+            actor_id=StableIdentifier("actor:tournament-manager"),
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=2,
+        )
+
+
+def test_legacy_unselected_scope_keeps_unbound_snapshot_compatibility(tmp_path) -> None:
+    lifecycle = LifecycleService(tmp_path / "legacy-snapshots.sqlite3")
+    tournament = StableIdentifier("tournament:legacy-show")
+    round_id = StableIdentifier("round:legacy-heat")
+
+    def sync(kind, entity, revision, content, key):
+        return lifecycle.ingest_snapshot(
+            UpstreamSnapshot(
+                kind,
+                entity,
+                revision,
+                tournament,
+                None if kind is SnapshotKind.TOURNAMENT else round_id,
+                content,
+            ),
+            command_id=IdempotencyKey(f"command:{key}"),
+            actor_id=StableIdentifier("actor:tournament-manager"),
+            occurred_at_utc=NOW,
+            monotonic_elapsed_ms=0,
+        )
+
+    sync(
+        SnapshotKind.TOURNAMENT,
+        tournament,
+        1,
+        {"bundle_id": "bundle:legacy", "historical_cutoff_key": "history:legacy"},
+        "legacy-tournament-snapshot",
+    )
+    round_content = {
+        "round_ordinal": 1,
+        "predecessor_round_ids": [],
+        "successor_round_ids": [],
+    }
+    sync(SnapshotKind.ROUND, round_id, 1, round_content, "legacy-round-snapshot")
+    lifecycle._execute(
+        CommandKind.CONFIGURE_TOURNAMENT,
+        EventKind.TOURNAMENT_CONFIGURED,
+        AggregateKind.TOURNAMENT,
+        tournament,
+        {"configured": True},
+        IdempotencyKey("command:configure-legacy-show"),
+        StableIdentifier("actor:tournament-manager"),
+        NOW,
+        0,
+    )
+    lifecycle.open_tournament(
+        tournament,
+        bundle_id=StableIdentifier("bundle:legacy"),
+        historical_cutoff_key="history:legacy",
+        root_round_ids=(round_id,),
+        command_id=IdempotencyKey("command:open-legacy-show"),
+        actor_id=StableIdentifier("actor:tournament-manager"),
+        occurred_at_utc=NOW,
+        monotonic_elapsed_ms=1,
+    )
+
+    revised = sync(SnapshotKind.ROUND, round_id, 2, round_content, "legacy-round-revision")
+    assert revised.last_global_sequence > 0
 
 
 def test_v3_lifecycle_rejects_v2_or_cross_scope_selection_without_writing(tmp_path) -> None:

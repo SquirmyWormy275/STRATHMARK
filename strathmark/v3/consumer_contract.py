@@ -8,10 +8,17 @@ import re
 from importlib.resources import files
 from typing import Any, cast
 
-V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v3"
+V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v4"
 EXPECTED_V3_CONSUMER_PATHS = frozenset(
     {
         "/v3/health",
+        "/v3/scopes/open",
+        "/v3/snapshots/synchronize",
+        "/v3/rounds/freeze",
+        "/v3/approvals/page",
+        "/v3/approvals/detail",
+        "/v3/rounds/close",
+        "/v3/scopes/close",
         "/v3/cards/prepare",
         "/v3/fields/assemble",
         "/v3/receipts/lookup",
@@ -34,6 +41,142 @@ class V3ConsumerContractIntegrityError(RuntimeError):
 
 _EXAMPLES: dict[str, dict[str, Any]] = {
     "/v3/health": {"response": {"schema_version": "strathmark-v3-health-v1", "status": "ok"}},
+    "/v3/scopes/open": {
+        "request": {
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:show",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:heats"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:show",
+                "engine": "v3",
+                "mode": "rehearsal",
+                "selected_by_actor_id": "actor:judge-seven",
+                "selected_at_utc": "2026-08-25T11:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": "a" * 64,
+                "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            },
+            "opened_at_utc": "2026-08-25T12:00:00.000Z",
+            "deadline_ms": 1000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-scope-open-response-v1",
+            "scope_id": "tournament:show",
+            "selection_digest": "b" * 64,
+            "authority_sequence": 4,
+            "status": "opened",
+        },
+    },
+    "/v3/snapshots/synchronize": {
+        "request": {
+            "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+            "entity_kind": "round",
+            "entity_id": "round:heats",
+            "upstream_revision": 1,
+            "tournament_id": "tournament:show",
+            "round_id": "round:heats",
+            "snapshot": {
+                "round_ordinal": 1,
+                "predecessor_round_ids": [],
+                "successor_round_ids": [],
+            },
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:show",
+                "engine": "v3",
+                "mode": "rehearsal",
+                "selected_by_actor_id": "actor:judge-seven",
+                "selected_at_utc": "2026-08-25T11:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": "a" * 64,
+                "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            },
+            "synchronized_at_utc": "2026-08-25T11:59:30.000Z",
+            "deadline_ms": 1000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-snapshot-sync-response-v1",
+            "entity_id": "round:heats",
+            "upstream_revision": 1,
+            "snapshot_digest": "c" * 64,
+            "authority_sequence": 2,
+            "status": "synchronized",
+        },
+    },
+    "/v3/rounds/freeze": {
+        "request": {
+            "schema_version": "strathmark-v3-round-freeze-request-v1",
+            "round_id": "round:heats",
+            "epoch_revision": 1,
+            "historical_cutoff_key": "history:before-show",
+            "closure_ids": [],
+            "frozen_at_utc": "2026-08-25T12:00:01.000Z",
+            "deadline_ms": 1000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-round-freeze-response-v1",
+            "round_id": "round:heats",
+            "epoch_id": "epoch:heats-1",
+            "epoch_revision": 1,
+            "authority_sequence": 6,
+            "status": "frozen",
+        },
+    },
+    "/v3/approvals/page": {
+        "response": {
+            "schema_version": "strathmark-v3-approval-page-response-v1",
+            "tournament_id": "tournament:show",
+            "snapshot_id": f"approval_snapshot:{'d' * 64}",
+            "offset": 0,
+            "limit": 25,
+            "total": 0,
+            "lifecycle_state": "no_scheduled_fields",
+            "rows": [],
+            "authority_sequence": 6,
+        }
+    },
+    "/v3/approvals/detail": {
+        "response": {
+            "schema_version": "strathmark-v3-approval-detail-response-v1",
+            "tournament_id": "tournament:show",
+            "snapshot_id": f"approval_snapshot:{'d' * 64}",
+            "receipt_id": "receipt:field-1",
+            "detail": {"schema_version": "strathmark-v3-approval-detail-v1"},
+            "authority_sequence": 7,
+        }
+    },
+    "/v3/rounds/close": {
+        "request": {
+            "schema_version": "strathmark-v3-round-close-request-v1",
+            "round_id": "round:heats",
+            "closed_at_utc": "2026-08-25T12:10:00.000Z",
+            "deadline_ms": 1000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-round-close-response-v1",
+            "round_id": "round:heats",
+            "closure_id": "round_closure:heats-1",
+            "authority_sequence": 20,
+            "status": "closed",
+        },
+    },
+    "/v3/scopes/close": {
+        "request": {
+            "schema_version": "strathmark-v3-scope-close-request-v1",
+            "scope_id": "tournament:show",
+            "closed_at_utc": "2026-08-25T12:11:00.000Z",
+            "deadline_ms": 1000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-scope-close-response-v1",
+            "scope_id": "tournament:show",
+            "authority_sequence": 21,
+            "status": "closed",
+        },
+    },
     "/v3/cards/prepare": {
         "request": {
             "schema_version": "strathmark-v3-card-preparation-request-v1",
@@ -306,6 +449,7 @@ def build_v3_consumer_contract() -> dict[str, Any]:
             operation["x-non-loopback-additional-security"] = ["PinnedClientCertificate"]
             if path != "/v3/health":
                 operation["parameters"] = [
+                    *operation.get("parameters", []),
                     {
                         "name": "Idempotency-Key",
                         "in": "header",

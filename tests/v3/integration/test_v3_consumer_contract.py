@@ -25,7 +25,12 @@ from strathmark.v3.api.schemas import (  # noqa: E402
     IssueAcknowledgmentRequest,
     PrepareCardRequest,
     ReceiptLookupRequest,
+    RoundCloseRequest,
+    RoundFreezeRequest,
+    ScopeCloseRequest,
+    ScopeOpenRequest,
     SettlementRequest,
+    SnapshotSyncRequest,
 )
 from strathmark.v3.consumer_contract import (  # noqa: E402
     EXPECTED_V3_CONSUMER_PATHS,
@@ -95,6 +100,11 @@ def test_frozen_contract_is_exact_fresh_generation_and_live_openapi(
 def test_every_example_validates_against_frozen_schema_and_live_request_model() -> None:
     document = load_v3_consumer_contract()
     request_models = {
+        "/v3/scopes/open": ScopeOpenRequest,
+        "/v3/snapshots/synchronize": SnapshotSyncRequest,
+        "/v3/rounds/freeze": RoundFreezeRequest,
+        "/v3/rounds/close": RoundCloseRequest,
+        "/v3/scopes/close": ScopeCloseRequest,
         "/v3/approvals/decide": ApprovalDecisionRequest,
         "/v3/cards/prepare": PrepareCardRequest,
         "/v3/fields/assemble": AssembleFieldRequest,
