@@ -8,7 +8,7 @@ import re
 from importlib.resources import files
 from typing import Any, cast
 
-V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v4"
+V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v5"
 EXPECTED_V3_CONSUMER_PATHS = frozenset(
     {
         "/v3/health",
@@ -340,6 +340,13 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
             "job_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
             "job_checkpoint_digest": "c" * 64,
             "open_tournament_count": 0,
+            "v3_option_state": "rehearsal_ready",
+            "rehearsal_eligible": True,
+            "production_eligible": False,
+            "eligibility_reason_codes": ["production_cutover_not_verified"],
+            "consumer_contract_version": "strathmark.v3-consumer-contract.v5",
+            "consumer_contract_digest": "d" * 64,
+            "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
         }
     },
     "/v3/credentials/rotate": {

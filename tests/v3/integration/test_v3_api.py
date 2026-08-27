@@ -136,6 +136,13 @@ class Gateway:
             job_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
             job_checkpoint_digest="c" * 64,
             open_tournament_count=0,
+            v3_option_state="rehearsal_ready",
+            rehearsal_eligible=True,
+            production_eligible=False,
+            eligibility_reason_codes=("production_cutover_not_verified",),
+            consumer_contract_version="strathmark.v3-consumer-contract.v5",
+            consumer_contract_digest="d" * 64,
+            source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
         )
 
     async def open_scope(self, payload, context):
@@ -371,6 +378,13 @@ def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -
         job_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
         job_checkpoint_digest="c" * 64,
         open_tournament_count=0,
+        v3_option_state="rehearsal_ready",
+        rehearsal_eligible=True,
+        production_eligible=False,
+        eligibility_reason_codes=("production_cutover_not_verified",),
+        consumer_contract_version="strathmark.v3-consumer-contract.v5",
+        consumer_contract_digest="d" * 64,
+        source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     )
     assert client.get("/v3/status", headers=_headers(issued.credential)).status_code == 200
 
@@ -1467,6 +1481,13 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
         "job_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
         "job_checkpoint_digest": "c" * 64,
         "open_tournament_count": 0,
+        "v3_option_state": "rehearsal_ready",
+        "rehearsal_eligible": True,
+        "production_eligible": False,
+        "eligibility_reason_codes": ("production_cutover_not_verified",),
+        "consumer_contract_version": "strathmark.v3-consumer-contract.v5",
+        "consumer_contract_digest": "d" * 64,
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     }
     StatusResponse.model_validate(status)
     for value in (

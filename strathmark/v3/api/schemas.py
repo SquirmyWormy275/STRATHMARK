@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -489,6 +489,13 @@ class StatusResponse(StrictV3Model):
     job_last_deep_verified_at_utc: str = Field(pattern=_UTC_MS)
     job_checkpoint_digest: str = Field(pattern=_DIGEST)
     open_tournament_count: int = Field(ge=0)
+    v3_option_state: Literal["rehearsal_ready", "production_ready", "ineligible"]
+    rehearsal_eligible: bool
+    production_eligible: bool
+    eligibility_reason_codes: tuple[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")], ...]
+    consumer_contract_version: str = Field(min_length=1, max_length=128)
+    consumer_contract_digest: str = Field(pattern=_DIGEST)
+    source_commit: str | None = Field(pattern=r"^[0-9a-f]{7,40}$")
 
     @model_validator(mode="after")
     def _consistent_authority(self) -> StatusResponse:
@@ -503,6 +510,23 @@ class StatusResponse(StrictV3Model):
             raise ValueError("cutover evidence must be complete")
         if (self.production_authority == "v3") != cutover_evidence_present:
             raise ValueError("V3 production authority requires cutover evidence")
+        expected_flags = {
+            "rehearsal_ready": (True, False),
+            "production_ready": (True, True),
+            "ineligible": (False, False),
+        }[self.v3_option_state]
+        if (self.rehearsal_eligible, self.production_eligible) != expected_flags:
+            raise ValueError("V3 readiness evidence is internally inconsistent")
+        if self.production_eligible != (self.production_authority == "v3"):
+            raise ValueError("V3 readiness evidence differs from production authority")
+        if self.eligibility_reason_codes != tuple(sorted(set(self.eligibility_reason_codes))):
+            raise ValueError("V3 readiness evidence reason codes must be canonical")
+        if self.v3_option_state == "rehearsal_ready" and (
+            "production_cutover_not_verified" not in self.eligibility_reason_codes
+        ):
+            raise ValueError("V3 readiness evidence must explain rehearsal-only eligibility")
+        if (self.source_commit is not None) != self.rehearsal_eligible:
+            raise ValueError("V3 readiness evidence requires exact service source identity")
         return self
 
 

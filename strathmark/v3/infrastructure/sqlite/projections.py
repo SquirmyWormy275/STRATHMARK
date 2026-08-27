@@ -3506,6 +3506,18 @@ class SQLiteFieldProjectionStore:
             ).fetchone()
             expected_roster = [str(item.competitor_id) for item in field.ordered_assignments]
             expected_stands = [str(item.stand_id) for item in field.ordered_assignments]
+            expected_ingress_payload = {
+                "schema_version": "strathmark-v3-upstream-snapshot-v1",
+                "entity_kind": "field",
+                "entity_id": str(field.field_id),
+                "upstream_revision": int(ingress[0]),
+                "tournament_id": str(ingress[1]),
+                "round_id": str(ingress[2]),
+                "snapshot": snapshot,
+                "snapshot_digest": str(ingress[5]),
+            }
+            if "engine_selection" in ingress_payload:
+                expected_ingress_payload["engine_selection"] = ingress_payload["engine_selection"]
             if (
                 int(ingress[0]) != field.field_revision
                 or str(ingress[1]) != str(field.tournament_id)
@@ -3519,17 +3531,7 @@ class SQLiteFieldProjectionStore:
                 or snapshot.get("scheduled_at") != field.scheduled_at
                 or snapshot.get("deadline_at") != field.deadline_at
                 or str(ingress[5]) != canonical_digest(snapshot)
-                or ingress_payload
-                != {
-                    "schema_version": "strathmark-v3-upstream-snapshot-v1",
-                    "entity_kind": "field",
-                    "entity_id": str(field.field_id),
-                    "upstream_revision": int(ingress[0]),
-                    "tournament_id": str(ingress[1]),
-                    "round_id": str(ingress[2]),
-                    "snapshot": snapshot,
-                    "snapshot_digest": str(ingress[5]),
-                }
+                or ingress_payload != expected_ingress_payload
                 or ingress_head is None
                 or int(ingress_head[0]) != ingress_event.aggregate_version
                 or str(ingress_head[1]) != ingress_event.event_digest

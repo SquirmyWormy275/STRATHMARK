@@ -31,6 +31,7 @@ from strathmark.v3.api.schemas import (  # noqa: E402
     ScopeOpenRequest,
     SettlementRequest,
     SnapshotSyncRequest,
+    StatusResponse,
 )
 from strathmark.v3.consumer_contract import (  # noqa: E402
     EXPECTED_V3_CONSUMER_PATHS,
@@ -67,6 +68,49 @@ def test_packaged_contract_is_canonical_checksum_verified_and_v3_only() -> None:
     assert all(path.startswith("/v3/") for path in document["paths"])
     assert b"smv3." not in raw.lower()
     assert b"bearer ey" not in raw.lower()
+
+
+def test_status_contract_distinguishes_rehearsal_from_production_eligibility() -> None:
+    common = {
+        "service": "ready",
+        "authority_sequence": 1,
+        "engine_authority": "v2",
+        "v3_readiness": "candidate",
+        "production_authority": "v2",
+        "cutover_receipt_digest": None,
+        "cutover_verified_at_utc": None,
+        "deep_verification_state": "verified",
+        "event_last_deep_verified_at_utc": "2026-08-25T12:00:00.000Z",
+        "event_checkpoint_digest": "a" * 64,
+        "field_last_deep_verified_at_utc": "2026-08-25T12:00:00.000Z",
+        "field_checkpoint_digest": "b" * 64,
+        "job_last_deep_verified_at_utc": "2026-08-25T12:00:00.000Z",
+        "job_checkpoint_digest": "c" * 64,
+        "open_tournament_count": 0,
+        "v3_option_state": "rehearsal_ready",
+        "rehearsal_eligible": True,
+        "production_eligible": False,
+        "eligibility_reason_codes": ("production_cutover_not_verified",),
+        "consumer_contract_version": V3_CONSUMER_CONTRACT_VERSION,
+        "consumer_contract_digest": "d" * 64,
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    }
+    status = StatusResponse(**common)
+    assert status.v3_option_state == "rehearsal_ready"
+
+    with pytest.raises(ValueError, match="readiness evidence"):
+        StatusResponse(**{**common, "production_eligible": True})
+
+    ineligible = StatusResponse(
+        **{
+            **common,
+            "v3_option_state": "ineligible",
+            "rehearsal_eligible": False,
+            "eligibility_reason_codes": ("service_identity_unavailable",),
+            "source_commit": None,
+        }
+    )
+    assert not ineligible.rehearsal_eligible
 
 
 def test_frozen_contract_has_no_non_executable_generic_command_surface() -> None:

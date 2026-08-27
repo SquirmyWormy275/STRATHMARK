@@ -67,7 +67,12 @@ from strathmark.v3.contracts.commands import (
     InlinePayload,
 )
 from strathmark.v3.contracts.errors import ContractError
-from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
+from strathmark.v3.contracts.events import (
+    AggregateKind,
+    CompetitionEngineSelection,
+    EventEnvelope,
+    EventKind,
+)
 from strathmark.v3.contracts.evidence import EvidencePacket, TargetContext
 from strathmark.v3.contracts.forecasts import (
     AssessorForecast,
@@ -912,6 +917,7 @@ def _ingest_field(
     capacity: CapacityManifest | None = None,
     competitors: list[str] | None = None,
     stands: list[str] | None = None,
+    engine_selection: CompetitionEngineSelection | None = None,
 ) -> None:
     capacity = _capacity_manifest() if capacity is None else capacity
     competitors = ["competitor:b", "competitor:a"] if competitors is None else competitors
@@ -933,6 +939,7 @@ def _ingest_field(
                 "scheduled_at": "2026-08-24T18:00:00.000Z",
                 "deadline_at": "2026-08-24T18:02:00.000Z",
             },
+            engine_selection,
         ),
         command_id=IdempotencyKey(f"command:field-revision-{revision}"),
         actor_id=ACTOR,
@@ -953,6 +960,7 @@ def _bootstrap(
     manual_medians: dict[str, int] | None = None,
     competitor_count: int = 2,
     component_seed_offset: int = 0,
+    engine_selection: CompetitionEngineSelection | None = None,
 ) -> tuple[
     SQLiteFieldProjectionStore,
     FrozenFieldRevision,
@@ -970,6 +978,7 @@ def _bootstrap(
             tournament,
             None,
             {"bundle_id": "bundle:verified", "historical_cutoff_key": "history:cutoff"},
+            engine_selection,
         ),
         command_id=IdempotencyKey("command:tournament-snapshot"),
         actor_id=ACTOR,
@@ -988,6 +997,7 @@ def _bootstrap(
                 "predecessor_round_ids": [],
                 "successor_round_ids": [],
             },
+            engine_selection,
         ),
         command_id=IdempotencyKey("command:round-snapshot"),
         actor_id=ACTOR,
@@ -1017,6 +1027,7 @@ def _bootstrap(
         actor_id=ACTOR,
         occurred_at_utc=NOW,
         monotonic_elapsed_ms=3,
+        engine_selection=engine_selection,
     )
     signer = P256EphemeralSigner.generate("integrity-key:u15")
     trust_store = IntegrityTrustStore((signer.identity,))
@@ -1084,6 +1095,7 @@ def _bootstrap(
         capacity=capacity_manifest,
         competitors=competitor_ids,
         stands=stand_ids,
+        engine_selection=engine_selection,
     )
     field = _field(
         evidence_digest=epoch.content_digest,

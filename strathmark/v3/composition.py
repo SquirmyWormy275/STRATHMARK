@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from strathmark.v3.application.gateway import V3ServiceIdentity
 from strathmark.v3.contracts.canonical import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_DEPTH,
@@ -203,6 +204,7 @@ def compose_v3_application_gateway(
     rolling_reactions: object | None = None,
     clock: object,
     caller_namespace: str = "api",
+    service_identity: V3ServiceIdentity | None = None,
 ):
     """Explicitly construct the concrete V3 API application port.
 
@@ -244,6 +246,8 @@ def compose_v3_application_gateway(
         raise ValueError("V3 gateway requires settlement reactions on the configured database")
     if not callable(clock):
         raise TypeError("V3 gateway requires an injected UTC millisecond clock")
+    if service_identity is not None and not isinstance(service_identity, V3ServiceIdentity):
+        raise TypeError("V3 gateway service identity must be verified composition evidence")
     if rolling_reactions is not None and (
         not callable(getattr(rolling_reactions, "react", None))
         or getattr(rolling_reactions, "database_path", None) != database
@@ -270,6 +274,7 @@ def compose_v3_application_gateway(
         services,
         clock=clock,
         caller_namespace=caller_namespace,
+        service_identity=service_identity,
     )
 
 
@@ -401,6 +406,7 @@ def _reject_production_test_path(path: Path) -> None:
 
 __all__ = [
     "V3RuntimeConfig",
+    "V3ServiceIdentity",
     "compose_production_ml_authorities",
     "compose_test_ml_audit_authority",
     "compose_test_ml_candidate_authority",

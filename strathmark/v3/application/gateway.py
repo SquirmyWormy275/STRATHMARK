@@ -8,6 +8,7 @@ were explicitly composed for this process.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +52,10 @@ from strathmark.v3.application.lifecycle import (
     UpstreamSnapshot,
 )
 from strathmark.v3.application.settlement import SettlementCommand, SettlementService
+from strathmark.v3.consumer_contract import (
+    V3_CONSUMER_CONTRACT_VERSION,
+    v3_consumer_contract_digest,
+)
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.commands import CommandKind
 from strathmark.v3.contracts.events import (
@@ -66,7 +71,7 @@ from strathmark.v3.contracts.identifiers import (
     deterministic_identifier,
     require_identifier,
 )
-from strathmark.v3.contracts.receipts import FieldReceipt
+from strathmark.v3.contracts.receipts import EngineAuthorityBinding, FieldReceipt
 from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus
 from strathmark.v3.domain.evidence import LiveResultSubmission
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
@@ -132,6 +137,34 @@ class VerifiedV3CutoverState:
         require_utc_milliseconds(self.verified_at_utc)
 
 
+@dataclass(frozen=True, slots=True)
+class V3ServiceIdentity:
+    """Installation/composition-owned identity for one executable V3 service."""
+
+    source_commit: str
+    consumer_contract_version: str
+    consumer_contract_digest: str
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[0-9a-f]{7,40}", self.source_commit) is None:
+            raise ValueError("V3 service source commit is invalid")
+        if self.consumer_contract_version != V3_CONSUMER_CONTRACT_VERSION:
+            raise ValueError("V3 service consumer contract version is unsupported")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", self.consumer_contract_digest) is None
+            or self.consumer_contract_digest != v3_consumer_contract_digest()
+        ):
+            raise ValueError("V3 service consumer contract digest is not installed evidence")
+
+    @classmethod
+    def from_installed_contract(cls, *, source_commit: str) -> V3ServiceIdentity:
+        return cls(
+            source_commit=source_commit,
+            consumer_contract_version=V3_CONSUMER_CONTRACT_VERSION,
+            consumer_contract_digest=v3_consumer_contract_digest(),
+        )
+
+
 class V3ApplicationGateway:
     """Packaged implementation of :class:`V3ApplicationPort`."""
 
@@ -142,6 +175,7 @@ class V3ApplicationGateway:
         clock: Callable[[], str],
         caller_namespace: str = "api",
         verified_cutover: Callable[[], VerifiedV3CutoverState | None] | None = None,
+        service_identity: V3ServiceIdentity | None = None,
     ) -> None:
         if not isinstance(services, GatewayServices) or not callable(clock):
             raise TypeError("gateway requires typed services and an injected clock")
@@ -158,6 +192,9 @@ class V3ApplicationGateway:
         if verified_cutover is not None and not callable(verified_cutover):
             raise TypeError("verified cutover authority must be callable")
         self._verified_cutover = verified_cutover or (lambda: None)
+        if service_identity is not None and not isinstance(service_identity, V3ServiceIdentity):
+            raise TypeError("V3 service identity must be verified composition evidence")
+        self._service_identity = service_identity
 
     def verify_startup(self) -> None:
         """Run the explicit deep audit once before the application begins serving."""
@@ -168,6 +205,7 @@ class V3ApplicationGateway:
 
     def open_scope(self, payload: dict[str, Any], context: RequestContext) -> ScopeOpenResponse:
         selection = CompetitionEngineSelection.from_dict(payload["engine_selection"])
+        self._require_selection_compatible(selection)
         self._verify_scope_snapshot_selection(payload, selection)
         configure_id = IdempotencyKey(
             str(
@@ -218,6 +256,7 @@ class V3ApplicationGateway:
             payload["snapshot"],
             CompetitionEngineSelection.from_dict(payload["engine_selection"]),
         )
+        self._require_selection_compatible(snapshot.engine_selection)
         stored = self._services.lifecycle.ingest_snapshot(
             snapshot,
             command_id=context.command_id,
@@ -234,6 +273,7 @@ class V3ApplicationGateway:
         )
 
     def freeze_round(self, payload: dict[str, Any], context: RequestContext) -> RoundFreezeResponse:
+        self._require_scope_compatible(self._round_parent(payload["round_id"]))
         if self._round_state(payload["round_id"]) is None:
             configure_id = IdempotencyKey(
                 str(
@@ -278,6 +318,7 @@ class V3ApplicationGateway:
     def approval_page(
         self, payload: dict[str, Any], _context: RequestContext
     ) -> ApprovalPageResponse:
+        self._require_scope_compatible(payload["tournament_id"])
         with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             meta = connection.execute(
                 "SELECT 1 FROM v3_approval_projection_meta WHERE tournament_id=?",
@@ -327,6 +368,7 @@ class V3ApplicationGateway:
     def approval_detail(
         self, payload: dict[str, Any], _context: RequestContext
     ) -> ApprovalDetailResponse:
+        self._require_scope_compatible(payload["tournament_id"])
         detail = self._services.fields.approval_detail(**payload)
         with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
             row = connection.execute(
@@ -346,6 +388,7 @@ class V3ApplicationGateway:
         )
 
     def close_round(self, payload: dict[str, Any], context: RequestContext) -> RoundCloseResponse:
+        self._require_scope_compatible(self._round_parent(payload["round_id"]))
         if self._round_state(payload["round_id"]) == "round_frozen":
             begin_id = IdempotencyKey(
                 str(
@@ -384,6 +427,7 @@ class V3ApplicationGateway:
         )
 
     def close_scope(self, payload: dict[str, Any], context: RequestContext) -> ScopeCloseResponse:
+        self._require_scope_compatible(payload["scope_id"])
         stored = self._services.lifecycle.close_tournament(
             StableIdentifier(payload["scope_id"]),
             command_id=context.command_id,
@@ -400,6 +444,7 @@ class V3ApplicationGateway:
     def prepare_card(
         self, payload: dict[str, Any], _context: RequestContext
     ) -> PrepareCardResponse:
+        self._require_scope_compatible(payload["tournament_id"])
         field = self._resolve_field(payload["field_id"])
         if (
             str(field.tournament_id) != payload["tournament_id"]
@@ -449,6 +494,7 @@ class V3ApplicationGateway:
             request_identity=str(context.command_id),
             actor_id=str(context.principal.principal_id),
             occurred_at=self._clock(),
+            engine_authority=self._scope_engine_authority(str(field.tournament_id)),
         )
         authority_sequence = self._receipt_sequence(str(result.receipt.receipt_id))
         return AssembleFieldResponse(
@@ -512,6 +558,7 @@ class V3ApplicationGateway:
         if len(tournament_ids) != 1:
             self._conflict("issue_receipts_span_tournaments")
         tournament_id = next(iter(tournament_ids))
+        self._require_scope_compatible(tournament_id)
         snapshot = self._services.fields.approval_page(
             tournament_id=tournament_id, offset=0, limit=1
         )
@@ -581,6 +628,7 @@ class V3ApplicationGateway:
     def record_approval_decision(
         self, payload: dict[str, Any], context: RequestContext
     ) -> ApprovalDecisionResponse:
+        self._require_scope_compatible(payload["tournament_id"])
         bindings = (*payload["selected"], *payload["excluded"])
         for binding in bindings:
             try:
@@ -671,6 +719,7 @@ class V3ApplicationGateway:
         receipt = self._services.fields.verified_receipt(payload["receipt_id"])
         self._verify_issue_binding(payload["issue_batch_id"], payload["receipt_id"])
         tournament_id, round_id = self._field_parent(str(receipt.field_id))
+        self._require_scope_compatible(tournament_id)
         rows = {item["competitor_id"]: item for item in payload["results"]}
         roster = tuple(str(item) for item in receipt.ordered_competitor_ids)
         if set(rows) != set(roster):
@@ -756,8 +805,17 @@ class V3ApplicationGateway:
         cutover = self._verified_cutover()
         if cutover is not None and not isinstance(cutover, VerifiedV3CutoverState):
             raise TypeError("verified cutover authority returned an invalid state")
-        production_authority = "v3" if cutover is not None else "v2"
-        v3_readiness = "production" if cutover is not None else "candidate"
+        identity = getattr(self, "_service_identity", None)
+        effective_cutover = cutover if identity is not None else None
+        production_authority = "v3" if effective_cutover is not None else "v2"
+        v3_readiness = "production" if effective_cutover is not None else "candidate"
+        v3_option_state = (
+            "ineligible"
+            if identity is None
+            else "production_ready"
+            if effective_cutover is not None
+            else "rehearsal_ready"
+        )
         field_checkpoint_unavailable = (
             int(field_integrity["authority_sequence"]) == 0
             and str(field_integrity["checkpoint_digest"]) == "0" * 64
@@ -769,8 +827,12 @@ class V3ApplicationGateway:
             engine_authority=production_authority,
             v3_readiness=v3_readiness,
             production_authority=production_authority,
-            cutover_receipt_digest=None if cutover is None else cutover.receipt_digest,
-            cutover_verified_at_utc=None if cutover is None else cutover.verified_at_utc,
+            cutover_receipt_digest=(
+                None if effective_cutover is None else effective_cutover.receipt_digest
+            ),
+            cutover_verified_at_utc=(
+                None if effective_cutover is None else effective_cutover.verified_at_utc
+            ),
             deep_verification_state=("unavailable" if field_checkpoint_unavailable else "verified"),
             event_last_deep_verified_at_utc=str(event_integrity["last_deep_verified_at"]),
             event_checkpoint_digest=str(event_integrity["checkpoint_digest"]),
@@ -779,6 +841,19 @@ class V3ApplicationGateway:
             job_last_deep_verified_at_utc=str(job_integrity["last_deep_verified_at"]),
             job_checkpoint_digest=str(job_integrity["checkpoint_digest"]),
             open_tournament_count=open_count,
+            v3_option_state=v3_option_state,
+            rehearsal_eligible=identity is not None,
+            production_eligible=effective_cutover is not None,
+            eligibility_reason_codes=(
+                ("service_identity_unavailable",)
+                if identity is None
+                else ()
+                if effective_cutover is not None
+                else ("production_cutover_not_verified",)
+            ),
+            consumer_contract_version=V3_CONSUMER_CONTRACT_VERSION,
+            consumer_contract_digest=v3_consumer_contract_digest(),
+            source_commit=None if identity is None else identity.source_commit,
         )
 
     def _resolve_field(self, field_id: str) -> FrozenFieldRevision:
@@ -842,6 +917,19 @@ class V3ApplicationGateway:
             ).fetchone()
         return None if row is None else str(row[0])
 
+    def _round_parent(self, round_id: str) -> str:
+        require_identifier(round_id, expected_namespace="round")
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT tournament_id FROM v3_ingress_snapshots "
+                "WHERE entity_kind='round' AND entity_id=? "
+                "ORDER BY upstream_revision DESC LIMIT 1",
+                (round_id,),
+            ).fetchone()
+        if row is None:
+            self._not_found("round_authority_not_found")
+        return str(row[0])
+
     def _verify_scope_snapshot_selection(
         self, payload: Mapping[str, Any], selection: CompetitionEngineSelection
     ) -> None:
@@ -868,6 +956,63 @@ class V3ApplicationGateway:
             for sequence in latest.values()
         ):
             self._conflict("scope_snapshot_selection_differs")
+
+    def _require_selection_compatible(self, selection: CompetitionEngineSelection | None) -> None:
+        identity = self._service_identity
+        if identity is None:
+            self._conflict("service_identity_unavailable")
+        if selection is None or (
+            selection.consumer_contract_digest != identity.consumer_contract_digest
+            or selection.source_commit != identity.source_commit
+        ):
+            self._conflict("scope_service_identity_mismatch")
+
+    def _require_scope_compatible(self, tournament_id: str) -> None:
+        require_identifier(tournament_id, expected_namespace="tournament")
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT global_sequence FROM v3_events WHERE aggregate_id=? "
+                "AND event_kind='tournament_opened' ORDER BY aggregate_version DESC LIMIT 1",
+                (tournament_id,),
+            ).fetchone()
+        if row is None:
+            self._conflict("field_scope_has_no_engine_authority")
+        opened = self._services.events.event_at(int(row[0]))
+        selection_value = opened.command.payload.to_value().get("engine_selection")
+        if selection_value is None:
+            self._conflict("field_scope_has_no_engine_authority")
+        if not isinstance(selection_value, Mapping):
+            self._conflict("field_scope_engine_authority_is_malformed")
+        self._require_selection_compatible(CompetitionEngineSelection.from_dict(selection_value))
+
+    def _scope_engine_authority(self, tournament_id: str) -> EngineAuthorityBinding:
+        require_identifier(tournament_id, expected_namespace="tournament")
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT global_sequence FROM v3_events WHERE aggregate_id=? "
+                "AND event_kind='tournament_opened' ORDER BY aggregate_version DESC LIMIT 1",
+                (tournament_id,),
+            ).fetchone()
+        if row is None:
+            self._conflict("field_scope_has_no_engine_authority")
+        opened = self._services.events.event_at(int(row[0]))
+        selection_value = opened.command.payload.to_value().get("engine_selection")
+        if selection_value is None:
+            self._conflict("field_scope_has_no_engine_authority")
+        if not isinstance(selection_value, Mapping):
+            self._conflict("field_scope_engine_authority_is_malformed")
+        selection = CompetitionEngineSelection.from_dict(selection_value)
+        if str(selection.scope_id) != tournament_id:
+            self._conflict("field_scope_engine_authority_differs")
+        self._require_selection_compatible(selection)
+        return EngineAuthorityBinding(
+            scope_id=selection.scope_id,
+            engine=selection.engine,
+            mode=selection.mode,
+            selection_digest=selection.selection_digest,
+            consumer_contract_digest=selection.consumer_contract_digest,
+            source_commit=selection.source_commit,
+        )
 
     def _submission(
         self,

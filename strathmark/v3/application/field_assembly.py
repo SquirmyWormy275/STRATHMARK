@@ -31,6 +31,7 @@ from strathmark.v3.contracts.identifiers import (
 )
 from strathmark.v3.contracts.receipts import (
     BundleIdentity,
+    EngineAuthorityBinding,
     FieldReceipt,
     MarkAssignment,
     PacketIdentity,
@@ -2815,6 +2816,7 @@ class FieldAssemblyService:
         request_identity: str,
         actor_id: str,
         occurred_at: str,
+        engine_authority: EngineAuthorityBinding | None = None,
         build_pipeline: PipelineBuilder | None = None,
         manual_action_binding: Any | None = None,
         supersession_kind: str,
@@ -2824,6 +2826,10 @@ class FieldAssemblyService:
         request = require_idempotency_key(request_identity)
         require_identifier(actor_id, expected_namespace="actor")
         require_utc_milliseconds(occurred_at)
+        if engine_authority is not None and not isinstance(
+            engine_authority, EngineAuthorityBinding
+        ):
+            raise AssemblyError("field assembly engine authority must be typed")
         manual_requirement = None
         if manual_action_binding is not None or (
             supersession_kind == "construction" and self._manual_action_store is not None
@@ -2871,6 +2877,10 @@ class FieldAssemblyService:
             field_revision_digest=field.revision_digest,
         )
         if retry is not None:
+            if retry.receipt.engine_authority != engine_authority:
+                raise AssemblyConflict(
+                    "field receipt engine authority differs from the current request"
+                )
             return retry
         configured_builder = build_pipeline is None
         selected_builder = build_pipeline if build_pipeline is not None else self._pipeline_builder
@@ -3133,6 +3143,7 @@ class FieldAssemblyService:
             warning_codes=_warnings(pipeline),
             total_latency_ms=pipeline.total_latency_ms,
             bundles=(BundleIdentity("runtime", "bundle:v3", field.bundle_digest),),
+            engine_authority=engine_authority,
         )
         crn = tuple(
             (str(item.competitor_id), str(item.stand_id), item.crn_index)

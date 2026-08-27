@@ -21,12 +21,25 @@ from strathmark.v3.contracts.identifiers import (
 )
 from strathmark.v3.contracts.receipts import (
     BundleIdentity,
+    EngineAuthorityBinding,
     FieldReceipt,
     MarkAssignment,
     PacketIdentity,
     ReceiptSection,
     ReceiptSectionKind,
 )
+from strathmark.v3.contracts.statuses import EngineExecutionMode, PredictionEngine
+
+
+def _authority_binding() -> EngineAuthorityBinding:
+    return EngineAuthorityBinding(
+        scope_id=StableIdentifier("tournament:show"),
+        engine=PredictionEngine.V3,
+        mode=EngineExecutionMode.REHEARSAL,
+        selection_digest="9" * 64,
+        consumer_contract_digest="a" * 64,
+        source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    )
 
 
 def _sections() -> tuple[ReceiptSection, ...]:
@@ -87,6 +100,21 @@ def test_atomic_field_receipt_is_content_addressed_and_round_trips() -> None:
     assert receipt.receipt_id == receipt.recompute_receipt_id()
     assert receipt.target_context.event_code == "underhand"
     assert receipt.target_context_digest == receipt.target_context.digest
+
+
+def test_bound_field_receipt_canonically_names_exact_scope_engine_and_mode() -> None:
+    receipt = FieldReceipt.create(
+        **{**_receipt().creation_arguments(), "engine_authority": _authority_binding()}
+    )
+
+    assert receipt.engine_authority == _authority_binding()
+    assert receipt.to_dict()["engine_authority"] == _authority_binding().to_dict()
+    assert FieldReceipt.from_dict(receipt.to_dict()) == receipt
+
+    encoded = receipt.to_dict()
+    encoded["engine_authority"]["mode"] = "production"
+    with pytest.raises(ContractError):
+        FieldReceipt.from_dict(encoded)
 
 
 def test_fresh_receipt_creation_reuses_its_same_call_content_proof(

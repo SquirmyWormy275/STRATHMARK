@@ -46,9 +46,13 @@ from strathmark.v3.application.pipeline_builder import (  # noqa: E402
     SQLiteCapabilityStateResolver,
 )
 from strathmark.v3.assessors.formula import FormulaManifest  # noqa: E402
-from strathmark.v3.composition import compose_v3_application_gateway  # noqa: E402
+from strathmark.v3.composition import (  # noqa: E402
+    V3ServiceIdentity,
+    compose_v3_application_gateway,
+)
+from strathmark.v3.consumer_contract import v3_consumer_contract_digest  # noqa: E402
 from strathmark.v3.contracts.canonical import canonical_digest  # noqa: E402
-from strathmark.v3.contracts.events import EventKind  # noqa: E402
+from strathmark.v3.contracts.events import CompetitionEngineSelection, EventKind  # noqa: E402
 from strathmark.v3.contracts.evidence import (
     EvidencePacket,
     ResultObservation,
@@ -58,7 +62,12 @@ from strathmark.v3.contracts.identifiers import (  # noqa: E402
     StableIdentifier,
     deterministic_identifier,
 )
-from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus  # noqa: E402
+from strathmark.v3.contracts.statuses import (  # noqa: E402
+    EngineExecutionMode,
+    OfficialResult,
+    PredictionEngine,
+    ResultStatus,
+)
 from strathmark.v3.domain.capability import CapabilityPrior  # noqa: E402
 from strathmark.v3.domain.credibility import WeightReceipt  # noqa: E402
 from strathmark.v3.domain.disagreement import (
@@ -134,9 +143,27 @@ def _runtime(
     fail_reactions_once: bool = False,
     schedule_cross_epoch_decoy: bool = False,
     verified_cutover: VerifiedV3CutoverState | None = None,
+    bind_selection: bool = True,
+    service_source_commit: str | None = "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
 ):
     database = tmp_path / "runtime.sqlite3"
-    store, field, build, _lifecycle = _bootstrap(database)
+    store, field, build, _lifecycle = _bootstrap(
+        database,
+        engine_selection=(
+            CompetitionEngineSelection(
+                scope_id=StableIdentifier("tournament:show"),
+                engine=PredictionEngine.V3,
+                mode=EngineExecutionMode.REHEARSAL,
+                selected_by_actor_id=StableIdentifier("actor:manager"),
+                selected_at_utc=NOW,
+                reason_code="runtime_contract_proof",
+                consumer_contract_digest=v3_consumer_contract_digest(),
+                source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            )
+            if bind_selection
+            else None
+        ),
+    )
     pipeline = build(field)
     formula_manifest = FormulaManifest.load("benchmarks/v3/formula_manifest.json")
     source_sequences = set(range(101, 101 + len(pipeline.pools)))
@@ -383,12 +410,18 @@ def _runtime(
         issue_coordinator=issue_coordinator,
         settlement_reactions=reactions,
         clock=lambda: "2026-08-25T18:00:00.000Z",
+        service_identity=(
+            None
+            if service_source_commit is None
+            else V3ServiceIdentity.from_installed_contract(source_commit=service_source_commit)
+        ),
     )
     if verified_cutover is not None:
         gateway = V3ApplicationGateway(
             gateway._services,
             clock=lambda: "2026-08-25T18:00:00.000Z",
             verified_cutover=lambda: verified_cutover,
+            service_identity=gateway._service_identity,
         )
     registry = ServiceCredentialRegistry(
         SQLiteEventStore(database), InMemoryCredentialSecretStore()
@@ -560,6 +593,24 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
         },
     )
     assert assembled.status_code == 200, assembled.text
+    receipt_value = json.loads(assembled.json()["canonical_receipt_json"])
+    assert receipt_value["engine_authority"] == {
+        "scope_id": "tournament:show",
+        "engine": "v3",
+        "mode": "rehearsal",
+        "selection_digest": CompetitionEngineSelection(
+            scope_id=StableIdentifier("tournament:show"),
+            engine=PredictionEngine.V3,
+            mode=EngineExecutionMode.REHEARSAL,
+            selected_by_actor_id=StableIdentifier("actor:manager"),
+            selected_at_utc=NOW,
+            reason_code="runtime_contract_proof",
+            consumer_contract_digest=v3_consumer_contract_digest(),
+            source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        ).selection_digest,
+        "consumer_contract_digest": v3_consumer_contract_digest(),
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    }
     receipt_id = assembled.json()["receipt_id"]
     assert assembled.json()["disposition"] == "prepared"
 
@@ -712,6 +763,139 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     )
 
 
+def test_public_field_assembly_rejects_an_unselected_legacy_scope(tmp_path: Path) -> None:
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, bind_selection=False
+    )
+    response = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "assemble-unselected"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "field_scope_has_no_engine_authority"
+
+
+def test_status_and_numeric_work_fail_closed_without_exact_service_identity(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, service_source_commit=None
+    )
+    status = client.get("/v3/status", headers=_headers(credential, "status-missing")).json()
+    assert status["v3_option_state"] == "ineligible"
+    assert status["source_commit"] is None
+    assert status["eligibility_reason_codes"] == ["service_identity_unavailable"]
+
+    response = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "assemble-missing-identity"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "service_identity_unavailable"
+
+
+def test_numeric_work_rejects_scope_pinned_to_different_service_source(tmp_path: Path) -> None:
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, service_source_commit="d" * 40
+    )
+    response = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "assemble-source-mismatch"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "scope_service_identity_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("service_source", "selection_source", "selection_contract"),
+    (
+        (
+            "d" * 40,
+            "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            v3_consumer_contract_digest(),
+        ),
+        (
+            "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            "0" * 64,
+        ),
+    ),
+)
+def test_scope_open_rejects_a_selection_pinned_to_different_service_identity(
+    tmp_path: Path,
+    service_source: str,
+    selection_source: str,
+    selection_contract: str,
+) -> None:
+    client, credential, _store, _field, _reactions, _repository = _runtime(
+        tmp_path, service_source_commit=service_source
+    )
+    response = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "open-source-mismatch"),
+        json={
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:different-show",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:different-root"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:different-show",
+                "engine": "v3",
+                "mode": "rehearsal",
+                "selected_by_actor_id": "actor:judge",
+                "selected_at_utc": "2026-08-25T17:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": selection_contract,
+                "source_commit": selection_source,
+            },
+            "opened_at_utc": "2026-08-25T18:00:00.000Z",
+            "deadline_ms": 1_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "scope_service_identity_mismatch"
+
+
+def test_service_identity_rejects_malformed_or_unverified_installation_evidence() -> None:
+    with pytest.raises(ValueError, match="source commit"):
+        V3ServiceIdentity.from_installed_contract(source_commit="not-a-commit")
+    with pytest.raises(ValueError, match="installed evidence"):
+        V3ServiceIdentity(
+            source_commit="d" * 40,
+            consumer_contract_version="strathmark.v3-consumer-contract.v5",
+            consumer_contract_digest="0" * 64,
+        )
+
+
 def test_concrete_gateway_exposes_scope_snapshot_freeze_and_close_lifecycle(
     tmp_path: Path,
 ) -> None:
@@ -726,7 +910,7 @@ def test_concrete_gateway_exposes_scope_snapshot_freeze_and_close_lifecycle(
         "selected_by_actor_id": "actor:judge-seven",
         "selected_at_utc": "2026-08-25T17:59:54.000Z",
         "reason_code": "new_competition",
-        "consumer_contract_digest": "a" * 64,
+        "consumer_contract_digest": v3_consumer_contract_digest(),
         "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     }
     common = {
@@ -886,6 +1070,12 @@ def test_status_separates_candidate_health_from_production_authority(tmp_path) -
     assert status["cutover_receipt_digest"] is None
     assert status["cutover_verified_at_utc"] is None
     assert status["deep_verification_state"] == "verified"
+    assert status["v3_option_state"] == "rehearsal_ready"
+    assert status["rehearsal_eligible"] is True
+    assert status["production_eligible"] is False
+    assert status["source_commit"] == "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f"
+    assert status["consumer_contract_version"] == "strathmark.v3-consumer-contract.v5"
+    assert status["consumer_contract_digest"] == v3_consumer_contract_digest()
     assert len(status["event_checkpoint_digest"]) == 64
     assert len(status["field_checkpoint_digest"]) == 64
     assert len(status["job_checkpoint_digest"]) == 64
