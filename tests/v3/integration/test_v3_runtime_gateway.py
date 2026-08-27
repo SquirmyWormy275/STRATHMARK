@@ -108,6 +108,20 @@ def _headers(credential: str, key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {credential}", "Idempotency-Key": key}
 
 
+def _pre_field_payload(field) -> dict[str, object]:
+    return {
+        "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+        "tournament_id": str(field.tournament_id),
+        "round_id": str(field.round_id),
+        "forecast_set_revision": 1,
+        "ordered_competitor_ids": [str(item.competitor_id) for item in field.ordered_assignments],
+        "target_context": field.target_context.to_dict(),
+        "hard_deadline_at": field.deadline_at,
+        "requested_at_utc": NOW,
+        "deadline_ms": 10_000,
+    }
+
+
 @dataclass
 class _CapabilitySourceAuthority:
     accepted: set[int]
@@ -145,6 +159,8 @@ def _runtime(
     verified_cutover: VerifiedV3CutoverState | None = None,
     bind_selection: bool = True,
     service_source_commit: str | None = "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    persist_field_snapshot: bool = True,
+    schedule_cards: bool = True,
 ):
     database = tmp_path / "runtime.sqlite3"
     store, field, build, _lifecycle = _bootstrap(
@@ -163,6 +179,7 @@ def _runtime(
             if bind_selection
             else None
         ),
+        persist_field_snapshot=persist_field_snapshot,
     )
     pipeline = build(field)
     formula_manifest = FormulaManifest.load("benchmarks/v3/formula_manifest.json")
@@ -258,11 +275,15 @@ def _runtime(
         )
         for index, card in enumerate(runtime_cards)
     )
-    scheduled = coordinator.schedule(
-        candidates,
-        capacity_use=CapacityUse(1, 2, 2, 2, 2, 1_024, 4_096, 25),
-        council_manifest_digest=council.body_digest,
-        observed_at=NOW,
+    scheduled = (
+        coordinator.schedule(
+            candidates,
+            capacity_use=CapacityUse(1, 2, 2, 2, 2, 1_024, 4_096, 25),
+            council_manifest_digest=council.body_digest,
+            observed_at=NOW,
+        )
+        if schedule_cards
+        else ()
     )
     candidate_by_digest = {item.key.card_digest: item for item in candidates}
     card_by_digest = {
@@ -306,7 +327,7 @@ def _runtime(
             clock=lambda: T2,
         )
         pending -= 1
-    for candidate in candidates:
+    for candidate in candidates if schedule_cards else ():
         card = card_by_digest[candidate.key.card_digest]
         coordinator.seal_card(
             candidate.key,
@@ -528,6 +549,66 @@ def _settlement_body(store, field, receipt_id: str, issue_batch_id: str):
     }
 
 
+def test_pre_field_forecast_reuses_cards_without_any_field_snapshot(tmp_path: Path) -> None:
+    client, credential, _store, field, _reactions, repository = _runtime(
+        tmp_path,
+        persist_field_snapshot=False,
+    )
+    with open_v3_connection(repository.database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_ingress_snapshots WHERE entity_kind='field'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    response = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-no-field"),
+        json=_pre_field_payload(field),
+    )
+
+    assert response.status_code == 200, response.text
+    receipt = json.loads(response.json()["canonical_receipt_json"])
+    assert receipt["purpose"] == "pre_field_seeding_only"
+    assert receipt["issued_mark"] is False
+    assert "field_id" not in response.request.content.decode("utf-8")
+    assert all("mark" not in item for item in receipt["forecasts"])
+
+
+def test_pre_field_forecast_schedules_five_jobs_each_without_a_field(tmp_path: Path) -> None:
+    client, credential, _store, field, _reactions, repository = _runtime(
+        tmp_path,
+        persist_field_snapshot=False,
+        schedule_cards=False,
+    )
+
+    response = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-schedule-no-field"),
+        json=_pre_field_payload(field),
+    )
+
+    assert response.status_code == 409, response.text
+    with open_v3_connection(repository.database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_ingress_snapshots WHERE entity_kind='field'"
+            ).fetchone()[0]
+            == 0
+        )
+        jobs = connection.execute("SELECT payload_json FROM v3_jobs ORDER BY job_id").fetchall()
+    assert len(jobs) == len(field.ordered_assignments) * 5
+    assert {json.loads(str(row[0]))["component_id"] for row in jobs} == {
+        "formula",
+        "ml",
+        "local_qwen35_9b",
+        "local_ministral3_8b",
+        "frontier_cloud",
+    }
+    assert all("field_id" not in json.loads(str(row[0])) for row in jobs)
+
+
 def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     tmp_path: Path,
 ) -> None:
@@ -578,6 +659,52 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     )
     assert prepared.status_code == 202, prepared.text
     assert prepared.json()["status"] == "ready"
+
+    forecast = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-before-field"),
+        json={
+            "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+            "tournament_id": str(field.tournament_id),
+            "round_id": str(field.round_id),
+            "forecast_set_revision": 1,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "target_context": field.target_context.to_dict(),
+            "hard_deadline_at": field.deadline_at,
+            "requested_at_utc": NOW,
+            "deadline_ms": 10_000,
+        },
+    )
+    assert forecast.status_code == 200, forecast.text
+    forecast_receipt = json.loads(forecast.json()["canonical_receipt_json"])
+    assert forecast_receipt["purpose"] == "pre_field_seeding_only"
+    assert forecast_receipt["issued_mark"] is False
+    assert [item["competitor_id"] for item in forecast_receipt["forecasts"]] == [
+        str(item.competitor_id) for item in field.ordered_assignments
+    ]
+    assert all("mark" not in item for item in forecast_receipt["forecasts"])
+    retry = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-before-field"),
+        json={
+            "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+            "tournament_id": str(field.tournament_id),
+            "round_id": str(field.round_id),
+            "forecast_set_revision": 1,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "target_context": field.target_context.to_dict(),
+            "hard_deadline_at": field.deadline_at,
+            "requested_at_utc": NOW,
+            "deadline_ms": 10_000,
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["disposition"] == "recovered"
+    assert retry.json()["receipt_digest"] == forecast.json()["receipt_digest"]
 
     assembled = client.post(
         "/v3/fields/assemble",
@@ -891,7 +1018,7 @@ def test_service_identity_rejects_malformed_or_unverified_installation_evidence(
     with pytest.raises(ValueError, match="installed evidence"):
         V3ServiceIdentity(
             source_commit="d" * 40,
-            consumer_contract_version="strathmark.v3-consumer-contract.v5",
+            consumer_contract_version="strathmark.v3-consumer-contract.v6",
             consumer_contract_digest="0" * 64,
         )
 
@@ -1074,7 +1201,7 @@ def test_status_separates_candidate_health_from_production_authority(tmp_path) -
     assert status["rehearsal_eligible"] is True
     assert status["production_eligible"] is False
     assert status["source_commit"] == "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f"
-    assert status["consumer_contract_version"] == "strathmark.v3-consumer-contract.v5"
+    assert status["consumer_contract_version"] == "strathmark.v3-consumer-contract.v6"
     assert status["consumer_contract_digest"] == v3_consumer_contract_digest()
     assert len(status["event_checkpoint_digest"]) == 64
     assert len(status["field_checkpoint_digest"]) == 64

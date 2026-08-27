@@ -205,6 +205,7 @@ def compose_v3_application_gateway(
     clock: object,
     caller_namespace: str = "api",
     service_identity: V3ServiceIdentity | None = None,
+    pre_field_forecasts: object | None = None,
 ):
     """Explicitly construct the concrete V3 API application port.
 
@@ -218,6 +219,10 @@ def compose_v3_application_gateway(
     from strathmark.v3.application.gateway import GatewayServices, V3ApplicationGateway
     from strathmark.v3.application.issuance import IssuanceService
     from strathmark.v3.application.lifecycle import LifecycleService
+    from strathmark.v3.application.pre_field_forecasts import (
+        PreFieldForecastService,
+        UnavailablePreFieldForecastInputSource,
+    )
     from strathmark.v3.application.settlement import SettlementService
     from strathmark.v3.infrastructure.integrity import (
         CriticalIssueCoordinator,
@@ -260,6 +265,17 @@ def compose_v3_application_gateway(
         trust_store=trust_store,
     )
     assembly = FieldAssemblyService(fields, pipeline_builder=pipeline_builder)
+    forecast_service = pre_field_forecasts
+    if forecast_service is None:
+        provider = getattr(pipeline_builder, "pre_field_source", None)
+        forecast_service = PreFieldForecastService(
+            database,
+            source=(provider() if callable(provider) else UnavailablePreFieldForecastInputSource()),
+            signer=signer,
+            trust_store=trust_store,
+        )
+    if not isinstance(forecast_service, PreFieldForecastService):
+        raise TypeError("V3 gateway pre-field forecast service is invalid")
     services = GatewayServices(
         events=SQLiteEventStore(database),
         lifecycle=lifecycle,
@@ -269,6 +285,7 @@ def compose_v3_application_gateway(
         settlement=SettlementService(lifecycle, reactions=settlement_reactions),
         settlement_reactions=settlement_reactions,
         jobs=job_repository,
+        pre_field_forecasts=forecast_service,
     )
     return V3ApplicationGateway(
         services,

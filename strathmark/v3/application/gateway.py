@@ -20,6 +20,7 @@ from strathmark.v3.api.schemas import (
     ApprovalPageResponse,
     AssembleFieldResponse,
     IssueAcknowledgmentResponse,
+    PreFieldForecastResponse,
     PrepareCardResponse,
     ReceiptLookupResponse,
     RoundCloseResponse,
@@ -46,17 +47,22 @@ from strathmark.v3.application.issuance import (
     IssueBatchCommand,
     IssueFieldSelection,
 )
+from strathmark.v3.application.job_ports import DurableJobError
 from strathmark.v3.application.lifecycle import (
     LifecycleService,
     SnapshotKind,
     UpstreamSnapshot,
+)
+from strathmark.v3.application.pre_field_forecasts import (
+    PreFieldForecastError,
+    PreFieldForecastService,
 )
 from strathmark.v3.application.settlement import SettlementCommand, SettlementService
 from strathmark.v3.consumer_contract import (
     V3_CONSUMER_CONTRACT_VERSION,
     v3_consumer_contract_digest,
 )
-from strathmark.v3.contracts.canonical import canonical_digest
+from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.commands import CommandKind
 from strathmark.v3.contracts.events import (
     AggregateKind,
@@ -64,13 +70,14 @@ from strathmark.v3.contracts.events import (
     EventEnvelope,
     EventKind,
 )
-from strathmark.v3.contracts.evidence import require_utc_milliseconds
+from strathmark.v3.contracts.evidence import TargetContext, require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import (
     IdempotencyKey,
     StableIdentifier,
     deterministic_identifier,
     require_identifier,
 )
+from strathmark.v3.contracts.pre_field_forecasts import ForecastSetSnapshot
 from strathmark.v3.contracts.receipts import EngineAuthorityBinding, FieldReceipt
 from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus
 from strathmark.v3.domain.evidence import LiveResultSubmission
@@ -92,6 +99,7 @@ class GatewayServices:
     settlement: SettlementService
     settlement_reactions: Any
     jobs: DurableJobRepository
+    pre_field_forecasts: PreFieldForecastService
 
     def __post_init__(self) -> None:
         if not all(
@@ -103,6 +111,7 @@ class GatewayServices:
                 isinstance(self.issuance, IssuanceService),
                 isinstance(self.settlement, SettlementService),
                 isinstance(self.jobs, DurableJobRepository),
+                isinstance(self.pre_field_forecasts, PreFieldForecastService),
                 callable(getattr(self.settlement_reactions, "react", None)),
             )
         ):
@@ -118,6 +127,8 @@ class GatewayServices:
                 raise ValueError("gateway services must share one exact V3 database")
         if getattr(self.settlement_reactions, "database_path", None) != database:
             raise ValueError("gateway settlement reactions must share its exact V3 database")
+        if self.pre_field_forecasts.database_path != database:
+            raise ValueError("gateway pre-field forecasts must share its exact V3 database")
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +375,104 @@ class V3ApplicationGateway:
             rows=[item.to_dict() for item in page.rows],
             authority_sequence=max(page.source_global_sequence, page.decision_global_sequence),
         )
+
+    def forecast_pre_field(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> PreFieldForecastResponse:
+        tournament_id = self._round_parent(payload["round_id"])
+        if tournament_id != payload["tournament_id"]:
+            self._conflict("pre_field_round_scope_differs")
+        self._require_scope_compatible(tournament_id)
+        if self._round_state(payload["round_id"]) != "round_frozen":
+            self._conflict("pre_field_round_is_not_frozen")
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            epoch = connection.execute(
+                "SELECT epoch_id,epoch_revision,maximum_tournament_sequence,"
+                "historical_cutoff_key,epoch_digest FROM v3_evidence_epochs "
+                "WHERE round_id=? ORDER BY epoch_revision DESC LIMIT 1",
+                (payload["round_id"],),
+            ).fetchone()
+        if epoch is None:
+            self._conflict("pre_field_epoch_not_found")
+        if int(epoch[1]) != payload["forecast_set_revision"]:
+            self._conflict("pre_field_revision_differs_from_frozen_epoch")
+        snapshot = ForecastSetSnapshot.create(
+            tournament_id=tournament_id,
+            round_id=payload["round_id"],
+            forecast_set_revision=payload["forecast_set_revision"],
+            ordered_competitor_ids=tuple(payload["ordered_competitor_ids"]),
+            target_context=TargetContext.from_dict(payload["target_context"]),
+            historical_cutoff_key=str(epoch[3]),
+            tournament_epoch_id=str(epoch[0]),
+            epoch_digest=str(epoch[4]),
+            maximum_tournament_sequence=int(epoch[2]),
+            bundle_digest=self._resolve_forecast_bundle(
+                competitor_ids=tuple(payload["ordered_competitor_ids"]),
+                target_context_digest=TargetContext.from_dict(payload["target_context"]).digest,
+                historical_cutoff_key=str(epoch[3]),
+                tournament_epoch_id=str(epoch[0]),
+            ),
+            hard_deadline_at=payload["hard_deadline_at"],
+            engine_authority=self._scope_engine_authority(tournament_id),
+        )
+        try:
+            receipt, recovered = self._services.pre_field_forecasts.forecast(
+                snapshot,
+                caller_namespace=self._caller_namespace,
+                request_identity=str(context.command_id),
+                created_at=payload["requested_at_utc"],
+            )
+        except (PreFieldForecastError, DurableJobError):
+            self._conflict("pre_field_forecast_not_ready")
+        return PreFieldForecastResponse(
+            forecast_set_id=str(receipt.snapshot.forecast_set_id),
+            receipt_digest=receipt.receipt_digest,
+            disposition="recovered" if recovered else "forecasted",
+            purpose=receipt.purpose,
+            issued_mark=receipt.issued_mark,
+            canonical_receipt_json=canonical_bytes(receipt.to_dict()).decode("utf-8"),
+            authority_sequence=self._services.events.current_anchor().global_sequence,
+        )
+
+    def _resolve_forecast_bundle(
+        self,
+        *,
+        competitor_ids: tuple[str, ...],
+        target_context_digest: str,
+        historical_cutoff_key: str,
+        tournament_epoch_id: str,
+    ) -> str:
+        placeholders = ",".join("?" for _ in competitor_ids)
+        query = (
+            "SELECT json_extract(payload_json, '$.card_key.competitor_id'), "
+            "json_extract(payload_json, '$.card_key.bundle_digest') FROM v3_jobs "
+            "WHERE json_extract(payload_json, '$.schema_version')=? "
+            "AND json_extract(payload_json, '$.card_key.target_context_digest')=? "
+            "AND json_extract(payload_json, '$.card_key.historical_cutoff_key')=? "
+            "AND json_extract(payload_json, '$.card_key.tournament_epoch_id')=? "
+            f"AND json_extract(payload_json, '$.card_key.competitor_id') IN ({placeholders})"
+        )
+        with open_v3_connection(self._services.events.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                query,
+                (
+                    "strathmark-v3-rolling-component-job-v1",
+                    target_context_digest,
+                    historical_cutoff_key,
+                    tournament_epoch_id,
+                    *competitor_ids,
+                ),
+            ).fetchall()
+            council_rows = connection.execute(
+                "SELECT bundle_digest FROM v3_rolling_council_authorities"
+            ).fetchall()
+        observed_ids = {str(row[0]) for row in rows}
+        bundles = {str(row[1]) for row in rows}
+        if not rows and len(council_rows) == 1:
+            return str(council_rows[0][0])
+        if observed_ids != set(competitor_ids) or len(bundles) != 1:
+            self._conflict("pre_field_bundle_authority_is_not_unique")
+        return next(iter(bundles))
 
     def approval_detail(
         self, payload: dict[str, Any], _context: RequestContext

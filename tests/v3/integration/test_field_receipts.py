@@ -961,6 +961,7 @@ def _bootstrap(
     competitor_count: int = 2,
     component_seed_offset: int = 0,
     engine_selection: CompetitionEngineSelection | None = None,
+    persist_field_snapshot: bool = True,
 ) -> tuple[
     SQLiteFieldProjectionStore,
     FrozenFieldRevision,
@@ -1089,14 +1090,15 @@ def _bootstrap(
     )
     store = SQLiteFieldProjectionStore(path, signer=signer, trust_store=trust_store)
     store.install_capacity_authority(capacity_authority, installed_at=NOW)
-    _ingest_field(
-        lifecycle,
-        1,
-        capacity=capacity_manifest,
-        competitors=competitor_ids,
-        stands=stand_ids,
-        engine_selection=engine_selection,
-    )
+    if persist_field_snapshot:
+        _ingest_field(
+            lifecycle,
+            1,
+            capacity=capacity_manifest,
+            competitors=competitor_ids,
+            stands=stand_ids,
+            engine_selection=engine_selection,
+        )
     field = _field(
         evidence_digest=epoch.content_digest,
         tournament_event_sequence=epoch.maximum_tournament_sequence,

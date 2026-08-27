@@ -30,7 +30,11 @@ from strathmark.v3.application.job_ports import (
 )
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.events import EventEnvelope, EventKind
-from strathmark.v3.contracts.evidence import require_utc_milliseconds
+from strathmark.v3.contracts.evidence import (
+    EvidencePacket,
+    ResultObservation,
+    require_utc_milliseconds,
+)
 from strathmark.v3.contracts.identifiers import (
     IdempotencyKey,
     StableIdentifier,
@@ -474,9 +478,8 @@ class RollingPreparationPlanner:
         ):
             raise DurableJobError("planner snapshot must contain typed completed cards")
         self._completed = {item.key.card_digest: item for item in completed}
-        self._active_by_subject: dict[tuple[str, str], CardKey] = {
-            (str(item.key.competitor_id), item.key.target_context_digest): item.key
-            for item in completed
+        self._active_by_subject: dict[tuple[str, str, str, str], CardKey] = {
+            _card_subject(item.key): item.key for item in completed
         }
 
     def plan(self, candidates: tuple[PreparationCandidate, ...]) -> PreparationPlan:
@@ -499,11 +502,9 @@ class RollingPreparationPlanner:
                 min(prior.hard_deadline_at, item.hard_deadline_at),
                 item.evidence_packet or prior.evidence_packet,
             )
-        by_subject: dict[tuple[str, str], list[PreparationCandidate]] = {}
+        by_subject: dict[tuple[str, str, str, str], list[PreparationCandidate]] = {}
         for item in exact.values():
-            by_subject.setdefault(
-                (str(item.key.competitor_id), item.key.target_context_digest), []
-            ).append(item)
+            by_subject.setdefault(_card_subject(item.key), []).append(item)
         unique: dict[str, PreparationCandidate] = {}
         for subject, rows in by_subject.items():
             maximum = max(item.key.dependency_revision for item in rows)
@@ -527,10 +528,7 @@ class RollingPreparationPlanner:
             unique[selected.key.card_digest] = selected
         invalidated: dict[str, CardKey] = {}
         for candidate in unique.values():
-            subject = (
-                str(candidate.key.competitor_id),
-                candidate.key.target_context_digest,
-            )
+            subject = _card_subject(candidate.key)
             prior = self._active_by_subject.get(subject)
             if prior is not None and prior != candidate.key:
                 invalidated[prior.card_digest] = prior
@@ -560,12 +558,12 @@ class RollingPreparationPlanner:
 
     def _checkpoint(
         self,
-    ) -> tuple[dict[str, CompletedCard], dict[tuple[str, str], CardKey]]:
+    ) -> tuple[dict[str, CompletedCard], dict[tuple[str, str, str, str], CardKey]]:
         return dict(self._completed), dict(self._active_by_subject)
 
     def _restore(
         self,
-        checkpoint: tuple[dict[str, CompletedCard], dict[tuple[str, str], CardKey]],
+        checkpoint: tuple[dict[str, CompletedCard], dict[tuple[str, str, str, str], CardKey]],
     ) -> None:
         self._completed, self._active_by_subject = checkpoint
 
@@ -584,7 +582,7 @@ class RollingPreparationPlanner:
         repository.verify()
         record = repository.get(job_id, job_revision)
         payload = record.payload()
-        subject = (str(key.competitor_id), key.target_context_digest)
+        subject = _card_subject(key)
         active = self._active_by_subject.get(subject)
         if active is not None and (
             key.dependency_revision < active.dependency_revision
@@ -953,7 +951,7 @@ class DurableRollingPreparationCoordinator:
         self._signer = signer
         self._trust_store = trust_store
         self._planner = RollingPreparationPlanner()
-        self._current: dict[tuple[str, str], RollingCardPublication] = {}
+        self._current: dict[tuple[str, str, str, str], RollingCardPublication] = {}
         self._repository.recover_rolling_restart()
         self._repository.rebuild_rolling_current_projection()
         self._repository.cancel_closed_rolling_jobs()
@@ -1267,8 +1265,12 @@ class DurableRollingPreparationCoordinator:
             ):
                 raise DurableJobError("existing rolling publication material differs")
             return published
-        scheduled_key = self._repository.current_rolling_card_key(
-            str(key.competitor_id), key.target_context_digest
+        scheduled_key = self._repository.rolling_card_key_for_field(
+            competitor_id=str(key.competitor_id),
+            target_context_digest=key.target_context_digest,
+            historical_cutoff_key=str(key.historical_cutoff_key),
+            tournament_epoch_id=str(key.tournament_epoch_id),
+            bundle_digest=key.bundle_digest,
         )
         if scheduled_key is None or scheduled_key != key.to_dict():
             raise DurableJobError("superseded card publication cannot become current")
@@ -1331,7 +1333,7 @@ class DurableRollingPreparationCoordinator:
             storage_row, expected_jobs=tuple(jobs), observed_at=now
         )
         publication = self._decode_publication_row(stored)
-        self._current[(str(key.competitor_id), key.target_context_digest)] = publication
+        self._current[_card_subject(key)] = publication
         self._planner = RollingPreparationPlanner(
             tuple(
                 CompletedCard(item.key, item.publication_digest) for item in self._current.values()
@@ -1342,7 +1344,7 @@ class DurableRollingPreparationCoordinator:
     def cached(self, key: CardKey) -> RollingCardPublication:
         if not isinstance(key, CardKey):
             raise DurableJobError("rolling cache lookup requires a CardKey")
-        publication = self._current.get((str(key.competitor_id), key.target_context_digest))
+        publication = self._current.get(_card_subject(key))
         if publication is None or publication.key != key:
             raise KeyError(key.card_digest)
         return publication
@@ -1359,7 +1361,12 @@ class DurableRollingPreparationCoordinator:
         publications = []
         for assignment in field.ordered_assignments:
             publication = self._current.get(
-                (str(assignment.competitor_id), field.target_context.digest)
+                (
+                    str(assignment.competitor_id),
+                    field.target_context.digest,
+                    str(field.tournament_epoch_id),
+                    field.bundle_digest,
+                )
             )
             if publication is None:
                 raise DurableJobError("rolling field publication is missing")
@@ -1381,6 +1388,114 @@ class DurableRollingPreparationCoordinator:
             publications.append(publication)
         return tuple(publications)
 
+    def publications_for_forecast(self, snapshot: object) -> tuple[RollingCardPublication, ...]:
+        """Return exact ordered cards for a field-independent frozen forecast set."""
+
+        from strathmark.v3.contracts.pre_field_forecasts import ForecastSetSnapshot
+
+        if not isinstance(snapshot, ForecastSetSnapshot):
+            raise DurableJobError("rolling forecast lookup requires frozen authority")
+        publications = []
+        for competitor_id in snapshot.ordered_competitor_ids:
+            key_value = self._repository.rolling_card_key_for_field(
+                competitor_id=str(competitor_id),
+                target_context_digest=snapshot.target_context.digest,
+                historical_cutoff_key=str(snapshot.historical_cutoff_key),
+                tournament_epoch_id=str(snapshot.tournament_epoch_id),
+                bundle_digest=snapshot.bundle_digest,
+            )
+            if key_value is None:
+                raise DurableJobError("rolling forecast publication is missing")
+            row = self._repository.rolling_publication_row(
+                card_digest=str(key_value["card_digest"])
+            )
+            if row is None:
+                raise DurableJobError("rolling forecast card is not published")
+            publication = self._decode_publication_row(row)
+            packet = publication.authority.evidence_packet
+            if (
+                publication.key.to_dict() != key_value
+                or publication.key.competitor_id != competitor_id
+                or packet.target_context != snapshot.target_context
+                or packet.tournament_event_sequence > snapshot.maximum_tournament_sequence
+            ):
+                raise DurableJobError("rolling forecast publication differs from snapshot")
+            publications.append(publication)
+        return tuple(publications)
+
+    def schedule_forecast(self, snapshot: object, *, observed_at: str) -> tuple[Any, ...]:
+        """Schedule exact field-independent card work from frozen round authority.
+
+        This derives only a competitor's causal evidence packet.  It deliberately
+        has no field, roster-opponent, stand, mark, or simulation input.
+        """
+
+        from strathmark.v3.contracts.pre_field_forecasts import ForecastSetSnapshot
+        from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
+
+        if not isinstance(snapshot, ForecastSetSnapshot):
+            raise DurableJobError("rolling forecast scheduling requires frozen authority")
+        now = require_utc_milliseconds(observed_at)
+        with open_v3_connection(self._repository.database_path, read_only=True) as connection:
+            council_rows = connection.execute(
+                "SELECT manifest_digest FROM v3_rolling_council_authorities WHERE bundle_digest=?",
+                (snapshot.bundle_digest,),
+            ).fetchall()
+            if len(council_rows) != 1:
+                raise DurableJobError("rolling forecast bundle has no unique council authority")
+            candidates = []
+            for competitor_id in snapshot.ordered_competitor_ids:
+                rows = connection.execute(
+                    "SELECT observation_json FROM v3_result_revisions revision "
+                    "WHERE revision.tournament_id=? AND revision.competitor_id=? "
+                    "AND revision.source_global_sequence<=? AND revision.revision=("
+                    "SELECT MAX(current.revision) FROM v3_result_revisions current "
+                    "WHERE current.result_key=revision.result_key AND "
+                    "current.source_global_sequence<=?) ORDER BY source_global_sequence "
+                    "LIMIT 257",
+                    (
+                        str(snapshot.tournament_id),
+                        str(competitor_id),
+                        snapshot.maximum_tournament_sequence,
+                        snapshot.maximum_tournament_sequence,
+                    ),
+                ).fetchall()
+                if len(rows) > 256:
+                    raise DurableJobError("rolling forecast evidence exceeds bounded capacity")
+                packet = EvidencePacket.create(
+                    competitor_id=competitor_id,
+                    target_context=snapshot.target_context,
+                    observations=tuple(
+                        ResultObservation.from_dict(json.loads(str(row[0]))) for row in rows
+                    ),
+                    taxonomy_version=snapshot.target_context.taxonomy_version,
+                    conversion_version=snapshot.target_context.conversion_version,
+                    historical_cutoff_key=str(snapshot.historical_cutoff_key),
+                    tournament_epoch_id=snapshot.tournament_epoch_id,
+                    tournament_event_sequence=snapshot.maximum_tournament_sequence,
+                )
+                candidates.append(
+                    PreparationCandidate.create(
+                        competitor_id=str(competitor_id),
+                        target_context_digest=snapshot.target_context.digest,
+                        historical_cutoff_key=str(snapshot.historical_cutoff_key),
+                        tournament_epoch_id=str(snapshot.tournament_epoch_id),
+                        bundle_digest=snapshot.bundle_digest,
+                        evidence_digest=packet.content_digest,
+                        dependency_revision=snapshot.maximum_tournament_sequence,
+                        preparation_class=PreparationClass.SCHEDULED,
+                        hard_deadline_at=snapshot.hard_deadline_at,
+                        evidence_packet=packet,
+                    )
+                )
+        count = len(candidates)
+        return self.schedule(
+            tuple(candidates),
+            capacity_use=CapacityUse(1, count, 0, count, count, 0, 0, count),
+            council_manifest_digest=str(council_rows[0][0]),
+            observed_at=now,
+        )
+
     def readiness(self, keys: tuple[CardKey, ...], *, observed_at: str) -> RollingReadiness:
         now = require_utc_milliseconds(observed_at)
         if not isinstance(keys, tuple) or not all(isinstance(item, CardKey) for item in keys):
@@ -1392,7 +1507,7 @@ class DurableRollingPreparationCoordinator:
         failed = 0
         deadlines: list[str] = []
         for key in keys:
-            current = self._current.get((str(key.competitor_id), key.target_context_digest))
+            current = self._current.get(_card_subject(key))
             if current is not None and current.key == key:
                 ready += 1
                 deadlines.append(current.hard_deadline_at)
@@ -1552,19 +1667,28 @@ class DurableRollingPreparationCoordinator:
             self._decode_publication_row(row)
 
     def _recover_current(self) -> None:
-        recovered = tuple(
-            self._decode_publication_row(
-                self._repository.rolling_publication_row(
-                    publication_digest=str(row["publication_digest"])
-                )
-                or {}
-            )
-            for row in self._repository.rolling_current_rows()
+        all_publications = tuple(
+            self._decode_publication_row(row) for row in self._repository.rolling_publication_rows()
         )
-        self._current = {
-            (str(item.key.competitor_id), item.key.target_context_digest): item
-            for item in recovered
-        }
+        newest: dict[tuple[str, str, str, str], RollingCardPublication] = {}
+        for publication in all_publications:
+            current_key = self._repository.rolling_card_key_for_field(
+                competitor_id=str(publication.key.competitor_id),
+                target_context_digest=publication.key.target_context_digest,
+                historical_cutoff_key=str(publication.key.historical_cutoff_key),
+                tournament_epoch_id=str(publication.key.tournament_epoch_id),
+                bundle_digest=publication.key.bundle_digest,
+            )
+            if current_key != publication.key.to_dict():
+                continue
+            subject = _card_subject(publication.key)
+            prior = newest.get(subject)
+            if prior is None or publication.key.dependency_revision > prior.key.dependency_revision:
+                newest[subject] = publication
+            elif publication.key.dependency_revision == prior.key.dependency_revision:
+                raise DurableJobError("scoped rolling dependency revision conflicts")
+        recovered = tuple(newest.values())
+        self._current = dict(newest)
         self._planner = RollingPreparationPlanner(
             tuple(CompletedCard(item.key, item.publication_digest) for item in recovered)
         )
@@ -1865,7 +1989,7 @@ class DurableRollingPreparationCoordinator:
                 )
 
     def _supersede_current(self, key: CardKey, observed_at: str, reason: str) -> None:
-        subject = (str(key.competitor_id), key.target_context_digest)
+        subject = _card_subject(key)
         current = self._current.get(subject)
         if current is None or current.key != key:
             return
@@ -1873,6 +1997,8 @@ class DurableRollingPreparationCoordinator:
             publication_digest=current.publication_digest,
             competitor_id=subject[0],
             target_context_digest=subject[1],
+            tournament_epoch_id=subject[2],
+            bundle_digest=subject[3],
             observed_at=observed_at,
             reason=reason,
         )
@@ -2199,6 +2325,17 @@ def _card_content(values: dict[str, object]) -> dict[str, object]:
         "evidence_digest": values["evidence_digest"],
         "dependency_revision": values["dependency_revision"],
     }
+
+
+def _card_subject(key: CardKey) -> tuple[str, str, str, str]:
+    """Identity for independently current rolling work across epochs and bundles."""
+
+    return (
+        str(key.competitor_id),
+        key.target_context_digest,
+        str(key.tournament_epoch_id),
+        key.bundle_digest,
+    )
 
 
 def _card_key_from_dict(value: Mapping[str, Any]) -> CardKey:

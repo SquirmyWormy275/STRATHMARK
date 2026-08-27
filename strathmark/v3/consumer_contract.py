@@ -8,7 +8,7 @@ import re
 from importlib.resources import files
 from typing import Any, cast
 
-V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v5"
+V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v6"
 EXPECTED_V3_CONSUMER_PATHS = frozenset(
     {
         "/v3/health",
@@ -20,6 +20,7 @@ EXPECTED_V3_CONSUMER_PATHS = frozenset(
         "/v3/rounds/close",
         "/v3/scopes/close",
         "/v3/cards/prepare",
+        "/v3/forecasts/pre-field",
         "/v3/fields/assemble",
         "/v3/receipts/lookup",
         "/v3/approvals/decide",
@@ -195,6 +196,37 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
             "authority_sequence": 10,
         },
     },
+    "/v3/forecasts/pre-field": {
+        "request": {
+            "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+            "tournament_id": "tournament:show",
+            "round_id": "round:heats",
+            "forecast_set_revision": 1,
+            "ordered_competitor_ids": ["competitor:alice", "competitor:bob"],
+            "target_context": {
+                "schema_version": "strathmark-v3-target-context-v1",
+                "event_code": "underhand",
+                "size_mm": 325,
+                "material_code": "pine",
+                "taxonomy_version": "taxonomy:v1",
+                "conversion_version": "conversion:v1",
+                "properties": [],
+            },
+            "hard_deadline_at": "2026-08-25T12:10:00.000Z",
+            "requested_at_utc": "2026-08-25T12:00:01.000Z",
+            "deadline_ms": 5000,
+        },
+        "response": {
+            "schema_version": "strathmark-v3-pre-field-forecast-response-v1",
+            "forecast_set_id": f"forecast_set:{'a' * 64}",
+            "receipt_digest": "b" * 64,
+            "disposition": "forecasted",
+            "purpose": "pre_field_seeding_only",
+            "issued_mark": False,
+            "canonical_receipt_json": ('{"issued_mark":false,"purpose":"pre_field_seeding_only"}'),
+            "authority_sequence": 10,
+        },
+    },
     "/v3/fields/assemble": {
         "request": {
             "schema_version": "strathmark-v3-field-assembly-request-v1",
@@ -344,7 +376,7 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
             "rehearsal_eligible": True,
             "production_eligible": False,
             "eligibility_reason_codes": ["production_cutover_not_verified"],
-            "consumer_contract_version": "strathmark.v3-consumer-contract.v5",
+            "consumer_contract_version": "strathmark.v3-consumer-contract.v6",
             "consumer_contract_digest": "d" * 64,
             "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
         }

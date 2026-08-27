@@ -63,6 +63,11 @@ from strathmark.v3.contracts.identifiers import (
     require_idempotency_key,
     require_identifier,
 )
+from strathmark.v3.contracts.pre_field_forecasts import (
+    ForecastSetSnapshot,
+    PreFieldCompetitorForecast,
+    PreFieldForecastReceipt,
+)
 from strathmark.v3.contracts.receipts import (
     BundleIdentity,
     FieldReceipt,
@@ -116,6 +121,7 @@ __all__ = [
     "EventKind",
     "FieldReceipt",
     "ForecastState",
+    "ForecastSetSnapshot",
     "ForecastWarning",
     "IdempotencyKey",
     "IdentifierError",
@@ -127,6 +133,8 @@ __all__ = [
     "OfficialResult",
     "PacketIdentity",
     "PositiveTimeDistribution",
+    "PreFieldCompetitorForecast",
+    "PreFieldForecastReceipt",
     "PredictiveDistributionContract",
     "QuantilePoint",
     "ReceiptSection",

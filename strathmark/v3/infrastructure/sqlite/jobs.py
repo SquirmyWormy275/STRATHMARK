@@ -978,9 +978,8 @@ class DurableJobRepository:
                         str(row[3]),
                     )
                     connection.execute(
-                        "DELETE FROM v3_rolling_card_current WHERE competitor_id=? "
-                        "AND target_context_digest=?",
-                        (str(row[0]), str(row[1])),
+                        "DELETE FROM v3_rolling_card_current WHERE publication_digest=?",
+                        (publication_digest,),
                     )
                     superseded.append(publication_digest)
         return tuple(superseded)
@@ -1926,6 +1925,8 @@ class DurableJobRepository:
                 (
                     item["competitor_id"],
                     item["target_context_digest"],
+                    item["tournament_epoch_id"],
+                    item["bundle_digest"],
                     item["publication_digest"],
                     item["dependency_revision"],
                     item["status_digest"],
@@ -1939,7 +1940,7 @@ class DurableJobRepository:
                 connection.execute("DELETE FROM v3_rolling_card_current")
                 for row in expected_rows:
                     connection.execute(
-                        "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", row
+                        "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?,?,?)", row
                     )
         material = self._rolling_restart_material(connection, repair_cursor=repair_current)
         current_keys = (
@@ -2065,17 +2066,18 @@ class DurableJobRepository:
         checkpoint: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         subjects = {
-            (str(row[0]), str(row[1])): {
+            (str(row[0]), str(row[1]), str(row[2]), str(row[3])): {
                 "competitor_id": str(row[0]),
                 "target_context_digest": str(row[1]),
                 "tournament_epoch_id": str(row[2]),
-                "publication_digest": str(row[3]),
-                "dependency_revision": int(row[4]),
-                "status_digest": str(row[5]),
-                "updated_at": str(row[6]),
+                "bundle_digest": str(row[3]),
+                "publication_digest": str(row[4]),
+                "dependency_revision": int(row[5]),
+                "status_digest": str(row[6]),
+                "updated_at": str(row[7]),
             }
             for row in connection.execute(
-                "SELECT competitor_id,target_context_digest,tournament_epoch_id,"
+                "SELECT competitor_id,target_context_digest,tournament_epoch_id,bundle_digest,"
                 "publication_digest,dependency_revision,status_digest,updated_at "
                 "FROM v3_rolling_restart_current_subjects WHERE checkpoint_sequence=? "
                 "ORDER BY competitor_id,target_context_digest",
@@ -2109,12 +2111,15 @@ class DurableJobRepository:
             key = (
                 str(publication["competitor_id"]),
                 str(publication["target_context_digest"]),
+                str(publication["tournament_epoch_id"]),
+                str(publication["bundle_digest"]),
             )
             if str(status["status"]) == "current":
                 subjects[key] = {
                     "competitor_id": key[0],
                     "target_context_digest": key[1],
                     "tournament_epoch_id": str(publication["tournament_epoch_id"]),
+                    "bundle_digest": str(publication["bundle_digest"]),
                     "publication_digest": str(publication["publication_digest"]),
                     "dependency_revision": int(publication["dependency_revision"]),
                     "status_digest": str(status["status_digest"]),
@@ -2135,7 +2140,7 @@ class DurableJobRepository:
         connection.execute("DELETE FROM v3_rolling_card_current")
         for row in expected:
             connection.execute(
-                "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", tuple(row)
+                "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?,?,?)", tuple(row)
             )
 
     @staticmethod
@@ -2502,12 +2507,13 @@ class DurableJobRepository:
             )
         for subject in material["current_subjects"]:
             connection.execute(
-                "INSERT INTO v3_rolling_restart_current_subjects VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO v3_rolling_restart_current_subjects VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     sequence,
                     subject["competitor_id"],
                     subject["target_context_digest"],
                     subject["tournament_epoch_id"],
+                    subject["bundle_digest"],
                     subject["publication_digest"],
                     subject["dependency_revision"],
                     subject["status_digest"],
@@ -2900,6 +2906,7 @@ class DurableJobRepository:
                     "competitor_id": str(row["competitor_id"]),
                     "target_context_digest": str(row["target_context_digest"]),
                     "tournament_epoch_id": str(row["tournament_epoch_id"]),
+                    "bundle_digest": str(row["bundle_digest"]),
                     "publication_digest": str(row["publication_digest"]),
                     "dependency_revision": int(row["dependency_revision"]),
                     "status_digest": str(row["status_digest"]),
@@ -3538,6 +3545,7 @@ class DurableJobRepository:
                 "competitor_id",
                 "target_context_digest",
                 "tournament_epoch_id",
+                "bundle_digest",
                 "publication_digest",
                 "dependency_revision",
                 "status_digest",
@@ -3563,6 +3571,7 @@ class DurableJobRepository:
                 str(publication["competitor_id"]) != subject["competitor_id"]
                 or str(publication["target_context_digest"]) != subject["target_context_digest"]
                 or str(publication["tournament_epoch_id"]) != subject["tournament_epoch_id"]
+                or str(publication["bundle_digest"]) != subject["bundle_digest"]
                 or int(publication["dependency_revision"]) != subject["dependency_revision"]
                 or str(status["publication_digest"]) != subject["publication_digest"]
                 or str(status["status"]) != "current"
@@ -3574,6 +3583,8 @@ class DurableJobRepository:
                 (
                     subject["competitor_id"],
                     subject["target_context_digest"],
+                    subject["tournament_epoch_id"],
+                    subject["bundle_digest"],
                     subject["publication_digest"],
                     subject["dependency_revision"],
                     subject["status_digest"],
@@ -3582,7 +3593,7 @@ class DurableJobRepository:
             )
         connection.execute("DELETE FROM v3_rolling_card_current")
         for row in restored:
-            connection.execute("INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", row)
+            connection.execute("INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?,?,?)", row)
 
     def _rolling_pending_material(
         self,
@@ -3717,12 +3728,16 @@ class DurableJobRepository:
                     "WHERE json_extract(payload_json, '$.schema_version')=? "
                     "AND json_extract(payload_json, '$.card_key.competitor_id')=? "
                     "AND json_extract(payload_json, '$.card_key.target_context_digest')=? "
+                    "AND json_extract(payload_json, '$.card_key.tournament_epoch_id')=? "
+                    "AND json_extract(payload_json, '$.card_key.bundle_digest')=? "
                     "ORDER BY CAST(json_extract(payload_json, "
                     "'$.card_key.dependency_revision') AS INTEGER) DESC LIMIT 6",
                     (
                         "strathmark-v3-rolling-component-job-v1",
                         row["competitor_id"],
                         row["target_context_digest"],
+                        row["tournament_epoch_id"],
+                        row["bundle_digest"],
                     ),
                 ).fetchall()
                 if not scheduled:
@@ -3741,8 +3756,14 @@ class DurableJobRepository:
                 self._verify_rolling_restart_connection(connection, repair_current=True)
                 prior = connection.execute(
                     "SELECT publication_digest,dependency_revision FROM v3_rolling_card_current "
-                    "WHERE competitor_id=? AND target_context_digest=?",
-                    (row["competitor_id"], row["target_context_digest"]),
+                    "WHERE competitor_id=? AND target_context_digest=? "
+                    "AND tournament_epoch_id=? AND bundle_digest=?",
+                    (
+                        row["competitor_id"],
+                        row["target_context_digest"],
+                        row["tournament_epoch_id"],
+                        row["bundle_digest"],
+                    ),
                 ).fetchone()
                 if prior is not None and int(prior[1]) >= int(row["dependency_revision"]):
                     raise DurableJobError("rolling card publication is not monotonic")
@@ -3762,8 +3783,14 @@ class DurableJobRepository:
                     )
                     connection.execute(
                         "DELETE FROM v3_rolling_card_current WHERE competitor_id=? "
-                        "AND target_context_digest=?",
-                        (row["competitor_id"], row["target_context_digest"]),
+                        "AND target_context_digest=? AND tournament_epoch_id=? "
+                        "AND bundle_digest=?",
+                        (
+                            row["competitor_id"],
+                            row["target_context_digest"],
+                            row["tournament_epoch_id"],
+                            row["bundle_digest"],
+                        ),
                     )
                 status_digest = self._append_rolling_status(
                     connection,
@@ -3773,10 +3800,12 @@ class DurableJobRepository:
                     now,
                 )
                 connection.execute(
-                    "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?,?,?)",
                     (
                         row["competitor_id"],
                         row["target_context_digest"],
+                        row["tournament_epoch_id"],
+                        row["bundle_digest"],
                         row["publication_digest"],
                         row["dependency_revision"],
                         status_digest,
@@ -3796,6 +3825,8 @@ class DurableJobRepository:
         publication_digest: str,
         competitor_id: str,
         target_context_digest: str,
+        tournament_epoch_id: str,
+        bundle_digest: str,
         observed_at: str,
         reason: str,
     ) -> None:
@@ -3808,8 +3839,14 @@ class DurableJobRepository:
                 self._verify_rolling_restart_connection(connection, repair_current=True)
                 row = connection.execute(
                     "SELECT publication_digest FROM v3_rolling_card_current "
-                    "WHERE competitor_id=? AND target_context_digest=?",
-                    (competitor_id, target_context_digest),
+                    "WHERE competitor_id=? AND target_context_digest=? "
+                    "AND tournament_epoch_id=? AND bundle_digest=?",
+                    (
+                        competitor_id,
+                        target_context_digest,
+                        tournament_epoch_id,
+                        bundle_digest,
+                    ),
                 ).fetchone()
                 if row is None:
                     return
@@ -3820,8 +3857,14 @@ class DurableJobRepository:
                 )
                 connection.execute(
                     "DELETE FROM v3_rolling_card_current WHERE competitor_id=? "
-                    "AND target_context_digest=?",
-                    (competitor_id, target_context_digest),
+                    "AND target_context_digest=? AND tournament_epoch_id=? "
+                    "AND bundle_digest=?",
+                    (
+                        competitor_id,
+                        target_context_digest,
+                        tournament_epoch_id,
+                        bundle_digest,
+                    ),
                 )
 
     def verify_rolling_storage(self, *, allow_closed_current: bool = False) -> None:
@@ -3846,7 +3889,7 @@ class DurableJobRepository:
                 connection.execute("DELETE FROM v3_rolling_card_current")
                 for row in expected:
                     connection.execute(
-                        "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)",
+                        "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?,?,?)",
                         tuple(row),
                     )
                 status_tip = connection.execute(
@@ -3923,7 +3966,7 @@ class DurableJobRepository:
                 str(row["observed_at"]),
             )
         rows = []
-        subjects: set[tuple[str, str]] = set()
+        subjects: set[tuple[str, str, str, str]] = set()
         for digest, (status, status_digest, observed_at) in latest.items():
             if status != "current":
                 continue
@@ -3931,6 +3974,8 @@ class DurableJobRepository:
             subject = (
                 str(source["competitor_id"]),
                 str(source["target_context_digest"]),
+                str(source["tournament_epoch_id"]),
+                str(source["bundle_digest"]),
             )
             if subject in subjects:
                 raise DurableJobError("rolling status history has two current authorities")
@@ -3939,6 +3984,8 @@ class DurableJobRepository:
                 (
                     subject[0],
                     subject[1],
+                    subject[2],
+                    subject[3],
                     digest,
                     int(source["dependency_revision"]),
                     status_digest,
@@ -4008,14 +4055,22 @@ class DurableJobRepository:
         connection: sqlite3.Connection,
         competitor_id: str,
         target_context_digest: str,
+        tournament_epoch_id: str,
+        bundle_digest: str,
     ) -> None:
         """Compare one current pointer with its signed per-subject status authority."""
 
         publications = tuple(
             connection.execute(
                 "SELECT * FROM v3_rolling_card_publications WHERE competitor_id=? "
-                "AND target_context_digest=? ORDER BY dependency_revision",
-                (competitor_id, target_context_digest),
+                "AND target_context_digest=? AND tournament_epoch_id=? "
+                "AND bundle_digest=? ORDER BY dependency_revision",
+                (
+                    competitor_id,
+                    target_context_digest,
+                    tournament_epoch_id,
+                    bundle_digest,
+                ),
             )
         )
         publication_by_digest = {str(row["publication_digest"]): row for row in publications}
@@ -4027,8 +4082,9 @@ class DurableJobRepository:
             "JOIN v3_rolling_card_publications publication "
             "ON publication.publication_digest=status.publication_digest "
             "WHERE publication.competitor_id=? AND publication.target_context_digest=? "
+            "AND publication.tournament_epoch_id=? AND publication.bundle_digest=? "
             "ORDER BY status.status_sequence",
-            (competitor_id, target_context_digest),
+            (competitor_id, target_context_digest, tournament_epoch_id, bundle_digest),
         ):
             value = _rolling_status_value(status)
             manifest = SignedManifest.from_dict(json.loads(str(status["status_manifest_json"])))
@@ -4050,6 +4106,8 @@ class DurableJobRepository:
             expected = (
                 competitor_id,
                 target_context_digest,
+                tournament_epoch_id,
+                bundle_digest,
                 str(publication["publication_digest"]),
                 int(publication["dependency_revision"]),
                 str(status["status_digest"]),
@@ -4057,18 +4115,21 @@ class DurableJobRepository:
             )
         observed = connection.execute(
             "SELECT * FROM v3_rolling_card_current WHERE competitor_id=? "
-            "AND target_context_digest=?",
-            (competitor_id, target_context_digest),
+            "AND target_context_digest=? AND tournament_epoch_id=? AND bundle_digest=?",
+            (competitor_id, target_context_digest, tournament_epoch_id, bundle_digest),
         ).fetchone()
         observed_value = None if observed is None else tuple(observed)
         if observed_value == expected:
             return
         connection.execute(
-            "DELETE FROM v3_rolling_card_current WHERE competitor_id=? AND target_context_digest=?",
-            (competitor_id, target_context_digest),
+            "DELETE FROM v3_rolling_card_current WHERE competitor_id=? "
+            "AND target_context_digest=? AND tournament_epoch_id=? AND bundle_digest=?",
+            (competitor_id, target_context_digest, tournament_epoch_id, bundle_digest),
         )
         if expected is not None:
-            connection.execute("INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?)", expected)
+            connection.execute(
+                "INSERT INTO v3_rolling_card_current VALUES (?,?,?,?,?,?,?,?)", expected
+            )
 
     def _verify_rolling_reactions(self, connection: sqlite3.Connection) -> None:
         from itertools import groupby
@@ -5997,6 +6058,8 @@ def _rolling_current_material(rows: Any) -> tuple[tuple[Any, ...], ...]:
             (
                 str(row["competitor_id"]),
                 str(row["target_context_digest"]),
+                str(row["tournament_epoch_id"]),
+                str(row["bundle_digest"]),
                 str(row["publication_digest"]),
                 int(row["dependency_revision"]),
                 str(row["status_digest"]),

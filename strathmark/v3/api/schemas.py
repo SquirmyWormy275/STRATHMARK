@@ -12,6 +12,7 @@ _ID = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _TOURNAMENT_ID = r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _ROUND_ID = r"^round:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _FIELD_ID = r"^field:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
+_COMPETITOR_ID = r"^competitor:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _RECEIPT_ID = r"^receipt:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _DIGEST = r"^[0-9a-f]{64}$"
 _UTC_MS = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$"
@@ -151,6 +152,50 @@ class RoundFreezeResponse(StrictV3Model):
     epoch_revision: int = Field(ge=1)
     authority_sequence: int = Field(ge=1)
     status: Literal["frozen", "recovered"]
+
+
+class PreFieldForecastRequest(StrictV3Model):
+    schema_version: Literal["strathmark-v3-pre-field-forecast-request-v1"]
+    tournament_id: str = Field(pattern=_TOURNAMENT_ID)
+    round_id: str = Field(pattern=_ROUND_ID)
+    forecast_set_revision: int = Field(ge=1)
+    ordered_competitor_ids: list[str] = Field(min_length=1, max_length=128)
+    target_context: dict[str, Any]
+    hard_deadline_at: str = Field(pattern=_UTC_MS)
+    requested_at_utc: str = Field(pattern=_UTC_MS)
+    deadline_ms: int = Field(ge=25, le=10_000)
+
+    @model_validator(mode="after")
+    def _closed_pre_field_request(self) -> PreFieldForecastRequest:
+        from strathmark.v3.contracts.evidence import TargetContext
+
+        if (
+            len(self.ordered_competitor_ids) != len(set(self.ordered_competitor_ids))
+            or any(
+                __import__("re").fullmatch(_COMPETITOR_ID, item) is None
+                for item in self.ordered_competitor_ids
+            )
+            or self.requested_at_utc > self.hard_deadline_at
+        ):
+            raise ValueError("pre-field forecast roster or deadline is invalid")
+        try:
+            TargetContext.from_dict(self.target_context)
+        except Exception as exc:
+            raise ValueError("pre-field target context is invalid") from exc
+        return self
+
+
+class PreFieldForecastResponse(StrictV3Model):
+    schema_version: Literal["strathmark-v3-pre-field-forecast-response-v1"] = (
+        "strathmark-v3-pre-field-forecast-response-v1"
+    )
+    forecast_set_id: str = Field(pattern=r"^forecast_set:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$")
+    receipt_digest: str = Field(pattern=_DIGEST)
+    disposition: Literal["forecasted", "recovered"]
+    purpose: Literal["pre_field_seeding_only"]
+    issued_mark: Literal[False]
+    canonical_receipt_json: str = Field(min_length=2, max_length=1_048_576)
+    authority_sequence: int = Field(ge=1)
 
 
 class ApprovalPageResponse(StrictV3Model):

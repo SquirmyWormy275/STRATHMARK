@@ -368,7 +368,7 @@ def test_planner_merge_is_permutation_safe_and_stale_last_never_wins() -> None:
         assert plan.pending[0].hard_deadline_at == "2026-08-24T18:01:00.000Z"
 
 
-def test_new_epoch_can_reset_revision_and_invalidates_prior_epoch_card() -> None:
+def test_new_epoch_can_reset_revision_without_invalidating_concurrent_epoch() -> None:
     old = _candidate("a", "1", PreparationClass.IMMINENT_FIELD, revision=3)
     new = PreparationCandidate.create(
         competitor_id="competitor:a",
@@ -387,7 +387,81 @@ def test_new_epoch_can_reset_revision_and_invalidates_prior_epoch_card() -> None
     plan = planner.plan((new,))
 
     assert plan.pending == (new,)
-    assert plan.invalidated == (old.key,)
+    assert plan.invalidated == ()
+
+
+def test_two_epoch_scoped_current_cards_coexist_across_rebuild_and_restart(
+    tmp_path: Path,
+) -> None:
+    signer = P256EphemeralSigner.generate("integrity-key:rolling-two-epochs")
+    trust = IntegrityTrustStore((signer.identity,))
+    repository = DurableJobRepository(
+        tmp_path / "two-epochs.sqlite3",
+        capacity=_repository(tmp_path / "capacity-two-epochs").capacity,
+        signer=signer,
+        trust_store=trust,
+    )
+    coordinator = DurableRollingPreparationCoordinator(repository, signer=signer, trust_store=trust)
+    council = _council_manifest(signer)
+    coordinator.install_council_authority(council, installed_at=T0)
+    first, first_card = _rolling_authority(signer, epoch_id="epoch:rolling-one")
+    second, second_card = _rolling_authority(signer, epoch_id="epoch:rolling-two")
+    scheduled = coordinator.schedule(
+        (first, second),
+        capacity_use=CapacityUse(1, 12, 0, 12, 12, 1024, 4096, 25),
+        council_manifest_digest=council.body_digest,
+        observed_at=T0,
+    )
+    cards = {first.key.card_digest: first_card, second.key.card_digest: second_card}
+    for ordinal in range(len(scheduled)):
+        claimed = repository.claim(
+            JobLane.INFERENCE,
+            worker_id=f"worker:two-epochs-{ordinal}",
+            clock=lambda: T1,
+            lease_duration_ms=60_000,
+        )
+        assert claimed is not None
+        card = cards[claimed.payload()["card_key"]["card_digest"]]
+        result_digest = {
+            "formula": card.forecasts[0].commit_digest,
+            "ml": card.forecasts[1].commit_digest,
+            "local_qwen35_9b": "4" * 64,
+            "local_ministral3_8b": "5" * 64,
+            "frontier_cloud": "6" * 64,
+        }[claimed.payload()["component_id"]]
+        repository.commit_success(
+            claimed.job_id,
+            claimed.job_revision,
+            worker_id=f"worker:two-epochs-{ordinal}",
+            fencing_token=claimed.fencing_token,
+            result_digest=result_digest,
+            current_context=lambda _connection, record: (
+                record.evidence_digest,
+                record.bundle_digest,
+            ),
+            clock=lambda: T2,
+        )
+    publications = []
+    for candidate, card in ((first, first_card), (second, second_card)):
+        publications.append(
+            coordinator.seal_card(
+                candidate.key,
+                card,
+                council_manifest_digest=council.body_digest,
+                council_aggregate_authority=_aggregate_manifest(
+                    signer, candidate, card, council, repository
+                ),
+                observed_at=T2,
+            )
+        )
+
+    assert repository.rebuild_rolling_current_projection() == 0
+    assert len(repository.rolling_current_rows()) == 2
+    restarted = DurableRollingPreparationCoordinator(repository, signer=signer, trust_store=trust)
+    assert {
+        restarted.cached(first.key).publication_digest,
+        restarted.cached(second.key).publication_digest,
+    } == {item.publication_digest for item in publications}
 
 
 def test_card_key_covers_every_causal_dependency_and_survives_restart_export() -> None:

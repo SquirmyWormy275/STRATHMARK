@@ -26,6 +26,8 @@ from strathmark.v3.api.schemas import (
     HealthResponse,
     IssueAcknowledgmentRequest,
     IssueAcknowledgmentResponse,
+    PreFieldForecastRequest,
+    PreFieldForecastResponse,
     PrepareCardRequest,
     PrepareCardResponse,
     ReceiptLookupRequest,
@@ -131,6 +133,10 @@ class V3ApplicationPort(Protocol):
     def freeze_round(
         self, payload: dict[str, Any], context: RequestContext
     ) -> RoundFreezeResponse | Awaitable[RoundFreezeResponse]: ...
+
+    def forecast_pre_field(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> PreFieldForecastResponse | Awaitable[PreFieldForecastResponse]: ...
 
     def approval_page(
         self, payload: dict[str, Any], context: RequestContext
@@ -306,6 +312,21 @@ def create_router(
     async def freeze_round(payload: RoundFreezeRequest, request: Request) -> RoundFreezeResponse:
         return await _invoke(
             gateway.freeze_round,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
+
+    @router.post(
+        "/forecasts/pre-field",
+        response_model=PreFieldForecastResponse,
+        operation_id="v3_forecast_pre_field",
+    )
+    async def forecast_pre_field(
+        payload: PreFieldForecastRequest, request: Request
+    ) -> PreFieldForecastResponse:
+        return await _invoke(
+            gateway.forecast_pre_field,
             payload.model_dump(mode="json"),
             _context(request),
             deadline_ms=payload.deadline_ms,
