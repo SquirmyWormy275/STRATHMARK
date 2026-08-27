@@ -1680,7 +1680,7 @@ def test_blocked_maintenance_workers_do_not_starve_critical_receipt_lookup(shado
     }
     responses = []
 
-    def request_replay():
+    def request_replay(nonce: str):
         responses.append(
             client.post(
                 "/v1/shadow/mirror/replay",
@@ -1690,11 +1690,18 @@ def test_blocked_maintenance_workers_do_not_starve_critical_receipt_lookup(shado
                     revision=replay_payload["run_revision"],
                     request_payload=replay_payload,
                     roles=["admin"],
+                    nonce=nonce,
                 ),
             )
         )
 
-    workers = [threading.Thread(target=request_replay) for _ in range(2)]
+    workers = [
+        threading.Thread(
+            target=request_replay,
+            args=(f"maintenance-capacity-{worker_index}",),
+        )
+        for worker_index in range(2)
+    ]
     for worker in workers:
         worker.start()
     started.wait(timeout=10)
