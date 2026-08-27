@@ -448,6 +448,7 @@ def build_evidence(
         raise RuntimeError("release proof construction order differs")
     if tuple(operation for item in proofs for operation in PROOF_OPERATIONS[item["name"]]) == ():
         raise RuntimeError("release proof operation registry is empty")
+    require_clean_release_inputs(ROOT)
     if source_tree_digest(ROOT) != source_digest:
         raise RuntimeError("release source changed while executable evidence was running")
     lock_sha, versions_digest = dependency_snapshot(ROOT / "requirements/v3-release.lock")

@@ -10,10 +10,12 @@ results.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import subprocess
 import sys
+import tarfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, version
@@ -101,9 +103,31 @@ def git_source_paths(root: Path) -> tuple[Path, ...]:
 
 
 def source_tree_digest(root: Path) -> str:
-    return canonical_digest(
-        {path.relative_to(root).as_posix(): sha256_file(path) for path in git_source_paths(root)}
+    completed = subprocess.run(
+        ["git", "archive", "--format=tar", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        check=False,
     )
+    if completed.returncode != 0:
+        raise ValueError("release source archive requires a readable Git HEAD")
+    sources: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:") as archive:
+        for member in archive.getmembers():
+            normalized = member.name.replace("\\", "/")
+            if (
+                not member.isfile()
+                or normalized in GENERATED_SIDECARS
+                or normalized.startswith(GENERATED_PREFIXES)
+            ):
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise ValueError("release source archive contains an unreadable file")
+            sources[normalized] = hashlib.sha256(extracted.read()).hexdigest()
+    if not sources:
+        raise ValueError("release source path set is empty")
+    return canonical_digest(sources)
 
 
 def git_head(root: Path) -> str:
