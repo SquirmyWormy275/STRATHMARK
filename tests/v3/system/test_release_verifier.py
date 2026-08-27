@@ -16,6 +16,7 @@ from scripts.release_evidence import (
     PROOF_OPERATIONS,
     create_evidence_envelope,
     dependency_snapshot,
+    require_clean_release_inputs,
     sha256_file,
     source_tree_digest,
     verify_evidence_envelope,
@@ -80,6 +81,43 @@ def _run(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
         timeout=60,
         check=False,
     )
+
+
+def test_source_tree_digest_is_checkout_line_ending_independent_and_still_detects_dirt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    git("init")
+    git("config", "user.email", "release-verifier@example.invalid")
+    git("config", "user.name", "Release Verifier Test")
+    git("config", "core.autocrlf", "true")
+    source = root / "sample.py"
+    source.write_bytes(b"value = 1\n")
+    git("add", "sample.py")
+    git("commit", "-m", "fixture")
+
+    expected = source_tree_digest(root)
+    source.unlink()
+    git("checkout", "--", "sample.py")
+    assert source.read_bytes() == b"value = 1\r\n"
+    assert git("status", "--porcelain=v1").stdout == ""
+    assert source_tree_digest(root) == expected
+    require_clean_release_inputs(root)
+
+    source.write_bytes(b"value = 2\r\n")
+    with pytest.raises(ValueError, match="requires committed source inputs"):
+        require_clean_release_inputs(root)
 
 
 def _wheel(path: Path) -> None:
