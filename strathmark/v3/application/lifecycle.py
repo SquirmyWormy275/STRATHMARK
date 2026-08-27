@@ -13,7 +13,12 @@ from strathmark.v3.application.commands import CommandRequest, EventIntent
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.commands import CommandEnvelope, CommandKind, InlinePayload
 from strathmark.v3.contracts.errors import ContractError
-from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
+from strathmark.v3.contracts.events import (
+    AggregateKind,
+    CompetitionEngineSelection,
+    EventEnvelope,
+    EventKind,
+)
 from strathmark.v3.contracts.evidence import (
     ResultObservation,
     TargetContext,
@@ -25,6 +30,7 @@ from strathmark.v3.contracts.identifiers import (
     deterministic_identifier,
     require_identifier,
 )
+from strathmark.v3.contracts.statuses import PredictionEngine
 from strathmark.v3.domain.epochs import (
     EpochMember,
     EvidenceEpoch,
@@ -292,6 +298,7 @@ class LifecycleService:
         actor_id: StableIdentifier,
         occurred_at_utc: str,
         monotonic_elapsed_ms: int,
+        engine_selection: CompetitionEngineSelection | None = None,
     ) -> StoredCommandResult:
         require_identifier(tournament_id, expected_namespace="tournament")
         require_identifier(bundle_id, expected_namespace="bundle")
@@ -303,17 +310,33 @@ class LifecycleService:
         )
         if not roots or len(roots) != len(set(roots)):
             raise ContractError("tournament open requires unique root rounds")
+        if engine_selection is not None:
+            if not isinstance(engine_selection, CompetitionEngineSelection):
+                raise ContractError(
+                    "engine selection must use the CompetitionEngineSelection contract"
+                )
+            if engine_selection.scope_id != tournament_id:
+                raise ContractError("engine selection scope identity does not match tournament")
+            if engine_selection.selected_by_actor_id != actor_id:
+                raise ContractError("engine selection actor does not match tournament opener")
+            if engine_selection.selected_at_utc > occurred_at_utc:
+                raise ContractError("engine selection cannot occur after tournament open")
+            if engine_selection.engine is not PredictionEngine.V3:
+                raise ContractError("V2-selected scope cannot enter the V3 lifecycle")
+        payload: dict[str, Any] = {
+            "schema_version": "strathmark-v3-tournament-open-v1",
+            "bundle_id": str(bundle_id),
+            "historical_cutoff_key": historical_cutoff_key,
+            "root_round_ids": list(roots),
+        }
+        if engine_selection is not None:
+            payload["engine_selection"] = engine_selection.to_dict()
         return self._execute(
             CommandKind.OPEN_TOURNAMENT,
             EventKind.TOURNAMENT_OPENED,
             AggregateKind.TOURNAMENT,
             tournament_id,
-            {
-                "schema_version": "strathmark-v3-tournament-open-v1",
-                "bundle_id": str(bundle_id),
-                "historical_cutoff_key": historical_cutoff_key,
-                "root_round_ids": list(roots),
-            },
+            payload,
             command_id,
             actor_id,
             occurred_at_utc,

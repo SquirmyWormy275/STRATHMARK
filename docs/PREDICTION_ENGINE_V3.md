@@ -5,9 +5,12 @@
 V3.0.0rc1 is a release candidate in the `strathmark.v3` namespace that
 tracks all 232 requirements in the in-repository V3 plan. Repository implementation and
 audit are complete for this candidate. The checked-in rehearsal attestation is source-bound to
-its named source and artifacts and is signed by an ephemeral development key. V2 remains the trusted production authority until an
-explicit cutover. No production authority has changed, no consumer endpoint has
-switched, and V2 is not audit-only.
+its named source and artifacts and is signed by an ephemeral development key. V2 remains
+the trusted production-capable engine. The current competition-scoped contract does not
+globally replace V2: a tournament manager deliberately selects one eligible engine for
+each new competition root, and that engine alone owns the scope. No production V3
+eligibility has been established, no consumer endpoint has switched, and V2 is not
+audit-only.
 
 This distinction is intentional. A production release requires a live, non-exportable
 Windows CNG signing identity, an exact production evidence set, a zero-open-tournament
@@ -33,8 +36,28 @@ inform later rounds; every field must be rehandicapped and rebased; component ac
 must earn influence; and the judge must receive an auditable exception-first sheet in
 less than the live call-up window.
 
-V3 is therefore a separate contract, ledger, namespace, and cutover boundary. It does
+V3 is therefore a separate contract, ledger, namespace, and eligibility boundary. It does
 not reinterpret V2 receipts or hide new behavior behind V2's five compatibility keys.
+
+## Competition-scoped engine authority
+
+Engine eligibility and engine selection are different decisions. STRATHMARK establishes
+whether an installation can safely run V2, V3 rehearsal, or V3 production. STRATHEX owns
+the deliberate judge choice for a single-event or tournament root. A tournament's child
+events and rounds inherit that one choice; they cannot select independently.
+
+The selection fact is immutable and binds the tournament identity, requested engine,
+execution mode, selecting actor metadata, selection time and reason, consumer-contract
+digest, and exact source commit. Opening a selected V3 tournament embeds that fact in the
+authoritative tournament-open event, which locks V3 authority to the scope. A V2-selected
+scope is rejected before any V3 lifecycle event is written. Exact retries replay the
+original event; a changed selection conflicts. Separate competition roots may choose
+different eligible engines, but one root never has dual numeric authority.
+
+Historical internal V3 fixtures that predate the consumer selector retain their existing
+tournament-open shape for deterministic replay. New public consumer workflows must send
+the explicit selection contract. No unavailable, incompatible, or failed selected engine
+causes STRATHMARK to invoke the other engine.
 
 ## Race and evidence invariants
 
@@ -280,9 +303,10 @@ pass and the production-required command must fail with
 `production_attestation_required`. That failure proves the verifier does not convert
 rehearsal evidence into production authority.
 
-## Cutover gate
+## Production installation eligibility gate
 
-A separately authorized operator must satisfy all of the following before any switch:
+A separately authorized operator must satisfy all of the following before an installation
+may advertise V3 as production-eligible:
 
 1. Generate the exact production evidence set with a live non-exportable Windows CNG
    identity, then verify it against the separately operator-pinned public identity using
@@ -296,11 +320,13 @@ A separately authorized operator must satisfy all of the following before any sw
 6. Produce the signed pre-switch handoff. It must still state `current_authority=v2`,
    `next_authority=v3`, `endpoint_switched=false`, and
    `requires_explicit_release_authorization=true`.
-7. Obtain the separate release authorization and switch the consumer contract once.
+7. Obtain the separate release authorization and enable the exact V3 consumer contract as
+   a production-eligible competition choice.
 
 Any preparation failure resumes V2. If V2 cannot be resumed, the system declares
 traditional/manual authority explicitly. There is no silent numeric fallback and never
-dual trusted write authority.
+dual trusted write authority inside one competition. This installation gate does not
+select V3 for every competition and does not make V2 audit-only.
 
 ## Historical boundary
 

@@ -1,4 +1,4 @@
-# STRATHEX Consumer Migration: V2 to V3
+# STRATHEX Competition-Scoped Engine Consumer Contract
 
 ## Current status
 
@@ -6,15 +6,17 @@ V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. STRATHMARK repository implementation and audit are complete for this
 candidate. No installed-consumer rehearsal exists until STRATHEX implements the durable
 adapter described below; the STRATHMARK development-key rehearsal is source-bound. V2
-remains the trusted production authority until an explicit cutover. No production
-authority has changed, no STRATHEX endpoint has switched, and V2 is not audit-only.
+remains the trusted production-capable engine. V3 is not production-eligible. The target
+workflow deliberately selects one eligible engine per single-event or tournament root;
+it is not a global V2-to-V3 replacement. No production authority has changed, no
+STRATHEX endpoint has switched, and V2 is not audit-only.
 
 STRATHMARK now exposes the typed batch-approval prerequisite. STRATHEX's durable outbox
 forwarder and immutable local acknowledgment persistence are not yet implemented; this
 document specifies that remaining external work.
 
-This document is a migration contract, not authorization to modify STRATHEX or a live
-tournament.
+This document is a cross-repository consumer contract, not authorization to modify a
+live tournament or to manufacture V3 production readiness.
 
 ## Why this is a contract replacement
 
@@ -41,6 +43,25 @@ V2 receipts stay replayable and are never rewritten.
 Once STRATHEX has authenticated as the service principal, STRATHMARK does not authorize
 the human named by `X-STRATHMARK-Upstream-Actor`. Actor, action, and trace headers are
 audit metadata only. STRATHEX must enforce its own roles before calling V3.
+
+## Selection and inheritance contract
+
+STRATHEX creates one immutable competition-root selection. A standalone event owns its
+choice. A tournament owns one choice during creation, and every child event, heat, later
+round, bracket forecast, and supported championship forecast inherits it. A tournament
+child never exposes or accepts another selector.
+
+The selection records the root identity, requested engine, execution mode, judge actor
+metadata, time, reason, exact consumer-contract digest, and source commit. The first
+authoritative numeric action locks it. For V3, the tournament-open event is lock evidence
+and contains the same closed selection fact. A V2-selected root cannot enter the V3
+lifecycle. Different roots may select different eligible engines concurrently without
+sharing receipts or state.
+
+Before lock, a correction is a new deliberate, reasoned selection record. After lock, an
+engine never changes in place. Failure or unavailability blocks numeric progress; it does
+not call the unselected engine. Later units define terminal abandonment for locked,
+unissued scopes and the creation of a new scope identity.
 
 ## Frozen dependency
 
@@ -90,7 +111,8 @@ typed application services and the dedicated routes present in the frozen contra
 3. Confirm local durable authority, current backup/recovery state, active bundle, epoch,
    weights, queue health, and assessor availability.
 4. Send plausible future contexts for rolling card preparation.
-5. Keep the currently authoritative V2 adapter active until the separate cutover step.
+5. Require a deliberate eligible engine choice at the competition root; do not default
+   or silently fall back to another adapter.
 
 ### During a round
 
@@ -131,7 +153,8 @@ turnaround. STRATHEX should display:
 - stale/superseded work excluded from mass action;
 - a deliberate action and reason requirement for every exception;
 - an immutable issued state; and
-- a visible fallback authority if V3 cannot serve trusted numeric work.
+- the selected authority and a visible blocked/recovery state if it cannot serve trusted
+  numeric work.
 
 An LLM-generated narrative must never decide the color, authorization, mark, or official
 result. The displayed explanation is derived from signed structured evidence.
@@ -148,7 +171,7 @@ result. The displayed explanation is derived from signed structured evidence.
 | issue batch contains one stale member | treat the entire batch as unissued |
 | post-issue scratch/non-start | preserve the issued sheet and record the legal non-start/result state |
 | assessor unavailable | show abstention and surviving evidence; never relabel a fallback |
-| trusted V3 unavailable after cutover | declare traditional/manual authority; no automatic V2 numeric fallback |
+| selected V3 becomes unavailable | block new numeric work and recover exact V3 state; never invoke V2 automatically |
 
 ## Adapter rehearsal
 
@@ -164,10 +187,10 @@ The current repository provides the STRATHMARK endpoint and contract tests only.
 external STRATHEX outbox implementation, dependency pin, and end-to-end acknowledgment
 replay remain required before this rehearsal can pass.
 
-## Cutover boundary
+## V3 production-eligibility boundary
 
-STRATHEX may switch only after it receives and verifies a production-CNG-signed handoff
-that says:
+STRATHEX may offer V3 as a production selection only after it receives and verifies a
+production-CNG-signed handoff that says:
 
 ```text
 current_authority=v2
@@ -176,17 +199,18 @@ endpoint_switched=false
 requires_explicit_release_authorization=true
 ```
 
-That handoff proves readiness to ask for the final decision. It is not the decision.
-After separate release authorization, switch the pinned contract once, record the switch
-receipt, and make V2 audit-only. Never allow V2 and V3 trusted writes simultaneously.
+That handoff proves readiness to ask for production eligibility. It is not a competition
+selection. After separate release authorization, enable the pinned V3 contract as an
+eligible choice. Keep V2 available for separately selected roots. Never allow V2 and V3
+trusted writes inside the same competition scope.
 
-If preparation fails before the switch, continue/resume V2. If trusted V3 fails after the
-switch, recover V3 or enter explicit traditional/manual authority. Re-enabling V2 would
-require another deliberate authority migration.
+If eligibility preparation fails, V3 remains unavailable. If selected V3 fails after a
+scope locks, recover that V3 scope or follow its explicit terminal workflow; do not
+reinterpret the scope as V2.
 
 ## Preserved V2 integration
 
-Until cutover, STRATHEX continues to follow
+For every scope that deliberately selects V2, STRATHEX continues to follow
 [`SHADOW_CONSUMER_CONTRACT.md`](SHADOW_CONSUMER_CONTRACT.md). V2's exclusive date cutoff,
 numeric-LLM retirement, residual-only ML, five keys, and shadow routes remain exact for
 that adapter. They must not be generalized into V3 behavior.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
@@ -16,6 +17,8 @@ from strathmark.v3.contracts.evidence import (
 )
 from strathmark.v3.contracts.identifiers import StableIdentifier, require_identifier
 from strathmark.v3.contracts.statuses import (
+    EngineExecutionMode,
+    PredictionEngine,
     _require_fields,
     _require_nonnegative_int,
     _require_positive_int,
@@ -23,7 +26,105 @@ from strathmark.v3.contracts.statuses import (
 )
 
 EVENT_SCHEMA_VERSION = "strathmark-v3-event-envelope-v1"
+COMPETITION_ENGINE_SELECTION_SCHEMA_VERSION = "strathmark-v3-competition-engine-selection-v1"
 MAX_EVENT_CANONICAL_BYTES = 1_048_576
+_SOURCE_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
+_SELECTION_REASON = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+@dataclass(frozen=True, slots=True)
+class CompetitionEngineSelection:
+    """One immutable upstream choice for a competition root.
+
+    STRATHEX owns the human choice.  STRATHMARK accepts only this closed,
+    pseudonymous fact and uses the tournament identity to prevent a selection
+    from being replayed into another scope.  The tournament-open event that
+    embeds this fact is the V3 lock evidence; installation readiness remains a
+    separate concern.
+    """
+
+    scope_id: StableIdentifier
+    engine: PredictionEngine
+    mode: EngineExecutionMode
+    selected_by_actor_id: StableIdentifier
+    selected_at_utc: str
+    reason_code: str
+    consumer_contract_digest: str
+    source_commit: str
+    schema_version: str = COMPETITION_ENGINE_SELECTION_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        _require_schema(self.schema_version, COMPETITION_ENGINE_SELECTION_SCHEMA_VERSION)
+        require_identifier(self.scope_id, expected_namespace="tournament")
+        if not isinstance(self.engine, PredictionEngine):
+            raise ContractError("engine must be a PredictionEngine value")
+        if not isinstance(self.mode, EngineExecutionMode):
+            raise ContractError("mode must be an EngineExecutionMode value")
+        require_identifier(self.selected_by_actor_id, expected_namespace="actor")
+        require_utc_milliseconds(self.selected_at_utc)
+        if (
+            not isinstance(self.reason_code, str)
+            or _SELECTION_REASON.fullmatch(self.reason_code) is None
+        ):
+            raise ContractError("selection reason code is invalid")
+        _require_digest(self.consumer_contract_digest, "consumer contract digest")
+        if (
+            not isinstance(self.source_commit, str)
+            or _SOURCE_COMMIT.fullmatch(self.source_commit) is None
+        ):
+            raise ContractError("selection source commit is invalid")
+
+    @property
+    def selection_digest(self) -> str:
+        return canonical_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "schema_version": self.schema_version,
+            "scope_id": str(self.scope_id),
+            "engine": self.engine.value,
+            "mode": self.mode.value,
+            "selected_by_actor_id": str(self.selected_by_actor_id),
+            "selected_at_utc": self.selected_at_utc,
+            "reason_code": self.reason_code,
+            "consumer_contract_digest": self.consumer_contract_digest,
+            "source_commit": self.source_commit,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CompetitionEngineSelection:
+        _require_fields(
+            value,
+            {
+                "schema_version",
+                "scope_id",
+                "engine",
+                "mode",
+                "selected_by_actor_id",
+                "selected_at_utc",
+                "reason_code",
+                "consumer_contract_digest",
+                "source_commit",
+            },
+        )
+        _require_schema(value["schema_version"], COMPETITION_ENGINE_SELECTION_SCHEMA_VERSION)
+        try:
+            engine = PredictionEngine(value["engine"])
+            mode = EngineExecutionMode(value["mode"])
+        except (TypeError, ValueError) as exc:
+            raise ContractError("unknown prediction engine or execution mode") from exc
+        return cls(
+            scope_id=require_identifier(value["scope_id"], expected_namespace="tournament"),
+            engine=engine,
+            mode=mode,
+            selected_by_actor_id=require_identifier(
+                value["selected_by_actor_id"], expected_namespace="actor"
+            ),
+            selected_at_utc=value["selected_at_utc"],
+            reason_code=value["reason_code"],
+            consumer_contract_digest=value["consumer_contract_digest"],
+            source_commit=value["source_commit"],
+        )
 
 
 class AggregateKind(str, Enum):
@@ -247,9 +348,11 @@ def _event_content_value(**arguments: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "COMPETITION_ENGINE_SELECTION_SCHEMA_VERSION",
     "EVENT_SCHEMA_VERSION",
     "MAX_EVENT_CANONICAL_BYTES",
     "AggregateKind",
+    "CompetitionEngineSelection",
     "EventEnvelope",
     "EventKind",
 ]

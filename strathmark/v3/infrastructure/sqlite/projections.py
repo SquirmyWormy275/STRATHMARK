@@ -25,7 +25,12 @@ from strathmark.v3.contracts.commands import (
     InlinePayload,
 )
 from strathmark.v3.contracts.errors import ContractError, V3Error
-from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
+from strathmark.v3.contracts.events import (
+    AggregateKind,
+    CompetitionEngineSelection,
+    EventEnvelope,
+    EventKind,
+)
 from strathmark.v3.contracts.evidence import TargetContext, require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import (
     StableIdentifier,
@@ -1261,8 +1266,25 @@ class SQLiteProjectionStore:
             "historical_cutoff_key",
             "root_round_ids",
         }
-        if set(value) != required or value["schema_version"] != "strathmark-v3-tournament-open-v1":
+        if (
+            frozenset(value)
+            not in {
+                frozenset(required),
+                frozenset({*required, "engine_selection"}),
+            }
+            or value["schema_version"] != "strathmark-v3-tournament-open-v1"
+        ):
             raise ProjectionError("tournament-open payload is not closed")
+        if "engine_selection" in value:
+            selection_value = value["engine_selection"]
+            if not isinstance(selection_value, dict):
+                raise ProjectionError("tournament-open engine selection is malformed")
+            try:
+                selection = CompetitionEngineSelection.from_dict(selection_value)
+            except ContractError as exc:
+                raise ProjectionError("tournament-open engine selection is invalid") from exc
+            if selection.scope_id != event.aggregate_id:
+                raise ProjectionConflict("tournament-open engine selection scope drifted")
         roots = value["root_round_ids"]
         if not isinstance(roots, list) or not roots or len(roots) != len(set(roots)):
             raise ProjectionError("tournament open requires unique root rounds")
