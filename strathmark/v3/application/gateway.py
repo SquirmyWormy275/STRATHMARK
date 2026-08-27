@@ -21,6 +21,7 @@ from strathmark.v3.api.schemas import (
     AssembleFieldResponse,
     IssueAcknowledgmentResponse,
     PreFieldForecastResponse,
+    PreFieldSignerTrust,
     PrepareCardResponse,
     ReceiptLookupResponse,
     RoundCloseResponse,
@@ -930,6 +931,23 @@ class V3ApplicationGateway:
             and str(field_integrity["checkpoint_digest"]) == "0" * 64
             and str(field_integrity["last_deep_verified_at"]) == "1970-01-01T00:00:00.000Z"
         )
+        signer_trust = None
+        if identity is not None:
+            signer_identity = self._services.pre_field_forecasts.signer_identity.to_dict()
+            signer_identity_digest = canonical_digest(signer_identity)
+            signer_trust = PreFieldSignerTrust(
+                **signer_identity,
+                identity_digest=signer_identity_digest,
+                service_binding_digest=canonical_digest(
+                    {
+                        "schema_version": "strathmark-v3-pre-field-signer-service-binding-v1",
+                        "source_commit": identity.source_commit,
+                        "consumer_contract_version": identity.consumer_contract_version,
+                        "consumer_contract_digest": identity.consumer_contract_digest,
+                        "pre_field_signer_identity_digest": signer_identity_digest,
+                    }
+                ),
+            )
         return StatusResponse(
             service="ready",
             authority_sequence=int(event_integrity["authority_sequence"]),
@@ -963,6 +981,7 @@ class V3ApplicationGateway:
             consumer_contract_version=V3_CONSUMER_CONTRACT_VERSION,
             consumer_contract_digest=v3_consumer_contract_digest(),
             source_commit=None if identity is None else identity.source_commit,
+            pre_field_signer_trust=signer_trust,
         )
 
     def _resolve_field(self, field_id: str) -> FrozenFieldRevision:

@@ -953,7 +953,6 @@ class DurableRollingPreparationCoordinator:
         self._planner = RollingPreparationPlanner()
         self._current: dict[tuple[str, str, str, str], RollingCardPublication] = {}
         self._repository.recover_rolling_restart()
-        self._repository.rebuild_rolling_current_projection()
         self._repository.cancel_closed_rolling_jobs()
         self._repository.supersede_closed_rolling_publications()
         self._repository.recover_rolling_restart()
@@ -1668,7 +1667,8 @@ class DurableRollingPreparationCoordinator:
 
     def _recover_current(self) -> None:
         all_publications = tuple(
-            self._decode_publication_row(row) for row in self._repository.rolling_publication_rows()
+            self._decode_publication_row(row)
+            for row in self._repository.rolling_current_publication_rows()
         )
         newest: dict[tuple[str, str, str, str], RollingCardPublication] = {}
         for publication in all_publications:

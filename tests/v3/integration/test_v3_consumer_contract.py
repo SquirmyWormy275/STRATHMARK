@@ -24,6 +24,7 @@ from strathmark.v3.api.schemas import (  # noqa: E402
     CredentialRotationRequest,
     IssueAcknowledgmentRequest,
     PreFieldForecastRequest,
+    PreFieldSignerTrust,
     PrepareCardRequest,
     ReceiptLookupRequest,
     RoundCloseRequest,
@@ -72,6 +73,31 @@ def test_packaged_contract_is_canonical_checksum_verified_and_v3_only() -> None:
 
 
 def test_status_contract_distinguishes_rehearsal_from_production_eligibility() -> None:
+    signer_identity = {
+        "key_id": "integrity-key:pre-field",
+        "key_class": "development_ephemeral",
+        "provider": "cryptography_ephemeral_p256_sha256",
+        "public_key_der_b64": "A" * 120,
+    }
+    signer_identity_digest = hashlib.sha256(
+        json.dumps(signer_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    binding = {
+        "schema_version": "strathmark-v3-pre-field-signer-service-binding-v1",
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        "consumer_contract_version": V3_CONSUMER_CONTRACT_VERSION,
+        "consumer_contract_digest": "d" * 64,
+        "pre_field_signer_identity_digest": signer_identity_digest,
+    }
+    signer_trust = {
+        "schema_version": "strathmark-v3-pre-field-signer-trust-v1",
+        "algorithm": "ecdsa-p256-sha256",
+        **signer_identity,
+        "identity_digest": signer_identity_digest,
+        "service_binding_digest": hashlib.sha256(
+            json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
     common = {
         "service": "ready",
         "authority_sequence": 1,
@@ -95,6 +121,7 @@ def test_status_contract_distinguishes_rehearsal_from_production_eligibility() -
         "consumer_contract_version": V3_CONSUMER_CONTRACT_VERSION,
         "consumer_contract_digest": "d" * 64,
         "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        "pre_field_signer_trust": signer_trust,
     }
     status = StatusResponse(**common)
     assert status.v3_option_state == "rehearsal_ready"
@@ -109,9 +136,21 @@ def test_status_contract_distinguishes_rehearsal_from_production_eligibility() -
             "rehearsal_eligible": False,
             "eligibility_reason_codes": ("service_identity_unavailable",),
             "source_commit": None,
+            "pre_field_signer_trust": None,
         }
     )
     assert not ineligible.rehearsal_eligible
+
+    with pytest.raises(ValueError, match="signer identity digest"):
+        PreFieldSignerTrust(**{**signer_trust, "identity_digest": "0" * 64})
+
+    with pytest.raises(ValueError, match="service binding"):
+        StatusResponse(
+            **{
+                **common,
+                "pre_field_signer_trust": {**signer_trust, "service_binding_digest": "0" * 64},
+            }
+        )
 
 
 def test_frozen_contract_has_no_non_executable_generic_command_surface() -> None:

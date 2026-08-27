@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from strathmark.v3.contracts.canonical import canonical_bytes
+from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 
 _ID = r"^[a-z][a-z0-9_.-]{0,31}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
 _TOURNAMENT_ID = r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"
@@ -509,6 +509,38 @@ class SettlementResponse(StrictV3Model):
     status: Literal["recorded", "recovered"]
 
 
+class PreFieldSignerTrust(StrictV3Model):
+    """Public P-256 verification identity bound to this exact service build."""
+
+    schema_version: Literal["strathmark-v3-pre-field-signer-trust-v1"] = (
+        "strathmark-v3-pre-field-signer-trust-v1"
+    )
+    algorithm: Literal["ecdsa-p256-sha256"] = "ecdsa-p256-sha256"
+    key_id: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,127}$")
+    key_class: Literal["development_ephemeral", "production_cng"]
+    provider: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,127}$")
+    public_key_der_b64: str = Field(
+        min_length=64,
+        max_length=1024,
+        pattern=r"^[A-Za-z0-9+/]+={0,2}$",
+    )
+    identity_digest: str = Field(pattern=_DIGEST)
+    service_binding_digest: str = Field(pattern=_DIGEST)
+
+    @model_validator(mode="after")
+    def _canonical_identity(self) -> PreFieldSignerTrust:
+        if self.identity_digest != canonical_digest(
+            {
+                "key_id": self.key_id,
+                "key_class": self.key_class,
+                "provider": self.provider,
+                "public_key_der_b64": self.public_key_der_b64,
+            }
+        ):
+            raise ValueError("pre-field signer identity digest differs")
+        return self
+
+
 class StatusResponse(StrictV3Model):
     schema_version: Literal["strathmark-v3-status-response-v1"] = "strathmark-v3-status-response-v1"
     service: Literal["ready", "degraded", "stopped"] = Field(
@@ -541,6 +573,7 @@ class StatusResponse(StrictV3Model):
     consumer_contract_version: str = Field(min_length=1, max_length=128)
     consumer_contract_digest: str = Field(pattern=_DIGEST)
     source_commit: str | None = Field(pattern=r"^[0-9a-f]{7,40}$")
+    pre_field_signer_trust: PreFieldSignerTrust | None = None
 
     @model_validator(mode="after")
     def _consistent_authority(self) -> StatusResponse:
@@ -572,6 +605,20 @@ class StatusResponse(StrictV3Model):
             raise ValueError("V3 readiness evidence must explain rehearsal-only eligibility")
         if (self.source_commit is not None) != self.rehearsal_eligible:
             raise ValueError("V3 readiness evidence requires exact service source identity")
+        if self.pre_field_signer_trust is not None and not self.rehearsal_eligible:
+            raise ValueError("ineligible V3 readiness cannot publish pre-field signer trust")
+        if self.pre_field_signer_trust is not None:
+            expected_binding = canonical_digest(
+                {
+                    "schema_version": "strathmark-v3-pre-field-signer-service-binding-v1",
+                    "source_commit": self.source_commit,
+                    "consumer_contract_version": self.consumer_contract_version,
+                    "consumer_contract_digest": self.consumer_contract_digest,
+                    "pre_field_signer_identity_digest": self.pre_field_signer_trust.identity_digest,
+                }
+            )
+            if self.pre_field_signer_trust.service_binding_digest != expected_binding:
+                raise ValueError("pre-field signer service binding differs")
         return self
 
 

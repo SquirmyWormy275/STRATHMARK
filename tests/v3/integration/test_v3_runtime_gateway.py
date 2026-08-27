@@ -920,6 +920,7 @@ def test_status_and_numeric_work_fail_closed_without_exact_service_identity(
     status = client.get("/v3/status", headers=_headers(credential, "status-missing")).json()
     assert status["v3_option_state"] == "ineligible"
     assert status["source_commit"] is None
+    assert status["pre_field_signer_trust"] is None
     assert status["eligibility_reason_codes"] == ["service_identity_unavailable"]
 
     response = client.post(
@@ -1018,7 +1019,7 @@ def test_service_identity_rejects_malformed_or_unverified_installation_evidence(
     with pytest.raises(ValueError, match="installed evidence"):
         V3ServiceIdentity(
             source_commit="d" * 40,
-            consumer_contract_version="strathmark.v3-consumer-contract.v6",
+            consumer_contract_version="strathmark.v3-consumer-contract.v7",
             consumer_contract_digest="0" * 64,
         )
 
@@ -1201,8 +1202,25 @@ def test_status_separates_candidate_health_from_production_authority(tmp_path) -
     assert status["rehearsal_eligible"] is True
     assert status["production_eligible"] is False
     assert status["source_commit"] == "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f"
-    assert status["consumer_contract_version"] == "strathmark.v3-consumer-contract.v6"
+    assert status["consumer_contract_version"] == "strathmark.v3-consumer-contract.v7"
     assert status["consumer_contract_digest"] == v3_consumer_contract_digest()
+    signer_trust = status["pre_field_signer_trust"]
+    assert signer_trust["algorithm"] == "ecdsa-p256-sha256"
+    assert signer_trust["key_id"] == _rest[0]._signer.identity.key_id
+    assert signer_trust["public_key_der_b64"] == _rest[0]._signer.identity.public_key_der_b64
+    signer_identity = {
+        key: signer_trust[key] for key in ("key_id", "key_class", "provider", "public_key_der_b64")
+    }
+    assert signer_trust["identity_digest"] == canonical_digest(signer_identity)
+    assert signer_trust["service_binding_digest"] == canonical_digest(
+        {
+            "schema_version": "strathmark-v3-pre-field-signer-service-binding-v1",
+            "source_commit": status["source_commit"],
+            "consumer_contract_version": status["consumer_contract_version"],
+            "consumer_contract_digest": status["consumer_contract_digest"],
+            "pre_field_signer_identity_digest": signer_trust["identity_digest"],
+        }
+    )
     assert len(status["event_checkpoint_digest"]) == 64
     assert len(status["field_checkpoint_digest"]) == 64
     assert len(status["job_checkpoint_digest"]) == 64

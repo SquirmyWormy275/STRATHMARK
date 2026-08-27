@@ -8,7 +8,7 @@ import re
 from importlib.resources import files
 from typing import Any, cast
 
-V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v6"
+V3_CONSUMER_CONTRACT_VERSION = "strathmark.v3-consumer-contract.v7"
 EXPECTED_V3_CONSUMER_PATHS = frozenset(
     {
         "/v3/health",
@@ -376,9 +376,19 @@ _EXAMPLES: dict[str, dict[str, Any]] = {
             "rehearsal_eligible": True,
             "production_eligible": False,
             "eligibility_reason_codes": ["production_cutover_not_verified"],
-            "consumer_contract_version": "strathmark.v3-consumer-contract.v6",
+            "consumer_contract_version": "strathmark.v3-consumer-contract.v7",
             "consumer_contract_digest": "d" * 64,
             "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            "pre_field_signer_trust": {
+                "schema_version": "strathmark-v3-pre-field-signer-trust-v1",
+                "algorithm": "ecdsa-p256-sha256",
+                "key_id": "integrity-key:pre-field-rehearsal",
+                "key_class": "development_ephemeral",
+                "provider": "cryptography_ephemeral_p256_sha256",
+                "public_key_der_b64": "A" * 120,
+                "identity_digest": "bceaf3dfaecf90689b8e27d4521677bb6a33924a93167a4ef54df2ca4b164d1a",
+                "service_binding_digest": "78bcaf97ced0fcbf276e25dbd29462ab3d4d9566e0dee159c8055d254f45f209",
+            },
         }
     },
     "/v3/credentials/rotate": {

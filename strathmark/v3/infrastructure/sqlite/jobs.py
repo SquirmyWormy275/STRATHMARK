@@ -1411,6 +1411,19 @@ class DurableJobRepository:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def rolling_current_publication_rows(self) -> tuple[dict[str, Any], ...]:
+        """Return only publication bodies referenced by the bounded current projection."""
+
+        with open_v3_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT publication.* FROM v3_rolling_card_current current "
+                "JOIN v3_rolling_card_publications publication "
+                "ON publication.publication_digest=current.publication_digest "
+                "ORDER BY current.competitor_id,current.target_context_digest,"
+                "current.tournament_epoch_id,current.bundle_digest"
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def recover_rolling_restart(self) -> RollingRestartReceipt:
         """Verify only bounded current rolling material against its signed checkpoint."""
 

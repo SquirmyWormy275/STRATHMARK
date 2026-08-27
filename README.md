@@ -143,7 +143,7 @@ mechanism, pivot rationale, REST surface, recovery rules, and eligibility gate.
 ## V3 consumer contract
 
 V3 exposes a separate 18-path `/v3/*` service contract, version
-`strathmark.v3-consumer-contract.v6`. The canonical installed
+`strathmark.v3-consumer-contract.v7`. The canonical installed
 artifact is `strathmark/v3/contracts/v3_consumer.openapi.json`; its sibling SHA-256 file
 freezes exact bytes. The tournament manager must pin both. The dedicated
 `POST /v3/approvals/decide` route records one authenticated, idempotent decision over
@@ -157,6 +157,12 @@ sheet or treated as a mark. Only `POST /v3/fields/assemble`, after the exact fie
 roster have been synchronized, performs joint optimization and produces field-relative
 marks.
 
+Authenticated `GET /v3/status` publishes the current pre-field P-256 signer identity:
+stable key ID, key class, provider, DER public key, canonical identity digest, and a
+binding digest over that identity plus the exact source commit and installed consumer
+contract. Consumers must validate that binding before trusting a signed pre-field
+receipt; a key ID from the receipt alone is not a trust anchor.
+
 STRATHMARK authenticates the calling service, not human roles. Upstream actor headers are
 audit metadata. Human login, RBAC, official issue, results, publication, and payouts stay
 in the tournament manager. Loopback is the default; non-loopback operation additionally
@@ -165,7 +171,7 @@ requires pinned mutual TLS.
 See [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md). Do not
 switch a live consumer merely because the V3 endpoints import or the rehearsal passes.
 This repository does not certify a consumer deployment. STRATHEX must still prove its
-durable outbox, immutable acknowledgments, exact V6 pin, lifecycle orchestration, and
+durable outbox, immutable acknowledgments, exact V7 pin, lifecycle orchestration, and
 restart behavior in an installed-adapter rehearsal.
 
 ## Reproduce the V3 rehearsal

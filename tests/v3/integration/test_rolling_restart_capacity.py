@@ -451,6 +451,7 @@ def test_coordinator_restart_uses_bounded_checkpoint_not_full_history(
         "verify",
         "verify_rolling_storage",
         "rolling_publication_rows",
+        "rebuild_rolling_current_projection",
         "_verify_connection",
         "_verify_rolling_storage_connection",
         "_verify_rolling_restart_checkpoint_history_connection",

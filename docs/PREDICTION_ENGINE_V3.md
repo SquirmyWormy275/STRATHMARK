@@ -261,8 +261,15 @@ Its SHA-256 is stored beside it and mechanically checked. Unknown request fields
 | `POST` | `/v3/results/settle` | Record a field-atomic outcome set |
 | `GET` | `/v3/status` | Authenticated authority and service status |
 
-These 18 paths comprise `strathmark.v3-consumer-contract.v6`. Consumers must verify the
+These 18 paths comprise `strathmark.v3-consumer-contract.v7`. Consumers must verify the
 installed OpenAPI bytes and sibling SHA-256; prose route lists are explanatory only.
+
+The authenticated status response also carries `pre_field_signer_trust`. This is the
+consumer trust bootstrap for signed pre-field receipts, not a private-key or production
+authority claim. It publishes the P-256 key ID and DER public key plus a canonical
+identity digest and a service-binding digest covering the exact source commit and frozen
+consumer contract. Consumers fail closed when those digests, the receipt manifest key,
+or the ECDSA signature differ.
 
 Every trusted POST requires `Authorization: Bearer <service credential>` and an
 `Idempotency-Key`. Credential bootstrap is an offline listener-stopped operation.

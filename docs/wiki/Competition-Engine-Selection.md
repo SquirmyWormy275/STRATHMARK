@@ -70,12 +70,17 @@ fairness frontier, and rebases the complete field to Mark 3.
 Only that exact-field receipt can carry displayed V3 marks into judge review and issue.
 Marks from independently rebased heats are never copied into a later field.
 
-## V6 contract boundary
+## V7 contract boundary
 
-The frozen contract is `strathmark.v3-consumer-contract.v6` with 18 paths. Consumers
+The frozen contract is `strathmark.v3-consumer-contract.v7` with 18 paths. Consumers
 must verify the installed OpenAPI bytes, sibling SHA-256, exact source commit, and service
 status. STRATHMARK authenticates the upstream service; human RBAC, the selection UI,
 official issue, judging, publication, and payouts remain tournament-manager authority.
+
+The authenticated status includes the public P-256 identity that verifies V3 pre-field
+receipts. Its binding digest ties that signer identity to the exact service source and
+consumer contract. A consumer must verify that binding and the receipt signature before
+using forecast rows for seeding; neither the key ID nor an unsigned forecast is enough.
 
 See [STRATHEX Consumer](STRATHEX-Consumer.md), [REST API](REST-API.md), and
 [Deployment](Deployment.md) for integration, retry, and eligibility requirements.

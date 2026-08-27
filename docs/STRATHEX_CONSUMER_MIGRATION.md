@@ -77,12 +77,30 @@ Pin all of the following to one authorized source release:
 - the production release-attestation digest when one exists.
 
 The current OpenAPI SHA-256 is
-`ef2555da7836cc0997e7ac63d9a8132267b3ee3c12c4a64fadabf7500a775706`.
+`20174ab13d32c74419e90bfdc73e6b5d5e3e888e1a6cf098f20e585c3bf2ec24`.
 Consumers must verify the file bytes rather than copy this prose value alone.
 
-The contract version is `strathmark.v3-consumer-contract.v6` and contains 18 paths.
+The contract version is `strathmark.v3-consumer-contract.v7` and contains 18 paths.
 Any contract version, checksum, or exact source-commit mismatch makes V3 ineligible for
 new numeric work in that installation.
+
+Before accepting `canonical_receipt_json` from `POST /v3/forecasts/pre-field`, read the
+authenticated `GET /v3/status` response and validate `pre_field_signer_trust`:
+
+1. recompute `identity_digest` from the canonical object containing exactly `key_id`,
+   `key_class`, `provider`, and `public_key_der_b64`;
+2. recompute `service_binding_digest` from the documented binding schema, exact
+   `source_commit`, contract version/digest, and signer identity digest;
+3. parse the DER public key as P-256 and require manifest algorithm
+   `ecdsa-p256-sha256` and the same `key_id`;
+4. verify the manifest signature over STRATHMARK's canonical signed-manifest bytes;
+5. independently validate the receipt content digest, purpose, `issued_mark=false`,
+   requested round/context, and exact ordered competitor IDs.
+
+Do not trust public key material supplied inside a receipt, accept a key-ID match without
+signature verification, or keep using a cached trust identity after any source/contract
+binding changes. An absent, malformed, or mismatched trust object makes V3 pre-field
+seeding unavailable; it never authorizes V2 fallback within the V3-selected scope.
 
 ## V3 route mapping
 

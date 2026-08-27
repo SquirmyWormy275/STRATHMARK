@@ -140,7 +140,7 @@ class Gateway:
             rehearsal_eligible=True,
             production_eligible=False,
             eligibility_reason_codes=("production_cutover_not_verified",),
-            consumer_contract_version="strathmark.v3-consumer-contract.v6",
+            consumer_contract_version="strathmark.v3-consumer-contract.v7",
             consumer_contract_digest="d" * 64,
             source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
         )
@@ -382,7 +382,7 @@ def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -
         rehearsal_eligible=True,
         production_eligible=False,
         eligibility_reason_codes=("production_cutover_not_verified",),
-        consumer_contract_version="strathmark.v3-consumer-contract.v6",
+        consumer_contract_version="strathmark.v3-consumer-contract.v7",
         consumer_contract_digest="d" * 64,
         source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     )
@@ -1485,7 +1485,7 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
         "rehearsal_eligible": True,
         "production_eligible": False,
         "eligibility_reason_codes": ("production_cutover_not_verified",),
-        "consumer_contract_version": "strathmark.v3-consumer-contract.v6",
+        "consumer_contract_version": "strathmark.v3-consumer-contract.v7",
         "consumer_contract_digest": "d" * 64,
         "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     }

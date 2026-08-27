@@ -25,7 +25,11 @@ from strathmark.v3.contracts.pre_field_forecasts import (
 )
 from strathmark.v3.domain.credibility import WeightReceipt
 from strathmark.v3.domain.pooling import WeightAuthorityBinding, pool_forecasts
-from strathmark.v3.infrastructure.integrity import IntegrityTrustStore, P256Signer
+from strathmark.v3.infrastructure.integrity import (
+    IntegrityKeyIdentity,
+    IntegrityTrustStore,
+    P256Signer,
+)
 from strathmark.v3.infrastructure.sqlite.connection import (
     immediate_transaction,
     open_v3_connection,
@@ -179,6 +183,12 @@ class PreFieldForecastService:
         self._source = source
         self._signer = signer
         self._trust_store = trust_store
+
+    @property
+    def signer_identity(self) -> IntegrityKeyIdentity:
+        """Return public verification material for consumer trust bootstrap."""
+
+        return self._signer.identity
 
     def forecast(
         self,
