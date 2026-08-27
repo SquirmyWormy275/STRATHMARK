@@ -2,7 +2,7 @@
 
 Status: active for STRATHMARK V2. V3 has a separate signed automated model factory and
 event authority documented in [`PREDICTION_ENGINE_V3.md`](PREDICTION_ENGINE_V3.md).
-V2 remains trusted production authority until explicit cutover.
+V2 remains the globally trusted production authority; V3 is not production-eligible.
 
 This policy governs V2 artifacts, promotion, drift, trusted prediction evidence, and
 failure behavior. The full mechanism is documented in

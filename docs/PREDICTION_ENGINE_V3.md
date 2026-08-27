@@ -5,7 +5,8 @@
 V3.0.0rc1 is a release candidate in the `strathmark.v3` namespace that
 tracks all 232 requirements in the in-repository V3 plan. Repository implementation and
 audit are complete for this candidate. The checked-in rehearsal attestation is source-bound to
-its named source and artifacts and is signed by an ephemeral development key. V2 remains
+its named source and artifacts and is signed by an ephemeral development key. V3 is not
+production-eligible, and no production authority has changed. V2 remains
 the trusted production-capable engine. The current competition-scoped contract does not
 globally replace V2: a tournament manager deliberately selects one eligible engine for
 each new competition root, and that engine alone owns the scope. No production V3
@@ -39,6 +40,13 @@ less than the live call-up window.
 V3 is therefore a separate contract, ledger, namespace, and eligibility boundary. It does
 not reinterpret V2 receipts or hide new behavior behind V2's five compatibility keys.
 
+The consumer architecture originally described one global V2-to-V3 endpoint cutover.
+That assumption changed after deciding to gather real judge feedback from both engines.
+The current design enables an eligible engine as a competition-level choice: one choice
+for a standalone event, or one inherited choice for an entire tournament. This preserves
+meaningful comparison between competitions without allowing a heat, final, or retry to
+change numeric authority inside an active scope.
+
 ## Competition-scoped engine authority
 
 Engine eligibility and engine selection are different decisions. STRATHMARK establishes
@@ -58,6 +66,11 @@ Historical internal V3 fixtures that predate the consumer selector retain their 
 tournament-open shape for deterministic replay. New public consumer workflows must send
 the explicit selection contract. No unavailable, incompatible, or failed selected engine
 causes STRATHMARK to invoke the other engine.
+
+V2 remains the globally trusted production authority. The selection machinery does not
+make V3 production-eligible and does not authorize a V3 production scope. If V3 later
+passes its separate production-eligibility gates, that result only makes it available as
+a deliberate option for a new competition root.
 
 ## Race and evidence invariants
 
@@ -105,6 +118,26 @@ alone cannot promote a model. Identity invariance, roster-order invariance, dire
 behavior, calibration, latency, failure handling, and temporal replay are required.
 Rolling per-competitor cards keep final field assembly independent of fresh synchronous
 LLM inference.
+
+### Pre-field forecasts are not marks
+
+Tournament setup needs predicted raw-time evidence before fields or stand assignments
+exist. V6 therefore adds `POST /v3/forecasts/pre-field`. It consumes an ordered
+competitor set, target event/material context, frozen round epoch, and forecast-set
+revision. It returns a signed field-independent receipt with marginal distributions and
+p50 seed times.
+
+The receipt is deliberately closed around two facts:
+
+- `purpose=pre_field_seeding_only`; and
+- `issued_mark=false`.
+
+It contains no field ID, stand assignment, joint optimizer result, or displayed mark.
+STRATHEX may use it to seed or group competitors, but must not display it as a start
+sheet. Once the exact fields exist, STRATHEX synchronizes each real field and calls
+`/v3/fields/assemble`; only that complete-field calculation can create V3 marks. A
+zero-history competitor uses the exact Formula prior, while a competitor with adequate
+authority uses the compatible capability pool. Both paths remain signed and auditable.
 
 The live rolling path schedules an executable council payload, not a symbolic request.
 That payload binds the promoted two-local/one-cloud council identity, card-scoped
@@ -209,7 +242,15 @@ Its SHA-256 is stored beside it and mechanically checked. Unknown request fields
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `POST` | `/v3/scopes/open` | Open a V3-selected competition root and lock its engine authority |
+| `POST` | `/v3/snapshots/synchronize` | Synchronize versioned tournament, round, or exact-field facts |
+| `POST` | `/v3/rounds/freeze` | Freeze one causal evidence epoch for a round |
+| `GET` | `/v3/approvals/page` | Read the exception-first approval projection |
+| `GET` | `/v3/approvals/detail` | Read signed detail for one projected receipt |
+| `POST` | `/v3/rounds/close` | Close a settled round after all required reactions complete |
+| `POST` | `/v3/scopes/close` | Close the competition scope |
 | `POST` | `/v3/cards/prepare` | Prepare or recover a rolling competitor card |
+| `POST` | `/v3/forecasts/pre-field` | Produce signed seeding-only forecasts without marks |
 | `POST` | `/v3/approvals/decide` | Record one exact multi-receipt approval decision and explicit exclusions |
 | `POST` | `/v3/credentials/revoke` | Revoke a service credential |
 | `POST` | `/v3/credentials/rotate` | Rotate a service credential with bounded overlap |
@@ -219,6 +260,9 @@ Its SHA-256 is stored beside it and mechanically checked. Unknown request fields
 | `POST` | `/v3/receipts/lookup` | Recover an immutable receipt by identity |
 | `POST` | `/v3/results/settle` | Record a field-atomic outcome set |
 | `GET` | `/v3/status` | Authenticated authority and service status |
+
+These 18 paths comprise `strathmark.v3-consumer-contract.v6`. Consumers must verify the
+installed OpenAPI bytes and sibling SHA-256; prose route lists are explanatory only.
 
 Every trusted POST requires `Authorization: Bearer <service credential>` and an
 `Idempotency-Key`. Credential bootstrap is an offline listener-stopped operation.
@@ -275,7 +319,8 @@ This is a composition boundary, not a production factory declaration. Concrete f
 executors, the local evaluator that derives settlement metrics from authoritative local
 facts, OS accounts and ACL separation for builder/evaluator/signer, and non-exportable
 CNG key provisioning remain installation work. The final exact-source evidence and CI
-must exercise those real components before promotion or cutover evidence is accepted.
+must exercise those real components before promotion or production-eligibility evidence
+is accepted.
 
 ## Reproducible proof
 
@@ -334,4 +379,4 @@ select V3 for every competition and does not make V2 audit-only.
 receipt explanation. The dated
 [`V3 implementation plan`](plans/2026-08-22-001-feat-adaptive-ensemble-prediction-engine-plan.md)
 records why the pivot was made and which alternatives were rejected. Neither document
-authorizes a production cutover.
+authorizes V3 production eligibility or selects an engine for a competition.

@@ -3,6 +3,7 @@
 - [Home](Home.md)
 - [Handicap Foundations](Handicap-Mark-Math.md)
 - [Prediction Engine V3](Prediction-Engine-V3.md)
+- [Competition Engine Selection](Competition-Engine-Selection.md)
 - [Architecture](Architecture-Overview.md)
 - [Deployment](Deployment.md)
 - [REST API](REST-API.md)

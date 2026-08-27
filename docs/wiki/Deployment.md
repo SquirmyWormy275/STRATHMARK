@@ -4,10 +4,9 @@
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. Repository implementation and audit are complete for this candidate. The
-checked-in development-key rehearsal is source-bound and must pass the release verifier. V2 remains the
-trusted production authority until an explicit cutover. No production authority has
-changed, no consumer endpoint has switched, and V2 is not audit-only. No production CNG
-identity is provisioned. The external STRATHEX durable outbox/adapter is not implemented.
+checked-in development-key rehearsal is source-bound and must pass the release verifier.
+V2 remains the globally trusted production authority. V3 is not production-eligible,
+V2 is not audit-only, and no production CNG identity is provisioned.
 
 V3 deployment and rehearsal require Python 3.13 with the exact V3 release lock. The
 normal package and trusted V2 engine continue to support Python 3.10-3.13. Do not weaken
@@ -21,12 +20,17 @@ missing evidence; after a fresh ephemeral rehearsal is emitted it must pass, whi
 production-required verifier must reject it with production_attestation_required.
 Neither result changes authority.
 
-Production requires installation-owned non-exportable Windows CNG keys, the exact
-production evidence set, a zero-open-tournament V2 freeze, resolution of all ambiguous
-work, a signed final V2 manifest, initialized V3 verification, an installed-consumer
-rehearsal, a signed pre-switch handoff, and separate authorization for the final endpoint
-switch. Any preparation failure resumes V2 or declares traditional/manual authority.
-There is no automatic V2 numeric fallback after a V3 cutover.
+Production eligibility requires installation-owned non-exportable Windows CNG keys, the
+exact production evidence set, a zero-open-tournament V2 freeze, resolution of all
+ambiguous work, a signed final V2 manifest, initialized V3 verification, an
+installed-consumer rehearsal, a signed pre-switch handoff, and separate authorization
+to enable V3 as a choice. That does not select V3 globally or remove V2. Each new
+standalone event or tournament root deliberately selects one eligible engine, and the
+other engine is never its automatic fallback.
+
+The V6 installed rehearsal must cover pre-field seeding receipts that issue no marks,
+exact-field assembly that does, immutable tournament inheritance, exact retries, and
+restart recovery.
 
 Production verification also requires an operator-pinned public release identity passed
 with `--trusted-production-identity`. The verifier never treats signer metadata embedded

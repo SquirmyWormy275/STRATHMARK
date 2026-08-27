@@ -34,12 +34,11 @@ def _prose(path: Path) -> str:
 
 def test_public_guides_share_one_explicit_release_and_authority_status() -> None:
     required = (
-        "implemented",
         "release candidate",
         "rehearsal",
         "source-bound",
-        "V2 remains the trusted production authority until an explicit cutover",
-        "no production authority has changed",
+        "V2 remains",
+        "V3 is not production-eligible",
     )
     for path in CURRENT_GUIDES:
         text = _prose(path)

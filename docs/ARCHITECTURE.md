@@ -4,10 +4,9 @@
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. Repository implementation and audit are complete for this candidate. Its
-checked-in development-key rehearsal is source-bound and does not change authority. V2 remains the trusted
-production authority until an explicit cutover. No production authority has changed,
-the consumer endpoint has not switched, and V2 remains runnable and writable.
-The external STRATHEX durable outbox/adapter is not implemented.
+checked-in development-key rehearsal is source-bound and does not change authority. V2
+remains the globally trusted production authority; V3 is not production-eligible. No
+production authority has changed, and V2 remains runnable and writable.
 
 The two engines are deliberately separate:
 
@@ -17,11 +16,24 @@ The two engines are deliberately separate:
 | Numeric design | one prior-only core plus optional residual | blind formula + ML + LLM council ensemble |
 | Evidence boundary | exclusive historical date | historical cutoff plus tournament/round epoch |
 | Persistence | V2 ledger and shadow contract | V3 event authority and rebuildable projections |
-| Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen ten-route `/v3/*` contract |
+| Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen V6, 18-path `/v3/*` contract |
 | Authority now | trusted production | audited release candidate, rehearsal only |
 
-V3 does not mutate V2 receipts or project itself through V2's five keys. Cutover is one
-explicit tournament-boundary authority change, never a request-by-request fallback.
+V3 does not mutate V2 receipts or project itself through V2's five keys. Eligibility is
+an installation fact; numeric authority is selected once per competition root. A
+standalone event owns its selection, while a tournament's events and rounds inherit the
+tournament selection. Separate roots may select different eligible engines. One root
+never changes engines in place and never uses request-by-request fallback.
+
+### Documented pivot: global switch to scoped selection
+
+The earlier design assumed one global V2-to-V3 consumer switch. The current architecture
+keeps V2 and V3 as explicit choices so real V3 feedback can be gathered without making
+every competition a V3 competition. The root selection is immutable at the first
+numeric action, carries actor/time/reason and exact contract/source identity, and is
+repeated in every consequential V3 receipt. This preserves one auditable numeric
+authority from setup through finals while allowing another competition root to choose
+the other eligible engine.
 
 ## V3 data flow
 
@@ -57,6 +69,14 @@ must all close before the derivation barrier opens; none inserts a judge decisio
 The approval-decision event records the tournament manager's selected and excluded
 receipt bindings. It neither authorizes a human nor acknowledges official issue.
 
+Before the exact field exists, the same frozen round authority can produce a signed
+pre-field forecast set. It contains an ordered roster, marginal raw-time distributions,
+and p50 seed times, but explicitly records `purpose=pre_field_seeding_only` and
+`issued_mark=false`. It has no field identity, stand assignment, joint field optimization,
+or displayed mark. After STRATHEX creates and synchronizes the exact field, field
+assembly combines compatible cards jointly, optimizes the actual race, rebases it to
+Mark 3, and produces the only receipt from which V3 marks may be reviewed or issued.
+
 ## Layers
 
 ### Contracts
@@ -75,7 +95,7 @@ It performs no environment reads, storage, provider I/O, or background work.
 
 `strathmark/v3/application/` coordinates expected-version commands, rolling cards,
 field assembly, approvals, issue, settlement, lifecycle, automated factory work,
-operational status, recovery proof, and cutover preparation. Ports make every external
+operational status, recovery proof, and eligibility preparation. Ports make every external
 effect explicit.
 
 `application/factory_runtime.py` is the runnable local composition and scheduler for
@@ -140,6 +160,12 @@ post-format, five-run designated-Windows result-to-ready benchmark measured a ma
 3.414 seconds against the 120-second limit while preserving exact-source digests,
 component latency, exact-retry recovery, and immutable issuance.
 
+Pre-field forecasting fills the intentional gap between those stages. It lets the
+tournament manager seed or group competitors before exact fields and stands exist,
+without fabricating field facts or prematurely issuing marks. Its durable rolling-card
+authority is scoped by competitor, context, epoch, and bundle so concurrent competition
+roots cannot supersede one another's prepared state.
+
 ## Failure and readiness model
 
 Readiness is dependency-specific. Field assembly, issue, receipt lookup, result
@@ -160,5 +186,5 @@ results, publication, points, protests, and payouts. Actor/action/trace headers 
 V3 are audit metadata only.
 
 For full behavior, use [`PREDICTION_ENGINE_V3.md`](PREDICTION_ENGINE_V3.md). For current
-operations and cutover, use [`DEPLOYMENT.md`](DEPLOYMENT.md). V2 architecture remains in
+operations and eligibility, use [`DEPLOYMENT.md`](DEPLOYMENT.md). V2 architecture remains in
 [`PREDICTION_ENGINE_V2.md`](PREDICTION_ENGINE_V2.md).

@@ -5,8 +5,8 @@ source of truth. Rulebooks govern their competitions; versioned STRATHMARK docum
 govern product behavior.
 
 V3 is a release candidate whose source-bound rehearsal does not change authority. V2
-remains the trusted production authority until explicit cutover. No
-production authority has changed.
+remains the globally trusted production authority, V3 is not production-eligible, and
+no production authority has changed.
 
 Universal domain meaning includes staggered starts, smaller marks starting earlier,
 completion on mark plus raw time, field-wide rebasing, context-aware ability comparison,
@@ -20,7 +20,8 @@ adapter, but the model must not silently invent them.
 V2 product policy includes its exclusive-date evidence, prior-only model, 3/183 bounds,
 and deterministic optimizer. V3 product policy includes its sealed tournament epochs,
 independent assessor ensemble, capability and credibility mechanisms, consequence review,
-fairness frontier, event authority, and cutover protocol. Neither policy is itself a
+fairness frontier, event authority, and production-eligibility protocol. Neither policy
+is itself a
 sporting rule.
 
 Judges determine legal completion and placings. The tournament manager owns official

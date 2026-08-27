@@ -2,7 +2,7 @@
 
 > **V2-specific behavior.** The V3 release candidate uses historical cutoffs plus frozen
 > tournament/round epochs and a different capability mechanism. Its checked-in evidence
-> is rehearsal-tier; V2 remains production authority until explicit cutover.
+> is rehearsal-tier; V2 remains globally authoritative and V3 is not production-eligible.
 
 V2 applies 730-day exponential recency weighting only to results with
 `result_date < prediction_as_of`. Same-day, future, invalid-date, and undated results

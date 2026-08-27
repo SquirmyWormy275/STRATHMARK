@@ -2,7 +2,8 @@
 
 > **V2-specific definitions below.** The V3 release candidate uses immutable component
 > distributions, pooled uncertainty, joint dependence, and consequence disagreement.
-> Its evidence is rehearsal-tier; V2 remains production authority until explicit cutover.
+> Its evidence is rehearsal-tier; V2 remains globally authoritative and V3 is not
+> production-eligible.
 
 STRATHMARK exposes three related but distinct concepts:
 

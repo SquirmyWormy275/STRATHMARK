@@ -1,8 +1,8 @@
 # Fairness Assessment
 
 > **Version boundary.** The V3 release candidate has separate equity, manipulation, and
-> consequence evidence; its source-bound rehearsal does not change authority. V2 remains the
-> trusted production authority until explicit cutover. The V2 metrics below remain
+> consequence evidence; its source-bound rehearsal does not change authority. V2 remains
+> the globally trusted production authority and V3 is not production-eligible. The V2 metrics below remain
 > historical/current-V2 evidence, not the complete V3 fairness contract.
 
 V2 optimizes marks toward equal model-implied win probabilities, then lower expected

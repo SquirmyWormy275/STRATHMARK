@@ -4,8 +4,8 @@
 
 The V3 release candidate uses numeric LLM-council forecasting and source-bound release
 verification; its development-key rehearsal does not change authority. V2 remains the
-trusted production authority until an explicit cutover. No production authority has
-changed.
+globally trusted production authority, V3 is not production-eligible, and no production
+authority has changed.
 
 In V2, LLM integrations are narrative-only and the legacy LLM result key is always
 empty. That remains exact for V2.
