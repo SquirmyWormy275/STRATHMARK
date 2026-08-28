@@ -204,6 +204,7 @@ missing, stale, failed, or tampered artifacts, even the ordinary verifier must f
 - [V3 engine](docs/PREDICTION_ENGINE_V3.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Deployment and eligibility](docs/DEPLOYMENT.md)
+- [Package release boundary](docs/PACKAGE_RELEASE.md)
 - [STRATHEX consumer migration](docs/STRATHEX_CONSUMER_MIGRATION.md)
 - [Historical V2 engine](docs/PREDICTION_ENGINE_V2.md)
 - [Changelog](CHANGELOG.md)

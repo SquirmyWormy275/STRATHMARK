@@ -27,10 +27,22 @@ ENV/
 
 # Testing
 .pytest_cache/
+.pytest-*/
+.pytest_tmp_*/
 .coverage
+.coverage-*
 htmlcov/
 .tox/
 .ruff_cache/
+
+# Local release, deployment, and agent scratch artifacts
+.tmp/
+.tmp-*/
+.deployment-*/
+.codex/
+catboost_info/
+.railway-diagnostic/
+.release-worktrees/
 
 # IDE
 .vscode/

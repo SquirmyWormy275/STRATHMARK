@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import zipfile
+from email.parser import Parser
 from pathlib import Path
 
 INSTALLED_SHADOW_SMOKE = textwrap.dedent(
@@ -189,11 +191,51 @@ INSTALLED_SHADOW_SMOKE = textwrap.dedent(
     """
 )
 
+INSTALLED_CORE_SMOKE = textwrap.dedent(
+    """
+    from importlib.metadata import version
+
+    import strathmark
+
+    assert strathmark is not None
+    assert version("strathmark")
+    print("installed distribution core import smoke OK")
+    """
+)
+
+
+def declared_wheel_extras(wheel: Path) -> tuple[str, ...]:
+    """Read the exact wheel's declared extras without importing its source tree."""
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_names = [
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata_names) != 1:
+            raise ValueError(f"expected one wheel METADATA file, found {len(metadata_names)}")
+        metadata = Parser().parsestr(archive.read(metadata_names[0]).decode("utf-8"))
+    return tuple(sorted(set(metadata.get_all("Provides-Extra", ()))))
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kind", choices=("wheel", "sdist"), required=True)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
+    parser.add_argument(
+        "--extras",
+        default="api",
+        help="comma-separated extras to install; use an empty value for core only",
+    )
+    parser.add_argument(
+        "--smoke",
+        choices=("core", "shadow"),
+        default="shadow",
+        help="installed behavior to exercise after dependency validation",
+    )
+    parser.add_argument(
+        "--all-extras",
+        action="store_true",
+        help="install every extra declared by the exact wheel metadata",
+    )
     parser.add_argument(
         "--offline",
         action="store_true",
@@ -206,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"expected exactly one {args.kind} in {args.dist_dir}, found {len(candidates)}"
         )
+    if args.all_extras:
+        if args.kind != "wheel":
+            raise SystemExit("--all-extras requires --kind wheel")
+        args.extras = ",".join(declared_wheel_extras(candidates[0]))
+        print(f"installing exact wheel extras: {args.extras or '(none)'}")
 
     with tempfile.TemporaryDirectory(prefix=f"strathmark-{args.kind}-") as directory:
         root = Path(directory)
@@ -220,8 +267,11 @@ def main(argv: list[str] | None = None) -> int:
             install_command.extend(
                 ["--no-index", "--no-deps", "--no-build-isolation", "--no-cache-dir"]
             )
+        artifact = str(candidates[0])
+        if args.extras:
+            artifact = f"{artifact}[{args.extras}]"
         subprocess.run(
-            [*install_command, f"{candidates[0]}[api]"],
+            [*install_command, artifact],
             check=True,
             cwd=root,
         )
@@ -231,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             [
                 str(python),
                 "-c",
-                INSTALLED_SHADOW_SMOKE,
+                INSTALLED_SHADOW_SMOKE if args.smoke == "shadow" else INSTALLED_CORE_SMOKE,
             ],
             check=True,
             cwd=root,
