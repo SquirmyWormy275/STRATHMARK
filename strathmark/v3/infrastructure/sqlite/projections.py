@@ -25,7 +25,12 @@ from strathmark.v3.contracts.commands import (
     InlinePayload,
 )
 from strathmark.v3.contracts.errors import ContractError, V3Error
-from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
+from strathmark.v3.contracts.events import (
+    AggregateKind,
+    CompetitionEngineSelection,
+    EventEnvelope,
+    EventKind,
+)
 from strathmark.v3.contracts.evidence import TargetContext, require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import (
     StableIdentifier,
@@ -1261,8 +1266,25 @@ class SQLiteProjectionStore:
             "historical_cutoff_key",
             "root_round_ids",
         }
-        if set(value) != required or value["schema_version"] != "strathmark-v3-tournament-open-v1":
+        if (
+            frozenset(value)
+            not in {
+                frozenset(required),
+                frozenset({*required, "engine_selection"}),
+            }
+            or value["schema_version"] != "strathmark-v3-tournament-open-v1"
+        ):
             raise ProjectionError("tournament-open payload is not closed")
+        if "engine_selection" in value:
+            selection_value = value["engine_selection"]
+            if not isinstance(selection_value, dict):
+                raise ProjectionError("tournament-open engine selection is malformed")
+            try:
+                selection = CompetitionEngineSelection.from_dict(selection_value)
+            except ContractError as exc:
+                raise ProjectionError("tournament-open engine selection is invalid") from exc
+            if selection.scope_id != event.aggregate_id:
+                raise ProjectionConflict("tournament-open engine selection scope drifted")
         roots = value["root_round_ids"]
         if not isinstance(roots, list) or not roots or len(roots) != len(set(roots)):
             raise ProjectionError("tournament open requires unique root rounds")
@@ -1352,10 +1374,41 @@ class SQLiteProjectionStore:
             "snapshot_digest",
         }
         if (
-            set(value) != required
+            frozenset(value)
+            not in {frozenset(required), frozenset({*required, "engine_selection"})}
             or value["schema_version"] != "strathmark-v3-upstream-snapshot-v1"
         ):
             raise ProjectionError("upstream snapshot payload is not closed")
+        if "engine_selection" in value:
+            selection_value = value["engine_selection"]
+            if not isinstance(selection_value, dict):
+                raise ProjectionError("snapshot engine selection is malformed")
+            try:
+                selection = CompetitionEngineSelection.from_dict(selection_value)
+            except ContractError as exc:
+                raise ProjectionError("snapshot engine selection is invalid") from exc
+            if str(selection.scope_id) != value["tournament_id"] or selection.engine.value != "v3":
+                raise ProjectionConflict("snapshot engine selection differs from V3 scope")
+        opened_row = connection.execute(
+            "SELECT envelope_json FROM v3_events WHERE aggregate_id=? "
+            "AND event_kind=? AND global_sequence<? ORDER BY global_sequence DESC LIMIT 1",
+            (
+                value["tournament_id"],
+                EventKind.TOURNAMENT_OPENED.value,
+                event.global_sequence,
+            ),
+        ).fetchone()
+        if opened_row is not None:
+            opened = EventEnvelope.from_dict(json.loads(str(opened_row[0])))
+            opened_selection = (
+                cast(InlinePayload, opened.command.payload).to_value().get("engine_selection")
+            )
+            if opened_selection is not None and value.get("engine_selection") != opened_selection:
+                raise ProjectionConflict(
+                    "selected tournament requires its exact engine selection on every snapshot"
+                )
+            if opened_selection is None and "engine_selection" in value:
+                raise ProjectionConflict("legacy tournament cannot acquire selection by snapshot")
         revision = value["upstream_revision"]
         if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
             raise ProjectionError("upstream revision must be positive")
@@ -3453,6 +3506,18 @@ class SQLiteFieldProjectionStore:
             ).fetchone()
             expected_roster = [str(item.competitor_id) for item in field.ordered_assignments]
             expected_stands = [str(item.stand_id) for item in field.ordered_assignments]
+            expected_ingress_payload = {
+                "schema_version": "strathmark-v3-upstream-snapshot-v1",
+                "entity_kind": "field",
+                "entity_id": str(field.field_id),
+                "upstream_revision": int(ingress[0]),
+                "tournament_id": str(ingress[1]),
+                "round_id": str(ingress[2]),
+                "snapshot": snapshot,
+                "snapshot_digest": str(ingress[5]),
+            }
+            if "engine_selection" in ingress_payload:
+                expected_ingress_payload["engine_selection"] = ingress_payload["engine_selection"]
             if (
                 int(ingress[0]) != field.field_revision
                 or str(ingress[1]) != str(field.tournament_id)
@@ -3466,17 +3531,7 @@ class SQLiteFieldProjectionStore:
                 or snapshot.get("scheduled_at") != field.scheduled_at
                 or snapshot.get("deadline_at") != field.deadline_at
                 or str(ingress[5]) != canonical_digest(snapshot)
-                or ingress_payload
-                != {
-                    "schema_version": "strathmark-v3-upstream-snapshot-v1",
-                    "entity_kind": "field",
-                    "entity_id": str(field.field_id),
-                    "upstream_revision": int(ingress[0]),
-                    "tournament_id": str(ingress[1]),
-                    "round_id": str(ingress[2]),
-                    "snapshot": snapshot,
-                    "snapshot_digest": str(ingress[5]),
-                }
+                or ingress_payload != expected_ingress_payload
                 or ingress_head is None
                 or int(ingress_head[0]) != ingress_event.aggregate_version
                 or str(ingress_head[1]) != ingress_event.event_digest

@@ -23,9 +23,17 @@ from strathmark.v3.api.schemas import (  # noqa: E402
     CredentialRevocationRequest,
     CredentialRotationRequest,
     IssueAcknowledgmentRequest,
+    PreFieldForecastRequest,
+    PreFieldSignerTrust,
     PrepareCardRequest,
     ReceiptLookupRequest,
+    RoundCloseRequest,
+    RoundFreezeRequest,
+    ScopeCloseRequest,
+    ScopeOpenRequest,
     SettlementRequest,
+    SnapshotSyncRequest,
+    StatusResponse,
 )
 from strathmark.v3.consumer_contract import (  # noqa: E402
     EXPECTED_V3_CONSUMER_PATHS,
@@ -64,6 +72,87 @@ def test_packaged_contract_is_canonical_checksum_verified_and_v3_only() -> None:
     assert b"bearer ey" not in raw.lower()
 
 
+def test_status_contract_distinguishes_rehearsal_from_production_eligibility() -> None:
+    signer_identity = {
+        "key_id": "integrity-key:pre-field",
+        "key_class": "development_ephemeral",
+        "provider": "cryptography_ephemeral_p256_sha256",
+        "public_key_der_b64": "A" * 120,
+    }
+    signer_identity_digest = hashlib.sha256(
+        json.dumps(signer_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    binding = {
+        "schema_version": "strathmark-v3-pre-field-signer-service-binding-v1",
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        "consumer_contract_version": V3_CONSUMER_CONTRACT_VERSION,
+        "consumer_contract_digest": "d" * 64,
+        "pre_field_signer_identity_digest": signer_identity_digest,
+    }
+    signer_trust = {
+        "schema_version": "strathmark-v3-pre-field-signer-trust-v1",
+        "algorithm": "ecdsa-p256-sha256",
+        **signer_identity,
+        "identity_digest": signer_identity_digest,
+        "service_binding_digest": hashlib.sha256(
+            json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+    common = {
+        "service": "ready",
+        "authority_sequence": 1,
+        "engine_authority": "v2",
+        "v3_readiness": "candidate",
+        "production_authority": "v2",
+        "cutover_receipt_digest": None,
+        "cutover_verified_at_utc": None,
+        "deep_verification_state": "verified",
+        "event_last_deep_verified_at_utc": "2026-08-25T12:00:00.000Z",
+        "event_checkpoint_digest": "a" * 64,
+        "field_last_deep_verified_at_utc": "2026-08-25T12:00:00.000Z",
+        "field_checkpoint_digest": "b" * 64,
+        "job_last_deep_verified_at_utc": "2026-08-25T12:00:00.000Z",
+        "job_checkpoint_digest": "c" * 64,
+        "open_tournament_count": 0,
+        "v3_option_state": "rehearsal_ready",
+        "rehearsal_eligible": True,
+        "production_eligible": False,
+        "eligibility_reason_codes": ("production_cutover_not_verified",),
+        "consumer_contract_version": V3_CONSUMER_CONTRACT_VERSION,
+        "consumer_contract_digest": "d" * 64,
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        "pre_field_signer_trust": signer_trust,
+    }
+    status = StatusResponse(**common)
+    assert status.v3_option_state == "rehearsal_ready"
+
+    with pytest.raises(ValueError, match="readiness evidence"):
+        StatusResponse(**{**common, "production_eligible": True})
+
+    ineligible = StatusResponse(
+        **{
+            **common,
+            "v3_option_state": "ineligible",
+            "rehearsal_eligible": False,
+            "eligibility_reason_codes": ("service_identity_unavailable",),
+            "source_commit": None,
+            "pre_field_signer_trust": None,
+        }
+    )
+    assert not ineligible.rehearsal_eligible
+
+    with pytest.raises(ValueError, match="signer identity digest"):
+        PreFieldSignerTrust(**{**signer_trust, "identity_digest": "0" * 64})
+
+    with pytest.raises(ValueError, match="service binding"):
+        StatusResponse(
+            **{
+                **common,
+                "pre_field_signer_trust": {**signer_trust, "service_binding_digest": "0" * 64},
+            }
+        )
+
+
 def test_frozen_contract_has_no_non_executable_generic_command_surface() -> None:
     document = load_v3_consumer_contract()
 
@@ -95,8 +184,14 @@ def test_frozen_contract_is_exact_fresh_generation_and_live_openapi(
 def test_every_example_validates_against_frozen_schema_and_live_request_model() -> None:
     document = load_v3_consumer_contract()
     request_models = {
+        "/v3/scopes/open": ScopeOpenRequest,
+        "/v3/snapshots/synchronize": SnapshotSyncRequest,
+        "/v3/rounds/freeze": RoundFreezeRequest,
+        "/v3/rounds/close": RoundCloseRequest,
+        "/v3/scopes/close": ScopeCloseRequest,
         "/v3/approvals/decide": ApprovalDecisionRequest,
         "/v3/cards/prepare": PrepareCardRequest,
+        "/v3/forecasts/pre-field": PreFieldForecastRequest,
         "/v3/fields/assemble": AssembleFieldRequest,
         "/v3/receipts/lookup": ReceiptLookupRequest,
         "/v3/issues/acknowledge": IssueAcknowledgmentRequest,

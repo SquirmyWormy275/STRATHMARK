@@ -1,20 +1,24 @@
-# STRATHEX Consumer Migration: V2 to V3
+# STRATHEX Competition-Scoped Engine Consumer Contract
 
 ## Current status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. STRATHMARK repository implementation and audit are complete for this
-candidate. No installed-consumer rehearsal exists until STRATHEX implements the durable
-adapter described below; the STRATHMARK development-key rehearsal is source-bound. V2
-remains the trusted production authority until an explicit cutover. No production
-authority has changed, no STRATHEX endpoint has switched, and V2 is not audit-only.
+candidate. An installed-consumer rehearsal remains required before any production use;
+the STRATHMARK development-key rehearsal is source-bound and cannot substitute for that
+cross-repository proof. V2
+remains the trusted production-capable engine. V3 is not production-eligible. The target
+workflow deliberately selects one eligible engine per single-event or tournament root;
+it is not a global V2-to-V3 replacement. No production authority has changed, no
+STRATHEX endpoint has switched, and V2 is not audit-only.
 
-STRATHMARK now exposes the typed batch-approval prerequisite. STRATHEX's durable outbox
-forwarder and immutable local acknowledgment persistence are not yet implemented; this
-document specifies that remaining external work.
+STRATHMARK now exposes the V6 lifecycle, snapshot, pre-field forecast, exact-field,
+approval, issue, and settlement boundary. STRATHEX owns the corresponding durable
+adapter, UI, outbox, and immutable local acknowledgment persistence. This repository
+does not certify their installation or deployment.
 
-This document is a migration contract, not authorization to modify STRATHEX or a live
-tournament.
+This document is a cross-repository consumer contract, not authorization to modify a
+live tournament or to manufacture V3 production readiness.
 
 ## Why this is a contract replacement
 
@@ -42,6 +46,25 @@ Once STRATHEX has authenticated as the service principal, STRATHMARK does not au
 the human named by `X-STRATHMARK-Upstream-Actor`. Actor, action, and trace headers are
 audit metadata only. STRATHEX must enforce its own roles before calling V3.
 
+## Selection and inheritance contract
+
+STRATHEX creates one immutable competition-root selection. A standalone event owns its
+choice. A tournament owns one choice during creation, and every child event, heat, later
+round, bracket forecast, and supported championship forecast inherits it. A tournament
+child never exposes or accepts another selector.
+
+The selection records the root identity, requested engine, execution mode, judge actor
+metadata, time, reason, exact consumer-contract digest, and source commit. The first
+authoritative numeric action locks it. For V3, the tournament-open event is lock evidence
+and contains the same closed selection fact. A V2-selected root cannot enter the V3
+lifecycle. Different roots may select different eligible engines concurrently without
+sharing receipts or state.
+
+Before lock, a correction is a new deliberate, reasoned selection record. After lock, an
+engine never changes in place. Failure or unavailability blocks numeric progress; it does
+not call the unselected engine. Later units define terminal abandonment for locked,
+unissued scopes and the creation of a new scope identity.
+
 ## Frozen dependency
 
 Pin all of the following to one authorized source release:
@@ -54,8 +77,30 @@ Pin all of the following to one authorized source release:
 - the production release-attestation digest when one exists.
 
 The current OpenAPI SHA-256 is
-`5dfd135a0ea18316753b0107e50bf0cdd811bb0ec042b6b57206fb2022708fc3`.
+`20174ab13d32c74419e90bfdc73e6b5d5e3e888e1a6cf098f20e585c3bf2ec24`.
 Consumers must verify the file bytes rather than copy this prose value alone.
+
+The contract version is `strathmark.v3-consumer-contract.v7` and contains 18 paths.
+Any contract version, checksum, or exact source-commit mismatch makes V3 ineligible for
+new numeric work in that installation.
+
+Before accepting `canonical_receipt_json` from `POST /v3/forecasts/pre-field`, read the
+authenticated `GET /v3/status` response and validate `pre_field_signer_trust`:
+
+1. recompute `identity_digest` from the canonical object containing exactly `key_id`,
+   `key_class`, `provider`, and `public_key_der_b64`;
+2. recompute `service_binding_digest` from the documented binding schema, exact
+   `source_commit`, contract version/digest, and signer identity digest;
+3. parse the DER public key as P-256 and require manifest algorithm
+   `ecdsa-p256-sha256` and the same `key_id`;
+4. verify the manifest signature over STRATHMARK's canonical signed-manifest bytes;
+5. independently validate the receipt content digest, purpose, `issued_mark=false`,
+   requested round/context, and exact ordered competitor IDs.
+
+Do not trust public key material supplied inside a receipt, accept a key-ID match without
+signature verification, or keep using a cached trust identity after any source/contract
+binding changes. An absent, malformed, or mismatched trust object makes V3 pre-field
+seeding unavailable; it never authorizes V2 fallback within the V3-selected scope.
 
 ## V3 route mapping
 
@@ -63,12 +108,18 @@ Consumers must verify the file bytes rather than copy this prose value alone.
 | --- | --- |
 | process liveness | `GET /v3/health` |
 | trusted authority/readiness state | `GET /v3/status` |
+| open and bind one V3-selected competition scope | `POST /v3/scopes/open` |
+| synchronize tournament, round, and exact-field facts | `POST /v3/snapshots/synchronize` |
+| freeze one round evidence epoch | `POST /v3/rounds/freeze` |
 | prepare rolling competitor context | `POST /v3/cards/prepare` |
+| obtain signed field-independent seed times | `POST /v3/forecasts/pre-field` |
+| read approval queue and exact row evidence | `GET /v3/approvals/page`, `GET /v3/approvals/detail` |
 | record exact selected/excluded receipt approvals | `POST /v3/approvals/decide` |
 | assemble/recover complete field | `POST /v3/fields/assemble` |
 | recover immutable receipt | `POST /v3/receipts/lookup` |
 | bind official upstream issue to receipts | `POST /v3/issues/acknowledge` |
 | settle complete field outcome | `POST /v3/results/settle` |
+| close a settled round or competition | `POST /v3/rounds/close`, `POST /v3/scopes/close` |
 | rotate service credential | `POST /v3/credentials/rotate` |
 | revoke service credential | `POST /v3/credentials/revoke` |
 
@@ -90,25 +141,36 @@ typed application services and the dedicated routes present in the frozen contra
 3. Confirm local durable authority, current backup/recovery state, active bundle, epoch,
    weights, queue health, and assessor availability.
 4. Send plausible future contexts for rolling card preparation.
-5. Keep the currently authoritative V2 adapter active until the separate cutover step.
+5. Require a deliberate eligible engine choice at the competition root; do not default
+   or silently fall back to another adapter.
 
 ### During a round
 
 1. Open/freeze one evidence epoch for the round.
-2. Prepare every field against that same epoch.
-3. Do not feed an early heat's result into a later heat in the same round.
-4. When the final roster is known, assemble the complete field. Never copy displayed marks
+2. Before fields exist, request a pre-field forecast set for the ordered competitors and
+   target context. Use its p50 raw-time seeds only for grouping or seeding. The signed
+   receipt has `purpose=pre_field_seeding_only` and `issued_mark=false`.
+3. Create fields and stand assignments in STRATHEX. Do not invent or send a field ID to
+   obtain pre-field predictions.
+4. Synchronize every exact field and prepare it against that same epoch.
+5. Do not feed an early heat's result into a later heat in the same round.
+6. When the final roster is known, assemble the complete field. Never copy displayed marks
    from qualifying heats.
-5. Render the approval projection exception-first: green rows compact and batchable;
+7. Render the approval projection exception-first: green rows compact and batchable;
    normal amber rows flagged but batch-eligible, and red rows expanded with assessor and
    counterfactual consequences.
-6. Require the judge to deliberately choose each flagged action. There is no default
+8. Require the judge to deliberately choose each flagged action. There is no default
    manual estimate.
-7. Persist the human decision and a durable outbox row in one STRATHEX transaction.
+9. Persist the human decision and a durable outbox row in one STRATHEX transaction.
    Forward the exact approval snapshot, selected and excluded receipt bindings, actor
    metadata, timestamp, and idempotency identity to `/v3/approvals/decide`. Store the
    returned immutable acknowledgment before considering the outbox item delivered.
-8. Separately acknowledge the complete issued receipt set atomically before publication.
+10. Separately acknowledge the complete issued receipt set atomically before publication.
+
+Pre-field forecasts and field receipts are different authority objects. A pre-field
+forecast cannot be approved, issued, converted into a mark, or carried forward as a
+displayed field mark. Exact-field assembly is always required after the real field is
+known.
 
 ### After the race
 
@@ -131,7 +193,8 @@ turnaround. STRATHEX should display:
 - stale/superseded work excluded from mass action;
 - a deliberate action and reason requirement for every exception;
 - an immutable issued state; and
-- a visible fallback authority if V3 cannot serve trusted numeric work.
+- the selected authority and a visible blocked/recovery state if it cannot serve trusted
+  numeric work.
 
 An LLM-generated narrative must never decide the color, authorization, mark, or official
 result. The displayed explanation is derived from signed structured evidence.
@@ -148,7 +211,7 @@ result. The displayed explanation is derived from signed structured evidence.
 | issue batch contains one stale member | treat the entire batch as unissued |
 | post-issue scratch/non-start | preserve the issued sheet and record the legal non-start/result state |
 | assessor unavailable | show abstention and surviving evidence; never relabel a fallback |
-| trusted V3 unavailable after cutover | declare traditional/manual authority; no automatic V2 numeric fallback |
+| selected V3 becomes unavailable | block new numeric work and recover exact V3 state; never invoke V2 automatically |
 
 ## Adapter rehearsal
 
@@ -156,18 +219,19 @@ The installed STRATHEX adapter must run against an isolated V3 database and the 
 frozen contract. The rehearsal covers prepare, field assembly, approval projection,
 issue, restart lookup, result settlement, same-round epoch isolation, next-round update,
 stale/corrected requests, credential rotation/revocation, and all documented error codes.
-Its digest must match the V3 initialization snapshot used for cutover preparation.
+Its digest must match the V3 initialization snapshot used for eligibility preparation.
 
 Passing the adapter rehearsal changes no authority.
 
-The current repository provides the STRATHMARK endpoint and contract tests only. The
-external STRATHEX outbox implementation, dependency pin, and end-to-end acknowledgment
-replay remain required before this rehearsal can pass.
+The current repository provides the STRATHMARK endpoints and contract tests only. The
+external STRATHEX dependency pin, durable state, end-to-end acknowledgment replay, and
+restart recovery must all be proven by the installed rehearsal; implementation claims
+from another checkout are not evidence here.
 
-## Cutover boundary
+## V3 production-eligibility boundary
 
-STRATHEX may switch only after it receives and verifies a production-CNG-signed handoff
-that says:
+STRATHEX may offer V3 as a production selection only after it receives and verifies a
+production-CNG-signed handoff that says:
 
 ```text
 current_authority=v2
@@ -176,17 +240,23 @@ endpoint_switched=false
 requires_explicit_release_authorization=true
 ```
 
-That handoff proves readiness to ask for the final decision. It is not the decision.
-After separate release authorization, switch the pinned contract once, record the switch
-receipt, and make V2 audit-only. Never allow V2 and V3 trusted writes simultaneously.
+That handoff proves readiness to ask for production eligibility. It is not a competition
+selection and is not a global V2 replacement. After separate release authorization,
+enable the pinned V3 contract as an eligible choice for new roots. Keep V2 available for
+separately selected roots. Never allow V2 and V3 trusted writes inside the same
+competition scope.
 
-If preparation fails before the switch, continue/resume V2. If trusted V3 fails after the
-switch, recover V3 or enter explicit traditional/manual authority. Re-enabling V2 would
-require another deliberate authority migration.
+The inherited `next_authority=v3` field therefore means "V3 may become eligible for a
+new root" in this workflow. It does not demote V2 or select V3 for existing or future
+competitions.
+
+If eligibility preparation fails, V3 remains unavailable. If selected V3 fails after a
+scope locks, recover that V3 scope or follow its explicit terminal workflow; do not
+reinterpret the scope as V2.
 
 ## Preserved V2 integration
 
-Until cutover, STRATHEX continues to follow
+For every scope that deliberately selects V2, STRATHEX continues to follow
 [`SHADOW_CONSUMER_CONTRACT.md`](SHADOW_CONSUMER_CONTRACT.md). V2's exclusive date cutoff,
 numeric-LLM retirement, residual-only ML, five keys, and shadow routes remain exact for
 that adapter. They must not be generalized into V3 behavior.

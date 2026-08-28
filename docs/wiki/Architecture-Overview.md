@@ -4,10 +4,9 @@
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. Repository implementation and audit are complete for this candidate. Its
-checked-in development-key rehearsal is source-bound and does not change authority. V2 remains the trusted
-production authority until an explicit cutover. No production authority has changed,
-no consumer endpoint has switched, and V2 is not audit-only.
-The external STRATHEX durable outbox/adapter is not implemented.
+checked-in development-key rehearsal is source-bound and does not change authority. V2
+remains the globally trusted production authority, V3 is not production-eligible, and
+V2 is not audit-only.
 
 V2 and V3 are separate engines. V2 keeps its released prior-only model, ledger, and
 shadow contract. V3 uses a new namespace, closed contracts, an append-only SQLite event
@@ -20,9 +19,19 @@ council; validation, capability, credibility, and pooling; green/amber/red conse
 review; fairness-frontier marks rebased to 3; then immutable receipt, approval, issue,
 and settlement.
 
-The ten-route contract records a typed selected/excluded multi-receipt approval
-decision before the separate issue acknowledgment. The tournament manager still owns
-authorization and official issue.
+The V6 contract has 18 paths. It locks one V3 selection to a competition root, exposes
+lifecycle and versioned snapshot synchronization, and records typed selected/excluded
+approval decisions before the separate issue acknowledgment. The tournament manager
+still owns authorization and official issue.
+
+Before fields exist, V3 may sign marginal raw-time forecasts for seeding. Those receipts
+have no field/stand facts and explicitly state `purpose=pre_field_seeding_only` and
+`issued_mark=false`. After exact fields exist, complete-field assembly performs joint
+optimization and creates the only V3 receipt that carries displayed marks.
+
+This is the documented pivot from an earlier global-switch assumption: different
+competition roots may select different eligible engines, while every child of one root
+inherits one immutable numeric authority.
 
 The factory runtime composes local automation and settled-evidence monitoring and has a
 bounded separate-process CNG evaluator entrypoint. It deliberately requires injected

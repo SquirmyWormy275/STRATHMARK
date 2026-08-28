@@ -12,6 +12,20 @@ STATUS_SCHEMA_VERSION = "strathmark-v3-official-result-v1"
 LIFECYCLE_SCHEMA_VERSION = "strathmark-v3-aggregate-lifecycle-v1"
 
 
+class PredictionEngine(str, Enum):
+    """Closed competition-scoped numeric authority vocabulary."""
+
+    V2 = "v2"
+    V3 = "v3"
+
+
+class EngineExecutionMode(str, Enum):
+    """Whether a selected engine is authorized for production or rehearsal only."""
+
+    PRODUCTION = "production"
+    REHEARSAL = "rehearsal"
+
+
 class ResultStatus(str, Enum):
     """Version-one official outcome states; values are persisted verbatim."""
 

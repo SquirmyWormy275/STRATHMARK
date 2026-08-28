@@ -136,7 +136,83 @@ class Gateway:
             job_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
             job_checkpoint_digest="c" * 64,
             open_tournament_count=0,
+            v3_option_state="rehearsal_ready",
+            rehearsal_eligible=True,
+            production_eligible=False,
+            eligibility_reason_codes=("production_cutover_not_verified",),
+            consumer_contract_version="strathmark.v3-consumer-contract.v7",
+            consumer_contract_digest="d" * 64,
+            source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
         )
+
+    async def open_scope(self, payload, context):
+        self.calls.append(("open_scope", payload, context))
+        return {
+            "scope_id": payload["scope_id"],
+            "selection_digest": "1" * 64,
+            "authority_sequence": 3,
+            "status": "opened",
+        }
+
+    async def synchronize_snapshot(self, payload, context):
+        self.calls.append(("synchronize_snapshot", payload, context))
+        return {
+            "entity_id": payload["entity_id"],
+            "upstream_revision": payload["upstream_revision"],
+            "snapshot_digest": "2" * 64,
+            "authority_sequence": 4,
+            "status": "synchronized",
+        }
+
+    async def freeze_round(self, payload, context):
+        self.calls.append(("freeze_round", payload, context))
+        return {
+            "round_id": payload["round_id"],
+            "epoch_id": "epoch:root-1",
+            "epoch_revision": payload["epoch_revision"],
+            "authority_sequence": 5,
+            "status": "frozen",
+        }
+
+    async def approval_page(self, payload, context):
+        self.calls.append(("approval_page", payload, context))
+        return {
+            "tournament_id": payload["tournament_id"],
+            "snapshot_id": f"approval_snapshot:{'3' * 64}",
+            "offset": payload["offset"],
+            "limit": payload["limit"],
+            "total": 0,
+            "lifecycle_state": "preparing",
+            "rows": [],
+            "authority_sequence": 5,
+        }
+
+    async def approval_detail(self, payload, context):
+        self.calls.append(("approval_detail", payload, context))
+        return {
+            "tournament_id": payload["tournament_id"],
+            "snapshot_id": payload["snapshot_id"],
+            "receipt_id": payload["receipt_id"],
+            "detail": {"schema_version": "strathmark-v3-approval-detail-v1"},
+            "authority_sequence": 5,
+        }
+
+    async def close_round(self, payload, context):
+        self.calls.append(("close_round", payload, context))
+        return {
+            "round_id": payload["round_id"],
+            "closure_id": "round_closure:root-1",
+            "authority_sequence": 6,
+            "status": "closed",
+        }
+
+    async def close_scope(self, payload, context):
+        self.calls.append(("close_scope", payload, context))
+        return {
+            "scope_id": payload["scope_id"],
+            "authority_sequence": 7,
+            "status": "closed",
+        }
 
 
 @pytest.fixture
@@ -302,6 +378,13 @@ def test_upstream_audit_validation_sync_port_and_command_identity_binding(api) -
         job_last_deep_verified_at_utc="2026-08-25T11:59:00.000Z",
         job_checkpoint_digest="c" * 64,
         open_tournament_count=0,
+        v3_option_state="rehearsal_ready",
+        rehearsal_eligible=True,
+        production_eligible=False,
+        eligibility_reason_codes=("production_cutover_not_verified",),
+        consumer_contract_version="strathmark.v3-consumer-contract.v7",
+        consumer_contract_digest="d" * 64,
+        source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     )
     assert client.get("/v3/status", headers=_headers(issued.credential)).status_code == 200
 
@@ -511,6 +594,154 @@ def test_all_consumer_operations_map_to_separate_application_port_methods(api) -
         assert gateway.calls[-1][0] == expected
     assert client.get("/v3/status", headers=headers).status_code == 200
     assert gateway.calls[-1][0] == "status"
+
+
+def test_public_competition_lifecycle_routes_are_typed_authenticated_and_separate(api) -> None:
+    client, gateway, _registry, issued = api
+    headers = _headers(issued.credential, "lifecycle-1")
+    selection = {
+        "schema_version": "strathmark-v3-competition-engine-selection-v1",
+        "scope_id": "tournament:show",
+        "engine": "v3",
+        "mode": "rehearsal",
+        "selected_by_actor_id": "actor:tournament-manager",
+        "selected_at_utc": "2026-08-25T12:00:00.000Z",
+        "reason_code": "new_competition",
+        "consumer_contract_digest": "a" * 64,
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    }
+    cases = [
+        (
+            "/v3/scopes/open",
+            {
+                "schema_version": "strathmark-v3-scope-open-request-v1",
+                "scope_id": "tournament:show",
+                "bundle_id": "bundle:current",
+                "historical_cutoff_key": "history:before-show",
+                "root_round_ids": ["round:heats"],
+                "engine_selection": selection,
+                "opened_at_utc": "2026-08-25T12:00:01.000Z",
+                "deadline_ms": 1000,
+            },
+            "open_scope",
+        ),
+        (
+            "/v3/snapshots/synchronize",
+            {
+                "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+                "entity_kind": "round",
+                "entity_id": "round:heats",
+                "upstream_revision": 1,
+                "tournament_id": "tournament:show",
+                "round_id": "round:heats",
+                "snapshot": {
+                    "round_ordinal": 1,
+                    "predecessor_round_ids": [],
+                    "successor_round_ids": [],
+                },
+                "engine_selection": selection,
+                "synchronized_at_utc": "2026-08-25T12:00:02.000Z",
+                "deadline_ms": 1000,
+            },
+            "synchronize_snapshot",
+        ),
+        (
+            "/v3/rounds/freeze",
+            {
+                "schema_version": "strathmark-v3-round-freeze-request-v1",
+                "round_id": "round:heats",
+                "epoch_revision": 1,
+                "historical_cutoff_key": "history:before-show",
+                "closure_ids": [],
+                "frozen_at_utc": "2026-08-25T12:00:03.000Z",
+                "deadline_ms": 1000,
+            },
+            "freeze_round",
+        ),
+        (
+            "/v3/rounds/close",
+            {
+                "schema_version": "strathmark-v3-round-close-request-v1",
+                "round_id": "round:heats",
+                "closed_at_utc": "2026-08-25T12:01:00.000Z",
+                "deadline_ms": 1000,
+            },
+            "close_round",
+        ),
+        (
+            "/v3/scopes/close",
+            {
+                "schema_version": "strathmark-v3-scope-close-request-v1",
+                "scope_id": "tournament:show",
+                "closed_at_utc": "2026-08-25T12:02:00.000Z",
+                "deadline_ms": 1000,
+            },
+            "close_scope",
+        ),
+    ]
+    for path, payload, expected in cases:
+        response = client.post(path, headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        assert gateway.calls[-1][0] == expected
+
+    page = client.get(
+        "/v3/approvals/page?tournament_id=tournament:show&offset=0&limit=25",
+        headers={"Authorization": f"Bearer {issued.credential}"},
+    )
+    assert page.status_code == 200, page.text
+    snapshot_id = page.json()["snapshot_id"]
+    detail = client.get(
+        "/v3/approvals/detail"
+        f"?tournament_id=tournament:show&snapshot_id={snapshot_id}"
+        "&receipt_id=receipt:one",
+        headers={"Authorization": f"Bearer {issued.credential}"},
+    )
+    assert detail.status_code == 200, detail.text
+    assert gateway.calls[-1][0] == "approval_detail"
+
+
+def test_snapshot_transport_rejects_names_narrative_and_unknown_identity_fields(api) -> None:
+    client, gateway, _registry, issued = api
+    payload = {
+        "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+        "entity_kind": "field",
+        "entity_id": "field:one",
+        "upstream_revision": 1,
+        "tournament_id": "tournament:show",
+        "round_id": "round:heats",
+        "snapshot": {
+            "competitor_ids": ["competitor:one", "competitor:two"],
+            "target_context": {
+                "event": "standing_block",
+                "wood_species": "radiata_pine",
+                "wood_class": "softwood",
+                "diameter_mm": 300,
+                "competition_class": "open",
+            },
+            "stand_ids": ["stand:one", "stand:two"],
+            "display_name": "Private Person",
+        },
+        "engine_selection": {
+            "schema_version": "strathmark-v3-competition-engine-selection-v1",
+            "scope_id": "tournament:show",
+            "engine": "v3",
+            "mode": "rehearsal",
+            "selected_by_actor_id": "actor:judge-seven",
+            "selected_at_utc": "2026-08-25T12:00:00.000Z",
+            "reason_code": "new_competition",
+            "consumer_contract_digest": "a" * 64,
+            "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        },
+        "synchronized_at_utc": "2026-08-25T12:00:02.000Z",
+        "deadline_ms": 1000,
+    }
+    response = client.post(
+        "/v3/snapshots/synchronize",
+        headers=_headers(issued.credential, "pii-reject"),
+        json=payload,
+    )
+    assert response.status_code == 422
+    assert gateway.calls == []
 
 
 def test_rotation_and_revocation_routes_have_no_human_role_layer(api) -> None:
@@ -1250,6 +1481,13 @@ def test_cross_field_transport_contracts_reject_noncanonical_or_inconsistent_val
         "job_last_deep_verified_at_utc": "2026-08-25T11:59:00.000Z",
         "job_checkpoint_digest": "c" * 64,
         "open_tournament_count": 0,
+        "v3_option_state": "rehearsal_ready",
+        "rehearsal_eligible": True,
+        "production_eligible": False,
+        "eligibility_reason_codes": ("production_cutover_not_verified",),
+        "consumer_contract_version": "strathmark.v3-consumer-contract.v7",
+        "consumer_contract_digest": "d" * 64,
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     }
     StatusResponse.model_validate(status)
     for value in (

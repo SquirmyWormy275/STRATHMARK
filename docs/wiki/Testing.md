@@ -2,8 +2,9 @@
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. Repository implementation and audit are complete for this candidate. Its
-checked-in development-key rehearsal is source-bound and must pass the release verifier. V2 remains the trusted production
-authority until explicit cutover. No production authority has changed. Tests and
+checked-in development-key rehearsal is source-bound and must pass the release verifier.
+V2 remains the globally trusted production authority, V3 is not production-eligible,
+and no production authority has changed. Tests and
 verifiers never switch authority.
 
 Run V3 tests and release proof only in the designated Python 3.13 environment with the
@@ -22,7 +23,7 @@ Every run must use isolated V2 and V3 databases and a unique pytest base directo
 The V3 suite covers contracts, canonicalization, event authority, migrations,
 formula/ML/LLM assessors, capability, credibility, pooling, disagreement, optimizer,
 rolling preparation, approval, issue, settlement, factory, API/security, recovery,
-cutover, documented examples, and installed artifacts.
+production eligibility, documented examples, and installed artifacts.
 
 Whole-domain proof is:
 

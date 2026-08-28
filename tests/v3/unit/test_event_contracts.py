@@ -17,12 +17,72 @@ from strathmark.v3.contracts.commands import (
     InlinePayload,
 )
 from strathmark.v3.contracts.errors import ContractError
-from strathmark.v3.contracts.events import AggregateKind, EventEnvelope, EventKind
+from strathmark.v3.contracts.events import (
+    AggregateKind,
+    CompetitionEngineSelection,
+    EventEnvelope,
+    EventKind,
+)
 from strathmark.v3.contracts.identifiers import (
     IdempotencyKey,
     StableIdentifier,
     deterministic_identifier,
 )
+from strathmark.v3.contracts.statuses import EngineExecutionMode, PredictionEngine
+
+
+def _engine_selection(
+    *, engine: PredictionEngine = PredictionEngine.V3
+) -> CompetitionEngineSelection:
+    return CompetitionEngineSelection(
+        scope_id=StableIdentifier("tournament:show"),
+        engine=engine,
+        mode=EngineExecutionMode.REHEARSAL,
+        selected_by_actor_id=StableIdentifier("actor:tournament-manager"),
+        selected_at_utc="2026-08-27T15:00:00.000Z",
+        reason_code="new_competition",
+        consumer_contract_digest="a" * 64,
+        source_commit="7d0312a7f58a4a4b3ea4daad8efd2671fefaac3c",
+    )
+
+
+def test_competition_engine_selection_is_closed_immutable_and_round_trips() -> None:
+    selection = _engine_selection()
+
+    assert CompetitionEngineSelection.from_dict(selection.to_dict()) == selection
+    assert selection.engine is PredictionEngine.V3
+    assert selection.mode is EngineExecutionMode.REHEARSAL
+    assert selection.selection_digest == canonical_digest(selection.to_dict())
+
+    with pytest.raises((AttributeError, TypeError)):
+        selection.engine = PredictionEngine.V2  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    (
+        ({"scope_id": StableIdentifier("round:heat-a")}, "tournament"),
+        ({"engine": "v3"}, "PredictionEngine"),
+        ({"mode": "rehearsal"}, "EngineExecutionMode"),
+        ({"selected_by_actor_id": StableIdentifier("service:strathex")}, "actor"),
+        ({"selected_at_utc": "2026-08-27 15:00:00"}, "UTC"),
+        ({"reason_code": "Changed because maybe"}, "reason code"),
+        ({"consumer_contract_digest": "bad"}, "contract digest"),
+        ({"source_commit": "not-a-commit"}, "source commit"),
+    ),
+)
+def test_competition_engine_selection_rejects_open_or_malformed_values(
+    changes: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ContractError, match=message):
+        replace(_engine_selection(), **changes)
+
+
+def test_competition_engine_selection_decoder_rejects_unknown_fields() -> None:
+    encoded = _engine_selection().to_dict()
+    encoded["display_name"] = "Personal data does not belong here"
+    with pytest.raises(ContractError, match="fields"):
+        CompetitionEngineSelection.from_dict(encoded)
 
 
 def _command() -> CommandEnvelope:

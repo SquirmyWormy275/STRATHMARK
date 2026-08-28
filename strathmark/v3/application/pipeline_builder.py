@@ -706,6 +706,21 @@ class CoordinatorRollingFieldInputSource:
         self._authority_verifier.verify_weight_authority(self._operational_weight_authority)
         self._authority_verifier.verify_dependence_authority(self._dependence_artifact)
 
+    def pre_field_source(self):
+        """Expose only the authorities required for field-independent forecasts."""
+
+        from strathmark.v3.application.pre_field_forecasts import (
+            CoordinatorPreFieldForecastInputSource,
+        )
+
+        return CoordinatorPreFieldForecastInputSource(
+            self._coordinator,
+            capability_resolver=self._capability_resolver,
+            authority_verifier=self._authority_verifier,
+            weight_receipt=self._weight_receipt,
+            weight_authority=self._operational_weight_authority,
+        )
+
 
 class RollingFieldPipelineBuilder:
     """Build one ordinary field from exact current rolling card authority."""
@@ -734,6 +749,12 @@ class RollingFieldPipelineBuilder:
         self._trust_store = trust_store
         self._clock = clock
         self._monotonic_ns = monotonic_ns
+
+    def pre_field_source(self):
+        provider = getattr(self._source, "pre_field_source", None)
+        if not callable(provider):
+            raise AssemblyConflict("rolling builder has no pre-field forecast source")
+        return provider()
 
     def __call__(
         self, field: FrozenFieldRevision

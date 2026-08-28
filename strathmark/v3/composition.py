@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from strathmark.v3.application.gateway import V3ServiceIdentity
 from strathmark.v3.contracts.canonical import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_DEPTH,
@@ -200,8 +201,11 @@ def compose_v3_application_gateway(
     job_repository: object,
     issue_coordinator: object,
     settlement_reactions: object,
+    rolling_reactions: object | None = None,
     clock: object,
     caller_namespace: str = "api",
+    service_identity: V3ServiceIdentity | None = None,
+    pre_field_forecasts: object | None = None,
 ):
     """Explicitly construct the concrete V3 API application port.
 
@@ -215,6 +219,10 @@ def compose_v3_application_gateway(
     from strathmark.v3.application.gateway import GatewayServices, V3ApplicationGateway
     from strathmark.v3.application.issuance import IssuanceService
     from strathmark.v3.application.lifecycle import LifecycleService
+    from strathmark.v3.application.pre_field_forecasts import (
+        PreFieldForecastService,
+        UnavailablePreFieldForecastInputSource,
+    )
     from strathmark.v3.application.settlement import SettlementService
     from strathmark.v3.infrastructure.integrity import (
         CriticalIssueCoordinator,
@@ -243,13 +251,31 @@ def compose_v3_application_gateway(
         raise ValueError("V3 gateway requires settlement reactions on the configured database")
     if not callable(clock):
         raise TypeError("V3 gateway requires an injected UTC millisecond clock")
-    lifecycle = LifecycleService(database)
+    if service_identity is not None and not isinstance(service_identity, V3ServiceIdentity):
+        raise TypeError("V3 gateway service identity must be verified composition evidence")
+    if rolling_reactions is not None and (
+        not callable(getattr(rolling_reactions, "react", None))
+        or getattr(rolling_reactions, "database_path", None) != database
+    ):
+        raise ValueError("V3 gateway rolling reactions must share the configured database")
+    lifecycle = LifecycleService(database, reaction_port=rolling_reactions)
     fields = SQLiteFieldProjectionStore(
         database,
         signer=signer,
         trust_store=trust_store,
     )
     assembly = FieldAssemblyService(fields, pipeline_builder=pipeline_builder)
+    forecast_service = pre_field_forecasts
+    if forecast_service is None:
+        provider = getattr(pipeline_builder, "pre_field_source", None)
+        forecast_service = PreFieldForecastService(
+            database,
+            source=(provider() if callable(provider) else UnavailablePreFieldForecastInputSource()),
+            signer=signer,
+            trust_store=trust_store,
+        )
+    if not isinstance(forecast_service, PreFieldForecastService):
+        raise TypeError("V3 gateway pre-field forecast service is invalid")
     services = GatewayServices(
         events=SQLiteEventStore(database),
         lifecycle=lifecycle,
@@ -259,11 +285,13 @@ def compose_v3_application_gateway(
         settlement=SettlementService(lifecycle, reactions=settlement_reactions),
         settlement_reactions=settlement_reactions,
         jobs=job_repository,
+        pre_field_forecasts=forecast_service,
     )
     return V3ApplicationGateway(
         services,
         clock=clock,
         caller_namespace=caller_namespace,
+        service_identity=service_identity,
     )
 
 
@@ -395,6 +423,7 @@ def _reject_production_test_path(path: Path) -> None:
 
 __all__ = [
     "V3RuntimeConfig",
+    "V3ServiceIdentity",
     "compose_production_ml_authorities",
     "compose_test_ml_audit_authority",
     "compose_test_ml_candidate_authority",

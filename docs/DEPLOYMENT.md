@@ -1,25 +1,35 @@
-# Deployment, Recovery, and V2-to-V3 Cutover
+# Deployment, Recovery, and Engine Eligibility
 
 ## Authority status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository
 requirements. Repository implementation and audit are complete for this candidate. The
 checked-in **rehearsal** receipt is source-bound and valid only for the source commit, wheel, dependencies,
-and digests it names and must pass the release verifier. V2 remains the trusted
-production authority until an explicit cutover. No production authority has changed, no
-consumer endpoint has switched, and V2 remains the recovery authority.
-The external STRATHEX durable outbox/adapter is not implemented.
+and digests it names and must pass the release verifier. V2 remains the globally trusted
+production authority. V3 is not production-eligible. No production authority has
+changed, and V2 remains the recovery authority.
 
 This runbook distinguishes four states that must never be collapsed:
 
 1. code and tests exist;
 2. development-key rehearsal passes;
-3. production CNG-backed cutover preparation is ready;
-4. an explicitly authorized consumer switch has occurred.
+3. production CNG-backed V3 eligibility preparation is ready;
+4. V3 has been explicitly enabled as an eligible choice for new competition roots.
 
 The checked-in development-key rehearsal satisfies state 2 only when the ordinary
 verifier passes for its exact source and artifacts. It cannot reach states 3 or 4.
-No production CNG identity is currently provisioned.
+No production CNG identity is currently provisioned. Even state 4 would not select V3
+globally: a judge or tournament manager must choose one eligible engine for each new
+standalone event or tournament root.
+
+## Deployment pivot
+
+The historical runbook assumed a single global V2-to-V3 endpoint cutover. The current
+product model deliberately keeps V2 and V3 available side by side after V3 becomes
+eligible. Selection is immutable per competition root: a standalone event selects once,
+a tournament selects once and all children inherit, and an active root never changes or
+falls back to another engine. Production qualification therefore enables an option; it
+does not choose that option for any competition and does not make V2 audit-only.
 
 Use Python 3.13 and install `requirements/v3-release.lock` for every V3 rehearsal,
 deployment, migration, recovery drill, and release-verification run. Python 3.10-3.12
@@ -160,21 +170,28 @@ No factory process may auto-promote a bundle or change V2/API authority.
 
 1. Verify the active bundle, tournament epoch, event-chain tip, projection health,
    backup age, job queue, assessor availability, and SLA risk.
-2. Prepare rolling competitor cards as soon as future context is plausible. The live
+2. Confirm the competition root deliberately selected V3, that the exact selection is
+   compatible with `/v3/status`, and that the root is open under that authority. A
+   V2-selected root must not enter this sequence.
+3. Prepare rolling competitor cards as soon as future context is plausible. The live
    scheduler must bind the promoted council, card-scoped provider tokens, and deadlines;
    a generic symbolic schedule is not an executable live request.
-3. Freeze one epoch for every field in the current round.
-4. Assemble each final roster from compatible sealed cards; stale cards regenerate.
-5. Present the exception-first green/amber/red projection to the tournament manager.
-6. Record the deliberate approval decision through `/v3/approvals/decide`, binding the
+4. Freeze one epoch for every field in the current round.
+5. If fields do not yet exist, call `/v3/forecasts/pre-field` for seeding/grouping only.
+   Its signed receipt must say `purpose=pre_field_seeding_only` and
+   `issued_mark=false`. Never print or issue those p50 seed times as marks.
+6. After STRATHEX creates real fields and stands, synchronize the exact facts and
+   assemble each complete roster from compatible sealed cards; stale cards regenerate.
+7. Present the exception-first green/amber/red projection to the tournament manager.
+8. Record the deliberate approval decision through `/v3/approvals/decide`, binding the
    exact snapshot, selected and excluded receipt IDs/digests/revisions, actor metadata,
    timestamp, and idempotency identity. No manual estimate is defaulted.
-7. Separately acknowledge issue atomically and retain the exact receipt set.
-8. Submit the complete issued roster and settle all valid completions and explicit
+9. Separately acknowledge issue atomically and retain the exact receipt set.
+10. Submit the complete issued roster and settle all valid completions and explicit
    non-completion states in one atomic command.
-9. Drive and durably close capability, invalidation, scoring, coverage, weights,
+11. Drive and durably close capability, invalidation, scoring, coverage, weights,
    readiness, and credibility reactions. Do not infer or insert an approval decision.
-10. Close the round, advance the epoch, and prepare the next round. Never recalculate an
+12. Close the round, advance the epoch, and prepare the next round. Never recalculate an
     issued sheet or alter the legal winner.
 
 The live contract is a heat every ten minutes, a sheet ready within two minutes of a
@@ -192,7 +209,7 @@ result, field assembly under two seconds, and a five-minute final call-up path.
 | Disk reserve breached | stop factory/backfill and speculative work; preserve critical open-tournament writes; block new tournaments |
 | Queue saturation | reject bounded work with explicit capacity status; preserve exact retries |
 | Primary machine unavailable | use only a verified recovery-device package and authority procedure |
-| Trusted V3 cannot recover | keep/resume V2 before cutover; after cutover declare traditional/manual authority explicitly |
+| Selected V3 cannot recover | recover that scope from V3 authority or enter its explicit terminal/manual workflow; never invoke V2 inside it |
 
 Support exports are deterministic, size-bounded, signed, and redacted. They contain
 allowlisted operational facts and metrics, not credentials, raw evidence, free text, or
@@ -200,13 +217,13 @@ private keys.
 
 ## Production qualification prerequisites
 
-Before cutover preparation, all of these must be true on the installation that will run
+Before eligibility preparation, all of these must be true on the installation that will run
 the event:
 
 - the source commit and dependency lock are frozen;
 - the installed wheel and all required artifacts match their digests;
 - the frozen OpenAPI checksum matches the consumer adapter;
-- all eleven release-evidence classes pass on the production candidate;
+- all twelve release-evidence classes pass on the production candidate;
 - the Windows capacity manifest is production-tier for the designated machine;
 - candidate/audit/release signing identities are live non-exportable Windows CNG keys;
 - concrete local formula/ML/LLM factory executors and the authenticated local
@@ -224,9 +241,10 @@ the event:
 The repository intentionally contains no production private key, credential, endpoint,
 pre-approved switch, or provisioned production CNG identity.
 
-## Cutover preparation
+## V3 production-eligibility preparation
 
-Cutover is a zero-open-tournament state machine:
+The retained handoff machinery is a zero-open-tournament installation-qualification
+state machine. It does not perform a global engine selection:
 
 1. Freeze V2 trusted writes.
 2. Verify `open_tournaments=0`.
@@ -242,7 +260,9 @@ Cutover is a zero-open-tournament state machine:
    The identity file is operator-controlled public material outside the attestation. A
    self-supplied or merely relabeled `production_cng` identity is not trusted.
 6. Verify initialized V3 database, bundle, consumer-contract, and rehearsal digests.
-7. Run the installed tournament-manager adapter rehearsal and match its digest.
+7. Run the installed tournament-manager adapter rehearsal against the frozen V6,
+   18-path contract and match its digest. It must cover competition selection,
+   inheritance, pre-field forecasting without marks, exact-field assembly, and restart.
 8. Sign the pre-switch authority handoff using the production CNG identity.
 
 The handoff is only valid when it still says:
@@ -256,20 +276,26 @@ v2_audit_only=false
 requires_explicit_release_authorization=true
 ```
 
-Any failure resumes V2. If V2 cannot resume, stop and declare traditional/manual
-authority. Never infer permission to switch from a successful preparation.
+Those field names are retained in the signed compatibility artifact. Under the current
+pivot, `next_authority=v3` means the verified V3 installation may be enabled as an
+eligible authority for newly selected roots; it does not mean every root moves to V3 or
+that V2 becomes audit-only.
 
-## Explicit consumer switch and rollback
+Any failure leaves V3 ineligible and resumes V2. If V2 cannot resume, stop and declare
+traditional/manual authority. Never infer permission to enable V3 from successful
+preparation alone.
 
-The final consumer endpoint/contract switch is a separate, explicitly authorized
-operation owned with the tournament manager. It must occur once, at the verified
-boundary, with an immutable receipt. Afterward V2 becomes audit-only and must not accept
-trusted writes.
+## Explicit eligibility enablement and competition selection
 
-There is no automatic numeric fallback from V3 to V2 after cutover. A failed V3 service
-must be recovered from its authoritative event log or the competition must deliberately
-enter traditional/manual authority. Re-enabling V2 trusted writes would be another
-signed authority migration, not a runtime retry.
+Enabling the exact V3 endpoint/contract as an eligible choice is a separate, explicitly
+authorized operation owned with the tournament manager. It occurs only at a verified
+zero-open boundary and has an immutable receipt. V2 remains an eligible, trusted engine
+for separately selected competition roots.
+
+After a new competition root selects V2 or V3, the other engine is not its fallback. A
+failed selected V3 service must be recovered from its authoritative event log or that
+competition must deliberately enter its terminal/manual workflow. Starting a later,
+separate root with V2 is not a fallback and does not rewrite the failed V3 scope.
 
 ## Historical V2 deployment
 

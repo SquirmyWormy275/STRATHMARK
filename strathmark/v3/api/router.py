@@ -9,12 +9,14 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Protocol
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from strathmark.v3.api.auth import CredentialError, ServiceCredentialRegistry, ServicePrincipal
 from strathmark.v3.api.schemas import (
     ApprovalDecisionRequest,
     ApprovalDecisionResponse,
+    ApprovalDetailResponse,
+    ApprovalPageResponse,
     AssembleFieldRequest,
     AssembleFieldResponse,
     CredentialRevocationRequest,
@@ -24,12 +26,24 @@ from strathmark.v3.api.schemas import (
     HealthResponse,
     IssueAcknowledgmentRequest,
     IssueAcknowledgmentResponse,
+    PreFieldForecastRequest,
+    PreFieldForecastResponse,
     PrepareCardRequest,
     PrepareCardResponse,
     ReceiptLookupRequest,
     ReceiptLookupResponse,
+    RoundCloseRequest,
+    RoundCloseResponse,
+    RoundFreezeRequest,
+    RoundFreezeResponse,
+    ScopeCloseRequest,
+    ScopeCloseResponse,
+    ScopeOpenRequest,
+    ScopeOpenResponse,
     SettlementRequest,
     SettlementResponse,
+    SnapshotSyncRequest,
+    SnapshotSyncResponse,
     StatusResponse,
 )
 from strathmark.v3.contracts.identifiers import IdempotencyKey
@@ -108,6 +122,38 @@ class RequestContext:
 
 
 class V3ApplicationPort(Protocol):
+    def open_scope(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> ScopeOpenResponse | Awaitable[ScopeOpenResponse]: ...
+
+    def synchronize_snapshot(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> SnapshotSyncResponse | Awaitable[SnapshotSyncResponse]: ...
+
+    def freeze_round(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> RoundFreezeResponse | Awaitable[RoundFreezeResponse]: ...
+
+    def forecast_pre_field(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> PreFieldForecastResponse | Awaitable[PreFieldForecastResponse]: ...
+
+    def approval_page(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> ApprovalPageResponse | Awaitable[ApprovalPageResponse]: ...
+
+    def approval_detail(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> ApprovalDetailResponse | Awaitable[ApprovalDetailResponse]: ...
+
+    def close_round(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> RoundCloseResponse | Awaitable[RoundCloseResponse]: ...
+
+    def close_scope(
+        self, payload: dict[str, Any], context: RequestContext
+    ) -> ScopeCloseResponse | Awaitable[ScopeCloseResponse]: ...
+
     def prepare_card(
         self, payload: dict[str, Any], context: RequestContext
     ) -> PrepareCardResponse | Awaitable[PrepareCardResponse]: ...
@@ -233,6 +279,122 @@ def create_router(
     @router.get("/health", response_model=HealthResponse, operation_id="v3_health")
     async def health() -> HealthResponse:
         return HealthResponse()
+
+    @router.post("/scopes/open", response_model=ScopeOpenResponse, operation_id="v3_open_scope")
+    async def open_scope(payload: ScopeOpenRequest, request: Request) -> ScopeOpenResponse:
+        return await _invoke(
+            gateway.open_scope,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
+
+    @router.post(
+        "/snapshots/synchronize",
+        response_model=SnapshotSyncResponse,
+        operation_id="v3_synchronize_snapshot",
+    )
+    async def synchronize_snapshot(
+        payload: SnapshotSyncRequest, request: Request
+    ) -> SnapshotSyncResponse:
+        return await _invoke(
+            gateway.synchronize_snapshot,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
+
+    @router.post(
+        "/rounds/freeze",
+        response_model=RoundFreezeResponse,
+        operation_id="v3_freeze_round",
+    )
+    async def freeze_round(payload: RoundFreezeRequest, request: Request) -> RoundFreezeResponse:
+        return await _invoke(
+            gateway.freeze_round,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
+
+    @router.post(
+        "/forecasts/pre-field",
+        response_model=PreFieldForecastResponse,
+        operation_id="v3_forecast_pre_field",
+    )
+    async def forecast_pre_field(
+        payload: PreFieldForecastRequest, request: Request
+    ) -> PreFieldForecastResponse:
+        return await _invoke(
+            gateway.forecast_pre_field,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
+
+    @router.get(
+        "/approvals/page",
+        response_model=ApprovalPageResponse,
+        operation_id="v3_read_approval_page",
+    )
+    async def approval_page(
+        request: Request,
+        tournament_id: str = Query(pattern=r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"),
+        offset: int = Query(ge=0, default=0),
+        limit: int = Query(ge=1, le=100, default=25),
+        snapshot_id: str | None = Query(default=None, pattern=r"^approval_snapshot:[0-9a-f]{64}$"),
+    ) -> ApprovalPageResponse:
+        return await _invoke(
+            gateway.approval_page,
+            {
+                "tournament_id": tournament_id,
+                "offset": offset,
+                "limit": limit,
+                "snapshot_id": snapshot_id,
+            },
+            _context(request, require_idempotency=False),
+            deadline_ms=5_000,
+        )
+
+    @router.get(
+        "/approvals/detail",
+        response_model=ApprovalDetailResponse,
+        operation_id="v3_read_approval_detail",
+    )
+    async def approval_detail(
+        request: Request,
+        tournament_id: str = Query(pattern=r"^tournament:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"),
+        snapshot_id: str = Query(pattern=r"^approval_snapshot:[0-9a-f]{64}$"),
+        receipt_id: str = Query(pattern=r"^receipt:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"),
+    ) -> ApprovalDetailResponse:
+        return await _invoke(
+            gateway.approval_detail,
+            {
+                "tournament_id": tournament_id,
+                "snapshot_id": snapshot_id,
+                "receipt_id": receipt_id,
+            },
+            _context(request, require_idempotency=False),
+            deadline_ms=5_000,
+        )
+
+    @router.post("/rounds/close", response_model=RoundCloseResponse, operation_id="v3_close_round")
+    async def close_round(payload: RoundCloseRequest, request: Request) -> RoundCloseResponse:
+        return await _invoke(
+            gateway.close_round,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
+
+    @router.post("/scopes/close", response_model=ScopeCloseResponse, operation_id="v3_close_scope")
+    async def close_scope(payload: ScopeCloseRequest, request: Request) -> ScopeCloseResponse:
+        return await _invoke(
+            gateway.close_scope,
+            payload.model_dump(mode="json"),
+            _context(request),
+            deadline_ms=payload.deadline_ms,
+        )
 
     @router.post(
         "/cards/prepare",

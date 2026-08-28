@@ -102,6 +102,11 @@ def api_headers():
 
 
 class TestHealthEndpoint:
+    def test_openapi_keeps_the_v2_transport_contract_version(self, client):
+        document = client.get("/openapi.json").json()
+
+        assert document["info"]["version"] == "2.0.0"
+
     def test_health_returns_200(self, client):
         resp = client.get("/health")
         assert resp.status_code == 200

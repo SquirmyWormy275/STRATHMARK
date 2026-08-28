@@ -1,6 +1,6 @@
 {
   "schema_version": "strathmark-v3-formula-engine-verification-v1",
-  "artifact_tool_version": "2.8.48",
+  "artifact_tool_version": "2.8.52",
   "node_version": "v24.19.0",
   "builder_sha256": "c225ed99b2e96ebb8295fdde3ed94fb9e2de0069dfe957634b87b356c41bd538",
   "workbook_sha256": "12d22cb37044dafdcfbf49c28964dbd423c420f8cff1389b5c5df710d48e00ed",
@@ -47,5 +47,5 @@
     "IRLS Trace": "cf3bf4759552f0d816daca32873b6573e1cbd718cdf50b33f669898cab124541",
     "Distribution": "ca7f70521d62ca56c78ac8063602f476fb023aed0df7de42f37bd76666733da9"
   },
-  "receipt_digest": "1c55beb779595a06ab8c0e76611dad08883cdeabb1ea9d0e83a1e35adf14d425"
+  "receipt_digest": "63a7e9a719b6439950d7dfb576f18f6885f6d12db13ee1e22e334d8df8c61989"
 }

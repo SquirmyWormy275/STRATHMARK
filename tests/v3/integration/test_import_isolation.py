@@ -146,6 +146,13 @@ def test_integrity_extra_is_lazy_and_missing_runtime_fails_explicitly(tmp_path: 
         sys.meta_path.insert(0, BlockCryptography())
         from strathmark.v3.infrastructure.integrity import IntegrityError, P256EphemeralSigner
         assert "cryptography" not in sys.modules
+
+        import strathmark.v3.contracts as contracts
+        assert contracts.ForecastSetSnapshot is not None
+        assert contracts.PreFieldCompetitorForecast is not None
+        assert contracts.PreFieldForecastReceipt is not None
+        assert "cryptography" not in sys.modules
+
         try:
             P256EphemeralSigner.generate("integrity-key:missing-extra")
         except IntegrityError as exc:

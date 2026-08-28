@@ -12,10 +12,17 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 V3 is a `3.0.0rc1` release candidate that tracks all 232 requirements in
 the V3 plan. Repository implementation and audit are complete for this candidate. The
 checked-in development-key rehearsal is valid only for the source commit and digests it
-names and must pass the release verifier; it is not production evidence. V2 remains the trusted
-production authority until an explicit cutover. No production authority has changed,
-no endpoint has switched, and V2 is not audit-only.
-The external STRATHEX durable outbox/adapter is not implemented.
+names and must pass the release verifier; it is not production evidence. V2 remains the
+globally trusted production authority. V3 is not production-eligible, no production
+authority has changed, and V2 is not audit-only.
+
+The current integration model is **competition-scoped selection**, not one global engine
+replacement. A standalone event selects once at event setup. A tournament selects once
+at tournament creation, and every child event and round inherits that choice. Different
+competition roots may use different eligible engines, but one root never mixes V2 and
+V3 and never silently falls back. STRATHMARK supplies the V6 contract for that workflow;
+the external STRATHEX adapter and its installed rehearsal remain separately versioned
+consumer responsibilities.
 
 The distinction matters:
 
@@ -29,9 +36,11 @@ The distinction matters:
   production-CNG evaluator entrypoint. Concrete formula/ML/LLM family executors, the
   local settled-evidence metric evaluator, installation OS identities and ACLs, and CNG
   provisioning are still deployment gates; their absence cannot be replaced by mocks.
-- **Production V3** does not exist until a non-exportable Windows CNG identity signs the
-  exact production evidence and a separately authorized zero-open-tournament handoff is
-  completed. That production identity has not been provisioned.
+- **Production-eligible V3** does not exist until a non-exportable Windows CNG identity
+  signs the exact production evidence and a separately authorized zero-open-tournament
+  eligibility handoff is completed. That production identity has not been provisioned.
+  Eligibility would make V3 available for deliberate selection; it would not select V3
+  globally or remove V2.
 
 Start with the mandatory domain source of truth,
 [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md). It explains why a
@@ -48,7 +57,7 @@ python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/
 The V2 tag is not a V3 installation. For development and rehearsal of V3, use an exact
 authorized source commit and install its locked dependencies in an isolated environment.
 Do not point a development checkout at a production database or treat installation as
-cutover.
+production eligibility.
 
 ## V2 Python example
 
@@ -119,17 +128,40 @@ This design makes coasting less useful without pretending a model can infer moti
 Overperformance and underperformance both affect capability evidence. Issued marks and
 legal winners remain immutable.
 
+### Why selection is competition-scoped
+
+The earlier deployment design assumed one global V2-to-V3 endpoint cutover. The product
+pivot keeps both engines explicit so judges can test V3 on deliberately chosen
+competitions, compare real operating feedback, and still choose V2 elsewhere. Locking
+the choice at the competition root prevents an event, heat, or final from changing its
+numeric authority after evidence has begun to accumulate. This is an authority and
+auditability change, not a change to how either engine calculates its own predictions.
+
 Read [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) for the complete
-mechanism, pivot rationale, REST surface, recovery rules, and cutover gate.
+mechanism, pivot rationale, REST surface, recovery rules, and eligibility gate.
 
 ## V3 consumer contract
 
-V3 exposes a separate ten-route `/v3/*` service contract. The canonical installed
+V3 exposes a separate 18-path `/v3/*` service contract, version
+`strathmark.v3-consumer-contract.v7`. The canonical installed
 artifact is `strathmark/v3/contracts/v3_consumer.openapi.json`; its sibling SHA-256 file
 freezes exact bytes. The tournament manager must pin both. The dedicated
 `POST /v3/approvals/decide` route records one authenticated, idempotent decision over
 multiple exact receipt ID/digest/revision bindings plus explicit exclusions. It is
 separate from official issue acknowledgment.
+
+`POST /v3/forecasts/pre-field` returns a signed, field-independent forecast set for
+seeding or grouping competitors before stands and exact fields exist. Its receipt says
+`purpose=pre_field_seeding_only` and `issued_mark=false`; it cannot be printed as a start
+sheet or treated as a mark. Only `POST /v3/fields/assemble`, after the exact field and
+roster have been synchronized, performs joint optimization and produces field-relative
+marks.
+
+Authenticated `GET /v3/status` publishes the current pre-field P-256 signer identity:
+stable key ID, key class, provider, DER public key, canonical identity digest, and a
+binding digest over that identity plus the exact source commit and installed consumer
+contract. Consumers must validate that binding before trusting a signed pre-field
+receipt; a key ID from the receipt alone is not a trust anchor.
 
 STRATHMARK authenticates the calling service, not human roles. Upstream actor headers are
 audit metadata. Human login, RBAC, official issue, results, publication, and payouts stay
@@ -138,8 +170,9 @@ requires pinned mutual TLS.
 
 See [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md). Do not
 switch a live consumer merely because the V3 endpoints import or the rehearsal passes.
-STRATHMARK now supplies the typed batch-approval endpoint, but STRATHEX still needs its
-durable outbox forwarder and immutable acknowledgment persistence.
+This repository does not certify a consumer deployment. STRATHEX must still prove its
+durable outbox, immutable acknowledgments, exact V7 pin, lifecycle orchestration, and
+restart behavior in an installed-adapter rehearsal.
 
 ## Reproduce the V3 rehearsal
 
@@ -170,7 +203,8 @@ missing, stale, failed, or tampered artifacts, even the ordinary verifier must f
 - [Handicap foundations](docs/wiki/Handicap-Mark-Math.md)
 - [V3 engine](docs/PREDICTION_ENGINE_V3.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Deployment and cutover](docs/DEPLOYMENT.md)
+- [Deployment and eligibility](docs/DEPLOYMENT.md)
+- [Package release boundary](docs/PACKAGE_RELEASE.md)
 - [STRATHEX consumer migration](docs/STRATHEX_CONSUMER_MIGRATION.md)
 - [Historical V2 engine](docs/PREDICTION_ENGINE_V2.md)
 - [Changelog](CHANGELOG.md)

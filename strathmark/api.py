@@ -55,7 +55,6 @@ try:
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
-from strathmark import __version__
 from strathmark.auth import (
     ShadowAttestationReplayError,
     ShadowAuthenticationConfigurationError,
@@ -66,6 +65,8 @@ from strathmark.auth import (
     shadow_auth_configuration_status,
     verify_shadow_action,
 )
+
+_V2_API_CONTRACT_VERSION = "2.0.0"
 from strathmark.calculator import HandicapCalculator
 from strathmark.config import data_req, llm_config, prediction_config, rules, sim_config
 from strathmark.consumer_contract import load_shadow_consumer_contract
@@ -1012,7 +1013,10 @@ app = FastAPI(
         "REST API for the STRATHMARK woodchopping handicap calculation engine. "
         "Exposes HandicapCalculator, Monte Carlo simulation, and result storage."
     ),
-    version=__version__,
+    # This app is the frozen V2 transport.  The installable package also ships
+    # V3 under /v3, so its distribution version must not redefine this API's
+    # independently versioned consumer contract.
+    version=_V2_API_CONTRACT_VERSION,
 )
 app.add_middleware(TrustedShadowRequestGate)
 

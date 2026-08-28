@@ -3,8 +3,9 @@
 ## Is V3 live?
 
 No. V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. V2 remains the trusted production
-authority until an explicit cutover. The checked-in development-key rehearsal is
+requirements. Repository implementation and audit are complete for this candidate. V2
+remains the globally trusted production authority and V3 is not production-eligible.
+The checked-in development-key rehearsal is
 source-bound and must pass the release verifier. No production authority has changed and no
 consumer endpoint has switched. No production CNG identity is provisioned.
 
@@ -52,6 +53,20 @@ V2 still uses its prior-only core, exclusive date cutoff, optional residual, fiv
 compatibility keys, and narrative-only LLM integration. Those are V2 facts, preserved in
 [Prediction Engine V2](Prediction-Engine-V2.md), not restrictions on V3.
 
+## Can one tournament switch between V2 and V3?
+
+No. A standalone event selects once at setup. A tournament selects once during creation,
+and every event, heat, and later round inherits the choice. Different competition roots
+may choose different eligible engines, but one root never mixes engines or silently
+falls back after numeric work begins.
+
+## Is a pre-field forecast a handicap mark?
+
+No. It is signed field-independent raw-time evidence used to seed or group competitors
+before fields and stands exist. Its receipt explicitly states
+`purpose=pre_field_seeding_only` and `issued_mark=false`. V3 produces marks only after the
+exact field has been synchronized and jointly assembled.
+
 ## What does the rehearsal prove?
 
 A current rehearsal proves that its exact committed source, built and installed wheel,
@@ -64,6 +79,7 @@ maximum. It is one source-bound component of the full rehearsal.
 
 ## Is STRATHEX ready to consume V3 approvals?
 
-Not yet. STRATHMARK's typed multi-receipt endpoint exists, but STRATHEX still needs a
-durable outbox that commits the upstream decision with its delivery record, forwards the
-exact request idempotently, and stores the immutable acknowledgment.
+STRATHMARK exposes the required V6 endpoints, but this repository does not certify the
+external adapter. Its installed rehearsal must prove the exact V6 pin, competition
+selection and inheritance, pre-field/field boundary, durable outbox, idempotent
+forwarding, immutable acknowledgment, and restart recovery.

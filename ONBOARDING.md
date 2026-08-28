@@ -5,8 +5,9 @@
 V3 is a `3.0.0rc1` release candidate in a separate namespace that tracks
 all 232 in-repository requirements. Repository implementation and audit are complete for
 this candidate. The checked-in development-key rehearsal is source-bound and must pass
-the release verifier; it is not production evidence. V2 remains the trusted production authority until an explicit cutover. No
-production authority has changed, no endpoint has switched, and V2 is not audit-only.
+the release verifier; it is not production evidence. V2 remains the globally trusted
+production authority. V3 is not production-eligible. No production authority has
+changed, and V2 is not audit-only.
 No production CNG identity is provisioned. Never turn a rehearsal attestation into a
 production-readiness claim.
 
@@ -30,7 +31,7 @@ foundation.
 2. [`README.md`](README.md) — repository status and entry points.
 3. [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) — V3 release-candidate contract and pivot.
 4. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — V2/V3 boundaries and data flow.
-5. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — rehearsal, recovery, and cutover gates.
+5. [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — rehearsal, recovery, and eligibility gates.
 6. [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md) — consumer handoff.
 7. [`docs/PREDICTION_ENGINE_V2.md`](docs/PREDICTION_ENGINE_V2.md) — preserved V2 contract.
 
@@ -56,9 +57,17 @@ manual and signed.
 V3 authenticates one calling service, not human roles. Tournament-manager login, RBAC,
 official issue, results, publication, and payouts remain upstream. Once inside STRATHMARK,
 the authenticated service principal has full V3 authority; actor headers are audit data.
-The frozen ten-route contract includes a typed multi-receipt approval-decision route;
-it records approval evidence but does not issue a sheet. STRATHEX has not yet implemented
-the durable outbox that must forward and persist those acknowledgments.
+The frozen V6 contract has 18 paths. It includes lifecycle and snapshot routes, a
+field-independent pre-field forecast route, and typed approval decisions. A pre-field
+receipt is signed seeding evidence with `issued_mark=false`; it never issues a start
+mark. Only exact-field assembly can produce marks. Approval evidence remains separate
+from official issue.
+
+Engine eligibility and competition selection are separate. The current pivot replaces
+the earlier global-switch assumption with one immutable selection per standalone event
+or tournament root. Tournament children inherit it. Different roots may use different
+eligible engines, but one root never mixes engines or falls back silently. V2 remains
+globally authoritative while V3 production eligibility is absent.
 
 ## Code map
 
@@ -86,6 +95,10 @@ thread, and makes no network request. Runtime construction is explicit and injec
 - Set unique `STRATHMARK_DB_PATH`, `STRATHMARK_V3_DB_PATH`, and pytest `--basetemp`
   before collection; set `STRATHMARK_TEST_DB=1`.
 - Preserve V2 receipts and behavior. V3 never rewrites them or hides behind V2 keys.
+- Require one deliberate engine selection at the competition root. Never default it,
+  expose a child override, or mix receipts from both engines in one scope.
+- Use pre-field forecasts only for seeding/grouping. They do not contain marks; assemble
+  the synchronized exact field before displaying or issuing any V3 mark.
 - Do not copy displayed marks between fields. Reconstruct and rebase the complete field.
 - Same-round fields share one epoch; results affect only a later round.
 - Both overperformance and underperformance update capability without inferring motive.
@@ -93,7 +106,8 @@ thread, and makes no network request. Runtime construction is explicit and injec
 - An unavailable assessor abstains. Never relabel or silently substitute it.
 - Local numeric authority must not depend on Ollama, cloud, or archive availability.
 - Rehearsal keys and ephemeral signers cannot authorize production.
-- A failed cutover preparation resumes V2 or declares traditional/manual authority.
+- Failed V3 eligibility preparation leaves V2 authoritative or declares
+  traditional/manual authority if V2 cannot serve.
 - No code, document, test result, or model output grants official competition authority.
 
 ## Isolated verification
@@ -119,7 +133,7 @@ production CNG-backed attestation and does not itself switch consumer authority.
 
 The source-bound, post-format five-run Windows result-to-ready benchmark recorded a
 maximum of 3.414 seconds against the 120-second limit. That component result does not
-replace the final exact-wheel, rehearsal, production-identity, or cutover gates.
+replace the final exact-wheel, rehearsal, production-identity, or eligibility gates.
 
 For the preserved V2 suite, use another unique database and base directory:
 

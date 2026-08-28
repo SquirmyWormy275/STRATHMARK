@@ -81,6 +81,35 @@ from strathmark.v3.contracts.statuses import (
     admit_raw_completion,
 )
 
+_LAZY_PRE_FIELD_EXPORTS = frozenset(
+    {"ForecastSetSnapshot", "PreFieldCompetitorForecast", "PreFieldForecastReceipt"}
+)
+
+
+def __getattr__(name: str):
+    """Load integrity-dependent pre-field contracts only when requested."""
+    if name not in _LAZY_PRE_FIELD_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from strathmark.v3.contracts.pre_field_forecasts import (
+        ForecastSetSnapshot,
+        PreFieldCompetitorForecast,
+        PreFieldForecastReceipt,
+    )
+
+    globals().update(
+        {
+            "ForecastSetSnapshot": ForecastSetSnapshot,
+            "PreFieldCompetitorForecast": PreFieldCompetitorForecast,
+            "PreFieldForecastReceipt": PreFieldForecastReceipt,
+        }
+    )
+    return globals()[name]
+
+
+def __dir__() -> list[str]:
+    return sorted((*globals(), *_LAZY_PRE_FIELD_EXPORTS))
+
+
 __all__ = [
     "CANONICALIZATION_VERSION",
     "INT64_MAX",
@@ -116,6 +145,7 @@ __all__ = [
     "EventKind",
     "FieldReceipt",
     "ForecastState",
+    "ForecastSetSnapshot",
     "ForecastWarning",
     "IdempotencyKey",
     "IdentifierError",
@@ -127,6 +157,8 @@ __all__ = [
     "OfficialResult",
     "PacketIdentity",
     "PositiveTimeDistribution",
+    "PreFieldCompetitorForecast",
+    "PreFieldForecastReceipt",
     "PredictiveDistributionContract",
     "QuantilePoint",
     "ReceiptSection",

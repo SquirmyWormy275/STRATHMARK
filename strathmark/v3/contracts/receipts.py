@@ -30,17 +30,84 @@ from strathmark.v3.contracts.identifiers import (
     require_identifier,
 )
 from strathmark.v3.contracts.statuses import (
+    EngineExecutionMode,
+    PredictionEngine,
     _require_fields,
     _require_nonnegative_int,
     _require_positive_int,
     _require_schema,
 )
 
-FIELD_RECEIPT_SCHEMA_VERSION = "strathmark-v3-field-receipt-v1"
+FIELD_RECEIPT_SCHEMA_VERSION = "strathmark-v3-field-receipt-v2"
+LEGACY_FIELD_RECEIPT_SCHEMA_VERSION = "strathmark-v3-field-receipt-v1"
 RECEIPT_SECTION_SCHEMA_VERSION = "strathmark-v3-receipt-section-v1"
 MAX_RECEIPT_CANONICAL_BYTES = 1_048_576
 _CALLER_NAMESPACE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _WARNING = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SOURCE_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+@dataclass(frozen=True, slots=True)
+class EngineAuthorityBinding:
+    """Exact competition-scoped numeric authority carried by a V3 receipt."""
+
+    scope_id: StableIdentifier
+    engine: PredictionEngine
+    mode: EngineExecutionMode
+    selection_digest: str
+    consumer_contract_digest: str
+    source_commit: str
+
+    def __post_init__(self) -> None:
+        require_identifier(self.scope_id, expected_namespace="tournament")
+        if self.engine is not PredictionEngine.V3:
+            raise ContractError("V3 receipt authority must name the V3 engine")
+        if not isinstance(self.mode, EngineExecutionMode):
+            raise ContractError("receipt execution mode is invalid")
+        _require_digest(self.selection_digest, "selection digest")
+        _require_digest(self.consumer_contract_digest, "consumer contract digest")
+        if (
+            not isinstance(self.source_commit, str)
+            or _SOURCE_COMMIT.fullmatch(self.source_commit) is None
+        ):
+            raise ContractError("receipt source commit is invalid")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "scope_id": str(self.scope_id),
+            "engine": self.engine.value,
+            "mode": self.mode.value,
+            "selection_digest": self.selection_digest,
+            "consumer_contract_digest": self.consumer_contract_digest,
+            "source_commit": self.source_commit,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> EngineAuthorityBinding:
+        _require_fields(
+            value,
+            {
+                "scope_id",
+                "engine",
+                "mode",
+                "selection_digest",
+                "consumer_contract_digest",
+                "source_commit",
+            },
+        )
+        try:
+            engine = PredictionEngine(value["engine"])
+            mode = EngineExecutionMode(value["mode"])
+        except (TypeError, ValueError) as exc:
+            raise ContractError("receipt engine authority vocabulary is invalid") from exc
+        return cls(
+            scope_id=require_identifier(value["scope_id"], expected_namespace="tournament"),
+            engine=engine,
+            mode=mode,
+            selection_digest=value["selection_digest"],
+            consumer_contract_digest=value["consumer_contract_digest"],
+            source_commit=value["source_commit"],
+        )
 
 
 class ReceiptSectionKind(str, Enum):
@@ -200,12 +267,18 @@ class FieldReceipt:
     total_latency_ms: int
     bundles: tuple[BundleIdentity, ...]
     content_digest: str
-    schema_version: str = FIELD_RECEIPT_SCHEMA_VERSION
+    engine_authority: EngineAuthorityBinding | None = None
+    schema_version: str = LEGACY_FIELD_RECEIPT_SCHEMA_VERSION
     _generated_proof: InitVar[_GeneratedFieldReceiptProof | None] = None
     _canonical_payload_cache: bytes = field(init=False, repr=False, compare=False, default=b"")
 
     def __post_init__(self, _generated_proof: _GeneratedFieldReceiptProof | None) -> None:
-        _require_schema(self.schema_version, FIELD_RECEIPT_SCHEMA_VERSION)
+        expected_schema = (
+            FIELD_RECEIPT_SCHEMA_VERSION
+            if self.engine_authority is not None
+            else LEGACY_FIELD_RECEIPT_SCHEMA_VERSION
+        )
+        _require_schema(self.schema_version, expected_schema)
         _require_id(self.receipt_id, "receipt")
         if not isinstance(self.caller_namespace, str) or not _CALLER_NAMESPACE.fullmatch(
             self.caller_namespace
@@ -236,6 +309,10 @@ class FieldReceipt:
         require_identifier(self.historical_cutoff_key, expected_namespace="history")
         _require_id(self.tournament_epoch_id, "epoch")
         _require_nonnegative_int(self.tournament_event_sequence, "tournament_event_sequence")
+        if self.engine_authority is not None and not isinstance(
+            self.engine_authority, EngineAuthorityBinding
+        ):
+            raise ContractError("engine authority must be a typed receipt binding")
 
         roster = self.ordered_competitor_ids
         if (
@@ -315,6 +392,7 @@ class FieldReceipt:
         warning_codes: tuple[str, ...],
         total_latency_ms: int,
         bundles: tuple[BundleIdentity, ...],
+        engine_authority: EngineAuthorityBinding | None = None,
     ) -> FieldReceipt:
         arguments = locals().copy()
         arguments.pop("cls")
@@ -345,6 +423,11 @@ class FieldReceipt:
         return cls(
             receipt_id=receipt_id,
             content_digest=content_digest,
+            schema_version=(
+                FIELD_RECEIPT_SCHEMA_VERSION
+                if engine_authority is not None
+                else LEGACY_FIELD_RECEIPT_SCHEMA_VERSION
+            ),
             **arguments,
             _generated_proof=_GeneratedFieldReceiptProof(
                 _GENERATED_FIELD_RECEIPT_TOKEN,
@@ -380,6 +463,7 @@ class FieldReceipt:
             "warning_codes": self.warning_codes,
             "total_latency_ms": self.total_latency_ms,
             "bundles": self.bundles,
+            "engine_authority": self.engine_authority,
         }
 
     def recompute_content_digest(self) -> str:
@@ -430,8 +514,15 @@ class FieldReceipt:
             "bundles",
             "content_digest",
         }
+        schema_version = value.get("schema_version")
+        if schema_version == FIELD_RECEIPT_SCHEMA_VERSION:
+            expected.add("engine_authority")
         _require_fields(value, expected)
-        _require_schema(value["schema_version"], FIELD_RECEIPT_SCHEMA_VERSION)
+        if schema_version not in {
+            FIELD_RECEIPT_SCHEMA_VERSION,
+            LEGACY_FIELD_RECEIPT_SCHEMA_VERSION,
+        }:
+            raise ContractError("unsupported field receipt schema version")
         for label in (
             "ordered_competitor_ids",
             "packet_identities",
@@ -475,13 +566,25 @@ class FieldReceipt:
             total_latency_ms=value["total_latency_ms"],
             bundles=tuple(BundleIdentity.from_dict(item) for item in value["bundles"]),
             content_digest=value["content_digest"],
+            engine_authority=(
+                None
+                if schema_version == LEGACY_FIELD_RECEIPT_SCHEMA_VERSION
+                else EngineAuthorityBinding.from_dict(value["engine_authority"])
+            ),
+            schema_version=schema_version,
         )
 
 
 def _receipt_content_value(**arguments: Any) -> dict[str, Any]:
     supersedes = arguments["supersedes_receipt_id"]
-    return {
-        "schema_version": FIELD_RECEIPT_SCHEMA_VERSION,
+    engine_authority = arguments.get("engine_authority")
+    schema_version = (
+        FIELD_RECEIPT_SCHEMA_VERSION
+        if engine_authority is not None
+        else LEGACY_FIELD_RECEIPT_SCHEMA_VERSION
+    )
+    value = {
+        "schema_version": schema_version,
         "field_id": str(arguments["field_id"]),
         "upstream_field_revision": arguments["upstream_field_revision"],
         "receipt_revision": arguments["receipt_revision"],
@@ -499,6 +602,9 @@ def _receipt_content_value(**arguments: Any) -> dict[str, Any]:
         "total_latency_ms": arguments["total_latency_ms"],
         "bundles": [item.to_dict() for item in arguments["bundles"]],
     }
+    if engine_authority is not None:
+        value["engine_authority"] = engine_authority.to_dict()
+    return value
 
 
 __all__ = [
@@ -506,6 +612,7 @@ __all__ = [
     "MAX_RECEIPT_CANONICAL_BYTES",
     "RECEIPT_SECTION_SCHEMA_VERSION",
     "BundleIdentity",
+    "EngineAuthorityBinding",
     "FieldReceipt",
     "MarkAssignment",
     "PacketIdentity",

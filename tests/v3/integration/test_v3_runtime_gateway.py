@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,8 +48,16 @@ from strathmark.v3.application.pipeline_builder import (  # noqa: E402
     SQLiteCapabilityStateResolver,
 )
 from strathmark.v3.assessors.formula import FormulaManifest  # noqa: E402
-from strathmark.v3.composition import compose_v3_application_gateway  # noqa: E402
+from strathmark.v3.composition import (  # noqa: E402
+    V3ServiceIdentity,
+    compose_v3_application_gateway,
+)
+from strathmark.v3.consumer_contract import v3_consumer_contract_digest  # noqa: E402
 from strathmark.v3.contracts.canonical import canonical_digest  # noqa: E402
+from strathmark.v3.contracts.events import (
+    CompetitionEngineSelection,
+    EventKind,
+)  # noqa: E402
 from strathmark.v3.contracts.evidence import (
     EvidencePacket,
     ResultObservation,
@@ -57,7 +67,12 @@ from strathmark.v3.contracts.identifiers import (  # noqa: E402
     StableIdentifier,
     deterministic_identifier,
 )
-from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus  # noqa: E402
+from strathmark.v3.contracts.statuses import (  # noqa: E402
+    EngineExecutionMode,
+    OfficialResult,
+    PredictionEngine,
+    ResultStatus,
+)
 from strathmark.v3.domain.capability import CapabilityPrior  # noqa: E402
 from strathmark.v3.domain.credibility import WeightReceipt  # noqa: E402
 from strathmark.v3.domain.disagreement import (
@@ -98,6 +113,20 @@ def _headers(credential: str, key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {credential}", "Idempotency-Key": key}
 
 
+def _pre_field_payload(field) -> dict[str, object]:
+    return {
+        "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+        "tournament_id": str(field.tournament_id),
+        "round_id": str(field.round_id),
+        "forecast_set_revision": 1,
+        "ordered_competitor_ids": [str(item.competitor_id) for item in field.ordered_assignments],
+        "target_context": field.target_context.to_dict(),
+        "hard_deadline_at": field.deadline_at,
+        "requested_at_utc": NOW,
+        "deadline_ms": 10_000,
+    }
+
+
 @dataclass
 class _CapabilitySourceAuthority:
     accepted: set[int]
@@ -133,9 +162,31 @@ def _runtime(
     fail_reactions_once: bool = False,
     schedule_cross_epoch_decoy: bool = False,
     verified_cutover: VerifiedV3CutoverState | None = None,
+    bind_selection: bool = True,
+    service_source_commit: str | None = "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    persist_field_snapshot: bool = True,
+    schedule_cards: bool = True,
+    pre_field_sign_barrier: threading.Barrier | None = None,
 ):
     database = tmp_path / "runtime.sqlite3"
-    store, field, build, _lifecycle = _bootstrap(database)
+    store, field, build, _lifecycle = _bootstrap(
+        database,
+        engine_selection=(
+            CompetitionEngineSelection(
+                scope_id=StableIdentifier("tournament:show"),
+                engine=PredictionEngine.V3,
+                mode=EngineExecutionMode.REHEARSAL,
+                selected_by_actor_id=StableIdentifier("actor:manager"),
+                selected_at_utc=NOW,
+                reason_code="runtime_contract_proof",
+                consumer_contract_digest=v3_consumer_contract_digest(),
+                source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            )
+            if bind_selection
+            else None
+        ),
+        persist_field_snapshot=persist_field_snapshot,
+    )
     pipeline = build(field)
     formula_manifest = FormulaManifest.load("benchmarks/v3/formula_manifest.json")
     source_sequences = set(range(101, 101 + len(pipeline.pools)))
@@ -230,11 +281,15 @@ def _runtime(
         )
         for index, card in enumerate(runtime_cards)
     )
-    scheduled = coordinator.schedule(
-        candidates,
-        capacity_use=CapacityUse(1, 2, 2, 2, 2, 1_024, 4_096, 25),
-        council_manifest_digest=council.body_digest,
-        observed_at=NOW,
+    scheduled = (
+        coordinator.schedule(
+            candidates,
+            capacity_use=CapacityUse(1, 2, 2, 2, 2, 1_024, 4_096, 25),
+            council_manifest_digest=council.body_digest,
+            observed_at=NOW,
+        )
+        if schedule_cards
+        else ()
     )
     candidate_by_digest = {item.key.card_digest: item for item in candidates}
     card_by_digest = {
@@ -278,7 +333,7 @@ def _runtime(
             clock=lambda: T2,
         )
         pending -= 1
-    for candidate in candidates:
+    for candidate in candidates if schedule_cards else ():
         card = card_by_digest[candidate.key.card_digest]
         coordinator.seal_card(
             candidate.key,
@@ -382,13 +437,30 @@ def _runtime(
         issue_coordinator=issue_coordinator,
         settlement_reactions=reactions,
         clock=lambda: "2026-08-25T18:00:00.000Z",
+        service_identity=(
+            None
+            if service_source_commit is None
+            else V3ServiceIdentity.from_installed_contract(source_commit=service_source_commit)
+        ),
     )
     if verified_cutover is not None:
         gateway = V3ApplicationGateway(
             gateway._services,
             clock=lambda: "2026-08-25T18:00:00.000Z",
             verified_cutover=lambda: verified_cutover,
+            service_identity=gateway._service_identity,
         )
+    if pre_field_sign_barrier is not None:
+        signer = gateway._services.pre_field_forecasts._signer
+
+        class _SynchronizedSigner:
+            identity = signer.identity
+
+            def sign(self, payload: bytes) -> bytes:
+                pre_field_sign_barrier.wait(timeout=10)
+                return signer.sign(payload)
+
+        gateway._services.pre_field_forecasts._signer = _SynchronizedSigner()
     registry = ServiceCredentialRegistry(
         SQLiteEventStore(database), InMemoryCredentialSecretStore()
     )
@@ -494,6 +566,105 @@ def _settlement_body(store, field, receipt_id: str, issue_batch_id: str):
     }
 
 
+def test_pre_field_forecast_reuses_cards_without_any_field_snapshot(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, field, _reactions, repository = _runtime(
+        tmp_path,
+        persist_field_snapshot=False,
+    )
+    with open_v3_connection(repository.database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_ingress_snapshots WHERE entity_kind='field'"
+            ).fetchone()[0]
+            == 0
+        )
+
+    response = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-no-field"),
+        json=_pre_field_payload(field),
+    )
+
+    assert response.status_code == 200, response.text
+    receipt = json.loads(response.json()["canonical_receipt_json"])
+    assert receipt["purpose"] == "pre_field_seeding_only"
+    assert receipt["issued_mark"] is False
+    assert "field_id" not in response.request.content.decode("utf-8")
+    assert all("mark" not in item for item in receipt["forecasts"])
+
+
+def test_pre_field_forecast_schedules_five_jobs_each_without_a_field(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, field, _reactions, repository = _runtime(
+        tmp_path,
+        persist_field_snapshot=False,
+        schedule_cards=False,
+    )
+
+    response = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-schedule-no-field"),
+        json=_pre_field_payload(field),
+    )
+
+    assert response.status_code == 409, response.text
+    with open_v3_connection(repository.database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM v3_ingress_snapshots WHERE entity_kind='field'"
+            ).fetchone()[0]
+            == 0
+        )
+        jobs = connection.execute("SELECT payload_json FROM v3_jobs ORDER BY job_id").fetchall()
+    assert len(jobs) == len(field.ordered_assignments) * 5
+    assert {json.loads(str(row[0]))["component_id"] for row in jobs} == {
+        "formula",
+        "ml",
+        "local_qwen35_9b",
+        "local_ministral3_8b",
+        "frontier_cloud",
+    }
+    assert all("field_id" not in json.loads(str(row[0])) for row in jobs)
+
+
+def test_concurrent_identical_pre_field_retries_return_one_authoritative_receipt(
+    tmp_path: Path,
+) -> None:
+    barrier = threading.Barrier(2)
+    client, credential, _store, field, _reactions, repository = _runtime(
+        tmp_path,
+        persist_field_snapshot=False,
+        pre_field_sign_barrier=barrier,
+    )
+
+    def forecast() -> tuple[int, dict[str, object]]:
+        response = client.post(
+            "/v3/forecasts/pre-field",
+            headers=_headers(credential, "forecast-concurrent-exact-retry"),
+            json=_pre_field_payload(field),
+        )
+        return response.status_code, response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(lambda _ordinal: forecast(), range(2)))
+
+    assert {status for status, _body in results} == {200}
+    bodies = tuple(body for _status, body in results)
+    assert {str(body["receipt_digest"]) for body in bodies} == {str(bodies[0]["receipt_digest"])}
+    assert {str(body["canonical_receipt_json"]) for body in bodies} == {
+        str(bodies[0]["canonical_receipt_json"])
+    }
+    assert {str(body["disposition"]) for body in bodies} == {"forecasted", "recovered"}
+    with open_v3_connection(repository.database_path, read_only=True) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_pre_field_forecast_receipts").fetchone()[0]
+            == 1
+        )
+
+
 def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     tmp_path: Path,
 ) -> None:
@@ -545,6 +716,52 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     assert prepared.status_code == 202, prepared.text
     assert prepared.json()["status"] == "ready"
 
+    forecast = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-before-field"),
+        json={
+            "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+            "tournament_id": str(field.tournament_id),
+            "round_id": str(field.round_id),
+            "forecast_set_revision": 1,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "target_context": field.target_context.to_dict(),
+            "hard_deadline_at": field.deadline_at,
+            "requested_at_utc": NOW,
+            "deadline_ms": 10_000,
+        },
+    )
+    assert forecast.status_code == 200, forecast.text
+    forecast_receipt = json.loads(forecast.json()["canonical_receipt_json"])
+    assert forecast_receipt["purpose"] == "pre_field_seeding_only"
+    assert forecast_receipt["issued_mark"] is False
+    assert [item["competitor_id"] for item in forecast_receipt["forecasts"]] == [
+        str(item.competitor_id) for item in field.ordered_assignments
+    ]
+    assert all("mark" not in item for item in forecast_receipt["forecasts"])
+    retry = client.post(
+        "/v3/forecasts/pre-field",
+        headers=_headers(credential, "forecast-before-field"),
+        json={
+            "schema_version": "strathmark-v3-pre-field-forecast-request-v1",
+            "tournament_id": str(field.tournament_id),
+            "round_id": str(field.round_id),
+            "forecast_set_revision": 1,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "target_context": field.target_context.to_dict(),
+            "hard_deadline_at": field.deadline_at,
+            "requested_at_utc": NOW,
+            "deadline_ms": 10_000,
+        },
+    )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["disposition"] == "recovered"
+    assert retry.json()["receipt_digest"] == forecast.json()["receipt_digest"]
+
     assembled = client.post(
         "/v3/fields/assemble",
         headers=_headers(credential, "assemble-final"),
@@ -559,6 +776,24 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
         },
     )
     assert assembled.status_code == 200, assembled.text
+    receipt_value = json.loads(assembled.json()["canonical_receipt_json"])
+    assert receipt_value["engine_authority"] == {
+        "scope_id": "tournament:show",
+        "engine": "v3",
+        "mode": "rehearsal",
+        "selection_digest": CompetitionEngineSelection(
+            scope_id=StableIdentifier("tournament:show"),
+            engine=PredictionEngine.V3,
+            mode=EngineExecutionMode.REHEARSAL,
+            selected_by_actor_id=StableIdentifier("actor:manager"),
+            selected_at_utc=NOW,
+            reason_code="runtime_contract_proof",
+            consumer_contract_digest=v3_consumer_contract_digest(),
+            source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        ).selection_digest,
+        "consumer_contract_digest": v3_consumer_contract_digest(),
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    }
     receipt_id = assembled.json()["receipt_id"]
     assert assembled.json()["disposition"] == "prepared"
 
@@ -711,6 +946,340 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     )
 
 
+def test_public_field_assembly_rejects_an_unselected_legacy_scope(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, bind_selection=False
+    )
+    response = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "assemble-unselected"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "field_scope_has_no_engine_authority"
+
+
+def test_status_and_numeric_work_fail_closed_without_exact_service_identity(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, service_source_commit=None
+    )
+    status = client.get("/v3/status", headers=_headers(credential, "status-missing")).json()
+    assert status["v3_option_state"] == "ineligible"
+    assert status["source_commit"] is None
+    assert status["pre_field_signer_trust"] is None
+    assert status["eligibility_reason_codes"] == ["service_identity_unavailable"]
+
+    response = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "assemble-missing-identity"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "service_identity_unavailable"
+
+
+def test_numeric_work_rejects_scope_pinned_to_different_service_source(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, service_source_commit="d" * 40
+    )
+    response = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "assemble-source-mismatch"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "scope_service_identity_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("service_source", "selection_source", "selection_contract"),
+    (
+        (
+            "d" * 40,
+            "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            v3_consumer_contract_digest(),
+        ),
+        (
+            "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            "0" * 64,
+        ),
+    ),
+)
+def test_scope_open_rejects_a_selection_pinned_to_different_service_identity(
+    tmp_path: Path,
+    service_source: str,
+    selection_source: str,
+    selection_contract: str,
+) -> None:
+    client, credential, _store, _field, _reactions, _repository = _runtime(
+        tmp_path, service_source_commit=service_source
+    )
+    response = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "open-source-mismatch"),
+        json={
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:different-show",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:different-root"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:different-show",
+                "engine": "v3",
+                "mode": "rehearsal",
+                "selected_by_actor_id": "actor:judge",
+                "selected_at_utc": "2026-08-25T17:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": selection_contract,
+                "source_commit": selection_source,
+            },
+            "opened_at_utc": "2026-08-25T18:00:00.000Z",
+            "deadline_ms": 1_000,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "scope_service_identity_mismatch"
+
+
+def test_scope_open_rejects_production_mode_without_verified_cutover(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, _field, _reactions, _repository = _runtime(tmp_path)
+
+    response = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "open-production-without-cutover"),
+        json={
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:production-without-cutover",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:production-without-cutover"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:production-without-cutover",
+                "engine": "v3",
+                "mode": "production",
+                "selected_by_actor_id": "actor:judge",
+                "selected_at_utc": "2026-08-25T17:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": v3_consumer_contract_digest(),
+                "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            },
+            "opened_at_utc": "2026-08-25T18:00:00.000Z",
+            "deadline_ms": 1_000,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "production_cutover_not_verified"
+
+
+def test_service_identity_rejects_malformed_or_unverified_installation_evidence() -> None:
+    with pytest.raises(ValueError, match="source commit"):
+        V3ServiceIdentity.from_installed_contract(source_commit="not-a-commit")
+    with pytest.raises(ValueError, match="installed evidence"):
+        V3ServiceIdentity(
+            source_commit="d" * 40,
+            consumer_contract_version="strathmark.v3-consumer-contract.v7",
+            consumer_contract_digest="0" * 64,
+        )
+
+
+def test_concrete_gateway_exposes_scope_snapshot_freeze_and_close_lifecycle(
+    tmp_path: Path,
+) -> None:
+    client, credential, *_rest = _runtime(tmp_path)
+    scope_id = "tournament:public-lifecycle"
+    round_id = "round:public-root"
+    selection = {
+        "schema_version": "strathmark-v3-competition-engine-selection-v1",
+        "scope_id": scope_id,
+        "engine": "v3",
+        "mode": "rehearsal",
+        "selected_by_actor_id": "actor:judge-seven",
+        "selected_at_utc": "2026-08-25T17:59:54.000Z",
+        "reason_code": "new_competition",
+        "consumer_contract_digest": v3_consumer_contract_digest(),
+        "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+    }
+    common = {
+        "upstream_revision": 1,
+        "tournament_id": scope_id,
+        "synchronized_at_utc": "2026-08-25T17:59:55.000Z",
+        "deadline_ms": 10_000,
+    }
+    snapshots = (
+        {
+            **common,
+            "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+            "entity_kind": "tournament",
+            "entity_id": scope_id,
+            "round_id": None,
+            "engine_selection": selection,
+            "snapshot": {
+                "bundle_id": "bundle:public-current",
+                "historical_cutoff_key": "history:public-cutoff",
+            },
+        },
+        {
+            **common,
+            "schema_version": "strathmark-v3-snapshot-sync-request-v1",
+            "entity_kind": "round",
+            "entity_id": round_id,
+            "round_id": round_id,
+            "engine_selection": selection,
+            "snapshot": {
+                "round_ordinal": 1,
+                "predecessor_round_ids": [],
+                "successor_round_ids": [],
+            },
+        },
+    )
+    unbound = {key: value for key, value in snapshots[0].items() if key != "engine_selection"}
+    rejected = client.post(
+        "/v3/snapshots/synchronize",
+        headers=_headers(credential, "public-unbound-snapshot"),
+        json=unbound,
+    )
+    assert rejected.status_code == 422
+    with open_v3_connection(_rest[2].database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM v3_ingress_snapshots WHERE entity_id=?", (scope_id,)
+            ).fetchone()
+            is None
+        )
+    for index, payload in enumerate(snapshots):
+        response = client.post(
+            "/v3/snapshots/synchronize",
+            headers=_headers(credential, f"public-snapshot-{index}"),
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+
+    open_payload = {
+        "schema_version": "strathmark-v3-scope-open-request-v1",
+        "scope_id": scope_id,
+        "bundle_id": "bundle:public-current",
+        "historical_cutoff_key": "history:public-cutoff",
+        "root_round_ids": [round_id],
+        "engine_selection": selection,
+        "opened_at_utc": "2026-08-25T17:59:58.000Z",
+        "deadline_ms": 10_000,
+    }
+    mismatched = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "public-open-mismatch"),
+        json={
+            **open_payload,
+            "engine_selection": {**selection, "reason_code": "pre_lock_correction"},
+        },
+    )
+    assert mismatched.status_code == 409
+    with open_v3_connection(_rest[2].database_path, read_only=True) as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM v3_aggregate_heads "
+                "WHERE aggregate_kind='tournament' AND aggregate_id=?",
+                (scope_id,),
+            ).fetchone()
+            is None
+        )
+    opened = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "public-open"),
+        json=open_payload,
+    )
+    assert opened.status_code == 200, opened.text
+    opened_event = next(
+        event
+        for event in SQLiteEventStore(_rest[2].database_path).events()
+        if event.kind is EventKind.TOURNAMENT_OPENED and str(event.aggregate_id) == scope_id
+    )
+    assert str(opened_event.command.actor_id) == "actor:tournament-manager"
+    assert (
+        opened_event.command.payload.to_value()["engine_selection"]["selected_by_actor_id"]
+        == "actor:judge-seven"
+    )
+    frozen = client.post(
+        "/v3/rounds/freeze",
+        headers=_headers(credential, "public-freeze"),
+        json={
+            "schema_version": "strathmark-v3-round-freeze-request-v1",
+            "round_id": round_id,
+            "epoch_revision": 1,
+            "historical_cutoff_key": "history:public-cutoff",
+            "closure_ids": [],
+            "frozen_at_utc": "2026-08-25T17:59:59.000Z",
+            "deadline_ms": 10_000,
+        },
+    )
+    assert frozen.status_code == 200, frozen.text
+    page = client.get(
+        f"/v3/approvals/page?tournament_id={scope_id}&offset=0&limit=25",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    assert page.status_code == 200, page.text
+    assert page.json()["rows"] == []
+    for path, key, body in (
+        (
+            "/v3/rounds/close",
+            "public-close-round",
+            {
+                "schema_version": "strathmark-v3-round-close-request-v1",
+                "round_id": round_id,
+                "closed_at_utc": "2026-08-25T18:00:04.000Z",
+                "deadline_ms": 10_000,
+            },
+        ),
+        (
+            "/v3/scopes/close",
+            "public-close-scope",
+            {
+                "schema_version": "strathmark-v3-scope-close-request-v1",
+                "scope_id": scope_id,
+                "closed_at_utc": "2026-08-25T18:00:05.000Z",
+                "deadline_ms": 10_000,
+            },
+        ),
+    ):
+        response = client.post(path, headers=_headers(credential, key), json=body)
+        assert response.status_code == 200, response.text
+
+
 def test_status_separates_candidate_health_from_production_authority(tmp_path) -> None:
     client, credential, *_rest = _runtime(tmp_path)
 
@@ -723,9 +1292,73 @@ def test_status_separates_candidate_health_from_production_authority(tmp_path) -
     assert status["cutover_receipt_digest"] is None
     assert status["cutover_verified_at_utc"] is None
     assert status["deep_verification_state"] == "verified"
+    assert status["v3_option_state"] == "rehearsal_ready"
+    assert status["rehearsal_eligible"] is True
+    assert status["production_eligible"] is False
+    assert status["source_commit"] == "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f"
+    assert status["consumer_contract_version"] == "strathmark.v3-consumer-contract.v7"
+    assert status["consumer_contract_digest"] == v3_consumer_contract_digest()
+    signer_trust = status["pre_field_signer_trust"]
+    assert signer_trust["algorithm"] == "ecdsa-p256-sha256"
+    assert signer_trust["key_id"] == _rest[0]._signer.identity.key_id
+    assert signer_trust["public_key_der_b64"] == _rest[0]._signer.identity.public_key_der_b64
+    signer_identity = {
+        key: signer_trust[key] for key in ("key_id", "key_class", "provider", "public_key_der_b64")
+    }
+    assert signer_trust["identity_digest"] == canonical_digest(signer_identity)
+    assert signer_trust["service_binding_digest"] == canonical_digest(
+        {
+            "schema_version": "strathmark-v3-pre-field-signer-service-binding-v1",
+            "source_commit": status["source_commit"],
+            "consumer_contract_version": status["consumer_contract_version"],
+            "consumer_contract_digest": status["consumer_contract_digest"],
+            "pre_field_signer_identity_digest": signer_trust["identity_digest"],
+        }
+    )
     assert len(status["event_checkpoint_digest"]) == 64
     assert len(status["field_checkpoint_digest"]) == 64
     assert len(status["job_checkpoint_digest"]) == 64
+
+
+def test_public_approval_page_and_detail_share_one_projection_identity(
+    tmp_path: Path,
+) -> None:
+    client, credential, store, field, *_rest = _runtime(tmp_path)
+    assembled = client.post(
+        "/v3/fields/assemble",
+        headers=_headers(credential, "public-approval-assemble"),
+        json={
+            "schema_version": "strathmark-v3-field-assembly-request-v1",
+            "field_id": str(field.field_id),
+            "upstream_field_revision": field.field_revision,
+            "ordered_competitor_ids": [
+                str(item.competitor_id) for item in field.ordered_assignments
+            ],
+            "deadline_ms": 10_000,
+        },
+    )
+    assert assembled.status_code == 200, assembled.text
+    page = client.get(
+        f"/v3/approvals/page?tournament_id={field.tournament_id}&offset=0&limit=25",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    assert page.status_code == 200, page.text
+    row = next(
+        item for item in page.json()["rows"] if item["receipt_id"] == assembled.json()["receipt_id"]
+    )
+    detail = client.get(
+        "/v3/approvals/detail"
+        f"?tournament_id={field.tournament_id}&snapshot_id={page.json()['snapshot_id']}"
+        f"&receipt_id={row['receipt_id']}",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["snapshot_id"] == page.json()["snapshot_id"]
+    assert detail.json()["detail"]["row"] == row
+    assert (
+        store.approval_page(tournament_id=str(field.tournament_id), offset=0, limit=25).snapshot_id
+        == page.json()["snapshot_id"]
+    )
 
 
 def test_status_uses_bounded_checkpoints_after_explicit_startup_deep_verify(
@@ -851,6 +1484,9 @@ def test_status_accepts_only_explicit_verified_cutover_authority(tmp_path) -> No
     cutover = VerifiedV3CutoverState(
         receipt_digest="a" * 64,
         verified_at_utc="2026-08-25T17:59:00.000Z",
+        source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        consumer_contract_version="strathmark.v3-consumer-contract.v7",
+        consumer_contract_digest=v3_consumer_contract_digest(),
     )
     client, credential, *_rest = _runtime(tmp_path, verified_cutover=cutover)
 
@@ -863,6 +1499,59 @@ def test_status_accepts_only_explicit_verified_cutover_authority(tmp_path) -> No
     assert status["cutover_receipt_digest"] == "a" * 64
     assert status["cutover_verified_at_utc"] == "2026-08-25T17:59:00.000Z"
     assert status["deep_verification_state"] == "verified"
+
+
+def test_stale_verified_cutover_cannot_authorize_status_or_production_selection(
+    tmp_path: Path,
+) -> None:
+    stale = VerifiedV3CutoverState(
+        receipt_digest="a" * 64,
+        verified_at_utc="2026-08-25T17:59:00.000Z",
+        source_commit="b" * 40,
+        consumer_contract_version="strathmark.v3-consumer-contract.v7",
+        consumer_contract_digest=v3_consumer_contract_digest(),
+    )
+    client, credential, *_rest = _runtime(tmp_path, verified_cutover=stale)
+
+    status = client.get("/v3/status", headers=_headers(credential, "status-stale-cutover")).json()
+
+    assert status["v3_readiness"] == "candidate"
+    assert status["production_authority"] == "v2"
+    assert status["v3_option_state"] == "rehearsal_ready"
+    assert status["production_eligible"] is False
+    assert status["cutover_receipt_digest"] is None
+    assert status["eligibility_reason_codes"] == [
+        "production_cutover_identity_mismatch",
+        "production_cutover_not_verified",
+    ]
+
+    response = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "open-production-with-stale-cutover"),
+        json={
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:production-stale-cutover",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:production-stale-cutover"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:production-stale-cutover",
+                "engine": "v3",
+                "mode": "production",
+                "selected_by_actor_id": "actor:judge",
+                "selected_at_utc": "2026-08-25T17:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": v3_consumer_contract_digest(),
+                "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            },
+            "opened_at_utc": "2026-08-25T18:00:00.000Z",
+            "deadline_ms": 1_000,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "production_cutover_identity_mismatch"
 
 
 def test_prepare_card_rejects_newer_same_context_card_from_another_epoch(
@@ -1107,3 +1796,43 @@ def test_gateway_composition_requires_same_database_settlement_reactions(
             settlement_reactions=None,
             clock=lambda: "2026-08-25T18:00:00.000Z",
         )
+
+    wrong_rolling = _TrackingSettlementReactions(tmp_path / "wrong-rolling.sqlite3")
+    with pytest.raises(ValueError, match="rolling reactions"):
+        compose_v3_application_gateway(
+            database_path=store.database_path,
+            signer=store._signer,
+            trust_store=store._trust_store,
+            pipeline_builder=lambda _field: None,
+            job_repository=repository,
+            issue_coordinator=CriticalIssueCoordinator.for_rehearsal(
+                CriticalJournal(
+                    tmp_path / "wrong-rolling-journal",
+                    signer=store._signer,
+                    trust_store=store._trust_store,
+                )
+            ),
+            settlement_reactions=_TrackingSettlementReactions(store.database_path),
+            rolling_reactions=wrong_rolling,
+            clock=lambda: "2026-08-25T18:00:00.000Z",
+        )
+
+    rolling = _TrackingSettlementReactions(store.database_path)
+    gateway = compose_v3_application_gateway(
+        database_path=store.database_path,
+        signer=store._signer,
+        trust_store=store._trust_store,
+        pipeline_builder=lambda _field: None,
+        job_repository=repository,
+        issue_coordinator=CriticalIssueCoordinator.for_rehearsal(
+            CriticalJournal(
+                tmp_path / "rolling-wired-journal",
+                signer=store._signer,
+                trust_store=store._trust_store,
+            )
+        ),
+        settlement_reactions=_TrackingSettlementReactions(store.database_path),
+        rolling_reactions=rolling,
+        clock=lambda: "2026-08-25T18:00:00.000Z",
+    )
+    assert gateway._services.lifecycle._reaction_port is rolling
