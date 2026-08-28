@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,7 +54,10 @@ from strathmark.v3.composition import (  # noqa: E402
 )
 from strathmark.v3.consumer_contract import v3_consumer_contract_digest  # noqa: E402
 from strathmark.v3.contracts.canonical import canonical_digest  # noqa: E402
-from strathmark.v3.contracts.events import CompetitionEngineSelection, EventKind  # noqa: E402
+from strathmark.v3.contracts.events import (
+    CompetitionEngineSelection,
+    EventKind,
+)  # noqa: E402
 from strathmark.v3.contracts.evidence import (
     EvidencePacket,
     ResultObservation,
@@ -161,6 +166,7 @@ def _runtime(
     service_source_commit: str | None = "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
     persist_field_snapshot: bool = True,
     schedule_cards: bool = True,
+    pre_field_sign_barrier: threading.Barrier | None = None,
 ):
     database = tmp_path / "runtime.sqlite3"
     store, field, build, _lifecycle = _bootstrap(
@@ -444,6 +450,17 @@ def _runtime(
             verified_cutover=lambda: verified_cutover,
             service_identity=gateway._service_identity,
         )
+    if pre_field_sign_barrier is not None:
+        signer = gateway._services.pre_field_forecasts._signer
+
+        class _SynchronizedSigner:
+            identity = signer.identity
+
+            def sign(self, payload: bytes) -> bytes:
+                pre_field_sign_barrier.wait(timeout=10)
+                return signer.sign(payload)
+
+        gateway._services.pre_field_forecasts._signer = _SynchronizedSigner()
     registry = ServiceCredentialRegistry(
         SQLiteEventStore(database), InMemoryCredentialSecretStore()
     )
@@ -549,7 +566,9 @@ def _settlement_body(store, field, receipt_id: str, issue_batch_id: str):
     }
 
 
-def test_pre_field_forecast_reuses_cards_without_any_field_snapshot(tmp_path: Path) -> None:
+def test_pre_field_forecast_reuses_cards_without_any_field_snapshot(
+    tmp_path: Path,
+) -> None:
     client, credential, _store, field, _reactions, repository = _runtime(
         tmp_path,
         persist_field_snapshot=False,
@@ -576,7 +595,9 @@ def test_pre_field_forecast_reuses_cards_without_any_field_snapshot(tmp_path: Pa
     assert all("mark" not in item for item in receipt["forecasts"])
 
 
-def test_pre_field_forecast_schedules_five_jobs_each_without_a_field(tmp_path: Path) -> None:
+def test_pre_field_forecast_schedules_five_jobs_each_without_a_field(
+    tmp_path: Path,
+) -> None:
     client, credential, _store, field, _reactions, repository = _runtime(
         tmp_path,
         persist_field_snapshot=False,
@@ -607,6 +628,41 @@ def test_pre_field_forecast_schedules_five_jobs_each_without_a_field(tmp_path: P
         "frontier_cloud",
     }
     assert all("field_id" not in json.loads(str(row[0])) for row in jobs)
+
+
+def test_concurrent_identical_pre_field_retries_return_one_authoritative_receipt(
+    tmp_path: Path,
+) -> None:
+    barrier = threading.Barrier(2)
+    client, credential, _store, field, _reactions, repository = _runtime(
+        tmp_path,
+        persist_field_snapshot=False,
+        pre_field_sign_barrier=barrier,
+    )
+
+    def forecast() -> tuple[int, dict[str, object]]:
+        response = client.post(
+            "/v3/forecasts/pre-field",
+            headers=_headers(credential, "forecast-concurrent-exact-retry"),
+            json=_pre_field_payload(field),
+        )
+        return response.status_code, response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(lambda _ordinal: forecast(), range(2)))
+
+    assert {status for status, _body in results} == {200}
+    bodies = tuple(body for _status, body in results)
+    assert {str(body["receipt_digest"]) for body in bodies} == {str(bodies[0]["receipt_digest"])}
+    assert {str(body["canonical_receipt_json"]) for body in bodies} == {
+        str(bodies[0]["canonical_receipt_json"])
+    }
+    assert {str(body["disposition"]) for body in bodies} == {"forecasted", "recovered"}
+    with open_v3_connection(repository.database_path, read_only=True) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_pre_field_forecast_receipts").fetchone()[0]
+            == 1
+        )
 
 
 def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
@@ -890,7 +946,9 @@ def test_concrete_gateway_executes_prepare_assemble_issue_lookup_and_settlement(
     )
 
 
-def test_public_field_assembly_rejects_an_unselected_legacy_scope(tmp_path: Path) -> None:
+def test_public_field_assembly_rejects_an_unselected_legacy_scope(
+    tmp_path: Path,
+) -> None:
     client, credential, _store, field, _reactions, _repository = _runtime(
         tmp_path, bind_selection=False
     )
@@ -940,7 +998,9 @@ def test_status_and_numeric_work_fail_closed_without_exact_service_identity(
     assert response.json()["code"] == "service_identity_unavailable"
 
 
-def test_numeric_work_rejects_scope_pinned_to_different_service_source(tmp_path: Path) -> None:
+def test_numeric_work_rejects_scope_pinned_to_different_service_source(
+    tmp_path: Path,
+) -> None:
     client, credential, _store, field, _reactions, _repository = _runtime(
         tmp_path, service_source_commit="d" * 40
     )
@@ -1011,6 +1071,40 @@ def test_scope_open_rejects_a_selection_pinned_to_different_service_identity(
     )
     assert response.status_code == 409
     assert response.json()["code"] == "scope_service_identity_mismatch"
+
+
+def test_scope_open_rejects_production_mode_without_verified_cutover(
+    tmp_path: Path,
+) -> None:
+    client, credential, _store, _field, _reactions, _repository = _runtime(tmp_path)
+
+    response = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "open-production-without-cutover"),
+        json={
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:production-without-cutover",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:production-without-cutover"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:production-without-cutover",
+                "engine": "v3",
+                "mode": "production",
+                "selected_by_actor_id": "actor:judge",
+                "selected_at_utc": "2026-08-25T17:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": v3_consumer_contract_digest(),
+                "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            },
+            "opened_at_utc": "2026-08-25T18:00:00.000Z",
+            "deadline_ms": 1_000,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "production_cutover_not_verified"
 
 
 def test_service_identity_rejects_malformed_or_unverified_installation_evidence() -> None:
@@ -1226,7 +1320,9 @@ def test_status_separates_candidate_health_from_production_authority(tmp_path) -
     assert len(status["job_checkpoint_digest"]) == 64
 
 
-def test_public_approval_page_and_detail_share_one_projection_identity(tmp_path: Path) -> None:
+def test_public_approval_page_and_detail_share_one_projection_identity(
+    tmp_path: Path,
+) -> None:
     client, credential, store, field, *_rest = _runtime(tmp_path)
     assembled = client.post(
         "/v3/fields/assemble",
@@ -1388,6 +1484,9 @@ def test_status_accepts_only_explicit_verified_cutover_authority(tmp_path) -> No
     cutover = VerifiedV3CutoverState(
         receipt_digest="a" * 64,
         verified_at_utc="2026-08-25T17:59:00.000Z",
+        source_commit="c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+        consumer_contract_version="strathmark.v3-consumer-contract.v7",
+        consumer_contract_digest=v3_consumer_contract_digest(),
     )
     client, credential, *_rest = _runtime(tmp_path, verified_cutover=cutover)
 
@@ -1400,6 +1499,59 @@ def test_status_accepts_only_explicit_verified_cutover_authority(tmp_path) -> No
     assert status["cutover_receipt_digest"] == "a" * 64
     assert status["cutover_verified_at_utc"] == "2026-08-25T17:59:00.000Z"
     assert status["deep_verification_state"] == "verified"
+
+
+def test_stale_verified_cutover_cannot_authorize_status_or_production_selection(
+    tmp_path: Path,
+) -> None:
+    stale = VerifiedV3CutoverState(
+        receipt_digest="a" * 64,
+        verified_at_utc="2026-08-25T17:59:00.000Z",
+        source_commit="b" * 40,
+        consumer_contract_version="strathmark.v3-consumer-contract.v7",
+        consumer_contract_digest=v3_consumer_contract_digest(),
+    )
+    client, credential, *_rest = _runtime(tmp_path, verified_cutover=stale)
+
+    status = client.get("/v3/status", headers=_headers(credential, "status-stale-cutover")).json()
+
+    assert status["v3_readiness"] == "candidate"
+    assert status["production_authority"] == "v2"
+    assert status["v3_option_state"] == "rehearsal_ready"
+    assert status["production_eligible"] is False
+    assert status["cutover_receipt_digest"] is None
+    assert status["eligibility_reason_codes"] == [
+        "production_cutover_identity_mismatch",
+        "production_cutover_not_verified",
+    ]
+
+    response = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "open-production-with-stale-cutover"),
+        json={
+            "schema_version": "strathmark-v3-scope-open-request-v1",
+            "scope_id": "tournament:production-stale-cutover",
+            "bundle_id": "bundle:current",
+            "historical_cutoff_key": "history:before-show",
+            "root_round_ids": ["round:production-stale-cutover"],
+            "engine_selection": {
+                "schema_version": "strathmark-v3-competition-engine-selection-v1",
+                "scope_id": "tournament:production-stale-cutover",
+                "engine": "v3",
+                "mode": "production",
+                "selected_by_actor_id": "actor:judge",
+                "selected_at_utc": "2026-08-25T17:59:00.000Z",
+                "reason_code": "new_competition",
+                "consumer_contract_digest": v3_consumer_contract_digest(),
+                "source_commit": "c468e2f59eb42ba1affe0f1669c7a4fb57570d6f",
+            },
+            "opened_at_utc": "2026-08-25T18:00:00.000Z",
+            "deadline_ms": 1_000,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "production_cutover_identity_mismatch"
 
 
 def test_prepare_card_rejects_newer_same_context_card_from_another_epoch(

@@ -232,7 +232,8 @@ class PreFieldForecastService:
             )
             if capability is None:
                 formula = next(
-                    (item for item in committed if item.assessor is AssessorKind.FORMULA), None
+                    (item for item in committed if item.assessor is AssessorKind.FORMULA),
+                    None,
                 )
                 if (
                     formula is None
@@ -301,13 +302,12 @@ class PreFieldForecastService:
             created_at=created_at,
         )
         self._source.verify_current(snapshot, publications, tuple(capability_bindings))
-        self._persist(
+        return self._persist(
             receipt,
             caller_namespace=caller_namespace,
             request_identity=request_identity,
             request_digest=request_digest,
         )
-        return receipt, False
 
     def _recover(
         self, *, caller_namespace: str, request_identity: str, request_digest: str
@@ -335,7 +335,7 @@ class PreFieldForecastService:
         caller_namespace: str,
         request_identity: str,
         request_digest: str,
-    ) -> None:
+    ) -> tuple[PreFieldForecastReceipt, bool]:
         snapshot = receipt.snapshot
         serialized = canonical_bytes(receipt.to_dict()).decode("utf-8")
         with open_v3_connection(self.database_path) as connection:
@@ -347,13 +347,18 @@ class PreFieldForecastService:
                     (caller_namespace, request_identity),
                 ).fetchone()
                 if existing is not None:
-                    if (
-                        str(existing[0]) != request_digest
-                        or str(existing[1]) != receipt.receipt_digest
-                        or str(existing[2]) != serialized
-                    ):
-                        raise PreFieldForecastError("pre-field exact retry conflicts")
-                    return
+                    if str(existing[0]) != request_digest:
+                        raise PreFieldForecastError(
+                            "pre-field request identity already binds different causal authority"
+                        )
+                    authoritative = PreFieldForecastReceipt.from_dict(
+                        json.loads(str(existing[2])), trust_store=self._trust_store
+                    )
+                    if authoritative.receipt_digest != str(existing[1]):
+                        raise PreFieldForecastError(
+                            "stored pre-field receipt digest differs from signed authority"
+                        )
+                    return authoritative, True
                 connection.execute(
                     "INSERT INTO v3_pre_field_forecast_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -370,6 +375,7 @@ class PreFieldForecastService:
                         receipt.created_at,
                     ),
                 )
+        return receipt, False
 
 
 __all__ = [

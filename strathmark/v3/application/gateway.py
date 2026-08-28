@@ -83,7 +83,10 @@ from strathmark.v3.contracts.receipts import EngineAuthorityBinding, FieldReceip
 from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus
 from strathmark.v3.domain.evidence import LiveResultSubmission
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
-from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict, SQLiteEventStore
+from strathmark.v3.infrastructure.sqlite.event_store import (
+    EventStoreConflict,
+    SQLiteEventStore,
+)
 from strathmark.v3.infrastructure.sqlite.jobs import DurableJobRepository
 from strathmark.v3.infrastructure.sqlite.projections import SQLiteFieldProjectionStore
 
@@ -138,6 +141,9 @@ class VerifiedV3CutoverState:
 
     receipt_digest: str
     verified_at_utc: str
+    source_commit: str
+    consumer_contract_version: str
+    consumer_contract_digest: str
 
     def __post_init__(self) -> None:
         if (
@@ -147,6 +153,24 @@ class VerifiedV3CutoverState:
         ):
             raise ValueError("verified cutover receipt digest is invalid")
         require_utc_milliseconds(self.verified_at_utc)
+        if re.fullmatch(r"[0-9a-f]{7,40}", self.source_commit) is None:
+            raise ValueError("verified cutover source commit is invalid")
+        if (
+            not isinstance(self.consumer_contract_version, str)
+            or not self.consumer_contract_version
+        ):
+            raise ValueError("verified cutover consumer contract version is invalid")
+        if re.fullmatch(r"[0-9a-f]{64}", self.consumer_contract_digest) is None:
+            raise ValueError("verified cutover consumer contract digest is invalid")
+
+    def matches(self, identity: V3ServiceIdentity) -> bool:
+        """Return whether this cutover binds the exact installed service identity."""
+
+        return (
+            self.source_commit == identity.source_commit
+            and self.consumer_contract_version == identity.consumer_contract_version
+            and self.consumer_contract_digest == identity.consumer_contract_digest
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +247,10 @@ class V3ApplicationGateway:
             str(
                 deterministic_identifier(
                     "command",
-                    {"public_command_id": str(context.command_id), "phase": "configure_scope"},
+                    {
+                        "public_command_id": str(context.command_id),
+                        "phase": "configure_scope",
+                    },
                 )
             )
         )
@@ -264,7 +291,7 @@ class V3ApplicationGateway:
             StableIdentifier(payload["entity_id"]),
             payload["upstream_revision"],
             StableIdentifier(payload["tournament_id"]),
-            None if payload["round_id"] is None else StableIdentifier(payload["round_id"]),
+            (None if payload["round_id"] is None else StableIdentifier(payload["round_id"])),
             payload["snapshot"],
             CompetitionEngineSelection.from_dict(payload["engine_selection"]),
         )
@@ -916,15 +943,18 @@ class V3ApplicationGateway:
         if cutover is not None and not isinstance(cutover, VerifiedV3CutoverState):
             raise TypeError("verified cutover authority returned an invalid state")
         identity = getattr(self, "_service_identity", None)
-        effective_cutover = cutover if identity is not None else None
+        effective_cutover = (
+            cutover
+            if identity is not None and cutover is not None and cutover.matches(identity)
+            else None
+        )
+        cutover_identity_mismatch = cutover is not None and effective_cutover is None
         production_authority = "v3" if effective_cutover is not None else "v2"
         v3_readiness = "production" if effective_cutover is not None else "candidate"
         v3_option_state = (
             "ineligible"
             if identity is None
-            else "production_ready"
-            if effective_cutover is not None
-            else "rehearsal_ready"
+            else ("production_ready" if effective_cutover is not None else "rehearsal_ready")
         )
         field_checkpoint_unavailable = (
             int(field_integrity["authority_sequence"]) == 0
@@ -974,9 +1004,18 @@ class V3ApplicationGateway:
             eligibility_reason_codes=(
                 ("service_identity_unavailable",)
                 if identity is None
-                else ()
-                if effective_cutover is not None
-                else ("production_cutover_not_verified",)
+                else (
+                    ()
+                    if effective_cutover is not None
+                    else (
+                        (
+                            "production_cutover_identity_mismatch",
+                            "production_cutover_not_verified",
+                        )
+                        if cutover_identity_mismatch
+                        else ("production_cutover_not_verified",)
+                    )
+                )
             ),
             consumer_contract_version=V3_CONSUMER_CONTRACT_VERSION,
             consumer_contract_digest=v3_consumer_contract_digest(),
@@ -1072,7 +1111,10 @@ class V3ApplicationGateway:
         latest: dict[tuple[str, str], int] = {}
         for row in rows:
             latest.setdefault((str(row[0]), str(row[1])), int(row[2]))
-        required = {("tournament", payload["scope_id"]), *(("round", item) for item in roots)}
+        required = {
+            ("tournament", payload["scope_id"]),
+            *(("round", item) for item in roots),
+        }
         if not required.issubset(latest):
             self._conflict("scope_requires_bound_initial_snapshots")
         expected = selection.to_dict()
@@ -1094,6 +1136,14 @@ class V3ApplicationGateway:
             or selection.source_commit != identity.source_commit
         ):
             self._conflict("scope_service_identity_mismatch")
+        if selection.mode == "production":
+            cutover = self._verified_cutover()
+            if cutover is not None and not isinstance(cutover, VerifiedV3CutoverState):
+                raise TypeError("verified cutover authority returned an invalid state")
+            if cutover is None:
+                self._conflict("production_cutover_not_verified")
+            if not cutover.matches(identity):
+                self._conflict("production_cutover_identity_mismatch")
 
     def _require_scope_compatible(self, tournament_id: str) -> None:
         require_identifier(tournament_id, expected_namespace="tournament")
