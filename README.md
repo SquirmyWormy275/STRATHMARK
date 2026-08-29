@@ -5,21 +5,20 @@
 # STRATHMARK
 
 STRATHMARK is an installable Python engine for AAA-compatible woodchopping
-handicaps. Version 2.0.0 uses a reproducible, prior-only statistical model and a
+handicaps. Version 2.0.1 uses a reproducible, prior-only statistical model and a
 deterministic joint mark optimizer. It works offline and exposes both Python and REST
 interfaces.
 
 ## Install
 
 ```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
+python -m pip install "strathmark==2.0.1"
+python -m pip install "strathmark[api]==2.0.1"
 ```
 
-STRATHMARK 2.0.0 is published as the immutable `v2.0.0` Git tag and GitHub release;
-there is no PyPI distribution for this version. Production consumers may pin the
-exact release commit for an even stricter lock. Other optional extras are `ml`, `db`,
-`llm`, and `dev`.
+STRATHMARK 2.0.1 is published on PyPI as a portable Python package. The immutable
+`v2.0.1` Git tag identifies the exact source used to build the release. Other optional
+extras are `ml`, `db`, `llm`, and `dev`.
 
 The NumPy/Pandas V2 core and its validated JSON artifact ship in the base package. No
 network, database, LLM, or native ML library is required to calculate marks.

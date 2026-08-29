@@ -4,6 +4,13 @@ All notable changes to STRATHMARK will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-28
+
+### Changed
+
+- Corrected PyPI installation instructions and release wording in the README. This is
+  a documentation-only patch; the V2 calculation and API behavior are unchanged.
+
 ## [2.0.0] - 2026-08-18
 
 Prediction Engine V2 replaces the numeric Manual/LLM/ML/baseline cascade with one
