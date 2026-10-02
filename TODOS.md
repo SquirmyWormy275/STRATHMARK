@@ -1,6 +1,10 @@
 # Remaining installation and qualification work
 
-V3.0.0rc1 is a release candidate with repository implementation and audit complete. V2 remains the trusted production baseline; V3 is not production-eligible. Checked-in development-key rehearsal evidence is source-bound and does not grant production authority.
+V3.0.0rc2 is a release candidate with core implementation and contract tests in place; installed lifecycle composition and qualification remain unfinished. V2 remains the trusted production baseline; V3 is not production-eligible. Checked-in development-key rehearsal evidence is source-bound and does not grant production authority.
+
+## Runnable Linux previews
+
+The [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) and STRATHEX 7.2 selector run real Formula, trained ML, pooling, and joint optimization in separate installed environments. Training verifies Git provenance, partitions builder/evaluator processes, retains causal earlier-role context, and omits specialists without sufficient gate evidence. This development profile does not approve, issue, record official results, export official schedules, settle, or learn at the next round. It is not an OS-isolated blind audit or production qualification.
 
 ## Designated Windows installation
 

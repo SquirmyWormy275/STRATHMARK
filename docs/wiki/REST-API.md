@@ -1,9 +1,11 @@
 # REST API
 
+The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
+
 ## Current authority status
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. Its
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. Its
 checked-in development-key rehearsal is source-bound and must pass the release verifier.
 V2 remains the globally trusted production authority. V3 is not production-eligible,
 and V2 is not audit-only.

@@ -1,13 +1,15 @@
 # Testing and Release Proof
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. Its
+The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
+
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. Its
 checked-in development-key rehearsal is source-bound and must pass the release verifier.
 V2 remains the globally trusted production authority, V3 is not production-eligible,
 and no production authority has changed. Tests and
 verifiers never switch authority.
 
-Run V3 tests and release proof only in the designated Python 3.13 environment with the
+For qualification, run V3 tests and release proof in the designated Python 3.13 environment with the
 exact V3 release lock installed. The package and V2 compatibility matrix remains Python
 3.10-3.13; those older interpreters intentionally exclude `tests/v3`. Enabling SQLite
 `trusted_schema` to make an older bundled SQLite accept V3's expression indexes is not a
@@ -55,3 +57,5 @@ for V2 behavior. Optional-provider live smokes are opt-in and cannot replace det
 contract fakes, temporal replay, or installed-wheel verification.
 
 See [Deployment](Deployment.md) for the full gate.
+
+Portable Linux verification uses Python 3.13, isolated synthetic data, and `STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION=0` as described in the [Linux guide](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/LINUX.md). It does not qualify the production installation.

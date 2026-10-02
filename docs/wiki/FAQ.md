@@ -1,13 +1,17 @@
 # FAQ
 
-## Is V3 live?
+## Is V3 ready for official competitions?
 
-No. V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. V2
+No. V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. V2
 remains the globally trusted production authority and V3 is not production-eligible.
 The checked-in development-key rehearsal is
 source-bound and must pass the release verifier. No production authority has changed and no
 consumer endpoint has switched. No production CNG identity is provisioned.
+
+## Can Linux run V3 previews?
+
+Yes. The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) runs actual Formula, trained ML, pooling, and exact-field optimization with STRATHEX 7.2. It returns unissued previews and cannot approve, issue, record official results, settle, or learn at the next round.
 
 ## Why build formula, ML, and LLM forecasts?
 
