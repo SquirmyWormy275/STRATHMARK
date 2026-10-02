@@ -11,8 +11,6 @@ permissions:
 
 env:
   STRATHMARK_TEST_DB: "1"
-  STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
-  STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -178,6 +176,9 @@ jobs:
         run: pip check
 
       - name: Run API contract tests
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
         run: pytest tests/test_api.py tests/test_shadow_api.py tests/test_shadow_consumer_contract.py -v --tb=short
 
   optional-ml:
@@ -200,6 +201,9 @@ jobs:
         run: pip check
 
       - name: Run residual artifact and temporal validation tests
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
         run: pytest tests/test_residual.py tests/test_validation.py -v --tb=short
 
   validation-artifact:
@@ -222,9 +226,15 @@ jobs:
         run: pip check
 
       - name: Verify persisted report and checksummed artifact
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
         run: python scripts/validate_v2.py --verify-release
 
       - name: Exercise release-gate contracts
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
         run: pytest tests/test_validate_v2.py tests/test_validation.py -v --tb=short
 
       - name: Verify runtime provider loads the packaged core
@@ -254,6 +264,9 @@ jobs:
         run: pip check
 
       - name: Verify normalized public audit output
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
         run: python scripts/verify_v2_golden.py
 
   optimizer-capacity:
@@ -320,6 +333,9 @@ jobs:
           sudo apt-get install --yes postgresql-client
 
       - name: Exercise migrations 005 and 006 against disposable PostgreSQL
+        env:
+          STRATHMARK_DB_PATH: ${{ runner.temp }}/strathmark-v2-isolated.sqlite3
+          STRATHMARK_V3_DB_PATH: ${{ runner.temp }}/strathmark-v3-isolated.sqlite3
         run: pytest tests/test_postgres_rehearsal.py -v --tb=short
 
   build:
