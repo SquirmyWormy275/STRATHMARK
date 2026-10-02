@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.0.0rc2] - 2026-10-02
+
+- Add separately installed Linux numeric previews with actual Formula, trained ML, pooling, and V3 optimization; no approval, issue, settlement, or production authority is granted.
+- Add explicit candidate training from verified read-only historical workbook copies, signed disjoint chronological roles, holdout-only calibration forecasts, model export/reload, and audit measurements.
+- Bind training reports and runtime selection to the installed implementation, workbook, Formula, and model identities. Private history and models are not distributed.
+
 All notable changes to STRATHMARK will be documented in this file.
 
 ## [Unreleased]

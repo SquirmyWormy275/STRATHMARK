@@ -149,6 +149,7 @@ class MLDataRole(str, Enum):
 
 class MLAuthorityEnvironment(str, Enum):
     TEST_EPHEMERAL = "test_ephemeral"
+    DEVELOPMENT_CANDIDATE = "development_candidate"
     PRODUCTION_CNG = "production_cng"
 
 
@@ -460,8 +461,16 @@ def _compose_ml_authority(
             raise ValueError(
                 "production ML authority requires a live OS-attested Windows CNG signer"
             ) from exc
-    elif not isinstance(scope_signer, P256EphemeralSigner):
-        raise ValueError("test ML authority requires an explicit ephemeral test signer")
+    elif environment not in {
+        MLAuthorityEnvironment.TEST_EPHEMERAL,
+        MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE,
+    } or not isinstance(scope_signer, P256EphemeralSigner):
+        label = (
+            "ephemeral test"
+            if environment is MLAuthorityEnvironment.TEST_EPHEMERAL
+            else "development"
+        )
+        raise ValueError(f"ML authority requires an explicit {label} signer")
     else:
         observed_identity = scope_signer.identity
     if observed_identity != pinned_identity:  # pragma: no cover - composition prechecks
@@ -667,7 +676,7 @@ def _compose_ml_authority(
 
         def require_production_ready(self) -> None:
             if not self.production_ready:
-                raise ValueError("test-ephemeral ML authority is not production-authoritative")
+                raise ValueError("development ML authority is not production-authoritative")
 
         def authorize_packets(self, *args):
             role, packets = (MLDataRole.LOCKED_AUDIT, args[0]) if audit else (args[0], args[1])
@@ -740,6 +749,69 @@ def _compose_ml_authority(
                 source_digest=rows._authorization_envelope.body_digest,
             )
 
+        def chronological_holdout_component_predictions(
+            self, training_rows, holdout_rows, **settings
+        ):
+            """Forecast a disjoint later role with models fit on training only.
+
+            Early legacy cohorts can contain a single constant row, so refitting
+            inside that holdout cannot produce a CatBoost model. This path keeps
+            the frozen training hierarchy and never fits on holdout targets.
+            """
+            training_payload = self._verify_rows(training_rows, (MLDataRole.TRAINING,))
+            payload = self._verify_rows(holdout_rows, (MLDataRole.TUNING, MLDataRole.CALIBRATION))
+            if not training_rows or not holdout_rows:
+                raise ValueError("chronological holdout requires nonempty training and holdout")
+            if (
+                max(row.occurred_at_utc for row in training_rows)
+                >= min(row.occurred_at_utc for row in holdout_rows)
+                or {row.tournament_id for row in training_rows}
+                & {row.tournament_id for row in holdout_rows}
+                or training_payload["taxonomy_version"] != payload["taxonomy_version"]
+                or training_payload["conversion_version"] != payload["conversion_version"]
+            ):
+                raise ValueError("holdout must be later, disjoint, and context compatible")
+            universal, specialists, _eligibility = _train_catboost_hierarchy(
+                training_rows, **settings
+            )
+            vocabulary = {
+                name: {str(row.feature_dict[name]) for row in training_rows}
+                for name in CATEGORICAL_FEATURES
+            }
+            predictions = []
+            for row in holdout_rows:
+                features = row.feature_dict
+                for name in CATEGORICAL_FEATURES:
+                    if str(features[name]) not in vocabulary[name]:
+                        features[name] = "__other__"
+                ordered = [[features[name] for name in FEATURE_NAMES]]
+                specialist = specialists.get(row.specialist_key)
+                missing = [
+                    int(features[name]) for name in NUMERIC_FEATURES if name.endswith("_missing")
+                ]
+                predictions.append(
+                    OOFComponentPrediction(
+                        row.row_id,
+                        f"fold:{canonical_digest({'training_scope': training_rows._authorization_envelope.body_digest, 'holdout_tournament': row.tournament_id, 'validation_date': row.occurred_at_utc[:10]})}",
+                        _prediction_values(universal.predict(ordered)),
+                        None
+                        if specialist is None
+                        else _prediction_values(specialist.predict(ordered)),
+                        row.specialist_key,
+                        int(features["history_depth"]),
+                        sum(missing) / max(1, len(missing)),
+                    )
+                )
+            return sign_scope(
+                AuthorizedOOFPredictions,
+                tuple(predictions),
+                role=MLDataRole(payload["role"]),
+                purpose="oof_predictions",
+                taxonomy_version=payload["taxonomy_version"],
+                conversion_version=payload["conversion_version"],
+                source_digest=holdout_rows._authorization_envelope.body_digest,
+            )
+
         def gate_examples_from_oof(self, predictions, rows):
             row_payload = self._verify_rows(rows, (MLDataRole.TUNING,))
             prediction_payload = verify_scope(
@@ -793,6 +865,7 @@ def _compose_ml_authority(
             "fit_specialist_gate",
             "gate_examples_from_oof",
             "grouped_oof_component_predictions",
+            "chronological_holdout_component_predictions",
             "grouped_rolling_origin_splits",
             "specialist_eligibility",
             "train_catboost_hierarchy",

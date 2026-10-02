@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "3.0.0rc1"
+version = "3.0.0rc2"
 description = "Offline woodchopping handicap engine with trusted V2 and an auditable V3 adaptive-ensemble release candidate"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -66,6 +66,10 @@ security = [
     # Loaded lazily by V3 integrity adapters; core V2 imports remain dependency-free.
     "cryptography>=43,<47",
 ]
+v3-candidate = [
+    "catboost==1.2.10",
+    "cryptography==46.0.5",
+]
 dev = [
     "build>=1.2",
     "hatchling>=1.27",
@@ -89,6 +93,8 @@ dev = [
 [project.scripts]
 strathmark = "strathmark.cli:main"
 strathmark-v3-factory-evaluator = "strathmark.v3.factory.evaluator_cli:main"
+strathmark-v3-train-candidate = "strathmark.v3.factory.candidate_cli:main"
+strathmark-v3-linux-candidate = "strathmark.v3.linux_candidate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["strathmark"]

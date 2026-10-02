@@ -2,9 +2,10 @@
 
 ## Current status
 
-V3 is a `3.0.0rc1` release candidate in a separate namespace that tracks
-all 232 in-repository requirements. Repository implementation and audit are complete for
-this candidate. The checked-in development-key rehearsal is source-bound and must pass
+V3 is a `3.0.0rc2` release candidate in a separate namespace that tracks
+all 232 in-repository requirements. Core modules and contract tests exist; the full
+installed lifecycle still needs operational composition and qualification.
+The checked-in development-key rehearsal is source-bound and must pass
 the release verifier; it is not production evidence. V2 remains the globally trusted
 production authority. V3 is not production-eligible. No production authority has
 changed, and V2 is not audit-only.
@@ -111,6 +112,12 @@ thread, and makes no network request. Runtime construction is explicit and injec
 - No code, document, test result, or model output grants official competition authority.
 
 ## Portable Linux verification
+
+The [Linux V3 numeric candidate](docs/V3_LINUX_CANDIDATE.md) is an explicit separate
+preview profile with real Formula/ML/optimizer execution. It cannot authorize
+production or the V7 issue/settlement lifecycle. Training on production history
+requires the data owner's explicit authorization and a verified read-only copy;
+tests and rehearsals still use synthetic inputs.
 
 Follow [Linux setup](docs/LINUX.md) for the offline command and portable suite. Explicit portable mode skips the designated workbook rebuild; [formula runtime qualification](docs/FORMULA_RUNTIME.md) remains required for release evidence. The following PowerShell workflow is for the designated evidence environment.
 
