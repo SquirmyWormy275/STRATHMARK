@@ -16,7 +16,7 @@ the V3 plan. Core modules and contract tests exist; the full installed V7 lifecy
 still needs its operational composition and qualification. The
 checked-in development-key rehearsal is valid only for the source commit and digests it
 names and must pass the release verifier; it is not production evidence. V2 remains the
-globally trusted production authority. V3 is not production-eligible, no production
+globally trusted production authority. V3 has not received Windows CNG production eligibility, no production
 authority has changed, and V2 is not audit-only.
 
 The current integration model is **competition-scoped selection**, not one global engine
@@ -56,7 +56,7 @@ The [Linux competition runtime](docs/V3_LINUX_COMPETITION.md) supports the compl
 
 The V2 library and API run on Linux and Windows with Python 3.10–3.13; Python 3.13 is recommended for current development. No separate fork is required. Current repository builds also provide `strathmark demo` (or `python -m strathmark demo`), an offline calculation with synthetic competitors that opens no operator database. The existing V2 PyPI releases expose the library/API; this new demonstration command is available in the maintenance source build.
 
-For a source installation and portable V3 verification, follow [Linux setup](docs/LINUX.md). Portable tests and replay do not qualify the Windows native optimizer, installed models, non-exportable CNG identities, or exact machine-bound release evidence. V3 is not production-eligible.
+For a source installation and portable V3 verification, follow [Linux setup](docs/LINUX.md). Portable tests and replay do not qualify the Windows native optimizer, installed models, non-exportable CNG identities, or exact machine-bound release evidence. V3 has not received Windows CNG production eligibility.
 
 ## Install the trusted V2 release
 

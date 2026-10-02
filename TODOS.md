@@ -2,11 +2,11 @@
 
 Completed separately: the [Linux local competition profile](docs/V3_LINUX_COMPETITION.md) in rc4 implements the full operator lifecycle, real Formula/ML, signed issue/results/corrections, restart, backups, and later-round learning. Remaining Windows CNG and full three-assessor factory qualification below are distinct installation work.
 
-V3.0.0rc3 is a release candidate with core implementation and contract tests in place; installed lifecycle composition and qualification remain unfinished. V2 remains the trusted production baseline; V3 is not production-eligible. Checked-in development-key rehearsal evidence is source-bound and does not grant production authority.
+STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 ## Runnable Linux previews
 
-The [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) and STRATHEX 7.2 selector run real Formula, trained ML, pooling, and joint optimization in separate installed environments. Training verifies Git provenance, partitions builder/evaluator processes, retains causal earlier-role context, and omits specialists without sufficient gate evidence. This development profile does not approve, issue, record official results, export official schedules, settle, or learn at the next round. It is not an OS-isolated blind audit or production qualification.
+The retained preview profile, [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) and STRATHEX 7.2 selector run real Formula, trained ML, pooling, and joint optimization in separate installed environments. Training verifies Git provenance, partitions builder/evaluator processes, retains causal earlier-role context, and omits specialists without sufficient gate evidence. This development profile does not approve, issue, record official results, export official schedules, settle, or learn at the next round. It is not an OS-isolated blind audit or production qualification.
 
 ## Designated Windows installation
 
@@ -17,7 +17,7 @@ The [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) and STRATHEX 7.2 selec
 
 ## Cross-repository installed rehearsal
 
-STRATHEX already implements durable command forwarding, immutable approval and issue acknowledgments, exact-command recovery, and competition-root selection. Complete the installed cross-repository rehearsal against its reviewed STRATHMARK source and V7 digest. Prove setup/inheritance, pre-field seeding, exact-field assembly, review, approval, issue, settlement, next-round epochs, restart, and ambiguous-command recovery with copied competition data. Keep approval evidence separate from official issue acknowledgment. A current STRATHMARK main checkout does not satisfy STRATHEX's exact service pin automatically.
+STRATHEX already implements durable command forwarding, immutable approval and issue acknowledgments, exact-command recovery, and competition-root selection. The full Linux local installed workflow is complete. Complete the separate designated Windows V7 qualification rehearsal against its reviewed STRATHMARK source and V7 digest. Prove setup/inheritance, pre-field seeding, exact-field assembly, review, approval, issue, settlement, next-round epochs, restart, and ambiguous-command recovery with copied competition data. Keep approval evidence separate from official issue acknowledgment. A current STRATHMARK main checkout does not satisfy STRATHEX's exact service pin automatically.
 
 ## Eligibility and operation
 

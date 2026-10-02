@@ -4,16 +4,11 @@ The current separate Linux competition profile (STRATHMARK 3.0.0rc4 / STRATHEX 7
 
 ## Is V3 ready for official competitions?
 
-No. V3.0.0rc3 is a release candidate that tracks all 232 in-repository
-requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. V2
-remains the globally trusted production authority and V3 is not production-eligible.
-The checked-in development-key rehearsal is
-source-bound and must pass the release verifier. No production authority has changed and no
-consumer endpoint has switched. No production CNG identity is provisioned.
+STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
-## Can Linux run V3 previews?
+## Can Linux run full V3 competitions?
 
-Yes. The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) runs actual Formula, trained ML, pooling, and exact-field optimization with STRATHEX 7.2. It returns unissued previews and cannot approve, issue, record official results, settle, or learn at the next round.
+Yes. The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) runs actual Formula, trained ML, pooling, and exact-field optimization with STRATHEX 7.2. It returns unissued previews and cannot approve, issue, record official results, settle, or learn at the next round.
 
 ## Why build formula, ML, and LLM forecasts?
 

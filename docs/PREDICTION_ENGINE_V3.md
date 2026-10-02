@@ -1,18 +1,10 @@
 # Prediction Engine V3
 
-The [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
+The retained preview profile, [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
 
 ## Release and authority status
 
-V3.0.0rc3 is a release candidate in the `strathmark.v3` namespace that
-tracks all 232 requirements in the in-repository V3 plan. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. The checked-in rehearsal attestation is source-bound to
-its named source and artifacts and is signed by an ephemeral development key. V3 is not
-production-eligible, and no production authority has changed. V2 remains
-the trusted production-capable engine. The current competition-scoped contract does not
-globally replace V2: a tournament manager deliberately selects one eligible engine for
-each new competition root, and that engine alone owns the scope. No production V3
-eligibility has been established, no consumer endpoint has switched, and V2 is not
-audit-only.
+STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 This distinction is intentional. A production release requires a live, non-exportable
 Windows CNG signing identity, an exact production evidence set, a zero-open-tournament

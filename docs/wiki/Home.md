@@ -4,15 +4,10 @@ The current separate Linux competition profile (STRATHMARK 3.0.0rc4 / STRATHEX 7
 
 ## Current authority status
 
-V3.0.0rc3 is a release candidate that tracks all 232 in-repository
-requirements. The separately installed Linux numeric profile executes Formula,
-trained ML, pooling, and optimization; it remains preview-only. Its
-checked-in development-key V7 rehearsal is source-bound and must pass the release verifier.
-V2 remains the globally trusted production authority. V3 is not production-eligible,
-V2 is not audit-only, and no production CNG identity is provisioned.
+STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 See [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md)
-for private model training, the separate runtime, and its explicit lifecycle limits.
+for the retained preview profile and its historical lifecycle limits; current full Linux operation uses the competition runbook above.
 
 The current product model selects one eligible engine per competition root rather than
 performing one global replacement. A standalone event selects once; a tournament selects
