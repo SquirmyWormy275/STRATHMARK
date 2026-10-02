@@ -279,6 +279,9 @@ def test_actual_numerics_approval_issue_settlement_restart_and_next_round(compet
     assert "marks" not in seeds["numeric"]
     receipt = invoke(runtime, context, "field", request)
     assert min(receipt["numeric"]["marks"]) == 3
+    assert set(receipt["numeric"]["counterfactual_optimizers"]) == {"formula", "ml"}
+    for assessor, optimized in receipt["numeric"]["counterfactual_optimizers"].items():
+        assert optimized["selected_marks"] == receipt["numeric"]["counterfactual_marks"][assessor]
     assert (
         receipt["numeric"]["forecasts"][0]["predicted_time_ms"]
         < receipt["numeric"]["forecasts"][1]["predicted_time_ms"]
@@ -583,3 +586,18 @@ def test_events_advance_independently_and_forecast_only_rounds_close(competition
         value["status"] == "closed"
         for value in runtime.store.state()["roots"][context["scope_id"]]["rounds"].values()
     )
+
+
+@pytest.mark.parametrize("remapping", ["upstream", "local"])
+def test_competitor_bindings_cannot_change_without_mutation(competition, remapping):
+    runtime, context, request, _root = competition
+    invoke(runtime, context, "field", request)
+    before = runtime.store.state()
+    changed = {**request, "field_id": "field:synthetic-remapped"}
+    if remapping == "upstream":
+        changed["upstream_competitor_ids"] = list(reversed(request["upstream_competitor_ids"]))
+    else:
+        changed["competitor_ids"] = list(reversed(request["competitor_ids"]))
+    with pytest.raises(LinuxLifecycleError, match="identity binding cannot change"):
+        invoke(runtime, context, "field", changed)
+    assert runtime.store.state() == before

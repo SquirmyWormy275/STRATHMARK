@@ -67,6 +67,8 @@ CONTRACT_DIGEST = digest(
         "placings": "judge_authorized_or_explicitly_unresolved",
         "epoch_groups": "event_local_prior_rounds",
         "mutation_schemas": "exact_version_required",
+        "competitor_bindings": "scope_bijective_immutable",
+        "counterfactual_marks": "complete_field_optimizer",
     }
 )
 CONTEXT_FIELDS = {
@@ -550,6 +552,31 @@ class LinuxCompetitionRuntime:
             "ml": canonical_decimal_string(1 - formula),
         }
 
+    @staticmethod
+    def _competitor_bindings(root, payload):
+        if root is None:
+            return
+        upstream_to_local, local_to_upstream = {}, {}
+        receipts = list(root["forecasts"].values()) + [
+            field["receipt"] for field in root["fields"].values()
+        ]
+        receipts += [field["receipt"] for field in root.get("superseded_fields", {}).values()]
+        for receipt in receipts:
+            for upstream, local in zip(
+                receipt["competitor_ids"], receipt["local_competitor_ids"], strict=True
+            ):
+                upstream_to_local[upstream], local_to_upstream[local] = local, upstream
+        for upstream, local in zip(
+            payload["upstream_competitor_ids"], payload["competitor_ids"], strict=True
+        ):
+            if (
+                upstream_to_local.get(upstream, local) != local
+                or local_to_upstream.get(local, upstream) != upstream
+            ):
+                raise LinuxLifecycleError(
+                    "competitor identity binding cannot change within a competition"
+                )
+
     def _prepare(self, operation, envelope, context, payload, occurred_at):
         _fields(payload, FORECAST_FIELDS if operation == "forecast" else FIELD_FIELDS)
         _identifier(payload["round_id"], "round")
@@ -587,6 +614,7 @@ class LinuxCompetitionRuntime:
                 raise LinuxLifecycleError("field requires distinct stands for its exact roster")
             for stand in payload["stand_ids"]:
                 _identifier(stand, "stand")
+        self._competitor_bindings(self.store.state()["roots"].get(context["scope_id"]), payload)
         frozen = self._freeze(envelope, context, payload, occurred_at)
         if frozen["status"] != "open":
             raise LinuxLifecycleError("round is closed")
@@ -659,6 +687,7 @@ class LinuxCompetitionRuntime:
 
         def transition(state):
             current = self._root(state, context)
+            self._competitor_bindings(current, payload)
             round_state = current["rounds"][payload["round_id"]]
             if (
                 round_state["status"] != "open"

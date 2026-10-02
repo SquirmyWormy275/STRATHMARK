@@ -332,9 +332,9 @@ def calculate(
         optimized = optimize_and_verify_field(field, ceiling=ceiling)
         output["optimizer"] = optimized.receipt.to_dict()
         output["marks"] = list(optimized.receipt.selected_marks)
-        # Consequences use complete-field counterfactuals, preserving common
-        # rebasing instead of treating isolated raw-time gaps as issued marks.
-        counterfactuals = {}
+        # Each assessor's complete field passes through the same optimizer;
+        # uncertainty shapes matter even when component medians agree.
+        counterfactuals, component_optimizers = {}, {}
         for assessor in (AssessorKind.FORMULA, AssessorKind.ML):
             distributions = [
                 next(
@@ -344,10 +344,41 @@ def calculate(
                 )
                 for pool in pools
             ]
-            medians = [distribution.median_ms for distribution in distributions]
-            counterfactuals[assessor.value] = [
-                min(ceiling, max(3, 3 + round((max(medians) - value) / 1000))) for value in medians
-            ]
+            component_source = digest(
+                {
+                    "profile": POLICY,
+                    "field_id": field_id,
+                    "epoch": epoch.content_digest,
+                    "assessor": assessor.value,
+                    "distributions": [item.digest for item in distributions],
+                }
+            )
+            component_competitors = tuple(
+                OptimizationCompetitor(
+                    StableIdentifier(forecasts[index]["competitor_id"]),
+                    distribution.median_ms,
+                    distribution.sample(
+                        SamplingSpec(
+                            seed=int(digest({"source": component_source, "slot": index})[:15], 16),
+                            draw_count=4096,
+                        )
+                    ).samples_ms,
+                    index,
+                    distribution.digest,
+                )
+                for index, distribution in enumerate(distributions)
+            )
+            counterfactual = optimize_and_verify_field(
+                OptimizationField.create(
+                    field_id=StableIdentifier(field_id),
+                    source_receipt_digest=component_source,
+                    competitors=component_competitors,
+                ),
+                ceiling=ceiling,
+            )
+            component_optimizers[assessor.value] = counterfactual.receipt.to_dict()
+            counterfactuals[assessor.value] = list(counterfactual.receipt.selected_marks)
+        output["counterfactual_optimizers"] = component_optimizers
         output["counterfactual_marks"] = counterfactuals
         output["maximum_mark_disagreement"] = max(
             abs(a - b)
