@@ -255,6 +255,26 @@ def test_development_composition_keeps_audit_separate_and_cannot_authorize_produ
         with pytest.raises(ValueError, match="not production-authoritative"):
             authority.require_production_ready()
     assert not hasattr(audit, "chronological_holdout_component_predictions")
+    prior = _observation(1, 40_000, day=1, tournament="training")
+    target = _observation(2, 35_000, day=2, tournament="tuning")
+    future = _observation(3, 90_000, day=3, tournament="calibration")
+    causal = candidate.build_development_causal_rows(MLDataRole.TUNING, (_packet((prior, target)),))
+    assert len(causal) == 1
+    assert causal[0].training_max_sequence == 1
+    assert causal[0].feature_dict["history_depth"] == 1
+    with pytest.raises(ValueError, match="later role"):
+        candidate.build_development_causal_rows(
+            MLDataRole.TUNING, (_packet((prior, target, future)),)
+        )
+    locked = _observation(4, 30_000, day=4, tournament="audit")
+    with pytest.raises(ValueError, match="unknown or later"):
+        candidate.build_development_causal_rows(
+            MLDataRole.CALIBRATION, (_packet((prior, target, future, locked)),)
+        )
+    audit_rows = audit.build_development_causal_rows(
+        MLDataRole.LOCKED_AUDIT, (_packet((prior, target, future, locked)),)
+    )
+    assert len(audit_rows) == 1 and audit_rows[0].training_max_sequence == 3
     with pytest.raises(ConfigurationError, match="disjoint"):
         compose_development_ml_authorities(
             manifest(candidate_signer),

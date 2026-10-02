@@ -67,6 +67,20 @@ def test_naive_cutoff_is_rejected(tmp_path):
         load_workbook_history(path, cutoff_at_utc="2024-01-02T00:00:00")
 
 
+def test_malformed_material_is_excluded_without_losing_valid_rows(tmp_path):
+    from openpyxl import load_workbook
+
+    path = tmp_path / "synthetic.xlsx"
+    workbook_history_fixture(path)
+    workbook = load_workbook(path)
+    workbook["Results"].append(["SYN001", "UH", 30, 300, None, datetime(2023, 2, 2), None])
+    workbook.save(path)
+    workbook.close()
+    history = load_workbook_history(path, cutoff_at_utc="2025-01-01T00:00:00.000Z")
+    assert len(history.observations) == 3
+    assert dict(history.excluded)["invalid_material_context"] == 1
+
+
 def test_packaged_formula_manifest_matches_reviewed_source():
     from pathlib import Path
 

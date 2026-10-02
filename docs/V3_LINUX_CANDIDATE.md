@@ -22,6 +22,7 @@ python3.13 -m venv .venv-v3
   --workbook /absolute/private/authorized-history.xlsx \
   --output /absolute/private/new-candidate \
   --source-commit ACTUAL_WHEEL_SOURCE_COMMIT \
+  --source-repository /absolute/path/to/STRATHMARK \
   --cutoff-at-utc 2026-10-02T00:00:00.000Z
 .venv-v3/bin/strathmark-v3-linux-candidate status \
   --ml-bundle /absolute/private/new-candidate/ml-bundle
@@ -34,12 +35,12 @@ events; specific gravity becomes density in kg/m³. Undated or invalid results
 are counted as exclusions. Raw completions never acquire authenticated issue facts.
 
 Defaults use whole annual competition groups through 2022 for training, 2023 for
-tuning, 2024 for calibration, and 2025 onward for locked audit. Explicit year flags
+tuning, 2024 for calibration, and 2025 onward for diagnostic holdout evaluation. Explicit year flags
 can select other strictly chronological boundaries. Holdout predictions fit on
 training rows only. Feature construction excludes each target and future rows.
-Candidate and auditor use separate development keys; neither can authorize production.
+A coordinator partitions the copy, then passes only TRAIN/TUNE/CAL facts to a separate builder process. A separate evaluator receives holdout facts after the bundle is frozen. Earlier-role context is retained for causal features; each target and future observation are excluded. Candidate and evaluator use separate development keys. These development processes share an OS identity and do not constitute a production blind audit. Neither can authorize production.
 The report records the workbook, installed implementation, roles, model digest,
-settings, exclusions, and audit measurements. Output directories cannot be overwritten.
+settings, exclusions, and diagnostic measurements. The Git revision is checked against every installed Python source byte; that revision and implementation digest are bound into model metadata. Insufficient grouped gate evidence omits all specialists. Output directories cannot be overwritten.
 
 ## What the profile supports
 

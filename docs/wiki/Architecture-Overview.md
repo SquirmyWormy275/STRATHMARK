@@ -1,9 +1,11 @@
 # Architecture Overview
 
+The [Linux numeric candidate](../V3_LINUX_CANDIDATE.md) separately runs Formula, trained ML, pooling, and optimization for unissued previews. Approval, issue, settlement, next-round learning, and production qualification remain unavailable in that profile.
+
 ## Current authority status
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. Its
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. Its
 checked-in development-key rehearsal is source-bound and does not change authority. V2
 remains the globally trusted production authority, V3 is not production-eligible, and
 V2 is not audit-only.

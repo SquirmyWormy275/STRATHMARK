@@ -453,6 +453,8 @@ def _compose_ml_authority(
     scope_signer: P256Signer,
     audit: bool,
     environment: MLAuthorityEnvironment,
+    historical_manifest: SignedManifest | None = None,
+    historical_identity: IntegrityKeyIdentity | None = None,
 ) -> TrustedMLRoleAuthority | TrustedMLAuditAuthority:
     if environment is MLAuthorityEnvironment.PRODUCTION_CNG:
         try:
@@ -491,6 +493,29 @@ def _compose_ml_authority(
     }:
         raise ValueError("candidate ML manifest requires training, tuning, and calibration only")
     assignment_map = {item.tournament_id: item.role for item in assignments}
+    if historical_manifest is not None:
+        if (
+            not audit
+            or environment is not MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE
+            or historical_identity is None
+        ):
+            raise ValueError("historical role context is restricted to development evaluation")
+        prior_assignments, prior_generation, _ = _parse_role_manifest(
+            historical_manifest,
+            IntegrityTrustStore((historical_identity,)),
+            kind="ml_role_manifest",
+        )
+        if (
+            prior_generation != generation
+            or historical_identity == pinned_identity
+            or {item.role for item in prior_assignments}
+            != {MLDataRole.TRAINING, MLDataRole.TUNING, MLDataRole.CALIBRATION}
+            or set(assignment_map) & {item.tournament_id for item in prior_assignments}
+        ):
+            raise ValueError(
+                "evaluation context requires separate keys and disjoint prior roles in one generation"
+            )
+        assignment_map.update({item.tournament_id: item.role for item in prior_assignments})
     signer_identity = pinned_identity.to_dict()
     created_at = signed_manifest.body()["created_at"]
     manifest_body = {
@@ -682,6 +707,46 @@ def _compose_ml_authority(
             role, packets = (MLDataRole.LOCKED_AUDIT, args[0]) if audit else (args[0], args[1])
             return authorize_packets(role, packets)
 
+        def build_development_causal_rows(self, role, packets):
+            """Retain earlier role context, authorizing targets in exactly one role.
+
+            This preview-only API cannot grant production scopes. The builder
+            refuses all audit observations; the evaluator pins signed prior-role
+            assignments independently and has no model fitting capability.
+            """
+            if environment is not MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE:
+                raise ValueError("causal role context requires explicit development composition")
+            order = list(MLDataRole)
+            if role not in order or (audit != (role is MLDataRole.LOCKED_AUDIT)):
+                raise ValueError("development target role is forbidden for this authority")
+            targets = set()
+            for packet in packets:
+                _verify_packet(packet)
+                for observation in packet.observations:
+                    assigned = assignment_map.get(str(observation.tournament_id))
+                    if assigned is None or order.index(assigned) > order.index(role):
+                        raise ValueError("development context includes an unknown or later role")
+                    if assigned is role:
+                        targets.add(str(observation.evidence_id))
+            if not targets:
+                raise ValueError("development role contains no targets")
+            taxonomies = {item.taxonomy_version for item in packets}
+            conversions = {item.conversion_version for item in packets}
+            if len(taxonomies) != 1 or len(conversions) != 1:
+                raise ValueError("development context requires compatible taxonomy and conversion")
+            rows = _build_causal_matrix_values(packets, target_evidence_ids=targets)
+            return sign_scope(
+                AuthorizedMLRows,
+                rows,
+                role=role,
+                purpose="audit_rows" if audit else "candidate_rows",
+                taxonomy_version=next(iter(taxonomies)),
+                conversion_version=next(iter(conversions)),
+                source_digest=canonical_digest(
+                    {"packets": [item.content_digest for item in packets]}
+                ),
+            )
+
         def build_causal_training_matrix(self, scoped_packets):
             payload = verify_scope(
                 scoped_packets,
@@ -750,7 +815,7 @@ def _compose_ml_authority(
             )
 
         def chronological_holdout_component_predictions(
-            self, training_rows, holdout_rows, **settings
+            self, training_rows, holdout_rows, *, include_specialists=True, **settings
         ):
             """Forecast a disjoint later role with models fit on training only.
 
@@ -774,6 +839,8 @@ def _compose_ml_authority(
             universal, specialists, _eligibility = _train_catboost_hierarchy(
                 training_rows, **settings
             )
+            if not include_specialists:
+                specialists = {}
             vocabulary = {
                 name: {str(row.feature_dict[name]) for row in training_rows}
                 for name in CATEGORICAL_FEATURES
@@ -901,6 +968,8 @@ def _compose_ml_audit_authority(
     scope_signer: P256Signer,
     *,
     environment: MLAuthorityEnvironment,
+    historical_manifest: SignedManifest | None = None,
+    historical_identity: IntegrityKeyIdentity | None = None,
 ) -> TrustedMLAuditAuthority:
     return _compose_ml_authority(
         signed_manifest=signed_manifest,
@@ -908,6 +977,8 @@ def _compose_ml_audit_authority(
         scope_signer=scope_signer,
         audit=True,
         environment=environment,
+        historical_manifest=historical_manifest,
+        historical_identity=historical_identity,
     )
 
 
@@ -1201,12 +1272,19 @@ class FrozenMLReplayReport:
 
 def _build_causal_matrix_values(
     packets: tuple[EvidencePacket, ...],
+    *,
+    target_evidence_ids: set[str] | None = None,
 ) -> tuple[CausalTrainingRow, ...]:
     rows: list[CausalTrainingRow] = []
     seen_evidence: set[str] = set()
     for packet in packets:
         _verify_packet(packet)
         for observation in packet.observations:
+            if (
+                target_evidence_ids is not None
+                and str(observation.evidence_id) not in target_evidence_ids
+            ):
+                continue
             admitted = admit_raw_completion(observation.result)
             if admitted is None:
                 continue

@@ -38,12 +38,23 @@ from strathmark.v3.infrastructure.integrity import IntegrityTrustStore, P256Ephe
 from strathmark.v3.runtime_identity import implementation_digest
 
 PROTOCOL = "strathmark.v3-linux-numeric-candidate.v1"
+FORECAST_FIELDS = {
+    "workbook",
+    "cutoff_at_utc",
+    "scope_id",
+    "round_id",
+    "competitor_ids",
+    "target_context",
+}
+PREVIEW_FIELDS = FORECAST_FIELDS | {"field_id", "upstream_field_revision", "stand_ids", "ceiling"}
 CONTRACT_DIGEST = canonical_digest(
     {
         "protocol": PROTOCOL,
         "operations": ["status", "forecast", "preview"],
         "purpose": "numeric_preview_only",
         "issued_mark": False,
+        "forecast_fields": sorted(FORECAST_FIELDS),
+        "preview_fields": sorted(PREVIEW_FIELDS),
     }
 )
 
@@ -79,16 +90,7 @@ def status(bundle_root: Path) -> dict:
 def preview(bundle_root: Path, payload: dict, *, forecast_only: bool = False) -> dict:
     import catboost
 
-    required = {
-        "workbook",
-        "cutoff_at_utc",
-        "scope_id",
-        "round_id",
-        "field_id",
-        "competitor_ids",
-        "target_context",
-        "ceiling",
-    }
+    required = FORECAST_FIELDS if forecast_only else PREVIEW_FIELDS
     if set(payload) != required:
         raise ValueError("candidate preview request fields differ from its protocol")
     readiness = status(bundle_root)
@@ -102,6 +104,27 @@ def preview(bundle_root: Path, payload: dict, *, forecast_only: bool = False) ->
         or any(item not in identifiers for item in local_ids)
     ):
         raise ValueError("candidate request exceeds its distinct existing competitor capacity")
+    if not forecast_only:
+        revision, stands, ceiling = (
+            payload["upstream_field_revision"],
+            payload["stand_ids"],
+            payload["ceiling"],
+        )
+        if (
+            type(revision) is not int
+            or revision < 1
+            or type(ceiling) is not int
+            or not 3 <= ceiling <= 180
+            or not isinstance(stands, list)
+            or len(stands) != len(local_ids)
+            or any(not isinstance(stand, str) or not stand.startswith("stand:") for stand in stands)
+            or len(set(stands)) != len(stands)
+        ):
+            raise ValueError(
+                "preview requires an exact positive revision, distinct stable stands, and legal ceiling"
+            )
+        for stand in stands:
+            StableIdentifier(stand)
     context = TargetContext.from_dict(payload["target_context"])
     scope = StableIdentifier(payload["scope_id"])
     cutoff_key = f"history:{canonical_digest({'source': history.source_sha256, 'cutoff_at_utc': payload['cutoff_at_utc']})}"

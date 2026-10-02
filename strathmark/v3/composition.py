@@ -220,6 +220,14 @@ def compose_development_ml_authorities(
         item.tournament_id for item in candidate.manifest.assignments
     } & {item.tournament_id for item in audit.manifest.assignments}:
         raise ConfigurationError("candidate and audit need one generation and disjoint tournaments")
+    audit = _compose_ml_audit_authority(
+        audit_manifest,
+        audit_signer.identity,
+        audit_signer,
+        environment=MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE,
+        historical_manifest=candidate_manifest,
+        historical_identity=candidate_signer.identity,
+    )
     return candidate, audit
 
 

@@ -1,10 +1,11 @@
 # Prediction Engine V3
 
+The [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
+
 ## Release and authority status
 
-V3.0.0rc1 is a release candidate in the `strathmark.v3` namespace that
-tracks all 232 requirements in the in-repository V3 plan. Repository implementation and
-audit are complete for this candidate. The checked-in rehearsal attestation is source-bound to
+V3.0.0rc2 is a release candidate in the `strathmark.v3` namespace that
+tracks all 232 requirements in the in-repository V3 plan. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. The checked-in rehearsal attestation is source-bound to
 its named source and artifacts and is signed by an ephemeral development key. V3 is not
 production-eligible, and no production authority has changed. V2 remains
 the trusted production-capable engine. The current competition-scoped contract does not

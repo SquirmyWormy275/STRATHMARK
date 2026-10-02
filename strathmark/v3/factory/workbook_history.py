@@ -127,9 +127,13 @@ def load_workbook_history(path: Path | str, *, cutoff_at_utc: str) -> WorkbookHi
                 if species in densities
                 else ()
             )
-            context = TargetContext(
-                event, int(size), species, "strathex:v1", "strathex:v1", properties
-            )
+            try:
+                context = TargetContext(
+                    event, int(size), species, "strathex:v1", "strathex:v1", properties
+                )
+            except (ValueError, TypeError):
+                excluded["invalid_material_context"] += 1
+                continue
             note = str(row.get("Notes (Competition, special circumstances, etc.)") or "").strip()
             # A recorded annual competition label is grouped as a whole. Missing
             # labels use the whole day; none of these are claimed live identities.
