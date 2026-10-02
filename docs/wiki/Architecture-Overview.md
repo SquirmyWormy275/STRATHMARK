@@ -19,7 +19,7 @@ council; validation, capability, credibility, and pooling; green/amber/red conse
 review; fairness-frontier marks rebased to 3; then immutable receipt, approval, issue,
 and settlement.
 
-The V6 contract has 18 paths. It locks one V3 selection to a competition root, exposes
+The V7 contract has 18 paths. It locks one V3 selection to a competition root, exposes
 lifecycle and versioned snapshot synchronization, and records typed selected/excluded
 approval decisions before the separate issue acknowledgment. The tournament manager
 still owns authorization and official issue.
@@ -42,5 +42,5 @@ STRATHMARK authenticates a service principal. The tournament manager owns human 
 RBAC, official issue, results, publication, and payouts. Ollama, cloud, and the optional
 archive may fail without becoming race-day authority.
 
-See the canonical [architecture](../ARCHITECTURE.md) and
-[V3 engine contract](../PREDICTION_ENGINE_V3.md).
+See the canonical [architecture](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md) and
+[V3 engine contract](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V3.md).

@@ -215,11 +215,19 @@ def test_engine_verification_receipt_binds_workbook_formulas_and_mutation() -> N
 
 def test_designated_verification_runs_independent_artifact_engine(tmp_path: Path) -> None:
     required = os.environ.get("STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION", "1") != "0"
+    if not required:
+        pytest.skip("designated exact-workbook verification is disabled for this portable run")
+    from scripts.verify_formula_runtime import verify_runtime
+
     node, node_modules = _artifact_engine_paths()
     if not node.is_file() or not node_modules.is_dir():
         if required:
             pytest.fail("independent Formula workbook engine is required but unavailable")
         pytest.skip("independent Formula workbook engine is unavailable and gate is disabled")
+    try:
+        verify_runtime(node, node_modules)
+    except ValueError as error:
+        pytest.fail(str(error))
     junction = tmp_path / "node_modules"
     if os.name == "nt":
         linked = subprocess.run(

@@ -12,7 +12,7 @@ workflow deliberately selects one eligible engine per single-event or tournament
 it is not a global V2-to-V3 replacement. No production authority has changed, no
 STRATHEX endpoint has switched, and V2 is not audit-only.
 
-STRATHMARK now exposes the V6 lifecycle, snapshot, pre-field forecast, exact-field,
+STRATHMARK now exposes the V7 lifecycle, snapshot, pre-field forecast, exact-field,
 approval, issue, and settlement boundary. STRATHEX owns the corresponding durable
 adapter, UI, outbox, and immutable local acknowledgment persistence. This repository
 does not certify their installation or deployment.

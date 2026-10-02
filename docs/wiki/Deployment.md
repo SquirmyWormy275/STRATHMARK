@@ -28,7 +28,7 @@ to enable V3 as a choice. That does not select V3 globally or remove V2. Each ne
 standalone event or tournament root deliberately selects one eligible engine, and the
 other engine is never its automatic fallback.
 
-The V6 installed rehearsal must cover pre-field seeding receipts that issue no marks,
+The V7 installed rehearsal must cover pre-field seeding receipts that issue no marks,
 exact-field assembly that does, immutable tournament inheritance, exact retries, and
 restart recovery.
 
@@ -46,4 +46,4 @@ The focused post-format result-to-ready benchmark completed five Windows trials 
 3.414-second maximum against the 120-second limit. It is one part of the complete
 source-bound release evidence.
 
-See the canonical [deployment runbook](../DEPLOYMENT.md).
+See the canonical [deployment runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md).

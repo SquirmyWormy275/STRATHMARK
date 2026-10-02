@@ -260,7 +260,7 @@ state machine. It does not perform a global engine selection:
    The identity file is operator-controlled public material outside the attestation. A
    self-supplied or merely relabeled `production_cng` identity is not trusted.
 6. Verify initialized V3 database, bundle, consumer-contract, and rehearsal digests.
-7. Run the installed tournament-manager adapter rehearsal against the frozen V6,
+7. Run the installed tournament-manager adapter rehearsal against the frozen V7,
    18-path contract and match its digest. It must cover competition selection,
    inheritance, pre-field forecasting without marks, exact-field assembly, and restart.
 8. Sign the pre-switch authority handoff using the production CNG identity.

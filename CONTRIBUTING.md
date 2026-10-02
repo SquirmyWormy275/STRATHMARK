@@ -1,11 +1,6 @@
 # Contributing to STRATHMARK
 
-STRATHMARK supplies numeric handicap evidence to tournament software. V3.0.0rc1 is a
-release candidate that tracks all 232 in-repository requirements;
-implementation is under final audit. Its checked-in evidence is stale rehearsal
-evidence until regenerated on the final documentation commit. V2 remains the globally
-trusted production authority and V3 is not production-eligible. Changes here can affect live start sheets,
-so domain, causality, authority, isolation, and recovery evidence are mandatory.
+STRATHMARK supplies numeric handicap evidence to tournament software. V3.0.0rc1 is a release candidate with repository implementation and audit complete. Its development-key rehearsal evidence is source-bound and must pass the exact release verifier; it is not production evidence. V2 remains the trusted production baseline and V3 is not production-eligible. Production eligibility and immutable selection at each competition root are separate decisions.
 
 Read [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md), then
 [`ONBOARDING.md`](ONBOARDING.md), before changing prediction or mark behavior.
@@ -29,6 +24,8 @@ Never allow collection or a test to open production data. Use unique writable pa
 $env:STRATHMARK_TEST_DB = '1'
 $env:STRATHMARK_DB_PATH = "$PWD\.tmp\contrib-v2.sqlite3"
 $env:STRATHMARK_V3_DB_PATH = "$PWD\.tmp\contrib-v3.sqlite3"
+# Portable suite only; designated formula verification stays mandatory for release evidence.
+$env:STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION = '0'
 python -m pytest tests/v3 -q --basetemp .tmp/contrib-v3 -p no:cacheprovider
 ```
 
@@ -73,3 +70,9 @@ git diff --check
 All PRs must pass CI before merge. Merge, deployment, production migration, credential
 provisioning, model promotion, V3 eligibility enablement, and per-competition selection
 remain distinct authorized actions.
+
+## Repository maintenance
+
+Run `python scripts/check_docs.py`, the frozen consumer-contract check, a distribution build, and `python scripts/smoke_installed_distribution.py --kind wheel` (also `sdist` when packaging changes). Follow [Linux setup](docs/LINUX.md) for portable verification and [formula runtime qualification](docs/FORMULA_RUNTIME.md) for designated workbook verification. All hosted gates feed the stable `Required CI` status. Dependency updates are proposals; numeric dependencies, model/source pins, artifacts, and signed evidence require coordinated review.
+
+Wiki pages are versioned under `docs/wiki`. After merge, review `python scripts/publish_wiki.py --mode preview`, publish with `--mode publish` from clean exact main, and verify with `--mode check`.

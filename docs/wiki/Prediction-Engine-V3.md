@@ -17,7 +17,7 @@ later capability without labeling motive. One round uses one epoch. Issued sheet
 legal winners remain immutable. Rolling cards move slow inference ahead of the live
 call-up path.
 
-The V6, 18-path service contract includes competition lifecycle, frozen snapshot
+The V7, 18-path service contract includes competition lifecycle, frozen snapshot
 synchronization, pre-field forecasts, exact-field assembly, typed multi-receipt approval
 decisions, and separate official issue acknowledgment. Pre-field receipts contain
 signed raw-time seeds but always say `issued_mark=false`; only exact-field assembly
@@ -45,4 +45,4 @@ final asynchronous component can release readiness without waiting for another r
 restart.
 
 The canonical and complete explanation is
-[Prediction Engine V3](../PREDICTION_ENGINE_V3.md).
+[Prediction Engine V3](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V3.md).

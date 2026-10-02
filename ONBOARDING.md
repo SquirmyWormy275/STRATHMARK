@@ -57,7 +57,7 @@ manual and signed.
 V3 authenticates one calling service, not human roles. Tournament-manager login, RBAC,
 official issue, results, publication, and payouts remain upstream. Once inside STRATHMARK,
 the authenticated service principal has full V3 authority; actor headers are audit data.
-The frozen V6 contract has 18 paths. It includes lifecycle and snapshot routes, a
+The frozen V7 contract has 18 paths. It includes lifecycle and snapshot routes, a
 field-independent pre-field forecast route, and typed approval decisions. A pre-field
 receipt is signed seeding evidence with `issued_mark=false`; it never issues a start
 mark. Only exact-field assembly can produce marks. Approval evidence remains separate
@@ -109,6 +109,10 @@ thread, and makes no network request. Runtime construction is explicit and injec
 - Failed V3 eligibility preparation leaves V2 authoritative or declares
   traditional/manual authority if V2 cannot serve.
 - No code, document, test result, or model output grants official competition authority.
+
+## Portable Linux verification
+
+Follow [Linux setup](docs/LINUX.md) for the offline command and portable suite. Explicit portable mode skips the designated workbook rebuild; [formula runtime qualification](docs/FORMULA_RUNTIME.md) remains required for release evidence. The following PowerShell workflow is for the designated evidence environment.
 
 ## Isolated verification
 

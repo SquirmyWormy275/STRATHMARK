@@ -92,4 +92,4 @@ compatibility, and add the closed shadow receipt/numeric-revision mirror without
 rewriting old evidence.
 
 For the complete source-controlled contract, see
-[`docs/PREDICTION_ENGINE_V2.md`](../PREDICTION_ENGINE_V2.md).
+[`docs/PREDICTION_ENGINE_V2.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md).

@@ -79,7 +79,7 @@ maximum. It is one source-bound component of the full rehearsal.
 
 ## Is STRATHEX ready to consume V3 approvals?
 
-STRATHMARK exposes the required V6 endpoints, but this repository does not certify the
-external adapter. Its installed rehearsal must prove the exact V6 pin, competition
+STRATHMARK exposes the required V7 endpoints, but this repository does not certify the
+external adapter. Its installed rehearsal must prove the exact V7 pin, competition
 selection and inheritance, pre-field/field boundary, durable outbox, idempotent
 forwarding, immutable acknowledgment, and restart recovery.
