@@ -1012,7 +1012,9 @@ def test_numeric_actor_namespace_must_match_the_bound_caller(tmp_path):
         )
 
 
-def test_monitoring_uses_latest_numeric_mirror_attempt_and_does_not_infer_drift(tmp_path, monkeypatch):
+def test_monitoring_uses_latest_numeric_mirror_attempt_and_does_not_infer_drift(
+    tmp_path, monkeypatch
+):
     def offline(_payload):
         raise OSError("offline")
 
