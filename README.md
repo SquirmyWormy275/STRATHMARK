@@ -9,7 +9,9 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 
 ## Current release state
 
-V3 is a `3.0.0rc3` release candidate that tracks all 232 requirements in
+The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc4** with STRATHEX **7.3.0**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below.
+
+The Windows V7 profile in V3 is a `3.0.0rc4` release candidate that tracks all 232 requirements in
 the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle
 still needs its operational composition and qualification. The
 checked-in development-key rehearsal is valid only for the source commit and digests it
@@ -50,11 +52,7 @@ cannot simply be copied into another.
 
 ## Linux and Windows
 
-V3 now has a separately installed Linux numeric candidate that executes Formula,
-trained ML, pooling, and optimization through STRATHEX's explicit V2/V3 selector.
-See [Linux V3 candidate](docs/V3_LINUX_CANDIDATE.md). Its output is a numeric preview;
-approval, official issue, settlement, and next-round learning require the full V7
-runtime. Models trained on private history are kept outside the repository.
+The [Linux competition runtime](docs/V3_LINUX_COMPETITION.md) supports the complete local lifecycle through STRATHEX's selector. The older [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) remains available for existing preview scopes. Private model artifacts are kept outside the repository.
 
 The V2 library and API run on Linux and Windows with Python 3.10–3.13; Python 3.13 is recommended for current development. No separate fork is required. Current repository builds also provide `strathmark demo` (or `python -m strathmark demo`), an offline calculation with synthetic competitors that opens no operator database. The existing V2 PyPI releases expose the library/API; this new demonstration command is available in the maintenance source build.
 

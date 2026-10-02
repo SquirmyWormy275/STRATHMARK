@@ -1,5 +1,7 @@
 # Deployment, Recovery, and Engine Eligibility
 
+Current Linux local competitions are documented in [Linux competition workflow](V3_LINUX_COMPETITION.md). This separate rc4 profile supports the complete lifecycle with Formula/ML and persistent local keys; the Windows V7 qualification gates below remain unchanged.
+
 The [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
 
 ## Authority status

@@ -1,5 +1,7 @@
 # Installation
 
+The current separate Linux competition profile (STRATHMARK 3.0.0rc4 / STRATHEX 7.3.0) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+
 > **Authority status.** The commands below install the trusted V2.0.0 release. The V3
 > release candidate is in later source and is under exact-source verification, but no production authority
 > has changed. Installing a V3-capable wheel does not switch a consumer.

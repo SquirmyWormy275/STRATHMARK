@@ -1,5 +1,7 @@
 # Linux V3 numeric candidate
 
+For complete local competitions in rc4/STRATHEX 7.3, use [Linux competition workflow](V3_LINUX_COMPETITION.md). This page documents the retained preview profile.
+
 The separate Python 3.13 profile runs the actual Formula assessor, an exported and
 verified CatBoost ML bundle, their linear distribution pool, and the V3 joint mark
 optimizer. It is usable for numeric previews with STRATHEX's V2/V3 selector.

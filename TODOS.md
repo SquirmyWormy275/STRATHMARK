@@ -1,5 +1,7 @@
 # Remaining installation and qualification work
 
+Completed separately: the [Linux local competition profile](docs/V3_LINUX_COMPETITION.md) in rc4 implements the full operator lifecycle, real Formula/ML, signed issue/results/corrections, restart, backups, and later-round learning. Remaining Windows CNG and full three-assessor factory qualification below are distinct installation work.
+
 V3.0.0rc3 is a release candidate with core implementation and contract tests in place; installed lifecycle composition and qualification remain unfinished. V2 remains the trusted production baseline; V3 is not production-eligible. Checked-in development-key rehearsal evidence is source-bound and does not grant production authority.
 
 ## Runnable Linux previews

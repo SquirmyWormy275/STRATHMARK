@@ -40,6 +40,7 @@ class IntegrityError(RuntimeError):
 class IntegrityKeyClass(str, Enum):
     DEVELOPMENT_EPHEMERAL = "development_ephemeral"
     PRODUCTION_CNG = "production_cng"
+    LINUX_INSTALLATION = "linux_installation"
 
 
 @dataclass(frozen=True, slots=True)
