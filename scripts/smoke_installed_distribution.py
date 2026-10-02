@@ -300,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         output = json.loads(demo.stdout)
         assert output["purpose"] == "synthetic_v2_demo"
         assert len(output["results"]) == 2
+        assert all(not result["degraded"] for result in output["results"])
         executable = environment / (
             "Scripts/strathmark.exe" if os.name == "nt" else "bin/strathmark"
         )

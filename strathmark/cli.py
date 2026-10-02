@@ -25,20 +25,20 @@ def main() -> None:
             name="Alice",
             competitor_id="demo-alice",
             gender="F",
-            history=[HistoricalResult("SB", 28.4, "Pine", 300, 5, date(2025, 3, 1))],
+            history=[HistoricalResult("SB", 28.4, "S01", 300, 5, date(2025, 3, 1))],
         ),
         CompetitorRecord(
             name="Bob",
             competitor_id="demo-bob",
             gender="M",
-            history=[HistoricalResult("SB", 35.2, "Pine", 300, 5, date(2025, 3, 1))],
+            history=[HistoricalResult("SB", 35.2, "S01", 300, 5, date(2025, 3, 1))],
         ),
     ]
     results = HandicapCalculator().calculate(
         competitors,
-        WoodProfile(species="Pine", diameter_mm=300, quality=5),
+        WoodProfile(species="S01", diameter_mm=300, quality=5),
         event_code="SB",
-        context=PredictionContext(prediction_as_of=date(2026, 1, 1)),
+        context=PredictionContext(prediction_as_of=date(2026, 9, 30)),
     )
     print(
         json.dumps(
