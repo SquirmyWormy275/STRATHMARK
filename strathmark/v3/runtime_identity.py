@@ -14,7 +14,7 @@ def implementation_digest() -> str:
     root = Path(__file__).resolve().parents[1]
     return canonical_digest(
         {
-            str(path.relative_to(root)): sha256(path.read_bytes()).hexdigest()
+            path.relative_to(root).as_posix(): sha256(path.read_bytes()).hexdigest()
             for path in sorted(root.rglob("*.py"))
         }
     )
