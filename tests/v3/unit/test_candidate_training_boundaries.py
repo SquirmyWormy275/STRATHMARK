@@ -1,6 +1,8 @@
 """Development training must verify provenance and exclude audit input."""
 
 import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +60,9 @@ def test_builder_rejects_audit_rows_before_any_fit(tmp_path, monkeypatch):
     history = load_workbook_history(
         tmp_path / "synthetic.xlsx", cutoff_at_utc="2025-01-01T00:00:00.000Z"
     )
+    # This is an input-boundary test. The optional model backend must never
+    # be used; any attempted fit against this empty module fails the test.
+    monkeypatch.setitem(sys.modules, "catboost", SimpleNamespace())
     monkeypatch.setattr(candidate_cli, "verify_source_revision", lambda *_: "a" * 64)
     payload = {
         "source_commit": "b" * 40,
