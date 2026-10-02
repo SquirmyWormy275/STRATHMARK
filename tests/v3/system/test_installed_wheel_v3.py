@@ -121,7 +121,7 @@ capacity = json.loads(
 assert verify_windows_capacity_manifest(capacity)["candidate_tier"] == "rehearsal"
 lock_lines = files("strathmark.v3.contracts").joinpath("v3-release.lock").read_text("utf-8").splitlines()
 assert "cryptography==46.0.5" in lock_lines
-assert "fastapi==0.135.1" in lock_lines
+assert "fastapi==0.142.2" in lock_lines
 for locked in lock_lines:
     locked = locked.strip()
     if not locked or locked.startswith("#"):

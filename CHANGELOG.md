@@ -10,6 +10,7 @@ All notable changes to STRATHMARK will be documented in this file.
 - Reconciled maintained documentation with the V7 18-path contract, published V2 2.0.1 patch, implemented STRATHEX adapter, and competition-scoped eligibility/selection.
 - Fixed public wiki links and added preview/publish/readback verification from exact merged source.
 - Pinned CI actions and Ruff, added dependency-update proposals and documentation checks, and exposed the stable Required CI merge gate.
+- Raised API dependency floors and updated the V3 lock for reviewed HTTPX2 and Starlette advisories; refreshed parity/contract/full-suite verification. Frozen evidence remains source-bound and must be regenerated on the designated host.
 - Separated explicit portable test mode from designated formula-workbook qualification. Required mode checks the frozen Node/artifact-tool versions and still rejects mismatched artifacts; signed evidence is unchanged.
 
 ## [3.0.0rc1] - 2026-08-25
