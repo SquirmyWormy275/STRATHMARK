@@ -1,6 +1,6 @@
 # Architecture Overview
 
-The [Linux numeric candidate](../V3_LINUX_CANDIDATE.md) separately runs Formula, trained ML, pooling, and optimization for unissued previews. Approval, issue, settlement, next-round learning, and production qualification remain unavailable in that profile.
+The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs Formula, trained ML, pooling, and optimization for unissued previews. Approval, issue, settlement, next-round learning, and production qualification remain unavailable in that profile.
 
 ## Current authority status
 

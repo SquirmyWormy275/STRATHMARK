@@ -1,6 +1,6 @@
 # Deployment and Recovery
 
-The [Linux numeric candidate](../V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
+The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
 
 ## Current authority status
 
