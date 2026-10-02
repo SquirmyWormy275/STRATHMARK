@@ -29,7 +29,7 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     wheels = tuple(dist.glob("*.whl"))
     assert len(wheels) == 1
     wheel = wheels[0]
-    assert wheel.name.startswith("strathmark-3.0.0rc2-")
+    assert wheel.name.startswith("strathmark-3.0.0rc3-")
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         entry_points_name = next(
@@ -93,8 +93,8 @@ import re
 from importlib.metadata import distribution, version
 import strathmark
 v3 = load_v3_consumer_contract()
-assert strathmark.__version__ == "3.0.0rc2"
-assert version("strathmark") == "3.0.0rc2"
+assert strathmark.__version__ == "3.0.0rc3"
+assert version("strathmark") == "3.0.0rc3"
 console_scripts = {
     item.name: item.value
     for item in distribution("strathmark").entry_points
@@ -120,7 +120,7 @@ capacity = json.loads(
 )
 assert verify_windows_capacity_manifest(capacity)["candidate_tier"] == "rehearsal"
 lock_lines = files("strathmark.v3.contracts").joinpath("v3-release.lock").read_text("utf-8").splitlines()
-assert "cryptography==46.0.5" in lock_lines
+assert "cryptography==50.0.2" in lock_lines
 assert "fastapi==0.142.2" in lock_lines
 for locked in lock_lines:
     locked = locked.strip()

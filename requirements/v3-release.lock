@@ -1,5 +1,6 @@
-# Exact runtime dependency set verified on the designated Windows V3 rehearsal machine.
-# Regenerate deliberately for a release; ranges in pyproject.toml are not release evidence.
+# Exact current Python 3.13 dependency set for portable/development rehearsals.
+# Security maintenance changes this lock deliberately; regenerate designated-machine
+# evidence before qualification. Historical signed evidence remains source-bound.
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.11.0
@@ -8,7 +9,7 @@ cffi==2.0.0
 charset-normalizer==3.4.4
 click==8.3.1
 colorama==0.4.6
-cryptography==46.0.5
+cryptography==50.0.2
 et_xmlfile==2.0.0
 fastapi==0.142.2
 h11==0.16.0

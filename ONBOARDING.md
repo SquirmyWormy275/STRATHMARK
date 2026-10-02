@@ -2,7 +2,7 @@
 
 ## Current status
 
-V3 is a `3.0.0rc2` release candidate in a separate namespace that tracks
+V3 is a `3.0.0rc3` release candidate in a separate namespace that tracks
 all 232 in-repository requirements. Core modules and contract tests exist; the full
 installed lifecycle still needs operational composition and qualification.
 The checked-in development-key rehearsal is source-bound and must pass

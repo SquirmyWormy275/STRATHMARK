@@ -2,7 +2,7 @@
 
 ## Current authority status
 
-V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc2 is a separate
+V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc3 is a separate
 release candidate and is not production-eligible. A development-key rehearsal, V7 route,
 or selection record does not change that status.
 

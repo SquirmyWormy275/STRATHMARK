@@ -9,7 +9,7 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 
 ## Current release state
 
-V3 is a `3.0.0rc2` release candidate that tracks all 232 requirements in
+V3 is a `3.0.0rc3` release candidate that tracks all 232 requirements in
 the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle
 still needs its operational composition and qualification. The
 checked-in development-key rehearsal is valid only for the source commit and digests it
@@ -28,7 +28,7 @@ consumer responsibilities.
 The distinction matters:
 
 - **V2.0.0 / V2.0.1** are published on PyPI. The 2.0.1 patch changes packaging documentation and version metadata; it preserves the V2 numeric engine. STRATHEX retains its reviewed exact 2.0.0 Git source pin.
-- **V3.0.0rc2** has separate code, contracts, storage, and tests. The formatted
+- **V3.0.0rc3** has separate code, contracts, storage, and tests. The formatted
   five-run Windows result-to-ready benchmark completed with a maximum of **3.414
   seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
   development-key rehearsal attestation are candidate outputs, not permanent claims

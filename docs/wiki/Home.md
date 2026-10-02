@@ -2,7 +2,7 @@
 
 ## Current authority status
 
-V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+V3.0.0rc3 is a release candidate that tracks all 232 in-repository
 requirements. The separately installed Linux numeric profile executes Formula,
 trained ML, pooling, and optimization; it remains preview-only. Its
 checked-in development-key V7 rehearsal is source-bound and must pass the release verifier.

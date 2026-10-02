@@ -13,7 +13,7 @@ python3.13 -m venv .venv-linux
 .venv-linux/bin/strathmark demo
 ```
 
-The demo uses synthetic competitors and the released V2 calculation API; it opens no live database. Current package metadata remains `3.0.0rc2`; the demo does not make V3 production-eligible. For the trusted published V2 library, install `strathmark==2.0.1` in a separate environment. The V2 API starts with `python -m uvicorn strathmark.api:app --host 127.0.0.1 --port 8000`; configure an absolute `STRATHMARK_DB_PATH` first. That ASGI app is V2. V3 services require explicit authenticated, source-bound composition described in [deployment](DEPLOYMENT.md).
+The demo uses synthetic competitors and the released V2 calculation API; it opens no live database. Current package metadata remains `3.0.0rc3`; the demo does not make V3 production-eligible. For the trusted published V2 library, install `strathmark==2.0.1` in a separate environment. The V2 API starts with `python -m uvicorn strathmark.api:app --host 127.0.0.1 --port 8000`; configure an absolute `STRATHMARK_DB_PATH` first. That ASGI app is V2. V3 services require explicit authenticated, source-bound composition described in [deployment](DEPLOYMENT.md).
 
 Use a fresh scratch directory per test run, separate from operator data:
 

@@ -1,6 +1,6 @@
 # Remaining installation and qualification work
 
-V3.0.0rc2 is a release candidate with core implementation and contract tests in place; installed lifecycle composition and qualification remain unfinished. V2 remains the trusted production baseline; V3 is not production-eligible. Checked-in development-key rehearsal evidence is source-bound and does not grant production authority.
+V3.0.0rc3 is a release candidate with core implementation and contract tests in place; installed lifecycle composition and qualification remain unfinished. V2 remains the trusted production baseline; V3 is not production-eligible. Checked-in development-key rehearsal evidence is source-bound and does not grant production authority.
 
 ## Runnable Linux previews
 
