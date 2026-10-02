@@ -6,7 +6,7 @@ This is a local operator policy, with persistent owner-private P-256 keys and si
 
 ## Install and start
 
-Install exact reviewed wheels in separate Python 3.13 environments. Keep STRATHEX's exact V2 dependency in its environment; install STRATHMARK's `v3-release` extra and locked dependencies in the second environment. Use a verified trained bundle compatible with CatBoost 1.2.10 and `cp313`; private model files remain outside Git. Do not substitute a test fixture model for an operator model.
+Install exact reviewed wheels in separate Python 3.13 environments. Keep STRATHEX's exact V2 dependency in its environment; install STRATHMARK's `v3-candidate` extra and locked dependencies in the second environment. Use a verified trained bundle compatible with CatBoost 1.2.10 and `cp313`; private model files remain outside Git. Do not substitute a test fixture model for an operator model.
 
 Initialize and inspect the persistent authority explicitly:
 
