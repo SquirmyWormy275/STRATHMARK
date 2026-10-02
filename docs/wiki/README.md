@@ -8,7 +8,7 @@ after the matching repository documentation is merged and separately authorized.
 [Handicap foundations](Handicap-Mark-Math.md) is mandatory timeless domain reading.
 [Prediction Engine V3](Prediction-Engine-V3.md) routes to the successor release candidate.
 [Prediction Engine V2](Prediction-Engine-V2.md) preserves the globally trusted production
-contract. V3.0.0rc2 is a release candidate that tracks all
+contract. V3.0.0rc3 is a release candidate that tracks all
 232 in-repository requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. Its development-key rehearsal is source-bound; no production authority
 has changed and V3 is not production-eligible.
 

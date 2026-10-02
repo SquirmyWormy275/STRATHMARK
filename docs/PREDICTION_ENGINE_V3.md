@@ -4,7 +4,7 @@ The [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, p
 
 ## Release and authority status
 
-V3.0.0rc2 is a release candidate in the `strathmark.v3` namespace that
+V3.0.0rc3 is a release candidate in the `strathmark.v3` namespace that
 tracks all 232 requirements in the in-repository V3 plan. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. The checked-in rehearsal attestation is source-bound to
 its named source and artifacts and is signed by an ephemeral development key. V3 is not
 production-eligible, and no production authority has changed. V2 remains

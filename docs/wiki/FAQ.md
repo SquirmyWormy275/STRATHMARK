@@ -2,7 +2,7 @@
 
 ## Is V3 ready for official competitions?
 
-No. V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+No. V3.0.0rc3 is a release candidate that tracks all 232 in-repository
 requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. V2
 remains the globally trusted production authority and V3 is not production-eligible.
 The checked-in development-key rehearsal is

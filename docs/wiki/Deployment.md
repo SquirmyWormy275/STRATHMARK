@@ -4,7 +4,7 @@ The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob
 
 ## Current authority status
 
-V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+V3.0.0rc3 is a release candidate that tracks all 232 in-repository
 requirements. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. The
 checked-in development-key rehearsal is source-bound and must pass the release verifier.
 V2 remains the globally trusted production authority. V3 is not production-eligible,

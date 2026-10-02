@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.0.0rc3] - 2026-10-02
+
+- Raise all cryptography extras and the exact V3 lock to 50.0.2 to fix the six newly detected advisories; retain the V7 contract and numeric algorithms. See [security maintenance](docs/SECURITY_MAINTENANCE.md).
+- Preserve historical signed machine evidence and require regeneration before qualification. The Linux numeric profile remains a preview, and V2 remains the production baseline.
+
 ## [3.0.0rc2] - 2026-10-02
 
 - Add separately installed Linux numeric previews with actual Formula, trained ML, pooling, and V3 optimization; no approval, issue, settlement, or production authority is granted.

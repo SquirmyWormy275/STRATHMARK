@@ -17,7 +17,7 @@ data owner explicitly authorizes this training. Synthetic data needs no such exc
 ```bash
 python3.13 -m venv .venv-v3
 .venv-v3/bin/python -m pip install -r requirements/v3-release.lock
-.venv-v3/bin/python -m pip install 'dist/strathmark-3.0.0rc2-py3-none-any.whl[v3-candidate]'
+.venv-v3/bin/python -m pip install 'dist/strathmark-3.0.0rc3-py3-none-any.whl[v3-candidate]'
 .venv-v3/bin/strathmark-v3-train-candidate \
   --workbook /absolute/private/authorized-history.xlsx \
   --output /absolute/private/new-candidate \
