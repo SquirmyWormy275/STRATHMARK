@@ -4,7 +4,14 @@ All notable changes to STRATHMARK will be documented in this file.
 
 ## [Unreleased]
 
-No unreleased changes are recorded after the V3 release-candidate cut.
+### Repository maintenance — 2026-10-01
+
+- Added a portable offline `strathmark demo` command, Linux setup, and installed-command smoke coverage. V2 calculations and release authority are unchanged.
+- Reconciled maintained documentation with the V7 18-path contract, published V2 2.0.1 patch, implemented STRATHEX adapter, and competition-scoped eligibility/selection.
+- Fixed public wiki links and added preview/publish/readback verification from exact merged source.
+- Pinned CI actions and Ruff, added dependency-update proposals and documentation checks, and exposed the stable Required CI merge gate.
+- Raised API dependency floors and updated the V3 lock for reviewed HTTPX2 and Starlette advisories; refreshed parity/contract/full-suite verification. Frozen evidence remains source-bound and must be regenerated on the designated host.
+- Separated explicit portable test mode from designated formula-workbook qualification. Required mode checks the frozen Node/artifact-tool versions and still rejects mismatched artifacts; signed evidence is unchanged.
 
 ## [3.0.0rc1] - 2026-08-25
 
@@ -29,7 +36,7 @@ No unreleased changes are recorded after the V3 release-candidate cut.
   recovery-device support, and deterministic redacted support bundles.
 - Added authenticated `/v3/*` service routes with closed schemas, pre-body bounds,
   loopback default, pinned mutual TLS for non-loopback operation, credential rotation and
-  revocation, and a frozen installed eleven-route OpenAPI contract. The dedicated batch-
+  revocation, and a frozen installed V7 OpenAPI contract with 18 paths. The dedicated batch-
   approval route binds multiple exact receipt IDs, digests, and revisions plus explicit
   exclusions without conflating approval evidence with official issue acknowledgment.
 - Added automated formula/ML/LLM candidate evaluation, signed promotion and rollback,
@@ -43,21 +50,25 @@ No unreleased changes are recorded after the V3 release-candidate cut.
   failure, recovery, backup/restore, installed-wheel, and designated-Windows capacity.
   Class-specific execution receipts and current-source performance pins remain required;
   hashes of test source or self-declared rows are not accepted as completed evidence.
-- Tracks all 232 requirements in the V3 plan; implementation remains under final audit.
+- Tracks all 232 requirements in the V3 plan; repository implementation and audit are complete for the candidate.
   The five-run Windows result-to-ready benchmark executed after formatting and recorded
   a maximum of 3.414 seconds against the 120-second requirement.
-- Added a development-key **rehearsal** attestation format. The checked-in receipt must be
-  regenerated on the final documentation commit and is not production evidence:
+- Added a development-key **rehearsal** attestation format. The checked-in receipt is source-bound, must pass the exact release verifier,
+  and is not production evidence:
   V2 remains the trusted production authority, no endpoint has switched, and V2 is not
-  audit-only. Production cutover still requires a CNG-backed attestation, zero-open-
+  audit-only. Production eligibility still requires a CNG-backed attestation, zero-open-
   tournament signed handoff, and separate release authorization; no production CNG
   identity is currently provisioned.
-- Added the STRATHMARK-side typed approval-decision prerequisite for STRATHEX. The
-  external STRATHEX durable outbox forwarder and immutable acknowledgment persistence
-  remain integration work and are not part of this candidate.
+- Added the STRATHMARK-side typed approval-decision prerequisite for STRATHEX. The separately
+  versioned STRATHEX consumer now implements durable forwarding and immutable
+  acknowledgments; installed cross-repository qualification remains a deployment gate.
 - Reconciled README, onboarding, architecture, deployment, consumer migration, wiki,
   migration guidance, package metadata, and documentation checks around that authority
   boundary; final exact-artifact reconciliation remains a release gate.
+
+## [2.0.1] - 2026-08-29
+
+Published on PyPI from immutable `v2.0.1` / `pypi-v2.0.1` commit `31797fc98158105e6d508e7028ffb149f0a036d1`. Corrected package-install documentation and version metadata; V2 numeric behavior and artifacts are unchanged. STRATHEX keeps its exact reviewed V2 2.0.0 source dependency.
 
 ## [2.0.0] - 2026-08-18
 

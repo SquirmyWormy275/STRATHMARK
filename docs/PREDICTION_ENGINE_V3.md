@@ -122,7 +122,7 @@ LLM inference.
 ### Pre-field forecasts are not marks
 
 Tournament setup needs predicted raw-time evidence before fields or stand assignments
-exist. V6 therefore adds `POST /v3/forecasts/pre-field`. It consumes an ordered
+exist. V7 therefore adds `POST /v3/forecasts/pre-field`. It consumes an ordered
 competitor set, target event/material context, frozen round epoch, and forecast-set
 revision. It returns a signed field-independent receipt with marginal distributions and
 p50 seed times.

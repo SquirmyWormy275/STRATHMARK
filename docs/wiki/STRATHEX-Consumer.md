@@ -34,11 +34,11 @@ A standalone event selects V2 or V3 once. A tournament selects once during creat
 all child events and rounds inherit; child selectors are forbidden. Different roots may
 choose different eligible engines, but one root never mixes or silently falls back.
 
-STRATHMARK's frozen V6 contract now contains all 18 numeric lifecycle paths. The external
+STRATHMARK's frozen V7 contract now contains all 18 numeric lifecycle paths. The external
 STRATHEX installation must still prove its exact dependency pin, durable outbox,
 immutable local acknowledgments, and restart behavior before V3 production eligibility.
 
 A production-CNG-signed pre-switch handoff still declares V2 current and requires a
 separate release authorization before V3 can become an eligible choice. It is not a
 global engine selection. See the canonical
-[consumer migration](../STRATHEX_CONSUMER_MIGRATION.md).
+[consumer migration](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/STRATHEX_CONSUMER_MIGRATION.md).

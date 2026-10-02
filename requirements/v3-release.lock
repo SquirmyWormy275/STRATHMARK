@@ -10,13 +10,13 @@ click==8.3.1
 colorama==0.4.6
 cryptography==46.0.5
 et_xmlfile==2.0.0
-fastapi==0.135.1
+fastapi==0.142.2
 h11==0.16.0
 httpcore==1.0.9
-httpcore2==2.10.0
+httpcore2==2.13.1
 httptools==0.7.1
 httpx==0.28.1
-httpx2==2.10.0
+httpx2==2.13.1
 idna==3.18
 numpy==2.3.5
 openpyxl==3.1.5
@@ -31,7 +31,7 @@ PyYAML==6.0.3
 requests==2.32.5
 six==1.17.0
 sniffio==1.3.1
-starlette==0.52.1
+starlette==1.7.0
 truststore==0.10.4
 typing-inspection==0.4.2
 typing_extensions==4.15.0
@@ -41,3 +41,6 @@ urllib3==2.5.0
 uvicorn==0.42.0
 watchfiles==1.1.1
 websockets==15.0.1
+
+# FastAPI 0.142.2 adds OpenTelemetry API. No numeric dependency changes.
+opentelemetry-api==1.45.0

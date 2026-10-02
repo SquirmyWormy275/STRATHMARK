@@ -286,6 +286,26 @@ def main(argv: list[str] | None = None) -> int:
             check=True,
             cwd=root,
         )
+        demo = subprocess.run(
+            [str(python), "-m", "strathmark", "demo"],
+            check=True,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        import json
+
+        output = json.loads(demo.stdout)
+        assert output["purpose"] == "synthetic_v2_demo"
+        assert len(output["results"]) == 2
+        assert all(not result["degraded"] for result in output["results"])
+        executable = environment / (
+            "Scripts/strathmark.exe" if os.name == "nt" else "bin/strathmark"
+        )
+        subprocess.run([str(executable), "--help"], check=True, cwd=root)
+        print("Installed offline V2 demo and console entry point passed.")
     return 0
 
 

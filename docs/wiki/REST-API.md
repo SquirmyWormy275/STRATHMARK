@@ -9,7 +9,7 @@ V2 remains the globally trusted production authority. V3 is not production-eligi
 and V2 is not audit-only.
 
 V2 public, ledger, and /v1/shadow routes remain the production contract. V3 exposes the
-separate frozen V6, 18-path `/v3/*` contract. Do not mix their request/receipt identities
+separate frozen V7, 18-path `/v3/*` contract. Do not mix their request/receipt identities
 or interpret the presence of a V3 route as production eligibility or competition
 selection.
 
@@ -36,7 +36,7 @@ Internal command kinds use typed application services. The frozen consumer contr
 not advertise a generic event-mutation route.
 
 The canonical examples and schemas live in the
-[frozen OpenAPI document](../../strathmark/v3/contracts/v3_consumer.openapi.json), with
-its [SHA-256](../../strathmark/v3/contracts/v3_consumer.openapi.sha256) verified as exact
-bytes. See [Prediction Engine V3](../PREDICTION_ENGINE_V3.md) for the route table and
-[STRATHEX consumer migration](../STRATHEX_CONSUMER_MIGRATION.md) for workflow and retries.
+[frozen OpenAPI document](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/strathmark/v3/contracts/v3_consumer.openapi.json), with
+its [SHA-256](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/strathmark/v3/contracts/v3_consumer.openapi.sha256) verified as exact
+bytes. See [Prediction Engine V3](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V3.md) for the route table and
+[STRATHEX consumer migration](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/STRATHEX_CONSUMER_MIGRATION.md) for workflow and retries.

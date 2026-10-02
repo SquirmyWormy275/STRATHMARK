@@ -3,7 +3,7 @@
 ## Current authority status
 
 V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc1 is a separate
-release candidate and is not production-eligible. A development-key rehearsal, V6 route,
+release candidate and is not production-eligible. A development-key rehearsal, V7 route,
 or selection record does not change that status.
 
 ## The pivot
@@ -32,7 +32,7 @@ versions and decisions.
   engine as a silent fallback.
 
 The immutable selection records the root ID, engine, execution mode, selecting actor,
-selection time, reason, exact V6 consumer-contract digest, and exact STRATHMARK source
+selection time, reason, exact V7 consumer-contract digest, and exact STRATHMARK source
 commit. V3 scope-open authority and consequential receipts repeat that binding so the
 choice can be audited after restart.
 
@@ -42,7 +42,7 @@ eligible engine, but that does not reinterpret or repair the original scope.
 
 ## Prediction before fields exist
 
-Tournament seeding happens before exact fields and stand assignments may exist. V6 adds
+Tournament seeding happens before exact fields and stand assignments may exist. V7 adds
 `POST /v3/forecasts/pre-field` for that stage. The request binds an ordered competitor
 set, target event/material context, frozen round epoch, forecast-set revision, and hard
 deadline. It does not require or invent a field or stand identity.

@@ -32,5 +32,5 @@ repeatable read-only snapshot; V2 and V3 never become concurrent trusted writers
 Tests and rehearsals must set STRATHMARK_TEST_DB=1 plus unique V2 and V3 database and
 base paths. Known production identifiers and default operator paths are rejected.
 
-See the canonical [architecture](../ARCHITECTURE.md) and
-[deployment runbook](../DEPLOYMENT.md).
+See the canonical [architecture](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md) and
+[deployment runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md).

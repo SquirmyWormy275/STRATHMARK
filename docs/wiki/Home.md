@@ -43,7 +43,7 @@ gates.
 - Once a sheet is issued, the first legal completion wins. No adjusted placing exists.
 - STRATHMARK authenticates one upstream service. Human RBAC and official results remain
   in the tournament manager.
-- The V6, 18-path contract separates pre-field seeding, exact-field marks, approval, and
+- The V7, 18-path contract separates pre-field seeding, exact-field marks, approval, and
   issue. Pre-field forecasts are signed but always say `issued_mark=false`.
 - A rehearsal attestation is not a production attestation and never switches authority.
 
@@ -51,5 +51,5 @@ The post-format five-run Windows result-to-ready benchmark recorded a 3.414-seco
 maximum against the 120-second limit. It is focused performance evidence, not final
 exact-wheel or production evidence.
 
-The canonical repository documentation is [Onboarding](../../ONBOARDING.md) and
-[Prediction Engine V3](../PREDICTION_ENGINE_V3.md).
+The canonical repository documentation is [Onboarding](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/ONBOARDING.md) and
+[Prediction Engine V3](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V3.md).

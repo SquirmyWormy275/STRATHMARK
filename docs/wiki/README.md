@@ -15,3 +15,5 @@ Pages that retain V2 formulas or compatibility behavior must label them as V2-sp
 Pages that describe V3 must state the rehearsal/production boundary. Wiki publication
 does not authorize a code release, deployment, model promotion, database migration, or
 consumer switch.
+
+Use `python scripts/publish_wiki.py --mode preview` to review changes, then `--mode publish` from the exact clean merged main commit. Publication fetches and verifies the remote pages; `--mode check` verifies synchronization without writing.

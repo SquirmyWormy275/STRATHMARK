@@ -16,7 +16,7 @@ The two engines are deliberately separate:
 | Numeric design | one prior-only core plus optional residual | blind formula + ML + LLM council ensemble |
 | Evidence boundary | exclusive historical date | historical cutoff plus tournament/round epoch |
 | Persistence | V2 ledger and shadow contract | V3 event authority and rebuildable projections |
-| Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen V6, 18-path `/v3/*` contract |
+| Consumer contract | public/ledger and six `/v1/shadow/*` routes | frozen V7, 18-path `/v3/*` contract |
 | Authority now | trusted production | audited release candidate, rehearsal only |
 
 V3 does not mutate V2 receipts or project itself through V2's five keys. Eligibility is

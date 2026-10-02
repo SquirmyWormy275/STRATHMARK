@@ -20,13 +20,13 @@ The current integration model is **competition-scoped selection**, not one globa
 replacement. A standalone event selects once at event setup. A tournament selects once
 at tournament creation, and every child event and round inherits that choice. Different
 competition roots may use different eligible engines, but one root never mixes V2 and
-V3 and never silently falls back. STRATHMARK supplies the V6 contract for that workflow;
+V3 and never silently falls back. STRATHMARK supplies the V7 contract for that workflow;
 the external STRATHEX adapter and its installed rehearsal remain separately versioned
 consumer responsibilities.
 
 The distinction matters:
 
-- **V2.0.0** is the immutable released and currently trusted production engine.
+- **V2.0.0 / V2.0.1** are published on PyPI. The 2.0.1 patch changes packaging documentation and version metadata; it preserves the V2 numeric engine. STRATHEX retains its reviewed exact 2.0.0 Git source pin.
 - **V3.0.0rc1** has separate code, contracts, storage, and tests. The formatted
   five-run Windows result-to-ready benchmark completed with a maximum of **3.414
   seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
@@ -47,11 +47,17 @@ Start with the mandatory domain source of truth,
 smaller mark starts earlier, how rebasing preserves a race, and why a mark from one field
 cannot simply be copied into another.
 
+## Linux and Windows
+
+The V2 library and API run on Linux and Windows with Python 3.10–3.13; Python 3.13 is recommended for current development. No separate fork is required. Current repository builds also provide `strathmark demo` (or `python -m strathmark demo`), an offline calculation with synthetic competitors that opens no operator database. The existing V2 PyPI releases expose the library/API; this new demonstration command is available in the maintenance source build.
+
+For a source installation and portable V3 verification, follow [Linux setup](docs/LINUX.md). Portable tests and replay do not qualify the Windows native optimizer, installed models, non-exportable CNG identities, or exact machine-bound release evidence. V3 is not production-eligible.
+
 ## Install the trusted V2 release
 
 ```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
+python -m pip install "strathmark==2.0.1"
+python -m pip install "strathmark[api]==2.0.1"
 ```
 
 The V2 tag is not a V3 installation. For development and rehearsal of V3, use an exact
