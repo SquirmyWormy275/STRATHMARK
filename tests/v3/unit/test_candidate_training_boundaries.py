@@ -20,6 +20,9 @@ def test_source_revision_rejects_installed_source_drift(tmp_path, monkeypatch):
     package.mkdir()
     (package / "__init__.py").write_bytes(b"# synthetic source\n")
     subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    # This fixture compares exact source bytes. Do not inherit the Windows
+    # runner's checkout conversion policy into its standalone synthetic repo.
+    subprocess.run(["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "add", "strathmark"], check=True)
     subprocess.run(
         [
