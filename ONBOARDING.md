@@ -2,15 +2,9 @@
 
 ## Current status
 
-V3 is a `3.0.0rc3` release candidate in a separate namespace that tracks
-all 232 in-repository requirements. Core modules and contract tests exist; the full
-installed lifecycle still needs operational composition and qualification.
-The checked-in development-key rehearsal is source-bound and must pass
-the release verifier; it is not production evidence. V2 remains the globally trusted
-production authority. V3 is not production-eligible. No production authority has
-changed, and V2 is not audit-only.
-No production CNG identity is provisioned. Never turn a rehearsal attestation into a
-production-readiness claim.
+STRATHMARK 3.0.0rc4 contains the complete separate [Linux local competition profile](docs/V3_LINUX_COMPETITION.md): actual Formula/ML, persistent signed local authority, explicit judge review and issue, complete outcomes and official placings, settlement/corrections, same-round freezing, later-round learning, restart, and verified recovery. STRATHEX 7.3 selects V2 or this local V3 profile deliberately per competition. The LLM council is unavailable and requires degraded/individual review. Private training needs explicit owner authorization and an isolated copy; tests remain synthetic.
+
+The Windows V7 profile tracks the 232 in-repository requirements but still needs its designated operational composition and CNG qualification. Its development-key rehearsal is source-bound, must pass the release verifier, and is not Windows production evidence. No production CNG identity is provisioned. V2 remains the established production baseline. Linux local keys never satisfy Windows CNG production gates.
 
 The normal package and trusted V2 engine support Python 3.10-3.13. V3 race-day
 execution, migrations, tests, and release evidence require the designated Python 3.13

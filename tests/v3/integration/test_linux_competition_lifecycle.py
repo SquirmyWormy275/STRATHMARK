@@ -157,6 +157,7 @@ def competition(tmp_path, trained_synthetic_bundle):
         "cutoff_at_utc": CUTOFF,
         "round_id": "round:synthetic-heats",
         "round_ordinal": 1,
+        "epoch_group_id": "round:synthetic-event",
         "predecessor_round_ids": [],
         "competitor_ids": ["SYN001", "SYN002"],
         "upstream_competitor_ids": ["competitor:synthetic-1", "competitor:synthetic-2"],
@@ -232,7 +233,7 @@ def approve_and_issue(runtime, context, receipt):
     )
 
 
-def settle(runtime, context, receipt, issue):
+def settle(runtime, context, receipt, issue, *, results=None, observed_at=None):
     return invoke(
         runtime,
         context,
@@ -241,13 +242,15 @@ def settle(runtime, context, receipt, issue):
             "schema_version": "strathmark-v3-settlement-request-v1",
             "receipt_id": receipt["receipt_id"],
             "issue_batch_id": issue["issue_batch_id"],
-            "results": [
+            "results": results
+            or [
                 {
                     "competitor_id": receipt["competitor_ids"][0],
                     "status": "completion",
                     "raw_time_ms": 22000,
                     "penalty_ms": None,
                     "source_revision": 1,
+                    "official_placing": 1,
                 },
                 {
                     "competitor_id": receipt["competitor_ids"][1],
@@ -255,9 +258,10 @@ def settle(runtime, context, receipt, issue):
                     "raw_time_ms": 50000,
                     "penalty_ms": None,
                     "source_revision": 1,
+                    "official_placing": 2,
                 },
             ],
-            "observed_at_utc": "2026-10-02T21:01:00.000Z",
+            "observed_at_utc": observed_at or "2026-10-02T21:01:00.000Z",
             "deadline_ms": 10000,
         },
     )
@@ -405,7 +409,11 @@ def test_correction_retains_issued_receipt_old_results_and_frozen_later_epoch(co
         runtime,
         context,
         "advance",
-        {"round_ordinal": 2, "closed_at_utc": "2026-10-02T21:02:00.000Z"},
+        {
+            "round_ordinal": 2,
+            "epoch_group_id": request["epoch_group_id"],
+            "closed_at_utc": "2026-10-02T21:02:00.000Z",
+        },
     )
     next_request = {
         **request,
@@ -431,6 +439,7 @@ def test_correction_retains_issued_receipt_old_results_and_frozen_later_epoch(co
                 "raw_time_ms": 24000 if index == 0 else None,
                 "penalty_ms": None,
                 "source_revision": 2,
+                "official_placing": 1 if index == 0 else None,
             }
             for index, identifier in enumerate(receipt["competitor_ids"])
         ],
@@ -449,3 +458,128 @@ def test_correction_retains_issued_receipt_old_results_and_frozen_later_epoch(co
     with pytest.raises(LinuxLifecycleError, match="latest settlement"):
         invoke(runtime, context, "correct", stale)
     assert runtime.store.state()["roots"][context["scope_id"]] == after
+
+
+@pytest.mark.parametrize(
+    "operation", ["approve", "issue", "settle", "correct", "close_round", "close_scope"]
+)
+def test_unknown_mutation_schema_rejected_before_any_mutation(competition, operation):
+    runtime, context, _request, _root = competition
+    before = runtime.store.state()
+    with pytest.raises(LinuxLifecycleError, match="schema version"):
+        invoke(runtime, context, operation, {"schema_version": "unrecognized-v99"})
+    assert runtime.store.state() == before
+
+
+def test_future_outcomes_rejected_and_judge_ties_retained(competition):
+    runtime, context, request, _root = competition
+    receipt = invoke(runtime, context, "field", request)
+    issue = approve_and_issue(runtime, context, receipt)
+    before = runtime.store.state()
+    with pytest.raises(LinuxLifecycleError, match="future observed result"):
+        settle(runtime, context, receipt, issue, observed_at="2030-01-01T00:00:00.000Z")
+    assert runtime.store.state() == before
+    marks = receipt["numeric"]["marks"]
+    clock = max(marks) * 1000 + 40000
+    results = [
+        {
+            "competitor_id": identifier,
+            "status": "completion",
+            "raw_time_ms": clock - mark * 1000,
+            "penalty_ms": None,
+            "source_revision": 1,
+            "official_placing": 1,
+        }
+        for identifier, mark in zip(receipt["competitor_ids"], marks, strict=True)
+    ]
+    accepted = settle(runtime, context, receipt, issue, results=results)
+    assert accepted["legal_finish_order"] is None
+    assert accepted["legal_finish_groups"] == [["SYN001", "SYN002"]]
+    assert accepted["placing_status"] == "judge_authorized"
+
+
+def test_events_advance_independently_and_forecast_only_rounds_close(competition):
+    runtime, context, request, _root = competition
+    forecast = {
+        key: value
+        for key, value in request.items()
+        if key not in {"field_id", "field_kind", "upstream_field_revision", "stand_ids", "ceiling"}
+    }
+    invoke(runtime, context, "forecast", {**forecast, "round_id": "round:synthetic-seeding"})
+    first = invoke(runtime, context, "field", request)
+    other_request = {
+        **request,
+        "epoch_group_id": "round:synthetic-other-event",
+        "round_id": "round:synthetic-other-heat",
+        "field_id": "field:synthetic-other-heat",
+    }
+    other = invoke(runtime, context, "field", other_request)
+    settle(runtime, context, first, approve_and_issue(runtime, context, first))
+    invoke(
+        runtime,
+        context,
+        "advance",
+        {
+            "round_ordinal": 2,
+            "epoch_group_id": request["epoch_group_id"],
+            "closed_at_utc": "2026-10-02T21:02:00.000Z",
+        },
+    )
+    final = invoke(
+        runtime,
+        context,
+        "field",
+        {
+            **request,
+            "round_id": "round:synthetic-final",
+            "field_id": "field:synthetic-final",
+            "round_ordinal": 2,
+        },
+    )
+    root = runtime.store.state()["roots"][context["scope_id"]]
+    assert root["rounds"][other_request["round_id"]]["status"] == "open"
+    other_again = invoke(
+        runtime,
+        context,
+        "field",
+        {**other_request, "field_id": "field:synthetic-other-second-heat"},
+    )
+    assert other_again["numeric"]["epoch_digest"] == other["numeric"]["epoch_digest"]
+    assert other_again["numeric"]["forecasts"] == other["numeric"]["forecasts"]
+    for receipt in (final, other, other_again):
+        settle(runtime, context, receipt, approve_and_issue(runtime, context, receipt))
+    for round_id in (final["round_id"], other["round_id"]):
+        invoke(
+            runtime,
+            context,
+            "close_round",
+            {
+                "schema_version": "strathmark-v3-round-close-request-v1",
+                "round_id": round_id,
+                "closed_at_utc": "2026-10-02T21:03:00.000Z",
+                "deadline_ms": 10000,
+            },
+        )
+    # Distinct final seeding identity is not a missing official settlement.
+    invoke(
+        runtime,
+        context,
+        "forecast",
+        {**forecast, "round_id": "round:synthetic-final-seeding", "round_ordinal": 2},
+    )
+    closed = invoke(
+        runtime,
+        context,
+        "close_scope",
+        {
+            "schema_version": "strathmark-v3-scope-close-request-v1",
+            "scope_id": context["scope_id"],
+            "closed_at_utc": "2026-10-02T21:04:00.000Z",
+            "deadline_ms": 10000,
+        },
+    )
+    assert closed["status"] == "closed"
+    assert all(
+        value["status"] == "closed"
+        for value in runtime.store.state()["roots"][context["scope_id"]]["rounds"].values()
+    )

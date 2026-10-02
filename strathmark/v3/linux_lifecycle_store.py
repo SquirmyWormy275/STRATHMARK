@@ -16,7 +16,7 @@ import sqlite3
 import tarfile
 import tempfile
 import zlib
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable
@@ -153,7 +153,7 @@ class LinuxLifecycleStore:
         )
         _write_private(identity_path, encode(signer.identity.to_dict()))
         _write_private(root / "head.json", encode({"sequence": 0, "event_digest": EMPTY_DIGEST}))
-        with sqlite3.connect(root / "competition.sqlite3") as connection:
+        with closing(sqlite3.connect(root / "competition.sqlite3")) as connection:
             connection.executescript(
                 """
                 PRAGMA trusted_schema=OFF;
@@ -305,7 +305,7 @@ class LinuxLifecycleStore:
                     archive.add(snapshot, arcname="installation")
                 if _archive_digests(temporary) != files:
                     raise LinuxLifecycleError("recovery archive readback differs")
-                with temporary.open("rb") as stream:
+                with temporary.open("rb+") as stream:
                     os.fsync(stream.fileno())
                 os.chmod(temporary, 0o600)
                 os.replace(temporary, target)
@@ -424,8 +424,8 @@ class LinuxLifecycleStore:
             # A separate read connection obtains a consistent SQLite backup while
             # the writer lock prevents new commands and head changes.
             with (
-                sqlite3.connect(self.database) as reader,
-                sqlite3.connect(destination / "competition.sqlite3") as target,
+                closing(sqlite3.connect(self.database)) as reader,
+                closing(sqlite3.connect(destination / "competition.sqlite3")) as target,
             ):
                 reader.backup(target)
             for name in ("installation-key.pem", "installation-identity.json"):
@@ -451,7 +451,7 @@ class LinuxLifecycleStore:
                 )
             _write_private(destination / "head.json", encode(head))
             os.chmod(destination / "competition.sqlite3", 0o600)
-            descriptor = os.open(destination / "competition.sqlite3", os.O_RDONLY)
+            descriptor = os.open(destination / "competition.sqlite3", os.O_RDWR)
             try:
                 os.fsync(descriptor)
             finally:

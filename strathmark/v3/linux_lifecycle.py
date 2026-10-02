@@ -64,6 +64,9 @@ CONTRACT_DIGEST = digest(
         "approval_is_issue": False,
         "issued_marks_mutable": False,
         "field_kinds": ["handicap", "championship"],
+        "placings": "judge_authorized_or_explicitly_unresolved",
+        "epoch_groups": "event_local_prior_rounds",
+        "mutation_schemas": "exact_version_required",
     }
 )
 CONTEXT_FIELDS = {
@@ -80,6 +83,7 @@ FORECAST_FIELDS = {
     "cutoff_at_utc",
     "round_id",
     "round_ordinal",
+    "epoch_group_id",
     "predecessor_round_ids",
     "competitor_ids",
     "upstream_competitor_ids",
@@ -91,6 +95,15 @@ FIELD_FIELDS = FORECAST_FIELDS | {
     "stand_ids",
     "ceiling",
     "field_kind",
+}
+
+SCHEMAS = {
+    "approve": "strathmark-v3-approval-decision-request-v1",
+    "issue": "strathmark-v3-issue-acknowledgment-request-v1",
+    "settle": "strathmark-v3-settlement-request-v1",
+    "correct": "strathmark-v3-settlement-request-v1",
+    "close_round": "strathmark-v3-round-close-request-v1",
+    "close_scope": "strathmark-v3-scope-close-request-v1",
 }
 
 
@@ -162,6 +175,10 @@ class LinuxCompetitionRuntime:
             "contract_digest": CONTRACT_DIGEST,
             "available": True,
             "numeric_available": numeric_available,
+            "competition_sources": {
+                scope: digest(self._identity(root["runtime_identity"]["ml_bundle_digest"]))
+                for scope, root in self.store.state()["roots"].items()
+            },
             "purpose": "competition_lifecycle",
             "mode": "local",
             "windows_production_qualified": False,
@@ -209,6 +226,10 @@ class LinuxCompetitionRuntime:
             raise LinuxLifecycleError("unsupported Linux competition operation")
         _fields(envelope, {"command_id", "context", "payload"})
         context, payload = envelope["context"], envelope["payload"]
+        if operation in SCHEMAS and (
+            not isinstance(payload, dict) or payload.get("schema_version") != SCHEMAS[operation]
+        ):
+            raise LinuxLifecycleError("operation schema version differs from the selected contract")
         self._context(context)
         occurred_at = now()
         request = {"context": context, "payload": payload}
@@ -332,9 +353,9 @@ class LinuxCompetitionRuntime:
                 if removed:
                     path.chmod(0o600)
                     workbook.save(path)
-                    path.chmod(0o400)
-                    with path.open("rb") as stream:
+                    with path.open("rb+") as stream:
                         os.fsync(stream.fileno())
+                    path.chmod(0o400)
             finally:
                 workbook.close()
             metadata.update(
@@ -364,6 +385,7 @@ class LinuxCompetitionRuntime:
             "context": context,
             "round_id": round_id,
             "round_ordinal": payload["round_ordinal"],
+            "epoch_group_id": payload["epoch_group_id"],
             "predecessor_round_ids": payload["predecessor_round_ids"],
             "history_sha256": history["sha256"],
             "cutoff_at_utc": history["cutoff_at_utc"],
@@ -402,7 +424,13 @@ class LinuxCompetitionRuntime:
             if round_id in root["rounds"]:
                 raise LinuxLifecycleError("round already exists with another freeze identity")
             ordinal = payload["round_ordinal"]
-            if root["phases"] and ordinal < max(map(int, root["phases"])):
+            group = payload["epoch_group_id"]
+            group_rounds = {
+                key: value
+                for key, value in root["rounds"].items()
+                if value["epoch_group_id"] == group
+            }
+            if group_rounds and ordinal < max(value["ordinal"] for value in group_rounds.values()):
                 raise LinuxLifecycleError(
                     "cannot create an earlier-round field after a later epoch has started"
                 )
@@ -410,21 +438,22 @@ class LinuxCompetitionRuntime:
             if not predecessors and payload["round_ordinal"] > 1:
                 predecessors = [
                     key
-                    for key, value in root["rounds"].items()
+                    for key, value in group_rounds.items()
                     if value["ordinal"] < payload["round_ordinal"]
                 ]
                 if not predecessors:
                     raise LinuxLifecycleError("later round has no completed predecessor")
             if any(
-                key not in root["rounds"] or root["rounds"][key]["status"] != "closed"
+                key not in group_rounds or group_rounds[key]["status"] != "closed"
                 for key in predecessors
             ):
                 raise LinuxLifecycleError("predecessor round is not closed and settled")
-            phase = root["phases"].get(str(ordinal))
+            phase_key = group + ":" + str(ordinal)
+            phase = root["phases"].get(phase_key)
             if phase is None:
                 if any(
                     value["ordinal"] < ordinal and value["status"] != "closed"
-                    for value in root["rounds"].values()
+                    for value in group_rounds.values()
                 ):
                     raise LinuxLifecycleError(
                         "all fields in earlier rounds must close before the next epoch"
@@ -447,8 +476,11 @@ class LinuxCompetitionRuntime:
                         live.extend(
                             item
                             for item in field["settlement"]["live_results"]
-                            if other_scope == scope
-                            or item["observation"]["occurred_at_utc"] < history["cutoff_at_utc"]
+                            if item["observation"]["occurred_at_utc"] <= occurred_at
+                            and (
+                                other_scope == scope
+                                or item["observation"]["occurred_at_utc"] < history["cutoff_at_utc"]
+                            )
                         )
                 live.sort(
                     key=lambda item: (
@@ -458,16 +490,19 @@ class LinuxCompetitionRuntime:
                 )
                 phase = {
                     "live_results": live,
-                    "weights": self._weights(root),
+                    "weights": self._weights(root, ordinal),
                     "frozen_at_utc": occurred_at,
                     "epoch_round_id": str(
-                        deterministic_identifier("round", {"scope": scope, "ordinal": ordinal})
+                        deterministic_identifier(
+                            "round", {"scope": scope, "epoch_group_id": group, "ordinal": ordinal}
+                        )
                     ),
                 }
-                root["phases"][str(ordinal)] = phase
+                root["phases"][phase_key] = phase
             root["rounds"][round_id] = {
                 "status": "open",
                 "ordinal": payload["round_ordinal"],
+                "epoch_group_id": group,
                 "predecessors": predecessors,
                 "history_path": history["path"],
                 "history_sha256": history["sha256"],
@@ -494,7 +529,7 @@ class LinuxCompetitionRuntime:
         return self._root(self.store.state(), context)["rounds"][round_id]
 
     @staticmethod
-    def _weights(root):
+    def _weights(root, ordinal):
         # A disclosed Linux policy, not a replacement for the Windows factory:
         # eight equal-prior opportunities regularize earned normalized CRPS.
         values = {}
@@ -504,6 +539,7 @@ class LinuxCompetitionRuntime:
                 for item in root["scores"]
                 if item["assessor"] == assessor
                 and root["rounds"][item["round_id"]]["status"] == "closed"
+                and root["rounds"][item["round_id"]]["ordinal"] < ordinal
             ]
             loss = (sum(scores) + Decimal("0.8")) / (len(scores) + 8)
             values[assessor] = Decimal(1) / max(loss, Decimal("0.001"))
@@ -517,6 +553,7 @@ class LinuxCompetitionRuntime:
     def _prepare(self, operation, envelope, context, payload, occurred_at):
         _fields(payload, FORECAST_FIELDS if operation == "forecast" else FIELD_FIELDS)
         _identifier(payload["round_id"], "round")
+        _identifier(payload["epoch_group_id"], "round")
         _positive(payload["round_ordinal"], "round ordinal")
         require_utc_milliseconds(payload["cutoff_at_utc"])
         if not isinstance(payload["predecessor_round_ids"], list) or len(
@@ -877,6 +914,10 @@ class LinuxCompetitionRuntime:
             },
         )
         require_utc_milliseconds(payload["observed_at_utc"])
+        if payload["observed_at_utc"] > occurred_at:
+            raise LinuxLifecycleError(
+                "future observed result cannot enter the causal evidence history"
+            )
         field = self._receipt(root, payload["receipt_id"])
         receipt = field["receipt"]
         if field["issue"] is None or payload["issue_batch_id"] != field["issue"]["issue_batch_id"]:
@@ -898,10 +939,18 @@ class LinuxCompetitionRuntime:
             raise LinuxLifecycleError(
                 "settlement requires one explicit outcome for every issued competitor"
             )
-        parsed = {}
+        parsed, placements = {}, {}
         for item in results:
             _fields(
-                item, {"competitor_id", "status", "raw_time_ms", "penalty_ms", "source_revision"}
+                item,
+                {
+                    "competitor_id",
+                    "status",
+                    "raw_time_ms",
+                    "penalty_ms",
+                    "source_revision",
+                    "official_placing",
+                },
             )
             _positive(item["source_revision"], "result revision")
             if item["source_revision"] != revision:
@@ -918,17 +967,34 @@ class LinuxCompetitionRuntime:
             local_id = dict(
                 zip(receipt["competitor_ids"], receipt["local_competitor_ids"], strict=True)
             )[item["competitor_id"]]
-            parsed[local_id] = official
+            placing = item["official_placing"]
+            if placing is not None:
+                _positive(placing, "official placing")
+                if official.status not in {ResultStatus.COMPLETION, ResultStatus.PENALTY}:
+                    raise LinuxLifecycleError(
+                        "nonfinishes and void results cannot carry legal placings"
+                    )
+            parsed[local_id], placements[local_id] = official, placing
         marks = dict(zip(receipt["local_competitor_ids"], receipt["numeric"]["marks"], strict=True))
         finishes = sorted(
             (result.raw_time_ms + marks[key] * 1000 + (result.penalty_ms or 0), key)
             for key, result in parsed.items()
             if result.status in {ResultStatus.COMPLETION, ResultStatus.PENALTY}
         )
-        placements = {
-            key: 1 + sum(other_count < count for other_count, _ in finishes)
-            for count, key in finishes
-        }
+        legal_groups = [
+            [key for key in sorted(parsed) if placements[key] == position]
+            for position in sorted({place for place in placements.values() if place is not None})
+        ]
+        unresolved = any(
+            result.status in {ResultStatus.COMPLETION, ResultStatus.PENALTY}
+            and placements[key] is None
+            for key, result in parsed.items()
+        )
+        legal_order = (
+            [group[0] for group in legal_groups]
+            if not unresolved and all(len(group) == 1 for group in legal_groups)
+            else None
+        )
         front = finishes[0][0] if finishes else None
         live_results = []
         issued = {
@@ -1016,13 +1082,17 @@ class LinuxCompetitionRuntime:
             "results": results,
             "live_results": live_results,
             "observed_at_utc": payload["observed_at_utc"],
-            "legal_finish_order": [key for _count, key in finishes],
+            "legal_finish_order": legal_order,
+            "legal_finish_groups": legal_groups,
+            "placing_status": "unresolved" if unresolved else "judge_authorized",
         }
         return {
             "settlement_id": settlement_id,
             "receipt_id": receipt["receipt_id"],
             "results_settled": len(results),
-            "legal_finish_order": [key for _count, key in finishes],
+            "legal_finish_order": legal_order,
+            "legal_finish_groups": legal_groups,
+            "placing_status": "unresolved" if unresolved else "judge_authorized",
             "same_round_epoch_changed": False,
         }
 
@@ -1115,17 +1185,21 @@ class LinuxCompetitionRuntime:
         }
 
     def _advance(self, root, payload, occurred_at):
-        _fields(payload, {"round_ordinal", "closed_at_utc"})
+        _fields(payload, {"round_ordinal", "epoch_group_id", "closed_at_utc"})
+        _identifier(payload["epoch_group_id"], "round")
         _positive(payload["round_ordinal"], "round ordinal")
         require_utc_milliseconds(payload["closed_at_utc"])
         closures = []
         for round_id, round_state in sorted(root["rounds"].items()):
-            if round_state["ordinal"] < payload["round_ordinal"]:
+            if (
+                round_state["epoch_group_id"] == payload["epoch_group_id"]
+                and round_state["ordinal"] < payload["round_ordinal"]
+            ):
                 closures.append(
                     self._close_round(
                         root,
                         {
-                            "schema_version": "strathmark-v3-round-closure-request-v1",
+                            "schema_version": "strathmark-v3-round-close-request-v1",
                             "round_id": round_id,
                             "closed_at_utc": payload["closed_at_utc"],
                             "deadline_ms": 10000,
@@ -1135,10 +1209,32 @@ class LinuxCompetitionRuntime:
                 )
         if not closures:
             raise LinuxLifecycleError("next round has no completed predecessor")
-        return {"round_ordinal": payload["round_ordinal"], "closures": closures}
+        return {
+            "round_ordinal": payload["round_ordinal"],
+            "epoch_group_id": payload["epoch_group_id"],
+            "closures": closures,
+        }
 
     def _close_scope(self, root, payload, occurred_at):
         _fields(payload, {"schema_version", "scope_id", "closed_at_utc", "deadline_ms"})
+        require_utc_milliseconds(payload["closed_at_utc"])
+        # Seeding is mark-free evidence, not an unissued competition field.
+        # The menu gives seeding its own round identity; close those retained
+        # forecast-only rounds without inventing issue or result authority.
+        for round_id, round_state in root["rounds"].items():
+            if round_state["status"] != "closed" and not any(
+                field["receipt"]["round_id"] == round_id for field in root["fields"].values()
+            ):
+                self._close_round(
+                    root,
+                    {
+                        "schema_version": SCHEMAS["close_round"],
+                        "round_id": round_id,
+                        "closed_at_utc": payload["closed_at_utc"],
+                        "deadline_ms": 10000,
+                    },
+                    occurred_at,
+                )
         if (
             payload["scope_id"] != root["selection"]["scope_id"]
             or not root["rounds"]

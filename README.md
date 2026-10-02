@@ -30,7 +30,7 @@ consumer responsibilities.
 The distinction matters:
 
 - **V2.0.0 / V2.0.1** are published on PyPI. The 2.0.1 patch changes packaging documentation and version metadata; it preserves the V2 numeric engine. STRATHEX retains its reviewed exact 2.0.0 Git source pin.
-- **V3.0.0rc3** has separate code, contracts, storage, and tests. The formatted
+- **V3.0.0rc4** provides the separate Linux local workflow. The historical formatted
   five-run Windows result-to-ready benchmark completed with a maximum of **3.414
   seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
   development-key rehearsal attestation are candidate outputs, not permanent claims
