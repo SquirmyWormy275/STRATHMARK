@@ -73,6 +73,6 @@ remain distinct authorized actions.
 
 ## Repository maintenance
 
-Run `python scripts/check_docs.py`, the frozen consumer-contract check, a distribution build, and `python scripts/smoke_installed_distribution.py --kind wheel` (also `sdist` when packaging changes). Follow [Linux setup](docs/LINUX.md) for portable verification and [formula runtime qualification](docs/FORMULA_RUNTIME.md) for designated workbook verification. All hosted gates feed the stable `Required CI` status. Dependency updates are proposals; numeric dependencies, model/source pins, artifacts, and signed evidence require coordinated review.
+Run `python scripts/check_docs.py`, the frozen consumer-contract check, a distribution build, and `python scripts/smoke_installed_distribution.py --kind wheel` (also `sdist` when packaging changes). Follow [Linux setup](docs/LINUX.md) for portable verification and [formula runtime qualification](docs/FORMULA_RUNTIME.md) for designated workbook verification. All hosted gates feed the stable `Required CI` status. Dependabot security updates are grouped proposals; routine version PRs are disabled to avoid branch churn. Version upgrades, including action majors, are reviewed manually; numeric dependencies, model/source pins, artifacts, and signed evidence require coordinated review.
 
 Wiki pages are versioned under `docs/wiki`. After merge, review `python scripts/publish_wiki.py --mode preview`, publish with `--mode publish` from clean exact main, and verify with `--mode check`.
