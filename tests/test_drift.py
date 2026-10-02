@@ -485,12 +485,24 @@ def test_evaluate_drift_requires_model_version_for_ledger():
         evaluate_drift(ledger=object(), baseline_residuals=[0.0] * 100)
 
 
-def test_sqlite_query_deadline_progress_handler_interrupts_long_read(tmp_path):
+def test_sqlite_query_deadline_progress_handler_interrupts_long_read(tmp_path, monkeypatch):
     from strathmark.ledger import PredictionLedger, SQLiteQueryDeadline
 
+    clock = {"now": 0.0}
+    monkeypatch.setattr("strathmark.ledger.time.monotonic", lambda: clock["now"])
     ledger = PredictionLedger(tmp_path / "query-deadline.db")
     deadline = SQLiteQueryDeadline(timeout_seconds=0.005)
     conn = ledger._connect(query_deadline=deadline)
+
+    def advance_clock(value):
+        # Expire during the query, after connection setup and actual SQL work.
+        # A loaded runner can spend more than 5ms opening a database.
+        if value == 100:
+            clock["now"] = 0.006
+        return value
+
+    conn.create_function("advance_test_clock", 1, advance_clock)
+    assert deadline.cancelled is False
     try:
         with pytest.raises(sqlite3.OperationalError, match="interrupted"):
             conn.execute(
@@ -500,9 +512,10 @@ def test_sqlite_query_deadline_progress_handler_interrupts_long_read(tmp_path):
                     UNION ALL
                     SELECT value + 1 FROM values_to_sum WHERE value < 10000000
                 )
-                SELECT SUM(value) FROM values_to_sum
+                SELECT SUM(advance_test_clock(value)) FROM values_to_sum
                 """
             ).fetchone()
     finally:
         conn.close()
+    assert clock["now"] == 0.006
     assert deadline.cancelled is True
