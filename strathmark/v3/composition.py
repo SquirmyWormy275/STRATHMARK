@@ -178,6 +178,59 @@ def compose_test_ml_audit_authority(
     )
 
 
+def compose_development_ml_authorities(
+    candidate_manifest: SignedManifest,
+    audit_manifest: SignedManifest,
+    *,
+    candidate_signer: P256EphemeralSigner,
+    audit_signer: P256EphemeralSigner,
+) -> tuple[TrustedMLRoleAuthority, TrustedMLAuditAuthority]:
+    """Compose separate non-production authorities for an explicit candidate build.
+
+    This path is usable on Linux. It grants neither CNG identity nor production
+    eligibility and retains the same signed role separation as the test and
+    production compositions.
+    """
+    from strathmark.v3.factory.ml_training import (
+        MLAuthorityEnvironment,
+        _compose_ml_audit_authority,
+        _compose_ml_candidate_authority,
+    )
+
+    if (
+        candidate_signer.identity.key_id == audit_signer.identity.key_id
+        or candidate_signer.identity.public_key_der_b64 == audit_signer.identity.public_key_der_b64
+    ):
+        raise ConfigurationError("candidate and locked-audit authorities need separate keys")
+    candidate, audit = (
+        _compose_ml_candidate_authority(
+            candidate_manifest,
+            candidate_signer.identity,
+            candidate_signer,
+            environment=MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE,
+        ),
+        _compose_ml_audit_authority(
+            audit_manifest,
+            audit_signer.identity,
+            audit_signer,
+            environment=MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE,
+        ),
+    )
+    if candidate.manifest.generation_digest != audit.manifest.generation_digest or {
+        item.tournament_id for item in candidate.manifest.assignments
+    } & {item.tournament_id for item in audit.manifest.assignments}:
+        raise ConfigurationError("candidate and audit need one generation and disjoint tournaments")
+    audit = _compose_ml_audit_authority(
+        audit_manifest,
+        audit_signer.identity,
+        audit_signer,
+        environment=MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE,
+        historical_manifest=candidate_manifest,
+        historical_identity=candidate_signer.identity,
+    )
+    return candidate, audit
+
+
 def compose_production_ml_authorities(
     config: V3RuntimeConfig,
 ) -> tuple[TrustedMLRoleAuthority, TrustedMLAuditAuthority]:

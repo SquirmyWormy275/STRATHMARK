@@ -171,6 +171,126 @@ def _signed_authority_payload(payload: object):
     return signed, signer
 
 
+def test_chronological_holdout_never_fits_on_holdout_targets(monkeypatch):
+    """Changing a holdout target cannot alter its forecast or training inputs."""
+    assignments = (
+        ("tournament:train", MLDataRole.TRAINING),
+        ("tournament:tune", MLDataRole.TUNING),
+        ("tournament:calibration", MLDataRole.CALIBRATION),
+    )
+    fitted_targets = []
+
+    class Model:
+        def predict(self, _features):
+            return [[3.0] * 7]
+
+    def fit(rows, **_settings):
+        fitted_targets.append(tuple(row.target_log_seconds for row in rows))
+        assert {row.tournament_id for row in rows} == {"tournament:train"}
+        return Model(), {}, {}
+
+    monkeypatch.setattr(ml_training_module, "_train_catboost_hierarchy", fit)
+    outputs = []
+    for target in (20000, 59000):
+        authority = _verified_authority(assignments)
+        training = authority.build_causal_training_matrix(
+            authority.authorize_packets(
+                MLDataRole.TRAINING,
+                (_packet((_observation(1, 30000, day=1, tournament="train"),)),),
+            )
+        )
+        holdout = authority.build_causal_training_matrix(
+            authority.authorize_packets(
+                MLDataRole.TUNING,
+                (_packet((_observation(2, target, day=5, tournament="tune"),)),),
+            )
+        )
+        outputs.append(authority.chronological_holdout_component_predictions(training, holdout)[0])
+        with pytest.raises(ValueError, match="role"):
+            authority.chronological_holdout_component_predictions(holdout, training)
+    assert fitted_targets[0] == fitted_targets[1]
+    assert outputs[0].universal_log_quantiles == outputs[1].universal_log_quantiles
+
+
+def test_development_composition_keeps_audit_separate_and_cannot_authorize_production():
+    from strathmark.v3.composition import compose_development_ml_authorities
+
+    candidate_signer = P256EphemeralSigner.generate("candidate-development")
+    audit_signer = P256EphemeralSigner.generate("audit-development")
+
+    def manifest(signer, audit=False, overlap=False):
+        return sign_manifest(
+            "ml_audit_role_manifest" if audit else "ml_role_manifest",
+            {
+                "schema_version": "strathmark-v3-ml-role-manifest-v3",
+                "generation_digest": "d" * 64,
+                "assignments": (
+                    [
+                        {
+                            "tournament_id": "tournament:training"
+                            if overlap
+                            else "tournament:audit",
+                            "role": "locked_audit",
+                        }
+                    ]
+                    if audit
+                    else [
+                        {"tournament_id": f"tournament:{role.value}", "role": role.value}
+                        for role in (MLDataRole.TRAINING, MLDataRole.TUNING, MLDataRole.CALIBRATION)
+                    ]
+                ),
+            },
+            signer=signer,
+            created_at="2026-10-02T00:00:00.000Z",
+        )
+
+    candidate, audit = compose_development_ml_authorities(
+        manifest(candidate_signer),
+        manifest(audit_signer, True),
+        candidate_signer=candidate_signer,
+        audit_signer=audit_signer,
+    )
+    for authority in (candidate, audit):
+        assert authority.authority_environment is MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE
+        with pytest.raises(ValueError, match="not production-authoritative"):
+            authority.require_production_ready()
+    assert not hasattr(audit, "chronological_holdout_component_predictions")
+    prior = _observation(1, 40_000, day=1, tournament="training")
+    target = _observation(2, 35_000, day=2, tournament="tuning")
+    future = _observation(3, 90_000, day=3, tournament="calibration")
+    causal = candidate.build_development_causal_rows(MLDataRole.TUNING, (_packet((prior, target)),))
+    assert len(causal) == 1
+    assert causal[0].training_max_sequence == 1
+    assert causal[0].feature_dict["history_depth"] == 1
+    with pytest.raises(ValueError, match="later role"):
+        candidate.build_development_causal_rows(
+            MLDataRole.TUNING, (_packet((prior, target, future)),)
+        )
+    locked = _observation(4, 30_000, day=4, tournament="audit")
+    with pytest.raises(ValueError, match="unknown or later"):
+        candidate.build_development_causal_rows(
+            MLDataRole.CALIBRATION, (_packet((prior, target, future, locked)),)
+        )
+    audit_rows = audit.build_development_causal_rows(
+        MLDataRole.LOCKED_AUDIT, (_packet((prior, target, future, locked)),)
+    )
+    assert len(audit_rows) == 1 and audit_rows[0].training_max_sequence == 3
+    with pytest.raises(ConfigurationError, match="disjoint"):
+        compose_development_ml_authorities(
+            manifest(candidate_signer),
+            manifest(audit_signer, True, True),
+            candidate_signer=candidate_signer,
+            audit_signer=audit_signer,
+        )
+    with pytest.raises(ConfigurationError, match="separate keys"):
+        compose_development_ml_authorities(
+            manifest(candidate_signer),
+            manifest(candidate_signer, True),
+            candidate_signer=candidate_signer,
+            audit_signer=candidate_signer,
+        )
+
+
 @dataclass(frozen=True)
 class _AuthorizedCase:
     authority: TrustedMLRoleAuthority

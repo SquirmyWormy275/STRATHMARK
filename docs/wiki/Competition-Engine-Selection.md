@@ -2,11 +2,18 @@
 
 ## Current authority status
 
-V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc1 is a separate
+V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc2 is a separate
 release candidate and is not production-eligible. A development-key rehearsal, V7 route,
 or selection record does not change that status.
 
 ## The pivot
+
+STRATHEX can also explicitly select the Linux numeric candidate for previews.
+This profile binds its installed code, Formula, and trained model digests instead
+of claiming V7 service identity. It supplies mark-free seeding and proposed marks,
+with no approval, issue, settlement, or next-round authority. Changing an artifact
+blocks the saved root. See the
+[candidate guide](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md).
 
 The earlier deployment design assumed one global V2-to-V3 consumer switch. The current
 design keeps both engines explicit so judges can test an eligible V3 on deliberately

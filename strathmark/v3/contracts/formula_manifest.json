@@ -1,0 +1,30 @@
+{
+  "schema_version": "strathmark-v3-formula-manifest-v2",
+  "version": "formula:v2-bootstrap",
+  "time_quantum_ms": 1,
+  "population_prior": {"median_seconds": "55", "log_sigma": "0.65", "log_variance": "0.4225", "pseudo_count": 3, "lineage_digest": "0ac3345d97864c3b6db118ef06107316b3fe73751e0a290cfeb9e19e4413aee7"},
+  "context_priors": [
+    {"event_code": "standing_block", "size_mm": 300, "material_code": "eucalyptus", "median_seconds": "52", "log_variance": "0.1764", "pseudo_count": 3, "lineage_digest": "b15434b2c74b2db5ffaa698c623ecb122b760b41f8d928ad1a3b02fa494cf1f1"},
+    {"event_code": "underhand", "size_mm": 300, "material_code": "eucalyptus", "median_seconds": "45", "log_variance": "0.16", "pseudo_count": 3, "lineage_digest": "be67bb87329d79a404244a99832bebae1275271faca40713ed7e784e68727d4d"},
+    {"event_code": "underhand", "size_mm": 350, "material_code": "pine", "median_seconds": "58", "log_variance": "0.3025", "pseudo_count": 3, "lineage_digest": "c100f311d763ccb7b49ccff80159b7244b2f891e044126c73ad972d4ee75a52e"}
+  ],
+  "discipline_priors": [
+    {"discipline": "axe", "median_seconds": "49", "log_variance": "0.25", "pseudo_count": 3, "lineage_digest": "e435c4d1cd8a5dceb3a9a3af9ec9ff58b6316b5e4ca03500272e2aa016a3dfc2"},
+    {"discipline": "sawing", "median_seconds": "65", "log_variance": "0.3025", "pseudo_count": 3, "lineage_digest": "c2b4b42da3cd0cd980cf135b8924aadf1671e839175b8125d168153e6082b507"}
+  ],
+  "robust_center": {"huber_tuning": "1.5", "max_iterations": 20, "tolerance": "0.0000000001", "mad_consistency": "1.4826", "minimum_scale": "0.05"},
+  "context": {"exact": "1", "same_discipline": "0.6", "cross_discipline": "0.25", "diameter_decay": "2"},
+  "recency_half_life_days": "730",
+  "quality": {"issued_official": "1", "verified_historical": "0.85"},
+  "tournament": {"active": "1", "other_authoritative": "0.9", "legacy": "0.75"},
+  "event_scales": {"single_buck": "1.3", "standing_block": "1.08", "underhand": "1"},
+  "event_size_exponents": {"single_buck": "1.8", "standing_block": "2.05", "underhand": "2"},
+  "event_disciplines": {"single_buck": "sawing", "standing_block": "axe", "underhand": "axe"},
+  "declared_event_relations": {"single_buck->standing_block": "cross_discipline", "single_buck->underhand": "cross_discipline", "standing_block->single_buck": "cross_discipline", "standing_block->underhand": "same_discipline", "underhand->single_buck": "cross_discipline", "underhand->standing_block": "same_discipline"},
+  "density_exponent": "0.35",
+  "conversion_variance": {"same_discipline": "0.01", "cross_discipline": "0.04", "size_coefficient": "0.15", "material_coefficient": "0.25"},
+  "positive_bounds": {"minimum_log_sigma": "0.05", "maximum_log_sigma": "1.5", "minimum_time_ms": 1, "maximum_time_ms": 600000},
+  "dense_effective_sample_size": "5",
+  "quantiles": {"0.05": "-1.645", "0.25": "-0.674", "0.5": "0", "0.75": "0.674", "0.95": "1.645"},
+  "digest": "2c58a9527c77a33e0b813fe938db44c6298ac0ea8b543a199b720d97baaf1354"
+}

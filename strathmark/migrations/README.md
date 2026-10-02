@@ -2,7 +2,7 @@
 
 ## V2/V3 boundary
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
 requirements; implementation is under final audit. Its older rehearsal is stale until
 regenerated from the final documentation commit, but V2 remains the trusted production
 authority until an explicit cutover. No production authority has changed.

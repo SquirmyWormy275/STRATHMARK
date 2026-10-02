@@ -1,9 +1,11 @@
 # STRATHMARK Architecture
 
+The [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
+
 ## Status and authority
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. Its
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. Its
 checked-in development-key rehearsal is source-bound and does not change authority. V2
 remains the globally trusted production authority; V3 is not production-eligible. No
 production authority has changed, and V2 remains runnable and writable.

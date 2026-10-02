@@ -1012,12 +1012,17 @@ def test_numeric_actor_namespace_must_match_the_bound_caller(tmp_path):
         )
 
 
-def test_monitoring_uses_latest_numeric_mirror_attempt_and_does_not_infer_drift(tmp_path):
+def test_monitoring_uses_latest_numeric_mirror_attempt_and_does_not_infer_drift(
+    tmp_path, monkeypatch
+):
     def offline(_payload):
         raise OSError("offline")
 
     path = tmp_path / "monitoring-attempts.db"
     ledger = PredictionLedger(path, mirror=offline)
+    # This query regression controls timestamps directly. Drain delivery through
+    # the explicit synchronous flush so a daemon cannot replace them mid-check.
+    monkeypatch.setattr(ledger, "_start_mirror_worker_locked", lambda: None)
     first = _field(
         ledger,
         "missoula:competitor:1",

@@ -2,11 +2,15 @@
 
 ## Current authority status
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. Its
-checked-in development-key rehearsal is source-bound and must pass the release verifier.
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. The separately installed Linux numeric profile executes Formula,
+trained ML, pooling, and optimization; it remains preview-only. Its
+checked-in development-key V7 rehearsal is source-bound and must pass the release verifier.
 V2 remains the globally trusted production authority. V3 is not production-eligible,
 V2 is not audit-only, and no production CNG identity is provisioned.
+
+See [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md)
+for private model training, the separate runtime, and its explicit lifecycle limits.
 
 The current product model selects one eligible engine per competition root rather than
 performing one global replacement. A standalone event selects once; a tournament selects

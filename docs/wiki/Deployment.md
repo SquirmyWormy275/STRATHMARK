@@ -1,9 +1,11 @@
 # Deployment and Recovery
 
+The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
+
 ## Current authority status
 
-V3.0.0rc1 is a release candidate that tracks all 232 in-repository
-requirements. Repository implementation and audit are complete for this candidate. The
+V3.0.0rc2 is a release candidate that tracks all 232 in-repository
+requirements. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. The
 checked-in development-key rehearsal is source-bound and must pass the release verifier.
 V2 remains the globally trusted production authority. V3 is not production-eligible,
 V2 is not audit-only, and no production CNG identity is provisioned.
