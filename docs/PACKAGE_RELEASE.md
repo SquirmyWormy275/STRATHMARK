@@ -57,3 +57,5 @@ authorization tag, source tag, version, checkout, or cleanliness checks disagree
 
 Creating tags, changing GitHub/PyPI settings, uploading to TestPyPI/PyPI, and enabling
 V3 production selection are deliberately outside ordinary code delivery.
+
+Public wheel and source archives exclude operator workbooks and signing keys. The source archive retains the synthetic Formula golden workbook. Reproducing workbook-backed V2 release checks requires the separate exact workbook pinned by the existing acceptance manifest; the released V2 algorithm, model and acceptance hashes are unchanged. The installed-distribution smoke refuses an archive containing either historical root workbook.
