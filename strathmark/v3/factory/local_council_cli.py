@@ -8,6 +8,7 @@ Raw envelopes, validator decisions and exact model/runtime identities are retain
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import http.client
 import ipaddress
@@ -119,9 +120,11 @@ class LocalCouncilClient:
             len(self.members) != 3
             or len({item.family for item in self.members}) != 3
             or len({item.member_id for item in self.members}) != 3
+            or len({item.model_id for item in self.members}) != 3
+            or len({item.model_digest for item in self.members}) != 3
         ):
             raise ValueError(
-                "local diagnostic council requires three distinct families and members"
+                "local diagnostic council requires three distinct families, members and models"
             )
         self.token_key = HMACTokenKey("local_council", secrets.token_bytes(32))
         self.check_pins()
@@ -174,12 +177,33 @@ class LocalCouncilClient:
     def evaluate_member(self, evidence, member, *, keep_alive=0):
         self.check_pins()
         packet = build_provider_packet(evidence, member, self.token_key, scope="local_candidate")
-        prompt = render_member_prompt(packet).decode()
+        # Workbook imports have no authenticated issued-mark or legal-field
+        # metadata. Their transport defaults are not evidence for a model.
+        projected = packet.to_dict()
+        unavailable = ("issued_mark", "completion_clock_ms", "placing", "gap_ms")
+        for observation in projected["observations"]:
+            for name in unavailable:
+                observation.pop(name, None)
+        projected["schema_version"] = "strathmark-v3-local-legacy-provider-packet-v1"
+        projected["unavailable_fields"] = list(unavailable)
+        projected["numeric_digest"] = canonical_digest(
+            {
+                "schema_version": projected["schema_version"],
+                "unavailable_fields": projected["unavailable_fields"],
+                "target_context": projected["target_context"],
+                "observations": [
+                    {key: value for key, value in item.items() if key != "evidence_ref"}
+                    for item in projected["observations"]
+                ],
+            }
+        )
+        policy = render_member_prompt(packet).decode().split("UNTRUSTED_JSON_DATA\n")[0]
+        prompt = policy + "UNTRUSTED_JSON_DATA\n" + canonical_bytes(projected).decode()
         prompt += "\nResponse schema: " + json.dumps(OUTPUT_SCHEMA)
         prompt += "\nQuantiles must have probabilities in exactly this order: " + ",".join(
             REQUIRED_QUANTILES
         )
-        prompt += "\nTimes are RAW cutting milliseconds. Legacy reference marks do not imply known official placings. Output no narrative."
+        prompt += "\nTimes are RAW cutting milliseconds. Issued marks, completion clocks, legal placings and gaps are unavailable. Output no narrative."
         prompt += "\nCOMMITTED: use all seven ordered quantiles, abstention_reason=null, and cite the supplied evidence_ref values in their original order."
         prompt += "\nABSTAINED: quantiles=[], evidence_refs=[], fact_codes=[]; use a declared abstention_reason. Empty history requires abstention. Do not cite references when abstaining. Sort warnings and fact_codes alphabetically without duplicates."
         attempts = []
@@ -195,51 +219,54 @@ class LocalCouncilClient:
                 + error
                 + ". Return corrected exact JSON."
             )
+            payload = {
+                "model": member.model_id,
+                "prompt": message,
+                "format": OUTPUT_SCHEMA,
+                "stream": False,
+                "think": False,
+                "keep_alive": keep_alive,
+                "options": {
+                    "seed": 1729,
+                    "temperature": 0,
+                    "top_p": 1,
+                    "num_ctx": 8192,
+                    "num_predict": 2048,
+                },
+            }
+            record = {"request_digest": canonical_digest(payload)}
+            attempts.append(record)
             try:
                 raw = self.request(
                     "POST",
                     "/api/generate",
-                    {
-                        "model": member.model_id,
-                        "prompt": message,
-                        "format": OUTPUT_SCHEMA,
-                        "stream": False,
-                        "think": False,
-                        "keep_alive": keep_alive,
-                        "options": {
-                            "seed": 1729,
-                            "temperature": 0,
-                            "top_p": 1,
-                            "num_ctx": 8192,
-                            "num_predict": 2048,
-                        },
-                    },
+                    payload,
                 )
+                record["raw_envelope_sha256"] = hashlib.sha256(raw).hexdigest()
+                try:
+                    record["raw_envelope"] = raw.decode()
+                except UnicodeDecodeError:
+                    record["raw_envelope_base64"] = base64.b64encode(raw).decode("ascii")
                 envelope = json.loads(raw)
+                if not isinstance(envelope, dict):
+                    raise ValueError("provider envelope must be an object")
                 if envelope.get("model") != member.model_id or envelope.get("done") is not True:
                     raise ValueError("provider returned another model or incomplete output")
+                if not isinstance(envelope.get("response"), str):
+                    raise ValueError("provider response must be a string")
                 body = envelope["response"].encode()
-                attempts.append(
-                    {
-                        "request_digest": canonical_digest(
-                            {"prompt": message, "model": member.model_digest}
-                        ),
-                        "raw_envelope": raw.decode(),
-                        "response_sha256": hashlib.sha256(body).hexdigest(),
-                    }
-                )
+                record["response_sha256"] = hashlib.sha256(body).hexdigest()
                 validated = validate_member_output(
                     body,
                     expected_evidence_refs=[item.evidence_ref for item in packet.observations],
                     allowed_fact_codes=("observed_raw_time",),
                 )
-                attempts[-1]["validator_code"] = validated.validator_code
+                record["validator_code"] = validated.validator_code
                 error = None
                 break
-            except (LLMOutputError, ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
+            except (LLMOutputError, ValueError, TypeError, KeyError, OSError) as exc:
                 error = exc.code if isinstance(exc, LLMOutputError) else type(exc).__name__
-                if attempts:
-                    attempts[-1]["validator_code"] = error
+                record["validator_code"] = error
         self.check_pins()
         return {
             "member_id": member.member_id,
@@ -248,7 +275,7 @@ class LocalCouncilClient:
             "model_digest": member.model_digest,
             "evidence_digest": evidence.content_digest,
             "prompt_digest": hashlib.sha256(prompt.encode()).hexdigest(),
-            "provider_packet": packet.to_dict(),
+            "provider_packet": projected,
             "latency_ms": round((time.monotonic() - started) * 1000),
             "attempts": attempts,
             "error": error,

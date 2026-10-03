@@ -49,6 +49,30 @@ from strathmark.v3.infrastructure.integrity import (
 from strathmark.v3.runtime_identity import implementation_digest, verify_source_revision
 
 
+def _fit_selected_specialist_gate(
+    authority, training_rows, tuning_rows, specialists, settings, universal_oof
+):
+    predictions = universal_oof
+    if specialists:
+        # Universal-only tuning selects settings; specialist gating needs the
+        # selected hierarchy's chronological, held-out predictions.
+        predictions = authority.chronological_holdout_component_predictions(
+            training_rows, tuning_rows, include_specialists=True, **settings
+        )
+    examples = authority.gate_examples_from_oof(predictions, tuning_rows)
+    if examples and len({item.fold_id for item in examples}) >= 2:
+        return (
+            authority.fit_specialist_gate(examples),
+            specialists,
+            "fitted_from_grouped_tuning_oof",
+        )
+    return (
+        SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
+        {},
+        "insufficient_grouped_gate_evidence; universal_only",
+    )
+
+
 def _select_training_settings(authority, training_rows, tuning_rows):
     """Whole-tournament tuning only. Calibration and audit targets are inaccessible."""
     trials = []
@@ -180,15 +204,14 @@ def _build_candidate(payload: dict, output: Path) -> dict:
     universal, specialists, eligibility = authority.train_catboost_hierarchy(
         rows[MLDataRole.TRAINING], **training_settings
     )
-    # An ineligible specialist abstains; the universal model keeps its identity.
-    examples = authority.gate_examples_from_oof(gate_oof, rows[MLDataRole.TUNING])
-    if examples and len({item.fold_id for item in examples}) >= 2:
-        gate = authority.fit_specialist_gate(examples)
-        gate_status = "fitted_from_grouped_tuning_oof"
-    else:
-        gate = SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0")))
-        specialists = {}
-        gate_status = "insufficient_grouped_gate_evidence; universal_only"
+    gate, specialists, gate_status = _fit_selected_specialist_gate(
+        authority,
+        rows[MLDataRole.TRAINING],
+        rows[MLDataRole.TUNING],
+        specialists,
+        training_settings,
+        gate_oof,
+    )
     calibration_oof = authority.chronological_holdout_component_predictions(
         rows[MLDataRole.TRAINING],
         rows[MLDataRole.CALIBRATION],
