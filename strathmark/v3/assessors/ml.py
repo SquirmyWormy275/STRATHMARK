@@ -367,7 +367,9 @@ def build_positive_distribution(
 
 
 def _predict_log_quantiles(model: Any, rows: list[list[object]]) -> tuple[float, ...]:
-    predicted = model.predict(rows)
+    from strathmark.v3.factory.ml_training import predict_model_log_quantiles
+
+    predicted = predict_model_log_quantiles(model, rows)
     if hasattr(predicted, "tolist"):
         predicted = predicted.tolist()
     values: Any = (

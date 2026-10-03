@@ -866,10 +866,10 @@ def _compose_ml_authority(
                     OOFComponentPrediction(
                         row.row_id,
                         f"fold:{canonical_digest({'training_scope': training_rows._authorization_envelope.body_digest, 'holdout_tournament': row.tournament_id, 'validation_date': row.occurred_at_utc[:10]})}",
-                        _prediction_values(universal.predict(ordered)),
+                        predict_model_log_quantiles(universal, ordered),
                         None
                         if specialist is None
-                        else _prediction_values(specialist.predict(ordered)),
+                        else predict_model_log_quantiles(specialist, ordered),
                         row.specialist_key,
                         int(features["history_depth"]),
                         sum(missing) / max(1, len(missing)),
@@ -1469,10 +1469,10 @@ def _grouped_oof_component_prediction_values(
         for index in split.validation_indices:
             row = rows[index]
             feature_row = [[row.feature_dict[name] for name in FEATURE_NAMES]]
-            universal_values = _prediction_values(universal.predict(feature_row))
+            universal_values = predict_model_log_quantiles(universal, feature_row)
             specialist = specialists.get(row.specialist_key)
             specialist_values = (
-                None if specialist is None else _prediction_values(specialist.predict(feature_row))
+                None if specialist is None else predict_model_log_quantiles(specialist, feature_row)
             )
             missing_flags = tuple(
                 int(row.feature_dict[name])
@@ -1626,7 +1626,7 @@ def _evaluate_frozen_replay(
         features = row.feature_dict
         normalized, _unseen = bundle.normalize_features(features)
         ordered = [[normalized[name] for name in bundle.feature_names]]
-        universal = _prediction_values(bundle.universal_model.predict(ordered))
+        universal = predict_model_log_quantiles(bundle.universal_model, ordered)
         specialist_model = bundle.specialist_models.get(row.specialist_key)
         eligibility = bundle.specialist_eligibility.get(row.specialist_key)
         available = specialist_model is not None and bool(
@@ -1643,7 +1643,7 @@ def _evaluate_frozen_replay(
             specialist_available=available,
         )
         specialist = (
-            _prediction_values(specialist_model.predict(ordered)) if available else universal
+            predict_model_log_quantiles(specialist_model, ordered) if available else universal
         )
         combined = combine_quantiles(universal, specialist, weight)
         distribution_by_id[row.row_id] = build_positive_distribution(combined, bundle.calibrator)
@@ -1811,11 +1811,14 @@ def _train_catboost_hierarchy(
     learning_rate: float = 0.03,
     seed: int = 20260823,
     sample_weight_power: float = 0.0,
+    target_transform: str = "log_seconds",
 ) -> tuple[Any, dict[str, Any], dict[str, SpecialistEligibility]]:
     if not rows:
         raise ValueError("ML training requires at least one admitted causal row")
     if not math.isfinite(sample_weight_power) or not 0 <= sample_weight_power <= 2:
         raise ValueError("sample weight power must be finite and between zero and two")
+    if target_transform not in {"log_seconds", "event_history_residual_v1"}:
+        raise ValueError("ML target transform is unsupported")
     factory = model_factory or _catboost_factory()
     settings = {
         "loss_function": "MultiQuantile:alpha=0.05,0.1,0.25,0.5,0.75,0.9,0.95",
@@ -1827,6 +1830,8 @@ def _train_catboost_hierarchy(
         "allow_writing_files": False,
         "thread_count": 1,
     }
+    if target_transform != "log_seconds":
+        settings["metadata"] = {"strathmark_target_transform": target_transform}
     universal = factory(**settings)
     _fit_model(universal, rows, sample_weight_power=sample_weight_power)
     eligibility = _specialist_eligibility(rows)
@@ -1855,10 +1860,42 @@ def _fit_model(
         columns=FEATURE_NAMES,
     )
     targets = [float(item.target_log_seconds) for item in rows]
+    fitted_targets = targets
+    if _model_target_transform(model) == "event_history_residual_v1":
+        fitted_targets = [
+            target - _event_history_anchor(row.feature_dict)
+            for target, row in zip(targets, rows, strict=True)
+        ]
     kwargs = {}
     if sample_weight_power:
         kwargs["sample_weight"] = [math.exp(value * sample_weight_power) for value in targets]
-    model.fit(features, targets, cat_features=list(CATEGORICAL_FEATURES), **kwargs)
+    model.fit(features, fitted_targets, cat_features=list(CATEGORICAL_FEATURES), **kwargs)
+
+
+def _model_target_transform(model: Any) -> str:
+    metadata = getattr(model, "get_metadata", None)
+    transform = (
+        metadata().get("strathmark_target_transform", "log_seconds") if metadata else "log_seconds"
+    )
+    if transform not in {"log_seconds", "event_history_residual_v1"}:
+        raise ValueError("ML model target transform is unsupported")
+    return transform
+
+
+def _event_history_anchor(features: Mapping[str, object]) -> float:
+    value = float(features["same_event_scaled_log_median"])
+    return value if int(features["same_event_history_depth"]) else math.log(45)
+
+
+def predict_model_log_quantiles(model: Any, ordered: list[list[object]]) -> tuple[float, ...]:
+    """Restore a declared residual target to log seconds before calibration/scoring."""
+    values = _prediction_values(model.predict(ordered))
+    if _model_target_transform(model) == "event_history_residual_v1":
+        if len(ordered) != 1 or len(ordered[0]) != len(FEATURE_NAMES):
+            raise ValueError("residual inference requires one exact feature row")
+        anchor = _event_history_anchor(dict(zip(FEATURE_NAMES, ordered[0], strict=True)))
+        values = tuple(value + anchor for value in values)
+    return values
 
 
 def _prediction_values(value: Any) -> tuple[float, ...]:

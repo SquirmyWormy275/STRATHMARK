@@ -35,6 +35,7 @@ from strathmark.v3.factory.ml_training import (
     _compose_ml_audit_authority,
     _compose_ml_candidate_authority,
     mean_pinball_loss,
+    predict_model_log_quantiles,
 )
 from strathmark.v3.factory.workbook_history import load_workbook_history
 from strathmark.v3.infrastructure.integrity import (
@@ -59,6 +60,7 @@ def _select_training_settings(authority, training_rows, tuning_rows):
                     "learning_rate": 0.03,
                     "seed": 20260823,
                     "sample_weight_power": power,
+                    "target_transform": "event_history_residual_v1",
                 }
                 predictions = authority.chronological_holdout_component_predictions(
                     training_rows, tuning_rows, include_specialists=False, **settings
@@ -353,7 +355,9 @@ def _evaluate_candidate(payload, output):
     losses, errors = [], []
     for row in rows:
         features, _ = bundle.normalize_features(row.feature_dict)
-        prediction = bundle.universal_model.predict([[features[name] for name in FEATURE_NAMES]])[0]
+        prediction = predict_model_log_quantiles(
+            bundle.universal_model, [[features[name] for name in FEATURE_NAMES]]
+        )
         losses.append(mean_pinball_loss(float(row.target_log_seconds), prediction))
         errors.append(abs(math.exp(float(prediction[3])) - math.exp(float(row.target_log_seconds))))
     if (
