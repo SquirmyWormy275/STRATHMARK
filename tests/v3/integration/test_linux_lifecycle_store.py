@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 
@@ -164,3 +165,48 @@ def test_linux_installation_key_never_satisfies_windows_production(store_path):
     store = LinuxLifecycleStore.initialize(store_path)
     with pytest.raises(IntegrityError, match="Windows CNG"):
         require_production_cng_signer(store.signer)
+
+
+@pytest.mark.parametrize("reader_kind", ["startup", "state", "lookup"])
+def test_verified_readers_wait_for_committed_head_replacement(store_path, monkeypatch, reader_kind):
+    from strathmark.v3 import linux_lifecycle_store as module
+
+    store = LinuxLifecycleStore.initialize(store_path)
+    head_pending, release_head, reader_started, reader_finished = (Event() for _ in range(4))
+    original_write = module._write_private
+
+    def pending_head(path, raw, *, replace=False):
+        if replace:
+            head_pending.set()
+            assert release_head.wait(10), "test writer was not released"
+        original_write(path, raw, replace=replace)
+
+    monkeypatch.setattr(module, "_write_private", pending_head)
+
+    def read():
+        reader_started.set()
+        try:
+            if reader_kind == "startup":
+                return LinuxLifecycleStore(store_path).state()
+            if reader_kind == "state":
+                return store.state()
+            return store.lookup("command:synthetic-open", {"value": 1}, operation="open")
+        finally:
+            reader_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(commit, store)
+        assert head_pending.wait(5)
+        reader = executor.submit(read)
+        try:
+            assert reader_started.wait(5)
+            assert not reader_finished.wait(0.1), "reader raced the retained head replacement"
+        finally:
+            release_head.set()
+        assert writer.result(timeout=5) == {"accepted": 1}
+        result = reader.result(timeout=5)
+    assert result == (
+        {"accepted": 1}
+        if reader_kind == "lookup"
+        else {"roots": {"tournament:synthetic": {"value": 1}}}
+    )

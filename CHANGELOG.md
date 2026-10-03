@@ -4,6 +4,7 @@
 
 - Add the complete separate Linux local competition profile: real Formula/ML, mark-free seeding, exact handicap/championship fields, deliberate approval and separate issue, authorized outcomes/placings, settlement, restart, advancing rounds, signed corrections and closure.
 - Preserve same-round epochs and immutable ID bindings; use the complete-field optimizer for assessor counterfactuals; reject future observations and unknown mutation schemas. Separate events advance independently.
+- Serialize verified startup, state and lookup readers with the SQLite commit and retained head replacement, preventing Windows sharing violations and inconsistent observations.
 - Require independently verified recovery for the STRATHEX operator launcher, preserve persistent local signing identity and exact retries, and checkpoint confirmed outcomes before submission.
 - Update README, onboarding, Linux setup, package release guidance and wiki status. Windows CNG and full three-assessor factory qualification remain separate; local keys never satisfy that boundary.
 

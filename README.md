@@ -11,7 +11,7 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 
 Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
 
-The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc4** with STRATHEX **7.3.1**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below.
+The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc4** with STRATHEX **7.3.2**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below.
 
 The Windows V7 profile in V3 is a `3.0.0rc4` release candidate that tracks all 232 requirements in
 the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle

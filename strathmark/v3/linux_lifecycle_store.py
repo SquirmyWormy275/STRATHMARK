@@ -198,7 +198,7 @@ class LinuxLifecycleStore:
         self.trust = IntegrityTrustStore((self.signer.identity,))
         self.database = self.root / "competition.sqlite3"
         _private(self.database)
-        with self._connect() as connection:
+        with self._writer_lock(), self._connect() as connection:
             self._verify(connection)
 
     @contextmanager
@@ -214,7 +214,7 @@ class LinuxLifecycleStore:
 
     @contextmanager
     def _writer_lock(self):
-        """Hold the installation lock through the SQLite commit and head fsync."""
+        """Serialize verified readers with commits and the retained head replacement."""
         descriptor = os.open(self.root / "writer.lock", os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if os.name == "posix":
@@ -274,7 +274,7 @@ class LinuxLifecycleStore:
         return state, {"sequence": sequence, "event_digest": previous}
 
     def state(self) -> dict:
-        with self._connect() as connection:
+        with self._writer_lock(), self._connect() as connection:
             connection.execute("BEGIN")
             state, _head = self._verify(connection)
             return state
@@ -318,7 +318,7 @@ class LinuxLifecycleStore:
     def lookup(
         self, command_id: str, request: dict, *, operation: str | None = None
     ) -> dict | None:
-        with self._connect() as connection:
+        with self._writer_lock(), self._connect() as connection:
             connection.execute("BEGIN")
             self._verify(connection)
             row = connection.execute(
