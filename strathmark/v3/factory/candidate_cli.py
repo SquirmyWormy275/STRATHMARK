@@ -50,6 +50,7 @@ from strathmark.v3.infrastructure.integrity import (
     SignedManifest,
     sign_manifest,
 )
+from strathmark.v3.linux_forecasts import load_formula_manifest
 from strathmark.v3.runtime_identity import implementation_digest, verify_source_revision
 
 
@@ -349,6 +350,10 @@ def _evaluate_candidate(payload, output):
     """Separate evaluator opens the already frozen bundle; it cannot train models."""
     import catboost
 
+    frozen_formula = load_formula_manifest(output / "ml-bundle")
+    if frozen_formula.digest != payload["frozen_formula_digest"]:
+        raise ValueError("evaluation Formula differs from the frozen builder artifact")
+
     report = json.loads((output / "training-report.json").read_text())
     bundle = load_ml_bundle(
         output / "ml-bundle",
@@ -417,6 +422,8 @@ def _evaluate_candidate(payload, output):
         != bundle.digest
     ):
         raise ValueError("evaluation changed the frozen candidate")
+    if load_formula_manifest(output / "ml-bundle").digest != frozen_formula.digest:
+        raise ValueError("evaluation changed the frozen Formula")
     report["row_counts"][MLDataRole.LOCKED_AUDIT.value] = len(rows)
     report["group_counts"][MLDataRole.LOCKED_AUDIT.value] = len(audit_assignments)
     report.update(
@@ -425,6 +432,7 @@ def _evaluate_candidate(payload, output):
         isolation="separate development builder/evaluator processes; no OS blind-audit qualification",
         builder_received_audit_rows=False,
         evaluation_frozen_bundle_digest=bundle.digest,
+        evaluation_frozen_formula_digest=frozen_formula.digest,
     )
     for name, value in {
         "training-report.json": report,
@@ -518,6 +526,7 @@ def train_candidate(
         "evaluator",
         {
             "frozen_bundle_digest": report["ml_bundle_digest"],
+            "frozen_formula_digest": report["formula_digest"],
             "calibration_end_year": calibration_end_year,
             "observations": [item.to_dict() for item in history.observations],
         },

@@ -20,6 +20,14 @@ from statistics import median
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.forecasts import PositiveTimeDistribution
 from strathmark.v3.domain.credibility import _quantile_crps
+from strathmark.v3.infrastructure.integrity import (
+    IntegrityKeyIdentity,
+    IntegrityTrustStore,
+    P256EphemeralSigner,
+    SignedManifest,
+    sign_manifest,
+    verify_manifest,
+)
 
 POLICY = {
     "schema_version": "strathmark-accuracy-regression-policy-v1",
@@ -40,6 +48,46 @@ POLICY = {
     "slice_mae_absolute_tolerance_seconds": 2.0,
 }
 COMPONENTS = ("bundle_digest", "formula_digest", "source_implementation_digest")
+
+
+def attest_benchmark(summary, rows, receipt_file_sha256, *, now=None):
+    """Bind local development receipts; this is not independently trusted execution."""
+    signer = P256EphemeralSigner.generate("integrity-key:development-benchmark")
+    value = {
+        **summary,
+        "row_receipts_digest": canonical_digest(rows, max_bytes=50_000_000, max_items=1_000_000),
+        "row_receipts_sha256": receipt_file_sha256,
+        "benchmark_identity": signer.identity.to_dict(),
+    }
+    now = now or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+    value["benchmark_attestation"] = sign_manifest(
+        "development_benchmark",
+        {"summary_digest": canonical_digest(value)},
+        signer=signer,
+        created_at=now,
+    ).to_dict()
+    return value
+
+
+def verify_benchmark(summary, rows, *, receipt_file_sha256=None):
+    if canonical_digest(rows, max_bytes=50_000_000, max_items=1_000_000) != summary.get(
+        "row_receipts_digest"
+    ):
+        raise ValueError("benchmark row receipts differ from the attested summary")
+    if receipt_file_sha256 is not None and receipt_file_sha256 != summary.get(
+        "row_receipts_sha256"
+    ):
+        raise ValueError("benchmark row-file checksum differs from the attested summary")
+    value = {k: v for k, v in summary.items() if k != "benchmark_attestation"}
+    manifest = SignedManifest.from_dict(summary["benchmark_attestation"])
+    identity = IntegrityKeyIdentity.from_dict(summary["benchmark_identity"])
+    payload = verify_manifest(manifest, IntegrityTrustStore((identity,)))
+    if manifest.kind != "development_benchmark" or payload != {
+        "summary_digest": canonical_digest(value)
+    }:
+        raise ValueError("benchmark summary differs from its development attestation")
 
 
 def _utc(value):
@@ -181,7 +229,7 @@ def compare_rows(baseline_rows, candidate_rows):
         ) or round(row["actual_seconds"] * 1000) != round(other["actual_seconds"] * 1000):
             raise ValueError("accuracy comparison changed a target, context or historical support")
         for key in ("same_event_history_depth", "same_material_history_depth", "occurred_at_utc"):
-            if key in row and key in other and row[key] != other[key]:
+            if (key in row) != (key in other) or (key in row and row[key] != other[key]):
                 raise ValueError("accuracy comparison changed causal evidence context")
     baseline, candidate = triage_rows(baseline_rows), triage_rows(candidate_rows)
     violations = []
@@ -256,6 +304,7 @@ def compare_rows(baseline_rows, candidate_rows):
 
 def freeze_protocol(summary, examined_rows, *, now=None):
     rows = _validated(examined_rows)
+    verify_benchmark(summary, rows)
     now = now or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
@@ -275,6 +324,10 @@ def freeze_protocol(summary, examined_rows, *, now=None):
         "created_at_utc": now,
         "not_before_utc": now,
         "components": {k: summary[k] for k in COMPONENTS},
+        "examined_receipts_digest": summary["row_receipts_digest"],
+        "examined_benchmark_attestation_digest": SignedManifest.from_dict(
+            summary["benchmark_attestation"]
+        ).body_digest,
         "examined_row_ids": sorted(r["row_id"] for r in rows),
         "examined_tournament_ids": sorted({r["tournament_id"] for r in rows}),
         "regression_policy": POLICY,
@@ -287,6 +340,7 @@ def freeze_protocol(summary, examined_rows, *, now=None):
 
 
 def verify_prospective(protocol, summary, rows):
+    verify_benchmark(summary, rows)
     value = {k: v for k, v in protocol.items() if k != "digest"}
     if (
         protocol.get("schema_version") != "strathmark-prospective-accuracy-protocol-v1"
@@ -434,6 +488,9 @@ def main():
         return 0
     rows_path = args.benchmark / "private-row-receipts.json"
     rows, summary = _load(rows_path), _load(args.benchmark / "summary.json")
+    verify_benchmark(
+        summary, rows, receipt_file_sha256=hashlib.sha256(rows_path.read_bytes()).hexdigest()
+    )
     if args.operation == "triage":
         result = triage_rows(rows)
     elif args.operation == "freeze":

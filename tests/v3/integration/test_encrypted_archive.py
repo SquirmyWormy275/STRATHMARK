@@ -2,6 +2,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -155,3 +156,58 @@ def test_native_authority_backup_is_encrypted_and_restores_exact_retry(gpg_archi
         pytest.fail("a restored exact retry must not rerun the transition")
 
     assert recovered.execute(**command, transition=fail_if_reexecuted) == {"accepted": 1}
+
+
+def test_killed_publisher_leaves_no_final_ciphertext_and_exact_retry_recovers(gpg_archive):
+    source, destination, policy = gpg_archive
+    script = """import os, sys
+from pathlib import Path
+from strathmark.v3.infrastructure import encrypted_archive as module
+original = module._sync
+def die_after_receipt_commit(path):
+    original(path)
+    if str(path).endswith('.verified.json'):
+        os._exit(99)
+module._sync = die_after_receipt_commit
+module.encrypt_file(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))
+"""
+    killed = subprocess.run(
+        [sys.executable, "-c", script, str(source), str(destination), str(policy)],
+        capture_output=True,
+    )
+    assert killed.returncode == 99, killed.stderr
+    assert not destination.exists()
+    assert destination.with_name(destination.name + ".verified.json").exists()
+    # The lock is released by the OS and the same source can be retried safely.
+    result = encrypt_file(source, destination, policy)
+    assert verify_file(destination, policy) == result
+    assert len(list(destination.parent.glob("*.orphaned-*"))) == 1
+    assert source.exists()
+
+
+def test_killed_authority_backup_recovers_with_a_fresh_snapshot(gpg_archive, tmp_path):
+    from strathmark.v3.linux_lifecycle_store import LinuxLifecycleStore
+
+    _, destination, policy = gpg_archive
+    store = LinuxLifecycleStore.initialize(tmp_path / "authority")
+    script = """import os, sys
+from pathlib import Path
+from strathmark.v3.infrastructure import encrypted_archive as module
+from strathmark.v3.linux_lifecycle_store import LinuxLifecycleStore
+original = module._sync
+def die_after_receipt_commit(path):
+    original(path)
+    if str(path).endswith('.verified.json'):
+        os._exit(99)
+module._sync = die_after_receipt_commit
+LinuxLifecycleStore(Path(sys.argv[1])).archive_backup(Path(sys.argv[2]), encryption_policy=Path(sys.argv[3]))
+"""
+    killed = subprocess.run(
+        [sys.executable, "-c", script, str(store.root), str(destination.parent), str(policy)],
+        capture_output=True,
+    )
+    assert killed.returncode == 99, killed.stderr
+    assert not list(destination.parent.glob("*.gpg"))
+    recovered = store.archive_backup(destination.parent, encryption_policy=policy)
+    assert verify_file(recovered, policy)["authenticated_decryption_readback"] is True
+    assert store.archive_backup(destination.parent, encryption_policy=policy) == recovered

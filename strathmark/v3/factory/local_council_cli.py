@@ -378,6 +378,13 @@ class LocalCouncilClient:
                     raise ValueError("provider response must be a string")
                 body = envelope["response"].encode()
                 record["response_sha256"] = hashlib.sha256(body).hexdigest()
+                response = json.loads(body)
+                if (
+                    isinstance(response, dict)
+                    and response.get("state") == "committed"
+                    and response.get("fact_codes") != list(fact_codes)
+                ):
+                    raise ValueError("committed fact codes differ from the generated schema")
                 validated = validate_member_output(
                     body,
                     expected_evidence_refs=[item.evidence_ref for item in packet.observations],

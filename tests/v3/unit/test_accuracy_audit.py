@@ -1,14 +1,24 @@
+import hashlib
+import json
 from copy import deepcopy
 
 import pytest
 
 from strathmark.v3.contracts.forecasts import DISTRIBUTION_SCHEMA_VERSION
 from strathmark.v3.factory.accuracy_audit import (
+    attest_benchmark,
     compare_rows,
     freeze_protocol,
     triage_rows,
+    verify_benchmark,
     verify_prospective,
 )
+
+
+def attested(summary, values):
+    return attest_benchmark(
+        summary, values, hashlib.sha256(json.dumps(values).encode()).hexdigest()
+    )
 
 
 def rows(n=30):
@@ -123,24 +133,54 @@ def test_prospective_gate_binds_model_and_refuses_examined_or_early_rows():
     old = rows()
     for r in old:
         r["occurred_at_utc"] = "2025-01-01T12:00:00.000Z"
+    summary = attested(summary, old)
     protocol = freeze_protocol(summary, old, now=now)
     future = rows()
     for i, r in enumerate(future):
         r["row_id"] = f"evidence:future-{i}"
         r["tournament_id"] = f"tournament:future-{i // 3}"
     assert (
-        verify_prospective(protocol, summary, future)["status"]
+        verify_prospective(
+            protocol,
+            attested(
+                {
+                    k: summary[k]
+                    for k in ("bundle_digest", "formula_digest", "source_implementation_digest")
+                },
+                future,
+            ),
+            future,
+        )["status"]
         == "eligible_for_frozen_model_evaluation"
     )
     with pytest.raises(ValueError, match="previously examined"):
         verify_prospective(protocol, summary, old)
-    altered = {**summary, "bundle_digest": "d" * 64}
+    altered = attested(
+        {
+            **{
+                k: summary[k]
+                for k in ("bundle_digest", "formula_digest", "source_implementation_digest")
+            },
+            "bundle_digest": "d" * 64,
+        },
+        future,
+    )
     with pytest.raises(ValueError, match="frozen component"):
         verify_prospective(protocol, altered, future)
     for r in future:
         r["occurred_at_utc"] = "2026-10-02T12:00:00.000Z"
     with pytest.raises(ValueError, match="after protocol"):
-        verify_prospective(protocol, summary, future)
+        verify_prospective(
+            protocol,
+            attested(
+                {
+                    k: summary[k]
+                    for k in ("bundle_digest", "formula_digest", "source_implementation_digest")
+                },
+                future,
+            ),
+            future,
+        )
 
 
 def test_protocol_cannot_be_modified_after_freeze():
@@ -149,6 +189,7 @@ def test_protocol_cannot_be_modified_after_freeze():
         "formula_digest": "b" * 64,
         "source_implementation_digest": "c" * 64,
     }
+    summary = attested(summary, rows())
     protocol = freeze_protocol(summary, rows(), now="2026-10-05T12:00:00.000Z")
     protocol["not_before_utc"] = "2020-01-01T00:00:00.000Z"
     with pytest.raises(ValueError, match="protocol digest"):
@@ -162,4 +203,43 @@ def test_protocol_cannot_be_backdated_before_examined_results():
         "source_implementation_digest": "c" * 64,
     }
     with pytest.raises(ValueError, match="precede examined"):
-        freeze_protocol(summary, rows(), now="2026-10-03T12:00:00.000Z")
+        freeze_protocol(attested(summary, rows()), rows(), now="2026-10-03T12:00:00.000Z")
+
+
+@pytest.mark.parametrize(
+    "field", ["occurred_at_utc", "same_event_history_depth", "same_material_history_depth"]
+)
+def test_compare_refuses_missing_causal_fields_even_in_small_slices(field):
+    baseline = rows(3)
+    candidate = deepcopy(baseline)
+    del candidate[0][field]
+    with pytest.raises(ValueError, match="causal evidence context"):
+        compare_rows(baseline, candidate)
+
+
+@pytest.mark.parametrize("change", ["target", "time", "identity", "distribution"])
+def test_attested_benchmark_refuses_substituted_row_values(change):
+    values = rows()
+    summary = attested({"bundle_digest": "a" * 64}, values)
+    substituted = deepcopy(values)
+    if change == "target":
+        substituted[0]["actual_seconds"] += 1
+    elif change == "time":
+        substituted[0]["occurred_at_utc"] = "2027-01-01T00:00:00.000Z"
+    elif change == "identity":
+        substituted[0]["row_id"] = "evidence:substituted"
+    else:
+        substituted[0]["pool"]["quantiles"][2]["time_ms"] += 1000
+    with pytest.raises(ValueError, match="row receipts differ"):
+        verify_benchmark(summary, substituted)
+
+
+def test_benchmark_refuses_unsigned_summary_changes_and_changed_file_bytes():
+    values = rows()
+    summary = attested({"bundle_digest": "a" * 64}, values)
+    verify_benchmark(summary, values)
+    with pytest.raises(ValueError, match="checksum differs"):
+        verify_benchmark(summary, values, receipt_file_sha256="b" * 64)
+    changed = {**summary, "bundle_digest": "c" * 64}
+    with pytest.raises(ValueError, match="summary differs"):
+        verify_benchmark(changed, values)

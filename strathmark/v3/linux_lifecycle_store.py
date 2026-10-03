@@ -9,6 +9,7 @@ identity, and the preceding chain digest. A separate head detects database rollb
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import os
 import secrets
@@ -310,12 +311,28 @@ class LinuxLifecycleStore:
                     return encrypted
                 local_archive = Path(staging) / "snapshot.tar.gz"
                 descriptor = os.open(local_archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+                def stable_metadata(member):
+                    # A retry reconstructs the same content under a new staging
+                    # directory. Snapshot/container timestamps must not change
+                    # its plaintext identity after interrupted publication.
+                    member.mtime = 0
+                    return member
+
                 with os.fdopen(descriptor, "wb") as stream:
-                    with tarfile.open(fileobj=stream, mode="w:gz", compresslevel=1) as archive:
-                        archive.add(snapshot, arcname="installation")
+                    with gzip.GzipFile(
+                        filename="", fileobj=stream, mode="wb", compresslevel=1, mtime=0
+                    ) as compressed:
+                        with tarfile.open(fileobj=compressed, mode="w") as archive:
+                            archive.add(snapshot, arcname="installation", filter=stable_metadata)
                 if _archive_digests(local_archive) != files:
                     raise LinuxLifecycleError("private staging archive readback differs")
-                encrypt_file(local_archive, encrypted, encryption_policy)
+                try:
+                    encrypt_file(local_archive, encrypted, encryption_policy)
+                except FileExistsError:
+                    # Another writer may have committed this exact head while
+                    # this snapshot was prepared. Verify it before reuse.
+                    verify_file(encrypted, encryption_policy)
                 if tar_digests(encrypted, encryption_policy) != files:
                     raise LinuxLifecycleError("encrypted independent archive readback differs")
                 return encrypted

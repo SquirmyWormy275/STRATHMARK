@@ -1,6 +1,7 @@
 """Read-only date-causal replay through installed numeric prediction implementations."""
 
 import argparse
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -16,6 +17,7 @@ from strathmark.prediction_v2 import PredictionV2Model, PredictionV2Request
 from strathmark.v3.contracts.forecasts import PositiveTimeDistribution
 from strathmark.v3.domain.credibility import _quantile_crps
 from strathmark.v3.domain.pooling import LinearPooledDistribution
+from strathmark.v3.factory.accuracy_audit import _write, attest_benchmark
 from strathmark.v3.factory.candidate_cli import _packets
 from strathmark.v3.factory.ml_artifacts import load_ml_bundle
 from strathmark.v3.factory.ml_training import _build_causal_matrix_values, mean_pinball_loss
@@ -264,10 +266,12 @@ def main():
     ):
         raise ValueError("model changed during the benchmark")
     args.output.mkdir(exist_ok=False, mode=0o700)
-    (args.output / "summary.json").write_text(json.dumps(summary, indent=2))
-    (args.output / "private-row-receipts.json").write_text(json.dumps(results, indent=2))
-    (args.output / "summary.json").chmod(0o600)
-    (args.output / "private-row-receipts.json").chmod(0o600)
+    receipts_path = args.output / "private-row-receipts.json"
+    _write(receipts_path, results)
+    summary = attest_benchmark(
+        summary, results, hashlib.sha256(receipts_path.read_bytes()).hexdigest()
+    )
+    _write(args.output / "summary.json", summary)
     print(json.dumps(summary["overall"], indent=2), flush=True)
 
 

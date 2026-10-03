@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -90,69 +91,112 @@ def plaintext_sha(path, policy):
     return digest.hexdigest()
 
 
+@contextmanager
+def _publication_lock(destination):
+    import fcntl
+
+    path = destination.with_name(destination.name + ".lock")
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _publish(source, destination):
+    # A hard link publishes a complete file atomically and refuses overwrite.
+    os.link(source, destination)
+    _sync(destination)
+    source.unlink()
+
+
 def encrypt_file(source, destination, policy_path):
     source, destination = Path(source).resolve(strict=True), Path(destination).absolute()
     policy = load_policy(policy_path)
     destination.parent.resolve(strict=True)
-    if (
-        destination.exists()
-        or destination.is_symlink()
-        or destination.with_name(destination.name + ".verified.json").exists()
-    ):
-        raise FileExistsError("encrypted archive or verification receipt already exists")
     if Path(policy["gpg_home"]).stat().st_dev == destination.parent.stat().st_dev:
         raise ValueError("private recovery key and encrypted archive need different filesystems")
     expected = sha(source)
-    created = False
-    try:
-        with source.open("rb") as incoming:
-            outgoing = _private_file(destination)
-            created = True
-            with outgoing:
-                completed = subprocess.run(
-                    _command(policy)
-                    + [
-                        "--trust-model",
-                        "always",
-                        "--recipient",
-                        policy["recipient_fingerprint"],
-                        "--compress-algo",
-                        "none",
-                        "--cipher-algo",
-                        "AES256",
-                        "--encrypt",
-                    ],
-                    stdin=incoming,
-                    stdout=outgoing,
-                    stderr=subprocess.PIPE,
-                )
-                if completed.returncode != 0:
-                    raise ValueError("GPG could not encrypt to the recovery recipient")
-                outgoing.flush()
-                os.fsync(outgoing.fileno())
-        if plaintext_sha(destination, policy) != expected or sha(source) != expected:
-            raise ValueError("encrypted archive readback or source stability check failed")
-        result = {
-            "schema_version": SCHEMA,
-            "recipient_fingerprint": policy["recipient_fingerprint"],
-            "ciphertext_sha256": sha(destination),
-            "plaintext_sha256": expected,
-            "plaintext_bytes": source.stat().st_size,
-            "source_archive_name": source.name,
-            "authenticated_decryption_readback": True,
-            "original_preserved": True,
-        }
-        with _private_file(destination.with_name(destination.name + ".verified.json")) as stream:
-            stream.write(json.dumps(result, indent=2).encode())
-            stream.flush()
-            os.fsync(stream.fileno())
-        _sync(destination)
-        return result
-    except Exception:
-        # Keep partial evidence for diagnosis; never advertise it as verified.
-        if created and destination.exists():
-            destination.rename(destination.with_name(destination.name + ".failed-" + uuid4().hex))
-        raise
+    receipt = destination.with_name(destination.name + ".verified.json")
+    with _publication_lock(destination):
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError("encrypted archive already exists")
+        if receipt.exists() or receipt.is_symlink():
+            # A killed publisher may leave the verified receipt before the
+            # ciphertext commit. Only quarantine a matching, tool-owned orphan.
+            if receipt.is_symlink() or receipt.stat().st_size > 16384:
+                raise FileExistsError("unrecognized orphan encryption receipt")
+            orphan = json.loads(receipt.read_bytes())
+            if (
+                orphan.get("schema_version") != SCHEMA
+                or orphan.get("recipient_fingerprint") != policy["recipient_fingerprint"]
+                or orphan.get("plaintext_sha256") != expected
+                or orphan.get("source_archive_name") != source.name
+                or orphan.get("authenticated_decryption_readback") is not True
+            ):
+                raise FileExistsError("unrecognized orphan encryption receipt")
+            receipt.rename(receipt.with_name(receipt.name + ".orphaned-" + uuid4().hex))
+            _sync(receipt)
+        token = uuid4().hex
+        temporary = destination.with_name(destination.name + "." + token + ".next")
+        temporary_receipt = receipt.with_name(receipt.name + "." + token + ".next")
+        created = []
+        try:
+            with source.open("rb") as incoming:
+                outgoing = _private_file(temporary)
+                created.append(temporary)
+                with outgoing:
+                    completed = subprocess.run(
+                        _command(policy)
+                        + [
+                            "--trust-model",
+                            "always",
+                            "--recipient",
+                            policy["recipient_fingerprint"],
+                            "--compress-algo",
+                            "none",
+                            "--cipher-algo",
+                            "AES256",
+                            "--encrypt",
+                        ],
+                        stdin=incoming,
+                        stdout=outgoing,
+                        stderr=subprocess.PIPE,
+                    )
+                    if completed.returncode != 0:
+                        raise ValueError("GPG could not encrypt to the recovery recipient")
+                    outgoing.flush()
+                    os.fsync(outgoing.fileno())
+            if plaintext_sha(temporary, policy) != expected or sha(source) != expected:
+                raise ValueError("encrypted archive readback or source stability check failed")
+            result = {
+                "schema_version": SCHEMA,
+                "recipient_fingerprint": policy["recipient_fingerprint"],
+                "ciphertext_sha256": sha(temporary),
+                "plaintext_sha256": expected,
+                "plaintext_bytes": source.stat().st_size,
+                "source_archive_name": source.name,
+                "authenticated_decryption_readback": True,
+                "original_preserved": True,
+            }
+            stream = _private_file(temporary_receipt)
+            created.append(temporary_receipt)
+            with stream:
+                stream.write(json.dumps(result, indent=2).encode())
+                stream.flush()
+                os.fsync(stream.fileno())
+            # Durably publish the receipt first. The ciphertext name is the
+            # commit marker, so a final-named archive always has its receipt.
+            _publish(temporary_receipt, receipt)
+            _publish(temporary, destination)
+            return result
+        except BaseException:
+            # Never touch another publisher's destination or source archive.
+            for path in created:
+                if path.exists():
+                    path.rename(path.with_name(path.name + ".failed-" + uuid4().hex))
+            raise
 
 
 def verify_file(path, policy_path):

@@ -127,3 +127,12 @@ def test_builder_rejects_audit_rows_before_any_fit(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="builder refuses locked-audit"):
         candidate_cli._build_candidate(payload, tmp_path / "candidate")
     assert not (tmp_path / "candidate").exists()
+
+
+def test_evaluator_refuses_changed_formula_before_reading_audit_targets(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "catboost", SimpleNamespace())
+    monkeypatch.setattr(
+        candidate_cli, "load_formula_manifest", lambda _: SimpleNamespace(digest="b" * 64)
+    )
+    with pytest.raises(ValueError, match="Formula differs"):
+        candidate_cli._evaluate_candidate({"frozen_formula_digest": "a" * 64}, tmp_path)
