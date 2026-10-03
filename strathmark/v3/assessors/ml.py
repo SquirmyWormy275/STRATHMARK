@@ -100,10 +100,23 @@ class PITCalibrator:
     points: tuple[tuple[str, str], ...]
     source_digest: str
     schema_version: str = "strathmark-v3-ml-pit-calibrator-v1"
+    interval_log_radius: str = "0"
 
     def __post_init__(self) -> None:
-        if self.schema_version != "strathmark-v3-ml-pit-calibrator-v1":
+        if self.schema_version not in {
+            "strathmark-v3-ml-pit-calibrator-v1",
+            "strathmark-v3-ml-pit-calibrator-v2",
+        }:
             raise ValueError("unsupported ML PIT calibrator schema")
+        radius = float(self.interval_log_radius)
+        if (
+            canonical_decimal_string(self.interval_log_radius) != self.interval_log_radius
+            or not math.isfinite(radius)
+            or radius < 0
+            or radius > 20
+            or (self.schema_version.endswith("v1") and radius != 0)
+        ):
+            raise ValueError("ML interval radius must be a bounded canonical calibration value")
         if self.role != "calibration":
             raise ValueError("PIT calibrator requires the separate calibration role")
         _require_digest(self.source_digest, "ML calibrator source_digest")
@@ -160,16 +173,22 @@ class PITCalibrator:
         return _interpolate_points(self.points, probability, inverse=True)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "role": self.role,
             "points": [{"raw": left, "calibrated": right} for left, right in self.points],
             "source_digest": self.source_digest,
         }
+        if self.schema_version.endswith("v2"):
+            result["interval_log_radius"] = self.interval_log_radius
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PITCalibrator:
-        if set(value) != {"schema_version", "role", "points", "source_digest"}:
+        fields = {"schema_version", "role", "points", "source_digest"}
+        if value.get("schema_version") == "strathmark-v3-ml-pit-calibrator-v2":
+            fields.add("interval_log_radius")
+        if set(value) != fields:
             raise ValueError("ML PIT calibrator fields do not match the closed schema")
         points = value["points"]
         if not isinstance(points, list) or any(
@@ -181,6 +200,7 @@ class PITCalibrator:
             tuple((item["raw"], item["calibrated"]) for item in points),
             value["source_digest"],
             value["schema_version"],
+            value.get("interval_log_radius", "0"),
         )
 
 
@@ -347,6 +367,22 @@ def build_positive_distribution(
         raw_probability = calibrator.inverse_probability(probability)
         output_logs.append(_quantile_log_at(raw_probability, repaired))
     output_logs = list(_isotonic_non_decreasing(output_logs))
+    radius = float(calibrator.interval_log_radius)
+    if radius:
+        # A separately calibrated absolute log-residual floor prevents nearly
+        # coincident fitted quantiles from claiming a precise future interval.
+        from statistics import NormalDist
+
+        center = output_logs[OUTPUT_LEVELS.index(0.5)]
+        for index, probability in enumerate(OUTPUT_LEVELS):
+            offset = radius * NormalDist().inv_cdf(probability) / NormalDist().inv_cdf(0.95)
+            floor = center + offset
+            output_logs[index] = (
+                min(output_logs[index], floor)
+                if probability < 0.5
+                else max(output_logs[index], floor)
+            )
+            output_logs[index] = min(MAX_LOG_SECONDS, max(MIN_LOG_SECONDS, output_logs[index]))
     rendered_levels = (
         "0.001",
         "0.05",

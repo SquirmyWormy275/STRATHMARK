@@ -1535,6 +1535,7 @@ def _fit_pit_calibrator_values(
     if not by_id or len(by_id) != len(predictions) or not set(by_id) <= row_ids:
         raise ValueError("PIT calibration OOF forecasts must uniquely match calibration rows")
     pits: list[float] = []
+    log_errors: list[float] = []
     for row in rows:
         if row.row_id not in by_id:
             continue
@@ -1550,6 +1551,7 @@ def _fit_pit_calibrator_values(
         specialist = prediction.specialist_log_quantiles or prediction.universal_log_quantiles
         combined = combine_quantiles(prediction.universal_log_quantiles, specialist, weight)
         pits.append(_quantile_probability(float(row.target_log_seconds), combined))
+        log_errors.append(abs(float(row.target_log_seconds) - combined[3]))
     source_digest = canonical_digest(
         {
             "schema_version": "strathmark-v3-ml-pit-fit-source-v1",
@@ -1571,7 +1573,18 @@ def _fit_pit_calibrator_values(
             "gate": gate.to_dict(),
         }
     )
-    return PITCalibrator._fit_authorized_values(pits, source_digest=source_digest)
+    fitted = PITCalibrator._fit_authorized_values(pits, source_digest=source_digest)
+    # Finite-sample higher quantile, from calibration-role forecasts only.
+    ordered = sorted(log_errors)
+    rank = min(len(ordered), math.ceil(0.9 * (len(ordered) + 1)))
+    radius = canonical_decimal_string(ordered[rank - 1])
+    return PITCalibrator(
+        fitted.role,
+        fitted.points,
+        fitted.source_digest,
+        "strathmark-v3-ml-pit-calibrator-v2",
+        radius,
+    )
 
 
 def _quantile_probability(actual: float, quantiles: Sequence[float]) -> float:
@@ -1819,7 +1832,11 @@ def _train_catboost_hierarchy(
         raise ValueError("ML training requires at least one admitted causal row")
     if not math.isfinite(sample_weight_power) or not 0 <= sample_weight_power <= 2:
         raise ValueError("sample weight power must be finite and between zero and two")
-    if target_transform not in {"log_seconds", "event_history_residual_v1"}:
+    if target_transform not in {
+        "log_seconds",
+        "event_history_residual_v1",
+        "material_recent_residual_v1",
+    }:
         raise ValueError("ML target transform is unsupported")
     factory = model_factory or _catboost_factory()
     settings = {
@@ -1874,9 +1891,9 @@ def _fit_model(
     )
     targets = [float(item.target_log_seconds) for item in rows]
     fitted_targets = targets
-    if target_transform == "event_history_residual_v1":
+    if target_transform != "log_seconds":
         fitted_targets = [
-            target - _event_history_anchor(row.feature_dict)
+            target - _event_history_anchor(row.feature_dict, target_transform)
             for target, row in zip(targets, rows, strict=True)
         ]
     kwargs = {}
@@ -1890,12 +1907,16 @@ def _model_target_transform(model: Any) -> str:
     transform = (
         metadata().get("strathmark_target_transform", "log_seconds") if metadata else "log_seconds"
     )
-    if transform not in {"log_seconds", "event_history_residual_v1"}:
+    if transform not in {"log_seconds", "event_history_residual_v1", "material_recent_residual_v1"}:
         raise ValueError("ML model target transform is unsupported")
     return transform
 
 
-def _event_history_anchor(features: Mapping[str, object]) -> float:
+def _event_history_anchor(
+    features: Mapping[str, object], transform: str = "event_history_residual_v1"
+) -> float:
+    if transform == "material_recent_residual_v1" and int(features["same_material_history_depth"]):
+        return float(features["same_material_recent_log_median"])
     value = float(features["same_event_scaled_log_median"])
     return value if int(features["same_event_history_depth"]) else math.log(45)
 
@@ -1903,10 +1924,11 @@ def _event_history_anchor(features: Mapping[str, object]) -> float:
 def predict_model_log_quantiles(model: Any, ordered: list[list[object]]) -> tuple[float, ...]:
     """Restore a declared residual target to log seconds before calibration/scoring."""
     values = _prediction_values(model.predict(ordered))
-    if _model_target_transform(model) == "event_history_residual_v1":
+    transform = _model_target_transform(model)
+    if transform != "log_seconds":
         if len(ordered) != 1 or len(ordered[0]) != len(FEATURE_NAMES):
             raise ValueError("residual inference requires one exact feature row")
-        anchor = _event_history_anchor(dict(zip(FEATURE_NAMES, ordered[0], strict=True)))
+        anchor = _event_history_anchor(dict(zip(FEATURE_NAMES, ordered[0], strict=True)), transform)
         # Restoring the physical scale can extrapolate beyond the factory's
         # declared 1 ms..600 s support. Saturate at those same frozen bounds.
         values = tuple(

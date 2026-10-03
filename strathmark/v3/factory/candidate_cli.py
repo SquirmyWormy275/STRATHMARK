@@ -10,6 +10,7 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,39 +52,42 @@ def _select_training_settings(authority, training_rows, tuning_rows):
     """Whole-tournament tuning only. Calibration and audit targets are inaccessible."""
     trials = []
     selected = None
-    for depth in (4, 6):
-        for iterations in (400, 1000):
-            for power in (0.0, 0.5, 1.0):
-                settings = {
-                    "iterations": iterations,
-                    "depth": depth,
-                    "learning_rate": 0.03,
-                    "seed": 20260823,
-                    "sample_weight_power": power,
-                    "target_transform": "event_history_residual_v1",
-                }
-                predictions = authority.chronological_holdout_component_predictions(
-                    training_rows, tuning_rows, include_specialists=False, **settings
-                )
-                targets = {row.row_id: float(row.target_log_seconds) for row in tuning_rows}
-                errors = [
-                    abs(math.exp(item.universal_log_quantiles[3]) - math.exp(targets[item.row_id]))
-                    for item in predictions
-                ]
-                losses = [
-                    mean_pinball_loss(targets[item.row_id], item.universal_log_quantiles)
-                    for item in predictions
-                ]
-                trial = {
-                    "settings": settings,
-                    "row_count": len(errors),
-                    "mean_absolute_error_seconds": sum(errors) / len(errors),
-                    "mean_log_pinball_loss": sum(losses) / len(losses),
-                }
-                trials.append(trial)
-                score = (trial["mean_absolute_error_seconds"], trial["mean_log_pinball_loss"])
-                if selected is None or score < selected[0]:
-                    selected = (score, settings, predictions)
+    for depth, iterations, power, transform in product(
+        (4, 6),
+        (400, 1000),
+        (0.0, 0.5, 1.0),
+        ("event_history_residual_v1", "material_recent_residual_v1"),
+    ):
+        settings = {
+            "iterations": iterations,
+            "depth": depth,
+            "learning_rate": 0.03,
+            "seed": 20260823,
+            "sample_weight_power": power,
+            "target_transform": transform,
+        }
+        predictions = authority.chronological_holdout_component_predictions(
+            training_rows, tuning_rows, include_specialists=False, **settings
+        )
+        targets = {row.row_id: float(row.target_log_seconds) for row in tuning_rows}
+        errors = [
+            abs(math.exp(item.universal_log_quantiles[3]) - math.exp(targets[item.row_id]))
+            for item in predictions
+        ]
+        losses = [
+            mean_pinball_loss(targets[item.row_id], item.universal_log_quantiles)
+            for item in predictions
+        ]
+        trial = {
+            "settings": settings,
+            "row_count": len(errors),
+            "mean_absolute_error_seconds": sum(errors) / len(errors),
+            "mean_log_pinball_loss": sum(losses) / len(losses),
+        }
+        trials.append(trial)
+        score = (trial["mean_absolute_error_seconds"], trial["mean_log_pinball_loss"])
+        if selected is None or score < selected[0]:
+            selected = (score, settings, predictions)
     return selected[1], selected[2], trials
 
 

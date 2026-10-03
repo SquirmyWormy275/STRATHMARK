@@ -39,7 +39,8 @@ def test_training_rejects_invalid_target_weighting(power):
         _train_catboost_hierarchy((_training_row(0),), sample_weight_power=power)
 
 
-def test_native_residual_export_reload_restores_seconds_at_unseen_diameter(tmp_path):
+@pytest.mark.parametrize("transform", ["event_history_residual_v1", "material_recent_residual_v1"])
+def test_native_residual_export_reload_restores_seconds_at_unseen_diameter(tmp_path, transform):
     catboost = pytest.importorskip("catboost")
     from strathmark.v3.factory.ml_artifacts import export_catboost_json
     from strathmark.v3.factory.ml_training import FEATURE_NAMES, predict_model_log_quantiles
@@ -51,6 +52,8 @@ def test_native_residual_export_reload_restores_seconds_at_unseen_diameter(tmp_p
         features = row.feature_dict
         features["same_event_scaled_log_median"] = math.log(30)
         features["same_event_history_depth"] = 2
+        features["same_material_recent_log_median"] = math.log(30)
+        features["same_material_history_depth"] = 2
         rows.append(
             replace(
                 row,
@@ -59,13 +62,14 @@ def test_native_residual_export_reload_restores_seconds_at_unseen_diameter(tmp_p
             )
         )
     model, _, _ = _train_catboost_hierarchy(
-        rows, iterations=40, depth=2, target_transform="event_history_residual_v1"
+        rows, iterations=40, depth=2, target_transform=transform
     )
     export_catboost_json(model, tmp_path / "native.json")
     reloaded = catboost.CatBoostRegressor()
     reloaded.load_model(str(tmp_path / "native.json"), format="json")
     features = rows[-1].feature_dict
     features["same_event_scaled_log_median"] = math.log(180)
+    features["same_material_recent_log_median"] = math.log(180)
     features["size_mm"] = 500
     ordered = [[features[name] for name in FEATURE_NAMES]]
     expected = tuple(float(value) + math.log(180) for value in model.predict(ordered)[0])
