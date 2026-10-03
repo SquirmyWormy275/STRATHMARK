@@ -29,7 +29,7 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     wheels = tuple(dist.glob("*.whl"))
     assert len(wheels) == 1
     wheel = wheels[0]
-    assert wheel.name.startswith("strathmark-3.0.0rc5-")
+    assert wheel.name.startswith("strathmark-3.0.0rc6-")
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         entry_points_name = next(
