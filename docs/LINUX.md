@@ -2,7 +2,7 @@
 
 Linux and Windows share the V2 library/API and current source demonstration command. Python 3.13 runs current development and portable V3 tests. No separate Linux fork is needed.
 
-For complete Formula + trained ML competitions with STRATHEX 7.3.0, use the
+For complete Formula + trained ML competitions with STRATHEX 7.3.1, use the
 [Linux local competition runbook](V3_LINUX_COMPETITION.md). It covers the separate
 Python 3.13 interpreter, `v3-candidate` dependencies, verified trained model,
 persistent authority, required independent recovery directory, and full
