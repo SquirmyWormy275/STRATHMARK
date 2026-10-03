@@ -93,8 +93,8 @@ import re
 from importlib.metadata import distribution, version
 import strathmark
 v3 = load_v3_consumer_contract()
-assert strathmark.__version__ == "3.0.0rc5"
-assert version("strathmark") == "3.0.0rc5"
+assert strathmark.__version__ == "3.0.0rc6"
+assert version("strathmark") == "3.0.0rc6"
 console_scripts = {
     item.name: item.value
     for item in distribution("strathmark").entry_points
