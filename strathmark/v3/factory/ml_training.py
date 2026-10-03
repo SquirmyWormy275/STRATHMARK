@@ -15,6 +15,8 @@ from statistics import median
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from strathmark.v3.assessors.ml import (
+    MAX_LOG_SECONDS,
+    MIN_LOG_SECONDS,
     PITCalibrator,
     SpecialistGate,
     build_positive_distribution,
@@ -1894,7 +1896,11 @@ def predict_model_log_quantiles(model: Any, ordered: list[list[object]]) -> tupl
         if len(ordered) != 1 or len(ordered[0]) != len(FEATURE_NAMES):
             raise ValueError("residual inference requires one exact feature row")
         anchor = _event_history_anchor(dict(zip(FEATURE_NAMES, ordered[0], strict=True)))
-        values = tuple(value + anchor for value in values)
+        # Restoring the physical scale can extrapolate beyond the factory's
+        # declared 1 ms..600 s support. Saturate at those same frozen bounds.
+        values = tuple(
+            min(MAX_LOG_SECONDS, max(MIN_LOG_SECONDS, value + anchor)) for value in values
+        )
     return values
 
 
