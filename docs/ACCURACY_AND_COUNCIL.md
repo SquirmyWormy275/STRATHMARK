@@ -1,6 +1,6 @@
 # Accuracy and local council evaluation
 
-STRATHMARK 3.0.0rc5 improves the separate Linux Formula/ML profile without changing the V2 engine, issued marks, judge placings, or Windows CNG eligibility. STRATHEX 7.4 keeps explicit V2/V3 selection and supports retained installation profiles.
+STRATHMARK 3.0.0rc6 adds Formula tail improvements, full-row regression controls, prospective freezing and encrypted recovery to the separate Linux profile. STRATHEX 7.4.1 keeps explicit V2/V3 selection and retained installation profiles. The rc5 development evidence below remains visibly historical; issued marks, judge placings and Windows CNG eligibility are separate from these accuracy comparisons.
 
 ## Chronological development benchmark
 
