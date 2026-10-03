@@ -15,6 +15,8 @@ from statistics import median
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from strathmark.v3.assessors.ml import (
+    MAX_LOG_SECONDS,
+    MIN_LOG_SECONDS,
     PITCalibrator,
     SpecialistGate,
     build_positive_distribution,
@@ -57,6 +59,12 @@ NUMERIC_FEATURES = (
     "context_distance",
     "eligible_tournament_sequence",
     "current_form_log_seconds",
+    "exact_history_log_median",
+    "same_material_scaled_log_median",
+    "same_event_scaled_log_median",
+    "same_material_history_depth",
+    "same_event_history_depth",
+    "same_material_recent_log_median",
 )
 FEATURE_NAMES = (*CATEGORICAL_FEATURES, *NUMERIC_FEATURES)
 GATE_FEATURE_NAMES = ("log_history_depth", "missing_fraction")
@@ -860,10 +868,10 @@ def _compose_ml_authority(
                     OOFComponentPrediction(
                         row.row_id,
                         f"fold:{canonical_digest({'training_scope': training_rows._authorization_envelope.body_digest, 'holdout_tournament': row.tournament_id, 'validation_date': row.occurred_at_utc[:10]})}",
-                        _prediction_values(universal.predict(ordered)),
+                        predict_model_log_quantiles(universal, ordered),
                         None
                         if specialist is None
-                        else _prediction_values(specialist.predict(ordered)),
+                        else predict_model_log_quantiles(specialist, ordered),
                         row.specialist_key,
                         int(features["history_depth"]),
                         sum(missing) / max(1, len(missing)),
@@ -1463,10 +1471,10 @@ def _grouped_oof_component_prediction_values(
         for index in split.validation_indices:
             row = rows[index]
             feature_row = [[row.feature_dict[name] for name in FEATURE_NAMES]]
-            universal_values = _prediction_values(universal.predict(feature_row))
+            universal_values = predict_model_log_quantiles(universal, feature_row)
             specialist = specialists.get(row.specialist_key)
             specialist_values = (
-                None if specialist is None else _prediction_values(specialist.predict(feature_row))
+                None if specialist is None else predict_model_log_quantiles(specialist, feature_row)
             )
             missing_flags = tuple(
                 int(row.feature_dict[name])
@@ -1527,6 +1535,7 @@ def _fit_pit_calibrator_values(
     if not by_id or len(by_id) != len(predictions) or not set(by_id) <= row_ids:
         raise ValueError("PIT calibration OOF forecasts must uniquely match calibration rows")
     pits: list[float] = []
+    log_errors: list[float] = []
     for row in rows:
         if row.row_id not in by_id:
             continue
@@ -1542,6 +1551,7 @@ def _fit_pit_calibrator_values(
         specialist = prediction.specialist_log_quantiles or prediction.universal_log_quantiles
         combined = combine_quantiles(prediction.universal_log_quantiles, specialist, weight)
         pits.append(_quantile_probability(float(row.target_log_seconds), combined))
+        log_errors.append(abs(float(row.target_log_seconds) - combined[3]))
     source_digest = canonical_digest(
         {
             "schema_version": "strathmark-v3-ml-pit-fit-source-v1",
@@ -1563,7 +1573,18 @@ def _fit_pit_calibrator_values(
             "gate": gate.to_dict(),
         }
     )
-    return PITCalibrator._fit_authorized_values(pits, source_digest=source_digest)
+    fitted = PITCalibrator._fit_authorized_values(pits, source_digest=source_digest)
+    # Finite-sample higher quantile, from calibration-role forecasts only.
+    ordered = sorted(log_errors)
+    rank = min(len(ordered), math.ceil(0.9 * (len(ordered) + 1)))
+    radius = canonical_decimal_string(ordered[rank - 1])
+    return PITCalibrator(
+        fitted.role,
+        fitted.points,
+        fitted.source_digest,
+        "strathmark-v3-ml-pit-calibrator-v2",
+        radius,
+    )
 
 
 def _quantile_probability(actual: float, quantiles: Sequence[float]) -> float:
@@ -1620,7 +1641,7 @@ def _evaluate_frozen_replay(
         features = row.feature_dict
         normalized, _unseen = bundle.normalize_features(features)
         ordered = [[normalized[name] for name in bundle.feature_names]]
-        universal = _prediction_values(bundle.universal_model.predict(ordered))
+        universal = predict_model_log_quantiles(bundle.universal_model, ordered)
         specialist_model = bundle.specialist_models.get(row.specialist_key)
         eligibility = bundle.specialist_eligibility.get(row.specialist_key)
         available = specialist_model is not None and bool(
@@ -1637,7 +1658,7 @@ def _evaluate_frozen_replay(
             specialist_available=available,
         )
         specialist = (
-            _prediction_values(specialist_model.predict(ordered)) if available else universal
+            predict_model_log_quantiles(specialist_model, ordered) if available else universal
         )
         combined = combine_quantiles(universal, specialist, weight)
         distribution_by_id[row.row_id] = build_positive_distribution(combined, bundle.calibrator)
@@ -1804,9 +1825,19 @@ def _train_catboost_hierarchy(
     depth: int = 6,
     learning_rate: float = 0.03,
     seed: int = 20260823,
+    sample_weight_power: float = 0.0,
+    target_transform: str = "log_seconds",
 ) -> tuple[Any, dict[str, Any], dict[str, SpecialistEligibility]]:
     if not rows:
         raise ValueError("ML training requires at least one admitted causal row")
+    if not math.isfinite(sample_weight_power) or not 0 <= sample_weight_power <= 2:
+        raise ValueError("sample weight power must be finite and between zero and two")
+    if target_transform not in {
+        "log_seconds",
+        "event_history_residual_v1",
+        "material_recent_residual_v1",
+    }:
+        raise ValueError("ML target transform is unsupported")
     factory = model_factory or _catboost_factory()
     settings = {
         "loss_function": "MultiQuantile:alpha=0.05,0.1,0.25,0.5,0.75,0.9,0.95",
@@ -1818,8 +1849,12 @@ def _train_catboost_hierarchy(
         "allow_writing_files": False,
         "thread_count": 1,
     }
+    if target_transform != "log_seconds":
+        settings["metadata"] = {"strathmark_target_transform": target_transform}
     universal = factory(**settings)
-    _fit_model(universal, rows)
+    _fit_model(
+        universal, rows, sample_weight_power=sample_weight_power, target_transform=target_transform
+    )
     eligibility = _specialist_eligibility(rows)
     specialists: dict[str, Any] = {}
     for key, state in eligibility.items():
@@ -1827,7 +1862,12 @@ def _train_catboost_hierarchy(
             continue
         selected = tuple(item for item in rows if item.specialist_key == key)
         model = factory(**settings)
-        _fit_model(model, selected)
+        _fit_model(
+            model,
+            selected,
+            sample_weight_power=sample_weight_power,
+            target_transform=target_transform,
+        )
         specialists[key] = model
     return universal, specialists, eligibility
 
@@ -1836,7 +1876,13 @@ def context_key(context: TargetContext) -> str:
     return f"{context.event_code}|{context.size_mm}|{context.material_code}"
 
 
-def _fit_model(model: Any, rows: Sequence[CausalTrainingRow]) -> None:
+def _fit_model(
+    model: Any,
+    rows: Sequence[CausalTrainingRow],
+    *,
+    sample_weight_power: float = 0.0,
+    target_transform: str = "log_seconds",
+) -> None:
     import pandas as pd
 
     features = pd.DataFrame(
@@ -1844,7 +1890,51 @@ def _fit_model(model: Any, rows: Sequence[CausalTrainingRow]) -> None:
         columns=FEATURE_NAMES,
     )
     targets = [float(item.target_log_seconds) for item in rows]
-    model.fit(features, targets, cat_features=list(CATEGORICAL_FEATURES))
+    fitted_targets = targets
+    if target_transform != "log_seconds":
+        fitted_targets = [
+            target - _event_history_anchor(row.feature_dict, target_transform)
+            for target, row in zip(targets, rows, strict=True)
+        ]
+    kwargs = {}
+    if sample_weight_power:
+        kwargs["sample_weight"] = [math.exp(value * sample_weight_power) for value in targets]
+    model.fit(features, fitted_targets, cat_features=list(CATEGORICAL_FEATURES), **kwargs)
+
+
+def _model_target_transform(model: Any) -> str:
+    metadata = getattr(model, "get_metadata", None)
+    transform = (
+        metadata().get("strathmark_target_transform", "log_seconds") if metadata else "log_seconds"
+    )
+    if transform not in {"log_seconds", "event_history_residual_v1", "material_recent_residual_v1"}:
+        raise ValueError("ML model target transform is unsupported")
+    return transform
+
+
+def _event_history_anchor(
+    features: Mapping[str, object], transform: str = "event_history_residual_v1"
+) -> float:
+    if transform == "material_recent_residual_v1" and int(features["same_material_history_depth"]):
+        return float(features["same_material_recent_log_median"])
+    value = float(features["same_event_scaled_log_median"])
+    return value if int(features["same_event_history_depth"]) else math.log(45)
+
+
+def predict_model_log_quantiles(model: Any, ordered: list[list[object]]) -> tuple[float, ...]:
+    """Restore a declared residual target to log seconds before calibration/scoring."""
+    values = _prediction_values(model.predict(ordered))
+    transform = _model_target_transform(model)
+    if transform != "log_seconds":
+        if len(ordered) != 1 or len(ordered[0]) != len(FEATURE_NAMES):
+            raise ValueError("residual inference requires one exact feature row")
+        anchor = _event_history_anchor(dict(zip(FEATURE_NAMES, ordered[0], strict=True)), transform)
+        # Restoring the physical scale can extrapolate beyond the factory's
+        # declared 1 ms..600 s support. Saturate at those same frozen bounds.
+        values = tuple(
+            min(MAX_LOG_SECONDS, max(MIN_LOG_SECONDS, value + anchor)) for value in values
+        )
+    return values
 
 
 def _prediction_values(value: Any) -> tuple[float, ...]:
@@ -1894,6 +1984,21 @@ def _features(
         for item, value in admitted
         if value is not None and context_key(item.context) == context_key(context)
     ]
+    # Relevant history stays discipline-specific. Diameter scaling is an explicit
+    # geometric feature, not a claim that all timber shares one conversion law.
+    same_event = [
+        (
+            item,
+            math.log(value.raw_time_ms / 1000.0)
+            + 2 * math.log(context.size_mm / item.context.size_mm),
+        )
+        for item, value in admitted
+        if value is not None and item.context.event_code == context.event_code
+    ]
+    same_material = [
+        value for item, value in same_event if item.context.material_code == context.material_code
+    ]
+    event_logs = [value for _, value in same_event]
     center = median(logs) if logs else 0.0
     spread = median(abs(item - center) for item in logs) if logs else 0.0
     recent = median(logs[-3:]) if logs else 0.0
@@ -1934,6 +2039,12 @@ def _features(
         "context_distance": context_distance,
         "eligible_tournament_sequence": eligible_sequence,
         "current_form_log_seconds": recent,
+        "exact_history_log_median": median(exact_logs) if exact_logs else 0.0,
+        "same_material_scaled_log_median": median(same_material) if same_material else 0.0,
+        "same_event_scaled_log_median": median(event_logs) if event_logs else 0.0,
+        "same_material_history_depth": len(same_material),
+        "same_event_history_depth": len(event_logs),
+        "same_material_recent_log_median": median(same_material[-3:]) if same_material else 0.0,
     }
 
 

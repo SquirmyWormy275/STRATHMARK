@@ -18,12 +18,12 @@ from strathmark.v3.factory.ml_training import (
 )
 
 MANIFEST_SCHEMA = "strathmark-v3-ml-bundle-manifest-v1"
-FEATURE_SCHEMA = "strathmark-v3-ml-feature-schema-v1"
+FEATURE_SCHEMA = "strathmark-v3-ml-feature-schema-v2"
 VOCABULARY_SCHEMA = "strathmark-v3-ml-category-vocabulary-v1"
 DEPENDENCY_SCHEMA = "strathmark-v3-ml-dependency-lock-v1"
 BUNDLE_METADATA_SCHEMA = "strathmark-v3-ml-bundle-metadata-v1"
 MAX_MANIFEST_BYTES = 1_000_000
-MAX_JSON_FILE_BYTES = 5_000_000
+MAX_JSON_FILE_BYTES = 20_000_000
 MAX_BUNDLE_BYTES = 50_000_000
 MAX_JSON_DEPTH = 32
 _MODEL_REQUIRED = {"features_info", "model_info", "oblivious_trees", "scale_and_bias"}

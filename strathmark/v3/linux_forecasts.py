@@ -41,6 +41,23 @@ POLICY = "strathmark-linux-competition-forecast-v1"
 FORMULA_PATH = Path(__file__).parent / "contracts/formula_manifest.json"
 
 
+def load_formula_manifest(bundle_root: Path) -> FormulaManifest:
+    """One bounded, source-bound Formula component alongside the ML directory."""
+    candidate = bundle_root.parent / "formula_manifest.json"
+    if not candidate.exists() and not candidate.is_symlink():
+        return FormulaManifest.load(FORMULA_PATH)
+    if candidate.is_symlink() or not candidate.is_file():
+        raise LinuxLifecycleError("Formula candidate must be a regular local file")
+    if candidate.stat().st_size > 1_000_000:
+        raise LinuxLifecycleError("Formula candidate exceeds its bounded manifest size")
+    import json
+
+    manifest = FormulaManifest.from_dict(json.loads(candidate.read_bytes()))
+    if manifest.version != "formula:v2-trained-priors-v1":
+        raise LinuxLifecycleError("unsupported local Formula candidate policy")
+    return manifest
+
+
 def _result_key(observation, live_by_id):
     if str(observation.evidence_id) not in live_by_id:
         return deterministic_identifier(
@@ -159,7 +176,7 @@ def calculate(
             installed_python_abi="cp313",
         )
     )
-    manifest = FormulaManifest.load(FORMULA_PATH)
+    manifest = load_formula_manifest(bundle_root)
     weights = round_snapshot["weights"]
     if (
         set(weights) != {"formula", "ml"}

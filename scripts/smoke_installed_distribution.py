@@ -6,6 +6,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import zipfile
@@ -248,6 +249,18 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"expected exactly one {args.kind} in {args.dist_dir}, found {len(candidates)}"
         )
+    artifact_path = candidates[0]
+    if args.kind == "wheel":
+        with zipfile.ZipFile(artifact_path) as archive:
+            names = archive.namelist()
+    else:
+        with tarfile.open(artifact_path) as archive:
+            names = archive.getnames()
+    if any(
+        Path(name).name in {"woodchopping.xlsx", "woodchopping_clean.xlsx", "installation-key.pem"}
+        for name in names
+    ):
+        raise SystemExit("operator workbook or signing key must not enter a public release")
     if args.all_extras:
         if args.kind != "wheel":
             raise SystemExit("--all-extras requires --kind wheel")

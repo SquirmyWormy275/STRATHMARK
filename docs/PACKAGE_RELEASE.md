@@ -9,7 +9,7 @@ enables V3 production authority.
 The first public package candidate is the immutable V2 portable library at
 `strathmark==2.0.0`, source tag `v2.0.0`, commit
 `a231ad65fe82317516cc82a282761d73adb0c0e3`. It does not promise V3 production
-eligibility. The current `3.0.0rc4` package is not a substitute for that V2 release.
+eligibility. The current `3.0.0rc5` package is not a substitute for that V2 release.
 
 The historical `v2.0.0` tag is lightweight and must not be moved or replaced. A
 separately authorized, protected, annotated `pypi-v2.0.0` tag must point to that
@@ -18,7 +18,7 @@ commit, and `[project].version` before it builds anything.
 
 ## Platform truth
 
-V2 is a portable Python library. STRATHMARK 3.0.0rc4 also supplies the separate
+V2 is a portable Python library. STRATHMARK 3.0.0rc5 also supplies the separate
 [Linux local competition profile](V3_LINUX_COMPETITION.md), using real Formula/ML,
 persistent local P-256 keys, explicit approval/issue, settlement and later rounds.
 Its authority is the declared local operator policy; it does not claim Windows
@@ -27,7 +27,7 @@ requires the designated Windows installation, non-exportable CNG identities and
 qualified three-assessor factory. The wheel retains the Windows optimizer DLL,
 so the project makes no blanket OS-independent metadata claim.
 
-GitHub rc4 wheel/source/checksum assets document the local Linux profile. They do
+GitHub rc5 wheel/source/checksum assets document the local Linux profile. They do
 not dispatch the separately guarded PyPI publisher or replace the immutable V2
 portable library release. Package publication, local operator readiness, and
 Windows production eligibility remain distinct.
@@ -57,3 +57,5 @@ authorization tag, source tag, version, checkout, or cleanliness checks disagree
 
 Creating tags, changing GitHub/PyPI settings, uploading to TestPyPI/PyPI, and enabling
 V3 production selection are deliberately outside ordinary code delivery.
+
+Public wheel and source archives exclude operator workbooks and signing keys. The source archive retains the synthetic Formula golden workbook. Reproducing workbook-backed V2 release checks requires the separate exact workbook pinned by the existing acceptance manifest; the released V2 algorithm, model and acceptance hashes are unchanged. The installed-distribution smoke refuses an archive containing either historical root workbook.

@@ -89,7 +89,7 @@ def _write(root: Path) -> Path:
         gate=SpecialistGate("0", (("log_history_depth", "1"), ("missing_fraction", "0"))),
         calibrator=PITCalibrator.identity(source_digest="c" * 64),
         feature_schema={
-            "schema_version": "strathmark-v3-ml-feature-schema-v1",
+            "schema_version": FEATURE_SCHEMA,
             "features": list(FEATURE_NAMES),
             "categorical": list(CATEGORICAL_FEATURES),
             "quantiles": ["0.05", "0.1", "0.25", "0.5", "0.75", "0.9", "0.95"],
@@ -198,7 +198,7 @@ def test_unsafe_artifacts_fail_before_any_model_activation(
             encoding="utf-8",
         )
     else:
-        (root / "universal.json").write_bytes(b" " * 5_000_001)
+        (root / "universal.json").write_bytes(b" " * 20_000_001)
 
     calls = 0
 
@@ -226,7 +226,7 @@ def test_writer_refuses_executable_or_non_json_model_payloads(tmp_path: Path) ->
             gate=SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
             calibrator=PITCalibrator.identity(source_digest="d" * 64),
             feature_schema={
-                "schema_version": "strathmark-v3-ml-feature-schema-v1",
+                "schema_version": FEATURE_SCHEMA,
                 "features": [],
                 "categorical": [],
                 "quantiles": [],
@@ -733,6 +733,12 @@ def test_real_catboost_train_export_verify_load_and_predict(tmp_path: Path) -> N
             "context_distance": 0.0,
             "eligible_tournament_sequence": index,
             "current_form_log_seconds": 3.5 + index / 1000,
+            "exact_history_log_median": 3.5,
+            "same_material_scaled_log_median": 3.5,
+            "same_event_scaled_log_median": 3.5,
+            "same_material_history_depth": index,
+            "same_event_history_depth": index,
+            "same_material_recent_log_median": 3.5,
         }
         rows.append(
             CausalTrainingRow(

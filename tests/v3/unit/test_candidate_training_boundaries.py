@@ -11,6 +11,53 @@ from strathmark.v3.factory import candidate_cli
 from strathmark.v3.runtime_identity import verify_source_revision
 
 
+def test_selected_eligible_specialists_receive_actual_heldout_gate_evidence():
+    from strathmark.v3.factory.ml_training import (
+        OOFComponentPrediction,
+        _fit_specialist_gate_values,
+        _gate_examples_values,
+    )
+
+    training = (SimpleNamespace(row_id="train-only"),)
+    tuning = tuple(SimpleNamespace(row_id=f"tune:{i}", target_log_seconds="2") for i in range(2))
+    universal_only = tuple(
+        OOFComponentPrediction(row.row_id, f"fold:{i}", (1.0,) * 7, None, "context", 10, 0.0)
+        for i, row in enumerate(tuning)
+    )
+    specialists = {"context": object()}
+    settings = dict(depth=6, iterations=1000)
+
+    def heldout(train, holdout, *, include_specialists, **actual_settings):
+        assert train is training and holdout is tuning and include_specialists
+        assert actual_settings == settings
+        return tuple(
+            OOFComponentPrediction(
+                row.row_id, f"fold:{i}", (1.0,) * 7, (2.0,) * 7, "context", 10, 0.0
+            )
+            for i, row in enumerate(tuning)
+        )
+
+    authority = SimpleNamespace(
+        chronological_holdout_component_predictions=heldout,
+        gate_examples_from_oof=_gate_examples_values,
+        fit_specialist_gate=_fit_specialist_gate_values,
+    )
+    gate, retained, status = candidate_cli._fit_selected_specialist_gate(
+        authority,
+        training,
+        tuning,
+        specialists,
+        settings,
+        universal_only,
+    )
+    assert retained is specialists
+    assert status == "fitted_from_grouped_tuning_oof"
+    assert (
+        gate.weight({"log_history_depth": 2.4, "missing_fraction": 0.0}, specialist_available=True)
+        > 0
+    )
+
+
 def test_source_revision_rejects_installed_source_drift(tmp_path, monkeypatch):
     import hashlib
 

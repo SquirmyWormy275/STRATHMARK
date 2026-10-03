@@ -10,6 +10,7 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from strathmark.v3.assessors.ml import SpecialistGate
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.evidence import EvidencePacket, ResultObservation
 from strathmark.v3.contracts.identifiers import StableIdentifier
+from strathmark.v3.factory.formula_training import PRIOR_POLICY, build_formula_candidate
 from strathmark.v3.factory.ml_artifacts import (
     BUNDLE_METADATA_SCHEMA,
     DEPENDENCY_SCHEMA,
@@ -35,6 +37,7 @@ from strathmark.v3.factory.ml_training import (
     _compose_ml_audit_authority,
     _compose_ml_candidate_authority,
     mean_pinball_loss,
+    predict_model_log_quantiles,
 )
 from strathmark.v3.factory.workbook_history import load_workbook_history
 from strathmark.v3.infrastructure.integrity import (
@@ -44,6 +47,73 @@ from strathmark.v3.infrastructure.integrity import (
     sign_manifest,
 )
 from strathmark.v3.runtime_identity import implementation_digest, verify_source_revision
+
+
+def _fit_selected_specialist_gate(
+    authority, training_rows, tuning_rows, specialists, settings, universal_oof
+):
+    predictions = universal_oof
+    if specialists:
+        # Universal-only tuning selects settings; specialist gating needs the
+        # selected hierarchy's chronological, held-out predictions.
+        predictions = authority.chronological_holdout_component_predictions(
+            training_rows, tuning_rows, include_specialists=True, **settings
+        )
+    examples = authority.gate_examples_from_oof(predictions, tuning_rows)
+    if examples and len({item.fold_id for item in examples}) >= 2:
+        return (
+            authority.fit_specialist_gate(examples),
+            specialists,
+            "fitted_from_grouped_tuning_oof",
+        )
+    return (
+        SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0"))),
+        {},
+        "insufficient_grouped_gate_evidence; universal_only",
+    )
+
+
+def _select_training_settings(authority, training_rows, tuning_rows):
+    """Whole-tournament tuning only. Calibration and audit targets are inaccessible."""
+    trials = []
+    selected = None
+    for depth, iterations, power, transform in product(
+        (4, 6),
+        (400, 1000),
+        (0.0, 0.5, 1.0),
+        ("event_history_residual_v1", "material_recent_residual_v1"),
+    ):
+        settings = {
+            "iterations": iterations,
+            "depth": depth,
+            "learning_rate": 0.03,
+            "seed": 20260823,
+            "sample_weight_power": power,
+            "target_transform": transform,
+        }
+        predictions = authority.chronological_holdout_component_predictions(
+            training_rows, tuning_rows, include_specialists=False, **settings
+        )
+        targets = {row.row_id: float(row.target_log_seconds) for row in tuning_rows}
+        errors = [
+            abs(math.exp(item.universal_log_quantiles[3]) - math.exp(targets[item.row_id]))
+            for item in predictions
+        ]
+        losses = [
+            mean_pinball_loss(targets[item.row_id], item.universal_log_quantiles)
+            for item in predictions
+        ]
+        trial = {
+            "settings": settings,
+            "row_count": len(errors),
+            "mean_absolute_error_seconds": sum(errors) / len(errors),
+            "mean_log_pinball_loss": sum(losses) / len(losses),
+        }
+        trials.append(trial)
+        score = (trial["mean_absolute_error_seconds"], trial["mean_log_pinball_loss"])
+        if selected is None or score < selected[0]:
+            selected = (score, settings, predictions)
+    return selected[1], selected[2], trials
 
 
 def _build_candidate(payload: dict, output: Path) -> dict:
@@ -128,22 +198,20 @@ def _build_candidate(payload: dict, output: Path) -> dict:
             if list(MLDataRole).index(role_of(observation)) <= list(MLDataRole).index(role):
                 eligible[str(observation.competitor_id)].append(observation)
         rows[role] = authority.build_development_causal_rows(role, _packets(eligible, generation))
-    training_settings = {"iterations": 400, "depth": 4, "learning_rate": 0.03, "seed": 20260823}
+    training_settings, gate_oof, tuning_trials = _select_training_settings(
+        authority, rows[MLDataRole.TRAINING], rows[MLDataRole.TUNING]
+    )
     universal, specialists, eligibility = authority.train_catboost_hierarchy(
         rows[MLDataRole.TRAINING], **training_settings
     )
-    # An ineligible specialist abstains; the universal model keeps its identity.
-    gate_oof = authority.chronological_holdout_component_predictions(
-        rows[MLDataRole.TRAINING], rows[MLDataRole.TUNING], **training_settings
+    gate, specialists, gate_status = _fit_selected_specialist_gate(
+        authority,
+        rows[MLDataRole.TRAINING],
+        rows[MLDataRole.TUNING],
+        specialists,
+        training_settings,
+        gate_oof,
     )
-    examples = authority.gate_examples_from_oof(gate_oof, rows[MLDataRole.TUNING])
-    if examples and len({item.fold_id for item in examples}) >= 2:
-        gate = authority.fit_specialist_gate(examples)
-        gate_status = "fitted_from_grouped_tuning_oof"
-    else:
-        gate = SpecialistGate("0", (("log_history_depth", "0"), ("missing_fraction", "0")))
-        specialists = {}
-        gate_status = "insufficient_grouped_gate_evidence; universal_only"
     calibration_oof = authority.chronological_holdout_component_predictions(
         rows[MLDataRole.TRAINING],
         rows[MLDataRole.CALIBRATION],
@@ -152,6 +220,8 @@ def _build_candidate(payload: dict, output: Path) -> dict:
     )
     calibrator = authority.fit_pit_calibrator(rows[MLDataRole.CALIBRATION], calibration_oof, gate)
     output.mkdir(parents=True, mode=0o700)
+    formula_manifest = build_formula_candidate(authority, rows[MLDataRole.TRAINING])
+    (output / "formula_manifest.json").write_bytes(canonical_bytes(formula_manifest.to_dict()))
     model_bytes = export_catboost_json(universal, output / "universal-export.json")
     specialist_bytes = {
         key: export_catboost_json(
@@ -220,8 +290,13 @@ def _build_candidate(payload: dict, output: Path) -> dict:
             "no production eligibility or bundle promotion is granted",
         ],
         "ml_bundle_digest": loaded.digest,
+        "formula_digest": formula_manifest.digest,
+        "formula_prior_policy": PRIOR_POLICY,
+        "formula_prior_role": MLDataRole.TRAINING.value,
         "catboost_version": catboost.__version__,
         "training_settings": training_settings,
+        "training_selection": "minimum raw-seconds MAE on disjoint tuning tournaments",
+        "tuning_trials": tuning_trials,
         "specialists": sorted(specialists),
         "specialist_gate": gate_status,
         "tuning_oof_count": len(gate_oof),
@@ -313,7 +388,9 @@ def _evaluate_candidate(payload, output):
     losses, errors = [], []
     for row in rows:
         features, _ = bundle.normalize_features(row.feature_dict)
-        prediction = bundle.universal_model.predict([[features[name] for name in FEATURE_NAMES]])[0]
+        prediction = predict_model_log_quantiles(
+            bundle.universal_model, [[features[name] for name in FEATURE_NAMES]]
+        )
         losses.append(mean_pinball_loss(float(row.target_log_seconds), prediction))
         errors.append(abs(math.exp(float(prediction[3])) - math.exp(float(row.target_log_seconds))))
     if (

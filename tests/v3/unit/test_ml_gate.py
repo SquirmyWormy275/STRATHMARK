@@ -175,6 +175,12 @@ def _training_row(index: int) -> CausalTrainingRow:
         "context_distance": 0.0,
         "eligible_tournament_sequence": index,
         "current_form_log_seconds": 3.5,
+        "exact_history_log_median": 3.5,
+        "same_material_scaled_log_median": 3.5,
+        "same_event_scaled_log_median": 3.5,
+        "same_material_history_depth": index,
+        "same_event_history_depth": index,
+        "same_material_recent_log_median": 3.5,
     }
     return CausalTrainingRow(
         row_id=f"evidence:r{index}",
