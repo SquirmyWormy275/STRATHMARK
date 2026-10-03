@@ -139,7 +139,6 @@ include = [
     "/AGENTS.md",
     "/CLAUDE.md",
     "/TODOS.md",
-    "/woodchopping_clean.xlsx",
 ]
 
 [tool.pytest.ini_options]
