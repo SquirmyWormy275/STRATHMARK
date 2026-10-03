@@ -693,7 +693,9 @@ def test_explicit_flush_limit_preserves_remaining_durable_work(tmp_path):
         ).fetchone() == (1,)
 
 
-def test_explicit_flush_prioritizes_never_attempted_rows_before_failed_retries(tmp_path, monkeypatch):
+def test_explicit_flush_prioritizes_never_attempted_rows_before_failed_retries(
+    tmp_path, monkeypatch
+):
     attempts = []
 
     def always_fails(payload):
