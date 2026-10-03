@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.0rc5] - 2026-10-03
+
+- Improve causal CatBoost features and residual targets; select training settings only on disjoint tuning competitions. Calibrate interval width using calibration-role targets, preserving raw-time units and median forecasts.
+- Learn transparent Formula context priors exclusively from authenticated training-role rows. Bind the optional Formula component into each Linux competition's immutable source identity.
+- Add a read-only native V2/V3 benchmark with exact 90% coverage, common-quantile losses, CRPS, and event/material/diameter slices.
+- Add pinned native Ollama diagnostics for three local model families, retained validator evidence, and app-owned Linux provider start/status/stop. This development council does not grant numeric promotion or Windows qualification.
+- Document immutable portable installation, verified independent backups and profile rollback. Existing competitions retain their original code, model, keys and data paths.
+
 ## [3.0.0rc4] - 2026-10-02
 
 - Add the complete separate Linux local competition profile: real Formula/ML, mark-free seeding, exact handicap/championship fields, deliberate approval and separate issue, authorized outcomes/placings, settlement, restart, advancing rounds, signed corrections and closure.

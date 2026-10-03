@@ -1,6 +1,6 @@
 # Installation
 
-The current separate Linux competition profile (STRATHMARK 3.0.0rc4 / STRATHEX 7.3.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+The current separate Linux competition profile (STRATHMARK 3.0.0rc5 / STRATHEX 7.4.0) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
 
 > **Authority status.** The commands below install the trusted V2.0.0 release. The V3
 > release candidate is in later source and is under exact-source verification, but no production authority
@@ -42,3 +42,5 @@ uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 
 Check `/health`; core and calibration should be available. Residual inactive and Ollama
 unavailable are expected/acceptable for numeric 2.0.0 operation.
+
+See [portable Linux profiles and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) for offline installation and retained older competitions.
