@@ -18,7 +18,11 @@ from strathmark.v3.assessors.ml import SpecialistGate
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.evidence import EvidencePacket, ResultObservation
 from strathmark.v3.contracts.identifiers import StableIdentifier
-from strathmark.v3.factory.formula_training import PRIOR_POLICY, build_formula_candidate
+from strathmark.v3.factory.formula_training import (
+    PRIOR_POLICY,
+    TUNING_POLICY,
+    select_formula_candidate,
+)
 from strathmark.v3.factory.ml_artifacts import (
     BUNDLE_METADATA_SCHEMA,
     DEPENDENCY_SCHEMA,
@@ -46,6 +50,7 @@ from strathmark.v3.infrastructure.integrity import (
     SignedManifest,
     sign_manifest,
 )
+from strathmark.v3.linux_forecasts import load_formula_manifest
 from strathmark.v3.runtime_identity import implementation_digest, verify_source_revision
 
 
@@ -192,12 +197,14 @@ def _build_candidate(payload: dict, output: Path) -> dict:
         environment=MLAuthorityEnvironment.DEVELOPMENT_CANDIDATE,
     )
     rows = {}
+    packets_by_role = {}
     for role in (MLDataRole.TRAINING, MLDataRole.TUNING, MLDataRole.CALIBRATION):
         eligible = defaultdict(list)
         for observation in history.observations:
             if list(MLDataRole).index(role_of(observation)) <= list(MLDataRole).index(role):
                 eligible[str(observation.competitor_id)].append(observation)
-        rows[role] = authority.build_development_causal_rows(role, _packets(eligible, generation))
+        packets_by_role[role] = _packets(eligible, generation)
+        rows[role] = authority.build_development_causal_rows(role, packets_by_role[role])
     training_settings, gate_oof, tuning_trials = _select_training_settings(
         authority, rows[MLDataRole.TRAINING], rows[MLDataRole.TUNING]
     )
@@ -220,7 +227,12 @@ def _build_candidate(payload: dict, output: Path) -> dict:
     )
     calibrator = authority.fit_pit_calibrator(rows[MLDataRole.CALIBRATION], calibration_oof, gate)
     output.mkdir(parents=True, mode=0o700)
-    formula_manifest = build_formula_candidate(authority, rows[MLDataRole.TRAINING])
+    formula_manifest, formula_settings, formula_trials = select_formula_candidate(
+        authority,
+        rows[MLDataRole.TRAINING],
+        rows[MLDataRole.TUNING],
+        packets_by_role[MLDataRole.TUNING],
+    )
     (output / "formula_manifest.json").write_bytes(canonical_bytes(formula_manifest.to_dict()))
     model_bytes = export_catboost_json(universal, output / "universal-export.json")
     specialist_bytes = {
@@ -293,6 +305,10 @@ def _build_candidate(payload: dict, output: Path) -> dict:
         "formula_digest": formula_manifest.digest,
         "formula_prior_policy": PRIOR_POLICY,
         "formula_prior_role": MLDataRole.TRAINING.value,
+        "formula_tuning_policy": TUNING_POLICY,
+        "formula_tuning_role": MLDataRole.TUNING.value,
+        "formula_settings": formula_settings,
+        "formula_tuning_trials": formula_trials,
         "catboost_version": catboost.__version__,
         "training_settings": training_settings,
         "training_selection": "minimum raw-seconds MAE on disjoint tuning tournaments",
@@ -333,6 +349,10 @@ def _packets(eligible, generation):
 def _evaluate_candidate(payload, output):
     """Separate evaluator opens the already frozen bundle; it cannot train models."""
     import catboost
+
+    frozen_formula = load_formula_manifest(output / "ml-bundle")
+    if frozen_formula.digest != payload["frozen_formula_digest"]:
+        raise ValueError("evaluation Formula differs from the frozen builder artifact")
 
     report = json.loads((output / "training-report.json").read_text())
     bundle = load_ml_bundle(
@@ -402,6 +422,8 @@ def _evaluate_candidate(payload, output):
         != bundle.digest
     ):
         raise ValueError("evaluation changed the frozen candidate")
+    if load_formula_manifest(output / "ml-bundle").digest != frozen_formula.digest:
+        raise ValueError("evaluation changed the frozen Formula")
     report["row_counts"][MLDataRole.LOCKED_AUDIT.value] = len(rows)
     report["group_counts"][MLDataRole.LOCKED_AUDIT.value] = len(audit_assignments)
     report.update(
@@ -410,6 +432,7 @@ def _evaluate_candidate(payload, output):
         isolation="separate development builder/evaluator processes; no OS blind-audit qualification",
         builder_received_audit_rows=False,
         evaluation_frozen_bundle_digest=bundle.digest,
+        evaluation_frozen_formula_digest=frozen_formula.digest,
     )
     for name, value in {
         "training-report.json": report,
@@ -503,6 +526,7 @@ def train_candidate(
         "evaluator",
         {
             "frozen_bundle_digest": report["ml_bundle_digest"],
+            "frozen_formula_digest": report["formula_digest"],
             "calibration_end_year": calibration_end_year,
             "observations": [item.to_dict() for item in history.observations],
         },

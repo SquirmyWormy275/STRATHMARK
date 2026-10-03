@@ -11,9 +11,9 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 
 Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
 
-The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc5** with STRATHEX **7.4.0**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below. Accuracy evaluation, training roles, calibration and the local diagnostic council are described in [accuracy and council evaluation](docs/ACCURACY_AND_COUNCIL.md). STRATHEX provides a [portable installer and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) with separate retained release profiles.
+The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc6** with STRATHEX **7.4.1**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below. Accuracy evaluation, training roles, calibration and the local diagnostic council are described in [accuracy and council evaluation](docs/ACCURACY_AND_COUNCIL.md). STRATHEX provides a [portable installer and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) with separate retained release profiles.
 
-The Windows V7 profile in V3 is a `3.0.0rc5` release candidate that tracks all 232 requirements in
+The Windows V7 profile in V3 is a `3.0.0rc6` release candidate that tracks all 232 requirements in
 the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle
 still needs its operational composition and qualification. The
 checked-in development-key rehearsal is valid only for the source commit and digests it
@@ -32,7 +32,7 @@ consumer responsibilities.
 The distinction matters:
 
 - **V2.0.0 / V2.0.1** are published on PyPI. The 2.0.1 patch changes packaging documentation and version metadata; it preserves the V2 numeric engine. STRATHEX retains its reviewed exact 2.0.0 Git source pin.
-- **V3.0.0rc5** provides the separate Linux local workflow. The historical formatted
+- **V3.0.0rc6** provides the separate Linux local workflow. The historical formatted
   five-run Windows result-to-ready benchmark completed with a maximum of **3.414
   seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
   development-key rehearsal attestation are candidate outputs, not permanent claims

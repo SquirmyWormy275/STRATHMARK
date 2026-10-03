@@ -9,7 +9,7 @@ enables V3 production authority.
 The first public package candidate is the immutable V2 portable library at
 `strathmark==2.0.0`, source tag `v2.0.0`, commit
 `a231ad65fe82317516cc82a282761d73adb0c0e3`. It does not promise V3 production
-eligibility. The current `3.0.0rc5` package is not a substitute for that V2 release.
+eligibility. The current `3.0.0rc6` package is not a substitute for that V2 release.
 
 The historical `v2.0.0` tag is lightweight and must not be moved or replaced. A
 separately authorized, protected, annotated `pypi-v2.0.0` tag must point to that
@@ -18,7 +18,7 @@ commit, and `[project].version` before it builds anything.
 
 ## Platform truth
 
-V2 is a portable Python library. STRATHMARK 3.0.0rc5 also supplies the separate
+V2 is a portable Python library. STRATHMARK 3.0.0rc6 also supplies the separate
 [Linux local competition profile](V3_LINUX_COMPETITION.md), using real Formula/ML,
 persistent local P-256 keys, explicit approval/issue, settlement and later rounds.
 Its authority is the declared local operator policy; it does not claim Windows

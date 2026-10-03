@@ -71,7 +71,7 @@ def local_native_provider(tmp_path):
                 ],
                 "evidence_refs": [o["evidence_ref"] for o in packet["observations"]],
                 "warnings": [],
-                "fact_codes": ["observed_raw_time"],
+                "fact_codes": payload["format"]["anyOf"][0]["properties"]["fact_codes"]["const"],
                 "abstention_reason": None,
             }
             self.respond({"model": payload["model"], "done": True, "response": json.dumps(output)})
@@ -111,12 +111,104 @@ def test_native_envelope_schema_sampling_and_local_mixture(local_native_provider
     assert all(len(m["attempts"]) == 1 for m in result["members"])
     for payload, receipt in zip(calls, result["members"], strict=True):
         packet = receipt["provider_packet"]
-        assert packet["schema_version"] == "strathmark-v3-local-legacy-provider-packet-v1"
+        assert packet["schema_version"] == "strathmark-v3-local-legacy-provider-packet-v2"
         assert all("issued_mark" not in observation for observation in packet["observations"])
         wire_packet = json.loads(
             payload["prompt"].split("UNTRUSTED_JSON_DATA\n")[1].split("\nResponse schema:")[0]
         )
         assert wire_packet == packet
+
+
+def test_member_schema_binds_references_and_both_response_states(local_native_provider):
+    config, calls = local_native_provider
+    client = LocalCouncilClient(config)
+    result = client.evaluate(_packet((_observation(1, 40000, day=1),)))
+    for payload, receipt in zip(calls, result["members"], strict=True):
+        committed, abstained = payload["format"]["anyOf"]
+        refs = [o["evidence_ref"] for o in receipt["provider_packet"]["observations"]]
+        assert committed["properties"]["evidence_refs"] == {"const": refs}
+        quantiles = committed["properties"]["quantiles"]
+        assert quantiles["minItems"] == quantiles["maxItems"] == 7
+        assert [q["properties"]["probability"]["const"] for q in quantiles["prefixItems"]] == list(
+            REQUIRED_QUANTILES
+        )
+        assert abstained["properties"]["quantiles"] == {"const": []}
+        assert abstained["properties"]["evidence_refs"] == {"const": []}
+        assert abstained["properties"]["fact_codes"] == {"const": []}
+        assert committed["properties"]["fact_codes"] == {
+            "const": ["declared_time_conversion", "observed_raw_time"]
+        }
+
+
+def test_committed_subset_fact_codes_refused_even_when_provider_ignores_schema(
+    local_native_provider, monkeypatch
+):
+    config, _ = local_native_provider
+    client = LocalCouncilClient(config)
+    original = client.request
+
+    def request(method, path, payload=None, **kwargs):
+        raw = original(method, path, payload, **kwargs)
+        if method == "POST":
+            envelope = json.loads(raw)
+            response = json.loads(envelope["response"])
+            response["fact_codes"] = ["observed_raw_time"]
+            envelope["response"] = json.dumps(response)
+            return json.dumps(envelope).encode()
+        return raw
+
+    monkeypatch.setattr(client, "request", request)
+    receipt = client.evaluate_member(_packet((_observation(1, 40000, day=1),)), client.members[0])
+    assert receipt["distribution"] is None
+    assert len(receipt["attempts"]) == 2
+    assert all(a["validator_code"] == "ValueError" for a in receipt["attempts"])
+
+
+def test_empty_history_schema_allows_only_abstention(local_native_provider):
+    config, calls = local_native_provider
+    client = LocalCouncilClient(config)
+    client.evaluate_member(_packet(()), client.members[0])
+    assert all(p["format"]["properties"]["state"] == {"const": "abstained"} for p in calls)
+
+
+def test_relevant_context_history_keeps_older_matching_results():
+    from dataclasses import replace
+
+    from strathmark.v3.factory.local_council_cli import select_local_history
+
+    exact = _observation(1, 180000, day=1)
+    recent_other_event = tuple(
+        replace(
+            _observation(i, 30000, day=i),
+            context=replace(exact.context, event_code="standing_block"),
+        )
+        for i in range(2, 16)
+    )
+    selected = select_local_history((exact, *recent_other_event), exact.context)
+    assert exact in selected
+    assert len(selected) == 12
+    assert selected == tuple(
+        sorted(selected, key=lambda o: (o.occurred_at_utc, o.observation_sequence))
+    )
+
+
+def test_declared_conversion_preserves_raw_fact_and_marks_missing_properties():
+    from dataclasses import replace
+
+    from strathmark.v3.factory.local_council_cli import add_declared_conversions
+
+    original = _observation(1, 90000, day=1)
+    target = replace(original.context, size_mm=600)
+    projected = {"observations": [{"observation_sequence": 1, "raw_time_ms": 90000}]}
+    facts = add_declared_conversions(projected, _packet((original,), target=target))
+    assert projected["observations"][0]["raw_time_ms"] == 90000
+    assert projected["observations"][0]["target_equivalent_time_ms"] == 360000
+    assert "declared_time_conversion" in facts
+    unsupported = replace(target, material_code="unknown", properties=())
+    projected = {"observations": [{"observation_sequence": 1, "raw_time_ms": 90000}]}
+    facts = add_declared_conversions(projected, _packet((original,), target=unsupported))
+    assert projected["observations"][0]["target_equivalent_time_ms"] is None
+    assert facts == ("observed_raw_time",)
 
 
 @pytest.mark.parametrize(

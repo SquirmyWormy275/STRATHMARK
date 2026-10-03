@@ -693,7 +693,9 @@ def test_explicit_flush_limit_preserves_remaining_durable_work(tmp_path):
         ).fetchone() == (1,)
 
 
-def test_explicit_flush_prioritizes_never_attempted_rows_before_failed_retries(tmp_path):
+def test_explicit_flush_prioritizes_never_attempted_rows_before_failed_retries(
+    tmp_path, monkeypatch
+):
     attempts = []
 
     def always_fails(payload):
@@ -702,7 +704,11 @@ def test_explicit_flush_prioritizes_never_attempted_rows_before_failed_retries(t
 
     path = tmp_path / "fair-flush.db"
     ledger = PredictionLedger(path)
+    # Some Windows clocks give consecutive writes identical timestamps. Give
+    # this age-ordering scenario explicit ages; deterministic ties are tested below.
+    monkeypatch.setattr("strathmark.ledger._now", lambda: "2026-08-14T00:00:00+00:00")
     ledger.record_field("api", "oldest", _request_payload(), [_pred()])
+    monkeypatch.setattr("strathmark.ledger._now", lambda: "2026-08-14T00:00:01+00:00")
     ledger.record_field("api", "newer", _request_payload(), [_pred()])
     ledger._mirror = always_fails
 

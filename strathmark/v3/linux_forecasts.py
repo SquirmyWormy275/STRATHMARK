@@ -53,7 +53,7 @@ def load_formula_manifest(bundle_root: Path) -> FormulaManifest:
     import json
 
     manifest = FormulaManifest.from_dict(json.loads(candidate.read_bytes()))
-    if manifest.version != "formula:v2-trained-priors-v1":
+    if manifest.version not in {"formula:v2-trained-priors-v1", "formula:v3-tuned-priors-v1"}:
         raise LinuxLifecycleError("unsupported local Formula candidate policy")
     return manifest
 
