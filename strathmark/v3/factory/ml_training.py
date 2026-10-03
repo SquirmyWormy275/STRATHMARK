@@ -57,6 +57,12 @@ NUMERIC_FEATURES = (
     "context_distance",
     "eligible_tournament_sequence",
     "current_form_log_seconds",
+    "exact_history_log_median",
+    "same_material_scaled_log_median",
+    "same_event_scaled_log_median",
+    "same_material_history_depth",
+    "same_event_history_depth",
+    "same_material_recent_log_median",
 )
 FEATURE_NAMES = (*CATEGORICAL_FEATURES, *NUMERIC_FEATURES)
 GATE_FEATURE_NAMES = ("log_history_depth", "missing_fraction")
@@ -1804,9 +1810,12 @@ def _train_catboost_hierarchy(
     depth: int = 6,
     learning_rate: float = 0.03,
     seed: int = 20260823,
+    sample_weight_power: float = 0.0,
 ) -> tuple[Any, dict[str, Any], dict[str, SpecialistEligibility]]:
     if not rows:
         raise ValueError("ML training requires at least one admitted causal row")
+    if not math.isfinite(sample_weight_power) or not 0 <= sample_weight_power <= 2:
+        raise ValueError("sample weight power must be finite and between zero and two")
     factory = model_factory or _catboost_factory()
     settings = {
         "loss_function": "MultiQuantile:alpha=0.05,0.1,0.25,0.5,0.75,0.9,0.95",
@@ -1819,7 +1828,7 @@ def _train_catboost_hierarchy(
         "thread_count": 1,
     }
     universal = factory(**settings)
-    _fit_model(universal, rows)
+    _fit_model(universal, rows, sample_weight_power=sample_weight_power)
     eligibility = _specialist_eligibility(rows)
     specialists: dict[str, Any] = {}
     for key, state in eligibility.items():
@@ -1827,7 +1836,7 @@ def _train_catboost_hierarchy(
             continue
         selected = tuple(item for item in rows if item.specialist_key == key)
         model = factory(**settings)
-        _fit_model(model, selected)
+        _fit_model(model, selected, sample_weight_power=sample_weight_power)
         specialists[key] = model
     return universal, specialists, eligibility
 
@@ -1836,7 +1845,9 @@ def context_key(context: TargetContext) -> str:
     return f"{context.event_code}|{context.size_mm}|{context.material_code}"
 
 
-def _fit_model(model: Any, rows: Sequence[CausalTrainingRow]) -> None:
+def _fit_model(
+    model: Any, rows: Sequence[CausalTrainingRow], *, sample_weight_power: float = 0.0
+) -> None:
     import pandas as pd
 
     features = pd.DataFrame(
@@ -1844,7 +1855,10 @@ def _fit_model(model: Any, rows: Sequence[CausalTrainingRow]) -> None:
         columns=FEATURE_NAMES,
     )
     targets = [float(item.target_log_seconds) for item in rows]
-    model.fit(features, targets, cat_features=list(CATEGORICAL_FEATURES))
+    kwargs = {}
+    if sample_weight_power:
+        kwargs["sample_weight"] = [math.exp(value * sample_weight_power) for value in targets]
+    model.fit(features, targets, cat_features=list(CATEGORICAL_FEATURES), **kwargs)
 
 
 def _prediction_values(value: Any) -> tuple[float, ...]:
@@ -1894,6 +1908,21 @@ def _features(
         for item, value in admitted
         if value is not None and context_key(item.context) == context_key(context)
     ]
+    # Relevant history stays discipline-specific. Diameter scaling is an explicit
+    # geometric feature, not a claim that all timber shares one conversion law.
+    same_event = [
+        (
+            item,
+            math.log(value.raw_time_ms / 1000.0)
+            + 2 * math.log(context.size_mm / item.context.size_mm),
+        )
+        for item, value in admitted
+        if value is not None and item.context.event_code == context.event_code
+    ]
+    same_material = [
+        value for item, value in same_event if item.context.material_code == context.material_code
+    ]
+    event_logs = [value for _, value in same_event]
     center = median(logs) if logs else 0.0
     spread = median(abs(item - center) for item in logs) if logs else 0.0
     recent = median(logs[-3:]) if logs else 0.0
@@ -1934,6 +1963,12 @@ def _features(
         "context_distance": context_distance,
         "eligible_tournament_sequence": eligible_sequence,
         "current_form_log_seconds": recent,
+        "exact_history_log_median": median(exact_logs) if exact_logs else 0.0,
+        "same_material_scaled_log_median": median(same_material) if same_material else 0.0,
+        "same_event_scaled_log_median": median(event_logs) if event_logs else 0.0,
+        "same_material_history_depth": len(same_material),
+        "same_event_history_depth": len(event_logs),
+        "same_material_recent_log_median": median(same_material[-3:]) if same_material else 0.0,
     }
 
 

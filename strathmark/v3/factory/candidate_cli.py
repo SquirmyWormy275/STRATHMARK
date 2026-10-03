@@ -46,6 +46,45 @@ from strathmark.v3.infrastructure.integrity import (
 from strathmark.v3.runtime_identity import implementation_digest, verify_source_revision
 
 
+def _select_training_settings(authority, training_rows, tuning_rows):
+    """Whole-tournament tuning only. Calibration and audit targets are inaccessible."""
+    trials = []
+    selected = None
+    for depth in (4, 6):
+        for iterations in (400, 1000):
+            for power in (0.0, 0.5, 1.0):
+                settings = {
+                    "iterations": iterations,
+                    "depth": depth,
+                    "learning_rate": 0.03,
+                    "seed": 20260823,
+                    "sample_weight_power": power,
+                }
+                predictions = authority.chronological_holdout_component_predictions(
+                    training_rows, tuning_rows, include_specialists=False, **settings
+                )
+                targets = {row.row_id: float(row.target_log_seconds) for row in tuning_rows}
+                errors = [
+                    abs(math.exp(item.universal_log_quantiles[3]) - math.exp(targets[item.row_id]))
+                    for item in predictions
+                ]
+                losses = [
+                    mean_pinball_loss(targets[item.row_id], item.universal_log_quantiles)
+                    for item in predictions
+                ]
+                trial = {
+                    "settings": settings,
+                    "row_count": len(errors),
+                    "mean_absolute_error_seconds": sum(errors) / len(errors),
+                    "mean_log_pinball_loss": sum(losses) / len(losses),
+                }
+                trials.append(trial)
+                score = (trial["mean_absolute_error_seconds"], trial["mean_log_pinball_loss"])
+                if selected is None or score < selected[0]:
+                    selected = (score, settings, predictions)
+    return selected[1], selected[2], trials
+
+
 def _build_candidate(payload: dict, output: Path) -> dict:
     """Builder receives only TRAIN/TUNE/CAL facts, never the workbook or audit rows."""
     import catboost
@@ -128,14 +167,13 @@ def _build_candidate(payload: dict, output: Path) -> dict:
             if list(MLDataRole).index(role_of(observation)) <= list(MLDataRole).index(role):
                 eligible[str(observation.competitor_id)].append(observation)
         rows[role] = authority.build_development_causal_rows(role, _packets(eligible, generation))
-    training_settings = {"iterations": 400, "depth": 4, "learning_rate": 0.03, "seed": 20260823}
+    training_settings, gate_oof, tuning_trials = _select_training_settings(
+        authority, rows[MLDataRole.TRAINING], rows[MLDataRole.TUNING]
+    )
     universal, specialists, eligibility = authority.train_catboost_hierarchy(
         rows[MLDataRole.TRAINING], **training_settings
     )
     # An ineligible specialist abstains; the universal model keeps its identity.
-    gate_oof = authority.chronological_holdout_component_predictions(
-        rows[MLDataRole.TRAINING], rows[MLDataRole.TUNING], **training_settings
-    )
     examples = authority.gate_examples_from_oof(gate_oof, rows[MLDataRole.TUNING])
     if examples and len({item.fold_id for item in examples}) >= 2:
         gate = authority.fit_specialist_gate(examples)
@@ -222,6 +260,8 @@ def _build_candidate(payload: dict, output: Path) -> dict:
         "ml_bundle_digest": loaded.digest,
         "catboost_version": catboost.__version__,
         "training_settings": training_settings,
+        "training_selection": "minimum raw-seconds MAE on disjoint tuning tournaments",
+        "tuning_trials": tuning_trials,
         "specialists": sorted(specialists),
         "specialist_gate": gate_status,
         "tuning_oof_count": len(gate_oof),
