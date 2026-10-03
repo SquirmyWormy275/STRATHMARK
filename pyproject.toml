@@ -96,6 +96,7 @@ strathmark-v3-factory-evaluator = "strathmark.v3.factory.evaluator_cli:main"
 strathmark-v3-train-candidate = "strathmark.v3.factory.candidate_cli:main"
 strathmark-v3-benchmark = "strathmark.v3.factory.benchmark_cli:main"
 strathmark-v3-local-council = "strathmark.v3.factory.local_council_cli:main"
+strathmark-v3-local-provider = "strathmark.v3.factory.local_provider_cli:main"
 strathmark-v3-linux-candidate = "strathmark.v3.linux_candidate:main"
 
 [tool.hatch.build.targets.wheel]

@@ -18,6 +18,7 @@ from strathmark.v3.assessors.ml import SpecialistGate
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.contracts.evidence import EvidencePacket, ResultObservation
 from strathmark.v3.contracts.identifiers import StableIdentifier
+from strathmark.v3.factory.formula_training import PRIOR_POLICY, build_formula_candidate
 from strathmark.v3.factory.ml_artifacts import (
     BUNDLE_METADATA_SCHEMA,
     DEPENDENCY_SCHEMA,
@@ -196,6 +197,8 @@ def _build_candidate(payload: dict, output: Path) -> dict:
     )
     calibrator = authority.fit_pit_calibrator(rows[MLDataRole.CALIBRATION], calibration_oof, gate)
     output.mkdir(parents=True, mode=0o700)
+    formula_manifest = build_formula_candidate(authority, rows[MLDataRole.TRAINING])
+    (output / "formula_manifest.json").write_bytes(canonical_bytes(formula_manifest.to_dict()))
     model_bytes = export_catboost_json(universal, output / "universal-export.json")
     specialist_bytes = {
         key: export_catboost_json(
@@ -264,6 +267,9 @@ def _build_candidate(payload: dict, output: Path) -> dict:
             "no production eligibility or bundle promotion is granted",
         ],
         "ml_bundle_digest": loaded.digest,
+        "formula_digest": formula_manifest.digest,
+        "formula_prior_policy": PRIOR_POLICY,
+        "formula_prior_role": MLDataRole.TRAINING.value,
         "catboost_version": catboost.__version__,
         "training_settings": training_settings,
         "training_selection": "minimum raw-seconds MAE on disjoint tuning tournaments",

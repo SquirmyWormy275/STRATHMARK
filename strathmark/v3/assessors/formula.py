@@ -220,7 +220,10 @@ class FormulaManifest:
     schema_version: str = FORMULA_MANIFEST_SCHEMA
 
     def __post_init__(self) -> None:
-        if self.schema_version != FORMULA_MANIFEST_SCHEMA or self.version != "formula:v2-bootstrap":
+        if self.schema_version != FORMULA_MANIFEST_SCHEMA or self.version not in {
+            "formula:v2-bootstrap",
+            "formula:v2-trained-priors-v1",
+        }:
             raise ValueError("unsupported formula bootstrap schema or version")
         for value, label in (
             (self.time_quantum_ms, "time_quantum_ms"),

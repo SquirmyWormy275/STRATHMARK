@@ -5,6 +5,7 @@ import json
 import math
 from collections import defaultdict
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from statistics import median
 
@@ -12,12 +13,15 @@ import pandas as pd
 
 from strathmark.features import build_prior_evidence
 from strathmark.prediction_v2 import PredictionV2Model, PredictionV2Request
+from strathmark.v3.contracts.forecasts import PositiveTimeDistribution
+from strathmark.v3.domain.credibility import _quantile_crps
+from strathmark.v3.domain.pooling import LinearPooledDistribution
 from strathmark.v3.factory.candidate_cli import _packets
 from strathmark.v3.factory.ml_artifacts import load_ml_bundle
 from strathmark.v3.factory.ml_training import _build_causal_matrix_values, mean_pinball_loss
 from strathmark.v3.factory.workbook_history import load_workbook_history
 from strathmark.v3.infrastructure.integrity import IntegrityTrustStore, P256EphemeralSigner
-from strathmark.v3.linux_forecasts import calculate
+from strathmark.v3.linux_forecasts import calculate, load_formula_manifest
 
 
 def main():
@@ -48,6 +52,9 @@ def main():
     ]
     if not rows:
         raise ValueError("no eligible held-out rows in the requested years")
+    if args.v2_training_cutoff > min(date.fromisoformat(r.occurred_at_utc[:10]) for r in rows):
+        raise ValueError("V2 fitting cutoff must not include benchmark targets")
+    formula_digest = load_formula_manifest(args.bundle).digest
     observations = {str(o.evidence_id): o for o in h.observations}
     local = {v: k for k, v in h.competitor_ids}
     signer = P256EphemeralSigner.generate("integrity-key:private-benchmark")
@@ -101,8 +108,9 @@ def main():
                 "formula": f["formula"]["forecast"]["distribution"],
                 "ml": f["ml"]["forecast"]["distribution"],
                 "pool_seconds": f["predicted_time_ms"] / 1000,
+                "pool": LinearPooledDistribution.from_dict(f["pool"]).quantile_summary().to_dict(),
             }
-            for name in ("formula", "ml"):
+            for name in ("formula", "ml", "pool"):
                 quant = entry[name]["quantiles"]
                 entry[name + "_seconds"] = next(
                     q["time_ms"] / 1000 for q in quant if q["probability"] == "0.5"
@@ -110,6 +118,22 @@ def main():
                 lower = next(q["time_ms"] / 1000 for q in quant if q["probability"] == "0.05")
                 upper = next(q["time_ms"] / 1000 for q in quant if q["probability"] == "0.95")
                 entry[name + "_coverage90"] = lower <= raw <= upper
+                losses = []
+                for q in quant:
+                    if q["probability"] in {"0.05", "0.25", "0.5", "0.75", "0.95"}:
+                        probability = float(q["probability"])
+                        residual = math.log(raw) - math.log(q["time_ms"] / 1000)
+                        losses.append(max(probability * residual, (probability - 1) * residual))
+                entry[name + "_log_pinball"] = sum(losses) / len(losses)
+                entry[name + "_quantile_crps_seconds"] = (
+                    float(
+                        _quantile_crps(
+                            PositiveTimeDistribution.from_dict(entry[name]),
+                            Decimal(str(raw * 1000)),
+                        )
+                    )
+                    / 1000
+                )
             results.append(entry)
         print(json.dumps({"completed_rows": len(results), "total_rows": len(rows)}), flush=True)
 
@@ -163,9 +187,15 @@ def main():
                 "p90_absolute_error_seconds": sorted(errors)[math.ceil(0.9 * len(errors)) - 1],
             }
         result["mean_log_pinball_loss"] = sum(e["pinball"] for e in selected) / len(selected)
-        for name, key in (("formula", "formula"), ("ml_calibrated", "ml")):
+        for name, key in (("formula", "formula"), ("ml_calibrated", "ml"), ("v3_pool", "pool")):
             result[name]["interval_90_coverage"] = sum(
                 e[key + "_coverage90"] for e in selected
+            ) / len(selected)
+            result[name]["mean_common_quantile_log_pinball"] = sum(
+                e[key + "_log_pinball"] for e in selected
+            ) / len(selected)
+            result[name]["mean_quantile_crps_seconds"] = sum(
+                e[key + "_quantile_crps_seconds"] for e in selected
             ) / len(selected)
         return result
 
@@ -173,6 +203,7 @@ def main():
         "schema_version": "strathmark-private-native-benchmark-v1",
         "workbook_sha256": h.source_sha256,
         "bundle_digest": bundle.digest,
+        "formula_digest": formula_digest,
         "audit_after_year": args.audit_after_year,
         "v2_training_cutoff": str(args.v2_training_cutoff),
         "v2_comparison": "unchanged V2 algorithm, chronologically refit on the declared training population",
@@ -190,6 +221,8 @@ def main():
     }
     if load_workbook_history(wb, cutoff_at_utc=args.cutoff_at_utc).source_sha256 != h.source_sha256:
         raise ValueError("workbook changed during the benchmark")
+    if load_formula_manifest(args.bundle).digest != formula_digest:
+        raise ValueError("Formula component changed during the benchmark")
     if (
         load_ml_bundle(
             args.bundle,

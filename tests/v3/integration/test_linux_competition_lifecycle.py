@@ -188,6 +188,37 @@ def invoke(runtime, context, operation, payload, *, key=None):
     )
 
 
+def test_learned_formula_change_cannot_rebind_an_existing_competition(competition, tmp_path):
+    import json
+    import shutil
+    from types import SimpleNamespace
+
+    from strathmark.v3.factory.formula_training import _build_formula_prior_values
+
+    runtime, context, request, _root = competition
+    copy = tmp_path / "isolated-model" / "ml-bundle"
+    shutil.copytree(runtime.bundle_root, copy)
+    runtime.bundle_root = copy
+    rows = (
+        SimpleNamespace(
+            row_id="evidence:synthetic-prior",
+            target_log_seconds=str(math.log(35)),
+            feature_dict={"event_family": "underhand", "species": "gum", "size_mm": 300},
+        ),
+    )
+    formula = _build_formula_prior_values(rows, "a" * 64)
+    path = copy.parent / "formula_manifest.json"
+    original = json.dumps(formula.to_dict())
+    path.write_text(original)
+    context["source_identity"] = runtime.status()["source_identity"]
+    receipt = invoke(runtime, context, "field", request)
+    path.unlink()
+    with pytest.raises(LinuxLifecycleError, match="differs"):
+        invoke(runtime, context, "approval_page", {"offset": 0, "limit": 100})
+    path.write_text(original)
+    assert invoke(runtime, context, "field", request) == receipt
+
+
 def approve_and_issue(runtime, context, receipt):
     page = invoke(runtime, context, "approval_page", {"offset": 0, "limit": 100})
     row = next(row for row in page["rows"] if row["receipt_id"] == receipt["receipt_id"])

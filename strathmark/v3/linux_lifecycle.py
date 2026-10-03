@@ -29,7 +29,7 @@ from strathmark.v3.contracts.statuses import OfficialResult, ResultStatus, admit
 from strathmark.v3.domain.credibility import compute_predictive_metrics
 from strathmark.v3.factory.ml_artifacts import load_ml_bundle
 from strathmark.v3.infrastructure.integrity import sign_manifest
-from strathmark.v3.linux_forecasts import FORMULA_PATH, POLICY, calculate
+from strathmark.v3.linux_forecasts import POLICY, calculate, load_formula_manifest
 from strathmark.v3.linux_lifecycle_store import (
     MAX_BYTES,
     LinuxLifecycleError,
@@ -139,12 +139,11 @@ class LinuxCompetitionRuntime:
 
     def _identity(self, bundle_digest):
         from strathmark import __version__
-        from strathmark.v3.assessors.formula import FormulaManifest
 
         return {
             "source_digest": implementation_digest(),
             "package_version": __version__,
-            "formula_digest": FormulaManifest.load(FORMULA_PATH).digest,
+            "formula_digest": load_formula_manifest(self.bundle_root).digest,
             "ml_bundle_digest": bundle_digest,
             "installation_identity": self.store.signer.identity.to_dict(),
         }

@@ -179,7 +179,9 @@ class LocalCouncilClient:
         prompt += "\nQuantiles must have probabilities in exactly this order: " + ",".join(
             REQUIRED_QUANTILES
         )
-        prompt += "\nTimes are RAW cutting milliseconds. Legacy reference marks do not imply known official placings. Output no narrative. Cite all supplied evidence_ref values exactly once."
+        prompt += "\nTimes are RAW cutting milliseconds. Legacy reference marks do not imply known official placings. Output no narrative."
+        prompt += "\nCOMMITTED: use all seven ordered quantiles, abstention_reason=null, and cite the supplied evidence_ref values in their original order."
+        prompt += "\nABSTAINED: quantiles=[], evidence_refs=[], fact_codes=[]; use a declared abstention_reason. Empty history requires abstention. Do not cite references when abstaining. Sort warnings and fact_codes alphabetically without duplicates."
         attempts = []
         validated = None
         error = None
