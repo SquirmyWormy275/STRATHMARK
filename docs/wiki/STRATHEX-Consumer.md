@@ -6,7 +6,7 @@ The retained preview profile, [Linux numeric candidate](https://github.com/Squir
 
 ## Current authority status
 
-STRATHMARK 3.0.0rc6 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 For V2-selected competition roots, STRATHEX continues to use the frozen V2 shadow
 contract. The V3 adapter is

@@ -5,11 +5,18 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
 
-from strathmark.v3.infrastructure.encrypted_archive import encrypt_file, tar_digests, verify_file
+from strathmark.v3.infrastructure.encrypted_archive import (
+    encrypt_file,
+    load_policy,
+    plaintext_sha,
+    tar_digests,
+    verify_file,
+)
 
 
 @pytest.fixture
@@ -101,6 +108,47 @@ def test_private_key_and_archive_cannot_share_filesystem(gpg_archive):
     source, _, policy = gpg_archive
     with pytest.raises(ValueError, match="different filesystems"):
         encrypt_file(source, source.parent / "same-filesystem.gpg", policy)
+
+
+def test_bulk_streaming_and_truncated_authenticated_tail(gpg_archive):
+    source, destination, policy = gpg_archive
+    # More than either OS pipe's capacity; small fixtures cannot expose deadlock.
+    source.write_bytes(b"synthetic archive input\x00" * 200000)
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    encrypt_file(source, destination, policy)
+    configured = load_policy(policy)
+    assert plaintext_sha(destination, configured) == expected
+    destination.write_bytes(destination.read_bytes()[:-12])
+    # Bypass the receipt checksum deliberately to exercise GPG's own end check.
+    with pytest.raises(ValueError, match="authenticated GPG"):
+        plaintext_sha(destination, configured)
+    assert not [t for t in threading.enumerate() if t.name == "strath-gpg-input"]
+
+
+def test_early_gpg_exit_preserves_source_and_joins_feeder(gpg_archive):
+    source, destination, policy = gpg_archive
+    source.write_bytes(b"synthetic oversized pipe input" * 200000)
+    original = hashlib.sha256(source.read_bytes()).hexdigest()
+    configured = json.loads(policy.read_text())
+    configured["recipient_fingerprint"] = "A" * 40
+    policy.write_text(json.dumps(configured))
+    with pytest.raises(ValueError, match="authenticated GPG"):
+        encrypt_file(source, destination, policy)
+    assert not destination.exists()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == original
+    assert not [t for t in threading.enumerate() if t.name == "strath-gpg-input"]
+
+
+def test_tar_failure_closes_gpg_and_feeder(gpg_archive, tmp_path):
+    source, destination, policy = gpg_archive
+    linked = tmp_path / "unsafe-link"
+    linked.symlink_to("../outside")
+    with tarfile.open(source, "w:gz") as archive:
+        archive.add(linked, arcname="unsafe-link")
+    encrypt_file(source, destination, policy)
+    with pytest.raises(ValueError, match="unsafe members"):
+        tar_digests(destination, policy)
+    assert not [t for t in threading.enumerate() if t.name == "strath-gpg-input"]
 
 
 def test_native_authority_backup_is_encrypted_and_restores_exact_retry(gpg_archive, tmp_path):

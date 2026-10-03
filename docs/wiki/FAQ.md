@@ -1,14 +1,14 @@
 # FAQ
 
-The current separate Linux competition profile (STRATHMARK 3.0.0rc6 / STRATHEX 7.4.1) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
 
 ## Is V3 ready for official competitions?
 
-STRATHMARK 3.0.0rc6 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 ## Can Linux run full V3 competitions?
 
-Yes. STRATHEX 7.4.1 and STRATHMARK 3.0.0rc6 support the complete local workflow,
+Yes. STRATHEX 7.4.2 and STRATHMARK 3.0.0rc7 support the complete local workflow,
 including real Formula/ML, explicit approval and separate issue, official outcomes
 and judge placings, settlement, restart, corrections, independent event advancement
 and later-round learning. Follow the
