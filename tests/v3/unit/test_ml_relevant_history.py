@@ -69,5 +69,6 @@ def test_native_residual_export_reload_restores_seconds_at_unseen_diameter(tmp_p
     features["size_mm"] = 500
     ordered = [[features[name] for name in FEATURE_NAMES]]
     expected = tuple(float(value) + math.log(180) for value in model.predict(ordered)[0])
+    assert 180 < math.exp(expected[3]) < 230
     assert predict_model_log_quantiles(reloaded, ordered) == pytest.approx(expected)
     assert math.exp(predict_model_log_quantiles(reloaded, ordered)[3]) > 180

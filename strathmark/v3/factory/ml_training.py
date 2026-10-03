@@ -1835,7 +1835,9 @@ def _train_catboost_hierarchy(
     if target_transform != "log_seconds":
         settings["metadata"] = {"strathmark_target_transform": target_transform}
     universal = factory(**settings)
-    _fit_model(universal, rows, sample_weight_power=sample_weight_power)
+    _fit_model(
+        universal, rows, sample_weight_power=sample_weight_power, target_transform=target_transform
+    )
     eligibility = _specialist_eligibility(rows)
     specialists: dict[str, Any] = {}
     for key, state in eligibility.items():
@@ -1843,7 +1845,12 @@ def _train_catboost_hierarchy(
             continue
         selected = tuple(item for item in rows if item.specialist_key == key)
         model = factory(**settings)
-        _fit_model(model, selected, sample_weight_power=sample_weight_power)
+        _fit_model(
+            model,
+            selected,
+            sample_weight_power=sample_weight_power,
+            target_transform=target_transform,
+        )
         specialists[key] = model
     return universal, specialists, eligibility
 
@@ -1853,7 +1860,11 @@ def context_key(context: TargetContext) -> str:
 
 
 def _fit_model(
-    model: Any, rows: Sequence[CausalTrainingRow], *, sample_weight_power: float = 0.0
+    model: Any,
+    rows: Sequence[CausalTrainingRow],
+    *,
+    sample_weight_power: float = 0.0,
+    target_transform: str = "log_seconds",
 ) -> None:
     import pandas as pd
 
@@ -1863,7 +1874,7 @@ def _fit_model(
     )
     targets = [float(item.target_log_seconds) for item in rows]
     fitted_targets = targets
-    if _model_target_transform(model) == "event_history_residual_v1":
+    if target_transform == "event_history_residual_v1":
         fitted_targets = [
             target - _event_history_anchor(row.feature_dict)
             for target, row in zip(targets, rows, strict=True)
