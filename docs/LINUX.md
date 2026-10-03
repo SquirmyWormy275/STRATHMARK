@@ -2,9 +2,14 @@
 
 Linux and Windows share the V2 library/API and current source demonstration command. Python 3.13 runs current development and portable V3 tests. No separate Linux fork is needed.
 
-For actual Formula + trained ML numeric previews and STRATHEX selection, follow
-the [separate V3 candidate profile](V3_LINUX_CANDIDATE.md). It uses its own interpreter
-and verified model bundle; it does not authorize official issue or results.
+For complete Formula + trained ML competitions with STRATHEX 7.3.0, use the
+[Linux local competition runbook](V3_LINUX_COMPETITION.md). It covers the separate
+Python 3.13 interpreter, `v3-candidate` dependencies, verified trained model,
+persistent authority, required independent recovery directory, and full
+approval/issue/results/next-round workflow. The older
+[numeric candidate](V3_LINUX_CANDIDATE.md) remains a separate retained preview.
+
+The following source setup runs the synthetic V2 demo and portable tests:
 
 ```bash
 python3.13 -m venv .venv-linux
@@ -13,7 +18,7 @@ python3.13 -m venv .venv-linux
 .venv-linux/bin/strathmark demo
 ```
 
-The demo uses synthetic competitors and the released V2 calculation API; it opens no live database. Current package metadata remains `3.0.0rc3`; the demo does not make V3 production-eligible. For the trusted published V2 library, install `strathmark==2.0.1` in a separate environment. The V2 API starts with `python -m uvicorn strathmark.api:app --host 127.0.0.1 --port 8000`; configure an absolute `STRATHMARK_DB_PATH` first. That ASGI app is V2. V3 services require explicit authenticated, source-bound composition described in [deployment](DEPLOYMENT.md).
+The demo uses synthetic competitors and the released V2 calculation API; it opens no live database. Current package metadata is `3.0.0rc4`; the demo does not grant Windows CNG production eligibility. For the trusted published V2 library, install `strathmark==2.0.1` in a separate environment. The V2 API starts with `python -m uvicorn strathmark.api:app --host 127.0.0.1 --port 8000`; configure an absolute `STRATHMARK_DB_PATH` first. That ASGI app is V2. V3 services require explicit authenticated, source-bound composition described in [deployment](DEPLOYMENT.md).
 
 Use a fresh scratch directory per test run, separate from operator data:
 

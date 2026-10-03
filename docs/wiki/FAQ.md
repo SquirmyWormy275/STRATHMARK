@@ -8,7 +8,12 @@ STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profi
 
 ## Can Linux run full V3 competitions?
 
-Yes. The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) runs actual Formula, trained ML, pooling, and exact-field optimization with STRATHEX 7.2. It returns unissued previews and cannot approve, issue, record official results, settle, or learn at the next round.
+Yes. STRATHEX 7.3.0 and STRATHMARK 3.0.0rc4 support the complete local workflow,
+including real Formula/ML, explicit approval and separate issue, official outcomes
+and judge placings, settlement, restart, corrections, independent event advancement
+and later-round learning. Follow the
+[Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md).
+The older numeric candidate remains an unissued preview with its original limits.
 
 ## Why build formula, ML, and LLM forecasts?
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.0rc4] - 2026-10-02
+
+- Add the complete separate Linux local competition profile: real Formula/ML, mark-free seeding, exact handicap/championship fields, deliberate approval and separate issue, authorized outcomes/placings, settlement, restart, advancing rounds, signed corrections and closure.
+- Preserve same-round epochs and immutable ID bindings; use the complete-field optimizer for assessor counterfactuals; reject future observations and unknown mutation schemas. Separate events advance independently.
+- Require independently verified recovery for the STRATHEX operator launcher, preserve persistent local signing identity and exact retries, and checkpoint confirmed outcomes before submission.
+- Update README, onboarding, Linux setup, package release guidance and wiki status. Windows CNG and full three-assessor factory qualification remain separate; local keys never satisfy that boundary.
+
 ## [3.0.0rc3] - 2026-10-02
 
 - Raise all cryptography extras and the exact V3 lock to 50.0.2 to fix the six newly detected advisories; retain the V7 contract and numeric algorithms. See [security maintenance](docs/SECURITY_MAINTENANCE.md).

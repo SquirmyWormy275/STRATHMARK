@@ -1,8 +1,8 @@
 # Cryptography security maintenance — October 2, 2026
 
-STRATHMARK 3.0.0rc3 requires `cryptography>=50.0.2,<51` for API, security,
+The baseline patch introduced in STRATHMARK 3.0.0rc3 requires `cryptography>=50.0.2,<51` for API, security,
 development, and candidate extras; its exact Python 3.13 lock uses 50.0.2.
-STRATHEX 7.2.1 uses the same maintained floor. This updates dependency security;
+STRATHEX 7.2.1 uses the same maintained floor. STRATHMARK 3.0.0rc4 and STRATHEX 7.3.0 retain this patch. The security-only change updates dependency security;
 it does not change the frozen V7 contract, numeric algorithms, V2 receipts, or
 production eligibility.
 
