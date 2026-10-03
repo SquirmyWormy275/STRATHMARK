@@ -1284,8 +1284,15 @@ def main():
         type=Path,
         help="Existing independent recovery directory; accepted mutations are archived and read back before acknowledgment",
     )
+    parser.add_argument(
+        "--backup-encryption-policy",
+        type=Path,
+        help="Optional pinned local GPG policy; readback verifies encryption before acknowledgment",
+    )
     args = parser.parse_args()
     try:
+        if args.backup_encryption_policy is not None and args.backup_dir is None:
+            raise LinuxLifecycleError("backup encryption requires --backup-dir")
         if args.operation == "init":
             LinuxLifecycleStore.initialize(args.runtime_root)
         runtime = LinuxCompetitionRuntime(root=args.runtime_root, ml_bundle=args.ml_bundle)
@@ -1294,7 +1301,13 @@ def main():
         elif args.operation == "backup":
             if args.backup_dir is None:
                 raise LinuxLifecycleError("backup requires --backup-dir")
-            response = {"archive": str(runtime.store.archive_backup(args.backup_dir))}
+            response = {
+                "archive": str(
+                    runtime.store.archive_backup(
+                        args.backup_dir, encryption_policy=args.backup_encryption_policy
+                    )
+                )
+            }
         elif args.operation == "state":
             response = runtime.store.state()
         else:
@@ -1327,7 +1340,9 @@ def main():
             "approval_detail",
             "lookup",
         }:
-            runtime.store.archive_backup(args.backup_dir)
+            runtime.store.archive_backup(
+                args.backup_dir, encryption_policy=args.backup_encryption_policy
+            )
         sys.stdout.buffer.write(encode(response) + b"\n")
     except Exception as error:
         print(f"V3 Linux competition failed: {type(error).__name__}: {error}", file=sys.stderr)

@@ -1,8 +1,8 @@
 # Remaining installation and qualification work
 
-Completed separately: the [Linux local competition profile](docs/V3_LINUX_COMPETITION.md) in rc4 implements the full operator lifecycle, real Formula/ML, signed issue/results/corrections, restart, backups, and later-round learning. Remaining Windows CNG and full three-assessor factory qualification below are distinct installation work.
+Completed separately: the [Linux local competition profile](docs/V3_LINUX_COMPETITION.md) in rc6 implements the full operator lifecycle, real Formula/ML, signed issue/results/corrections, restart, backups, and later-round learning. Remaining Windows CNG and full three-assessor factory qualification below are distinct installation work.
 
-STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+STRATHMARK 3.0.0rc6 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 ## Runnable Linux previews
 
@@ -26,3 +26,7 @@ Prepare the signed eligibility handoff at zero open tournaments only after the i
 After eligibility, operate signed backup/recovery and the model-factory lifecycle. Collect prospective settled evidence and reassess accuracy, calibration, equity, capacity, and providers through new versioned manifests. Optional V2 PostgreSQL/Supabase mirror migrations remain separate runbook work.
 
 Linux setup, portable launch, branch salvage, documentation links, wiki publication tools, action/Ruff pins, and CI isolation are delivered by the October maintenance change. This list tracks installed qualification rather than reopening implemented consumer work.
+
+## rc6 follow-up status
+
+Completed implementation: full-row tail triage, workbook quality audit, fixed context/history regression checks, a component-pinned prospective protocol, TRAIN/TUNE-isolated Formula prior tuning, schema-validated local council requests with declared raw-context conversions, and optional GPG-encrypted Linux authority archives with authenticated full readback. Council numeric quorum remains unavailable in the latest pilot. Future evaluation needs genuinely later competitions. Offline key storage and legacy plaintext archive retirement require the independent recovery copy and attached archive drive; a workstation copy alone is insufficient.

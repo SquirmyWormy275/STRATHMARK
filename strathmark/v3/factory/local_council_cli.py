@@ -13,6 +13,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import math
 import secrets
 import time
 from pathlib import Path
@@ -90,6 +91,118 @@ OUTPUT_SCHEMA = {
 }
 
 
+class LocalProviderError(ValueError):
+    def __init__(self, status, raw, *, truncated=False):
+        super().__init__(
+            f"provider_http_{status}" if not truncated else "provider_response_too_large"
+        )
+        self.raw = raw
+        self.code = str(self)
+        self.truncated = truncated
+
+
+def member_response_schema(references, *, fact_codes=("observed_raw_time",)):
+    """Constrain transport shape without manufacturing a committed forecast."""
+    import copy
+
+    abstained = copy.deepcopy(OUTPUT_SCHEMA)
+    for field in ("quantiles", "evidence_refs", "fact_codes"):
+        abstained["properties"][field] = {"const": []}
+    abstained["properties"]["state"] = {"const": "abstained"}
+    abstained["properties"]["abstention_reason"] = {
+        "enum": [
+            "conflicting_numeric_evidence",
+            "insufficient_numeric_evidence",
+            "unsupported_context",
+        ]
+    }
+    if not references:
+        return abstained
+    committed = copy.deepcopy(OUTPUT_SCHEMA)
+    committed["properties"]["state"] = {"const": "committed"}
+    committed["properties"]["evidence_refs"] = {"const": list(references)}
+    committed["properties"]["fact_codes"] = {"const": sorted(fact_codes)}
+    committed["properties"]["abstention_reason"] = {"const": None}
+    committed["properties"]["quantiles"] = {
+        "type": "array",
+        "minItems": 7,
+        "maxItems": 7,
+        "prefixItems": [
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["probability", "time_ms"],
+                "properties": {
+                    "probability": {"const": p},
+                    "time_ms": {"type": "integer", "minimum": 1, "maximum": 600000},
+                },
+            }
+            for p in REQUIRED_QUANTILES
+        ],
+    }
+    return {"type": "object", "anyOf": [committed, abstained]}
+
+
+def select_local_history(observations, target, *, limit=12):
+    """Preserve scarce relevant history instead of taking only the latest events.
+
+    The caller supplies exclusively prior observations. No result times, issued
+    marks or evaluation outcomes influence this context-only bounded selection.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 12:
+        raise ValueError("local history limit must be between one and twelve")
+    ranked = sorted(
+        observations,
+        key=lambda o: (
+            o.context.event_code == target.event_code,
+            o.context.material_code == target.material_code,
+            -abs(math.log(o.context.size_mm / target.size_mm)),
+            o.occurred_at_utc,
+            o.observation_sequence,
+        ),
+        reverse=True,
+    )[:limit]
+    return tuple(sorted(ranked, key=lambda o: (o.occurred_at_utc, o.observation_sequence)))
+
+
+def add_declared_conversions(projected, evidence):
+    """Supply transparent raw-fact unit/context conversions, never assessor output."""
+    from decimal import ROUND_HALF_EVEN, Decimal
+
+    from strathmark.v3.assessors.formula import FormulaManifest, _conversion
+
+    policy = FormulaManifest.load(Path(__file__).parents[1] / "contracts/formula_manifest.json")
+    if (
+        policy.version != "formula:v2-bootstrap"
+        or policy.digest != "2c58a9527c77a33e0b813fe938db44c6298ac0ea8b543a199b720d97baaf1354"
+    ):
+        raise ValueError("local declared conversion policy differs from the frozen bootstrap")
+    observations = {o.observation_sequence: o for o in evidence.observations}
+    supported = 0
+    for row in projected["observations"]:
+        original = observations[row["observation_sequence"]]
+        conversion = _conversion(original.context, evidence.target_context, policy)
+        row["conversion_status"] = conversion[3]
+        row["target_equivalent_time_ms"] = None
+        row["conversion_variance"] = str(conversion[2])
+        if conversion[0] > 0:
+            converted = Decimal(row["raw_time_ms"]) * conversion[4] * conversion[5] * conversion[6]
+            if 1 <= converted <= 600000:
+                row["target_equivalent_time_ms"] = int(
+                    converted.quantize(Decimal(1), rounding=ROUND_HALF_EVEN)
+                )
+                supported += 1
+    projected["declared_conversion_policy"] = {
+        "version": "local-raw-context-conversion-v1",
+        "manifest_digest": policy.digest,
+        "meaning": "declared event-scale, diameter and observed-density conversion of earlier raw cuts; not a new observed cut or assessor forecast",
+        "supported_observation_count": supported,
+    }
+    return (
+        ("declared_time_conversion", "observed_raw_time") if supported else ("observed_raw_time",)
+    )
+
+
 class LocalCouncilClient:
     def __init__(self, profile: dict):
         self.profile = profile
@@ -141,7 +254,9 @@ class LocalCouncilClient:
             response = connection.getresponse()
             raw = response.read(1_048_577)
             if len(raw) > 1_048_576 or response.status != 200:
-                raise ValueError("local provider returned an invalid bounded response")
+                raise LocalProviderError(
+                    response.status, raw[:1_048_576], truncated=len(raw) > 1_048_576
+                )
             return raw
         finally:
             connection.close()
@@ -184,13 +299,15 @@ class LocalCouncilClient:
         for observation in projected["observations"]:
             for name in unavailable:
                 observation.pop(name, None)
-        projected["schema_version"] = "strathmark-v3-local-legacy-provider-packet-v1"
+        projected["schema_version"] = "strathmark-v3-local-legacy-provider-packet-v2"
         projected["unavailable_fields"] = list(unavailable)
+        fact_codes = add_declared_conversions(projected, evidence)
         projected["numeric_digest"] = canonical_digest(
             {
                 "schema_version": projected["schema_version"],
                 "unavailable_fields": projected["unavailable_fields"],
                 "target_context": projected["target_context"],
+                "declared_conversion_policy": projected["declared_conversion_policy"],
                 "observations": [
                     {key: value for key, value in item.items() if key != "evidence_ref"}
                     for item in projected["observations"]
@@ -199,13 +316,18 @@ class LocalCouncilClient:
         )
         policy = render_member_prompt(packet).decode().split("UNTRUSTED_JSON_DATA\n")[0]
         prompt = policy + "UNTRUSTED_JSON_DATA\n" + canonical_bytes(projected).decode()
-        prompt += "\nResponse schema: " + json.dumps(OUTPUT_SCHEMA)
+        schema = member_response_schema(
+            [item.evidence_ref for item in packet.observations], fact_codes=fact_codes
+        )
+        prompt += "\nResponse schema: " + json.dumps(schema)
         prompt += "\nQuantiles must have probabilities in exactly this order: " + ",".join(
             REQUIRED_QUANTILES
         )
         prompt += "\nTimes are RAW cutting milliseconds. Issued marks, completion clocks, legal placings and gaps are unavailable. Output no narrative."
         prompt += "\nCOMMITTED: use all seven ordered quantiles, abstention_reason=null, and cite the supplied evidence_ref values in their original order."
         prompt += "\nABSTAINED: quantiles=[], evidence_refs=[], fact_codes=[]; use a declared abstention_reason. Empty history requires abstention. Do not cite references when abstaining. Sort warnings and fact_codes alphabetically without duplicates."
+        prompt += "\nUse matching event, material and diameter observations where available. Different contexts are not interchangeable. If numeric support is insufficient, keep the abstention branch. Seven quantile times must be nondecreasing."
+        prompt += "\nEach target_equivalent_time_ms is an explicitly declared conversion of an earlier RAW cut into the target context, not another assessor's prediction. Null means unsupported. Use supported values only with uncertainty appropriate to sparse history and declared conversion variance. Conversions are model policy, not a universal sport rule."
         attempts = []
         validated = None
         error = None
@@ -222,7 +344,7 @@ class LocalCouncilClient:
             payload = {
                 "model": member.model_id,
                 "prompt": message,
-                "format": OUTPUT_SCHEMA,
+                "format": schema,
                 "stream": False,
                 "think": False,
                 "keep_alive": keep_alive,
@@ -259,13 +381,21 @@ class LocalCouncilClient:
                 validated = validate_member_output(
                     body,
                     expected_evidence_refs=[item.evidence_ref for item in packet.observations],
-                    allowed_fact_codes=("observed_raw_time",),
+                    allowed_fact_codes=fact_codes,
                 )
                 record["validator_code"] = validated.validator_code
                 error = None
                 break
             except (LLMOutputError, ValueError, TypeError, KeyError, OSError) as exc:
-                error = exc.code if isinstance(exc, LLMOutputError) else type(exc).__name__
+                if isinstance(exc, LocalProviderError):
+                    record["raw_envelope_sha256"] = hashlib.sha256(exc.raw).hexdigest()
+                    record["raw_envelope_base64"] = base64.b64encode(exc.raw).decode("ascii")
+                    record["raw_envelope_truncated"] = exc.truncated
+                error = (
+                    exc.code
+                    if isinstance(exc, (LLMOutputError, LocalProviderError))
+                    else type(exc).__name__
+                )
                 record["validator_code"] = error
         self.check_pins()
         return {
@@ -352,11 +482,11 @@ def main():
         raise FileExistsError("council receipt exists; refusing to overwrite it")
     history = load_workbook_history(args.workbook, cutoff_at_utc=args.cutoff_at_utc)
     identity = dict(history.competitor_ids)[args.competitor_id]
-    observations = tuple(
-        item for item in history.observations if str(item.competitor_id) == identity
-    )[-12:]
     context = TargetContext(
         args.event, args.size_mm, args.species, "strathex:v1", "strathex:v1", ()
+    )
+    observations = select_local_history(
+        (item for item in history.observations if str(item.competitor_id) == identity), context
     )
     packet = EvidencePacket.create(
         competitor_id=StableIdentifier(identity),

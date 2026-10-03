@@ -279,7 +279,7 @@ class LinuxLifecycleStore:
             state, _head = self._verify(connection)
             return state
 
-    def archive_backup(self, directory: Path) -> Path:
+    def archive_backup(self, directory: Path, *, encryption_policy: Path | None = None) -> Path:
         """Verify an independently stored, consistent installation recovery archive."""
         directory = Path(directory).resolve(strict=True)
         with tempfile.TemporaryDirectory(prefix=".backup-", dir=self.root.parent) as staging:
@@ -295,14 +295,40 @@ class LinuxLifecycleStore:
                 for path in snapshot.rglob("*")
                 if path.is_file()
             }
+            if encryption_policy is not None:
+                from strathmark.v3.infrastructure.encrypted_archive import (
+                    encrypt_file,
+                    tar_digests,
+                    verify_file,
+                )
+
+                encrypted = target.with_name(target.name + ".gpg")
+                if encrypted.exists():
+                    verify_file(encrypted, encryption_policy)
+                    if tar_digests(encrypted, encryption_policy) != files:
+                        raise LinuxLifecycleError("encrypted recovery archive readback differs")
+                    return encrypted
+                local_archive = Path(staging) / "snapshot.tar.gz"
+                descriptor = os.open(local_archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    with tarfile.open(fileobj=stream, mode="w:gz", compresslevel=1) as archive:
+                        archive.add(snapshot, arcname="installation")
+                if _archive_digests(local_archive) != files:
+                    raise LinuxLifecycleError("private staging archive readback differs")
+                encrypt_file(local_archive, encrypted, encryption_policy)
+                if tar_digests(encrypted, encryption_policy) != files:
+                    raise LinuxLifecycleError("encrypted independent archive readback differs")
+                return encrypted
             if target.exists():
                 if _archive_digests(target) != files:
                     raise LinuxLifecycleError("existing recovery archive readback differs")
                 return target
             temporary = target.with_name(target.name + "." + secrets.token_hex(8) + ".next")
             try:
-                with tarfile.open(temporary, "w:gz", compresslevel=1) as archive:
-                    archive.add(snapshot, arcname="installation")
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    with tarfile.open(fileobj=stream, mode="w:gz", compresslevel=1) as archive:
+                        archive.add(snapshot, arcname="installation")
                 if _archive_digests(temporary) != files:
                     raise LinuxLifecycleError("recovery archive readback differs")
                 with temporary.open("rb+") as stream:

@@ -223,6 +223,7 @@ class FormulaManifest:
         if self.schema_version != FORMULA_MANIFEST_SCHEMA or self.version not in {
             "formula:v2-bootstrap",
             "formula:v2-trained-priors-v1",
+            "formula:v3-tuned-priors-v1",
         }:
             raise ValueError("unsupported formula bootstrap schema or version")
         for value, label in (

@@ -4,7 +4,7 @@ import argparse
 import json
 import math
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from statistics import median
@@ -22,6 +22,7 @@ from strathmark.v3.factory.ml_training import _build_causal_matrix_values, mean_
 from strathmark.v3.factory.workbook_history import load_workbook_history
 from strathmark.v3.infrastructure.integrity import IntegrityTrustStore, P256EphemeralSigner
 from strathmark.v3.linux_forecasts import calculate, load_formula_manifest
+from strathmark.v3.runtime_identity import implementation_digest
 
 
 def main():
@@ -33,6 +34,10 @@ def main():
     p.add_argument("--workbook", type=Path, required=True)
     p.add_argument("--cutoff-at-utc", required=True)
     p.add_argument("--audit-after-year", type=int, default=2024)
+    p.add_argument(
+        "--audit-after-utc",
+        help="Exclusive timestamp boundary for newly frozen prospective competitions",
+    )
     p.add_argument("--v2-training-cutoff", type=date.fromisoformat, default=date(2023, 1, 1))
     args = p.parse_args()
     if args.output.exists():
@@ -45,16 +50,27 @@ def main():
     by = defaultdict(list)
     for o in h.observations:
         by[str(o.competitor_id)].append(o)
+    after = None
+    if args.audit_after_utc:
+        after = datetime.fromisoformat(args.audit_after_utc.replace("Z", "+00:00"))
+        if after.tzinfo is None:
+            raise ValueError("prospective timestamp boundary requires a timezone")
+        after = after.astimezone(timezone.utc)
     rows = [
         r
         for r in _build_causal_matrix_values(_packets(by, "a" * 64))
-        if int(r.occurred_at_utc[:4]) > args.audit_after_year
+        if (
+            datetime.fromisoformat(r.occurred_at_utc.replace("Z", "+00:00")) > after
+            if after is not None
+            else int(r.occurred_at_utc[:4]) > args.audit_after_year
+        )
     ]
     if not rows:
         raise ValueError("no eligible held-out rows in the requested years")
     if args.v2_training_cutoff > min(date.fromisoformat(r.occurred_at_utc[:10]) for r in rows):
         raise ValueError("V2 fitting cutoff must not include benchmark targets")
     formula_digest = load_formula_manifest(args.bundle).digest
+    source_implementation_digest = implementation_digest()
     observations = {str(o.evidence_id): o for o in h.observations}
     local = {v: k for k, v in h.competitor_ids}
     signer = P256EphemeralSigner.generate("integrity-key:private-benchmark")
@@ -102,6 +118,9 @@ def main():
                 "species": context.material_code,
                 "size_mm": context.size_mm,
                 "history_depth": r.feature_dict["history_depth"],
+                "same_event_history_depth": r.feature_dict["same_event_history_depth"],
+                "same_material_history_depth": r.feature_dict["same_material_history_depth"],
+                "occurred_at_utc": r.occurred_at_utc,
                 "actual_seconds": raw,
                 "universal": math.exp(float(pred[3])),
                 "pinball": mean_pinball_loss(float(r.target_log_seconds), pred),
@@ -204,7 +223,10 @@ def main():
         "workbook_sha256": h.source_sha256,
         "bundle_digest": bundle.digest,
         "formula_digest": formula_digest,
+        "source_implementation_digest": source_implementation_digest,
+        "model_code_revision": bundle.metadata["code_revision"],
         "audit_after_year": args.audit_after_year,
+        "audit_after_utc": args.audit_after_utc,
         "v2_training_cutoff": str(args.v2_training_cutoff),
         "v2_comparison": "unchanged V2 algorithm, chronologically refit on the declared training population",
         "tournament_count": len({r.tournament_id for r in rows}),
@@ -216,11 +238,20 @@ def main():
                 str(v): metrics([e for e in results if e[category] == v])
                 for v in sorted({e[category] for e in results})
             }
-            for category in ("event", "species", "size_mm")
+            for category in (
+                "event",
+                "species",
+                "size_mm",
+                "history_depth",
+                "same_event_history_depth",
+                "same_material_history_depth",
+            )
         },
     }
     if load_workbook_history(wb, cutoff_at_utc=args.cutoff_at_utc).source_sha256 != h.source_sha256:
         raise ValueError("workbook changed during the benchmark")
+    if implementation_digest() != source_implementation_digest:
+        raise ValueError("implementation changed during the benchmark")
     if load_formula_manifest(args.bundle).digest != formula_digest:
         raise ValueError("Formula component changed during the benchmark")
     if (

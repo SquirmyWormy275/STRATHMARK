@@ -4,7 +4,7 @@ STRATHMARK 3.0.0rc5 improves the separate Linux Formula/ML profile without chang
 
 ## Chronological development benchmark
 
-The owner authorized an isolated read-only copy of historical workbook results. The original workbook is unchanged. Of 1,331 legacy rows, 1,311 dated completions are admitted; 20 undated rows cannot satisfy a causal cutoff. Whole recorded competition/year groups are disjoint: training through 2022 has 666 rows/88 groups, 2023 tuning has 116/8, 2024 calibration has 231/21, and 2025 onward evaluation has 278/20.
+The owner authorized an isolated read-only copy of historical workbook results. The original workbook is unchanged. Of 1,311 legacy rows, 1,291 dated completions are admitted; 20 undated rows cannot satisfy a causal cutoff. Whole recorded competition/year groups are disjoint: training through 2022 has 666 rows/88 groups, 2023 tuning has 116/8, 2024 calibration has 231/21, and 2025 onward evaluation has 278/20.
 
 The builder receives training, tuning and calibration roles in a separate process and cannot receive audit rows. Settings are selected by row-weighted mean absolute error, in seconds, of the predicted medians on tuning competitions. Formula priors receive only authenticated training-role rows. Calibration targets set PIT calibration and a finite-sample interval floor; audit targets cannot set interval width. Every prediction receives only observations with earlier timestamps and observation sequences. Native evaluation runs the actual Formula governor, exported/reloaded CatBoost, and Linux distribution pooling.
 
@@ -12,7 +12,7 @@ These are development comparisons. Several candidate aggregates have been examin
 
 The matched V2 comparison refits the unchanged V2 algorithm on the same pre-2023 population, then supplies date-prior individual history. It deliberately avoids using a newer packaged V2 artifact whose training cutoff would include evaluation targets.
 
-## Measured development results
+## Measured rc5 development results
 
 All 278 evaluation results are retained. MAE is the average absolute error in raw cutting seconds, not start marks or adjusted placings.
 
@@ -71,3 +71,28 @@ The pilot selects one SHA256-ranked row per whole tournament before any provider
 The initial native-provider pilot returned a two-member-or-better council for 11 of the 20 later evaluation rows, with nine unavailable. Its available-subset MAE was 22.33 seconds; on those identical rows the rc5 ensemble was 21.55 and matched V2 was 8.49. This does not support council promotion. A protocol-only prompt correction clarifies empty-history abstention payloads and ordered references; its revised pilot returned only one available council out of 20 evaluation rows (19 unavailable). Both pilots are retained development evidence and neither supports promotion. Review also found placeholder issued marks in the legacy projection; the local provider now receives a mark-free packet, with missing legal-field facts explicitly unavailable. The earlier pilots cannot qualify that corrected projection. The corrected mark-free pilot completed the same 84 native member calls on 28 preselected competition rows. It returned a numeric council for only one of 20 later evaluation rows, with 19 unavailable (two of eight tuning rows were available). Its 7-second error on that single available evaluation row cannot establish accuracy; numeric promotion remains refused. The public release aggregate retains all three pilot outcomes.
 
 The designated independent workbook gate still requires Node v24.19.0 and artifact-tool 2.8.52. This host's 2.8.59 does not satisfy it. Explicit portable tests skip that exact-artifact rebuild; its frozen receipt and Windows production qualification are unchanged.
+
+## rc6 tail audit and regression controls
+
+The read-only workbook audit corrects a published count: there are 1,311 total rows, 1,291 dated admitted completions and 20 excluded undated rows. The role counts and measured accuracy are unchanged. Twenty-one possible repeated row pairs require field/round confirmation; equal recorded cuts can be legitimate separate heats. No rows were deleted or corrected. Original receipts remain immutable.
+
+The worst 28 of 278 evaluation results account for 47.5% of rc5 pooled absolute error. Sparse history is a major limitation: the 20 results without same-event history averaged 86.84 seconds of pooled error. Inspecting an error does not establish that its recorded cut is wrong.
+
+An eight-setting Formula experiment selects prior strength and robust scale on the disjoint 2023 tuning role. Training-derived prior values remain TRAIN-only; CAL and EVAL targets cannot select the setting. The selected context/discipline pseudo-count is one and the minimum robust scale is 0.8; population pseudo-count three and recency 730 days remain fixed. Tuning MAE improves from 14.39 to 13.47 seconds, while tuning p90 worsens from 26.00 to 28.30 seconds. The manifest is `formula:v3-tuned-priors-v1`; bootstrap and earlier trained manifests remain readable.
+
+A native development replay retains all 278 later results. Pooled MAE improves from 25.21 to 23.12 seconds, p90 from 82.14 to 70.12, p99 from 171.90 to 164.17 and maximum error from 211.18 to 200.25. Quantile CRPS improves from 18.72 to 17.25 seconds. Exact 90% coverage rises from 91.73% to 94.60%, with wider mean intervals: 111.64 versus 94.36 seconds. This is a tradeoff, not a free accuracy gain. The universal ML diagnostic remains 23.71 seconds. An eight-trial related-event ML experiment was rejected on TUNE because its best MAE, 13.41 seconds, did not beat the current 12.97; it was never evaluated on EVAL.
+
+`strathmark-v3-accuracy` recomputes metrics from every private row distribution and enforces an identical cohort, fixed MAE/tail/CRPS/coverage limits, and supported event/material/diameter/history slices. Supplied summary metrics cannot override it. It refuses substituted targets, duplicate IDs, dropped rows and nonfinite times. Passing is a development regression result, not numeric promotion.
+
+```bash
+strathmark-v3-accuracy workbook --workbook /private/history-copy.xlsx \
+  --cutoff-at-utc 2026-10-03T00:00:00.000Z --output /private/new-quality.json
+strathmark-v3-accuracy triage --benchmark /private/new-benchmark --output /private/new-triage.json
+strathmark-v3-accuracy compare --baseline /private/old-benchmark \
+  --benchmark /private/new-benchmark --output /private/new-regression.json
+strathmark-v3-accuracy freeze --benchmark /private/new-benchmark --output /private/frozen-protocol.json
+```
+
+The prospective protocol freezes exact model, Formula and implementation hashes, previously examined row/group IDs and the policy before future competitions occur. A later benchmark accepts `--audit-after-utc` with that exact freeze timestamp. `prospective --protocol /private/frozen-protocol.json --benchmark /private/future-benchmark --output /private/new-future-check.json` refuses changed components, reused groups and targets at or before freezing. It requires at least 100 rows from ten new competitions. No such future dataset is currently available; that evaluation remains pending collection and cannot be manufactured from the development cohort.
+
+The revised local council uses bounded relevant history, ordered response schemas and explicitly declared conversions of earlier raw cuts into the target context. Original raw milliseconds remain present; unsupported conversions remain null. The bootstrap conversion policy is pinned and is not another assessor's forecast. Raw provider errors and bounded correction attempts remain private evidence. The final conversion pilot validates all 84 responses, with 25 committed Ministral responses and 59 valid abstentions across the three families. Qwen and Gemma abstain on every selected row, so none of the 28 rows reaches the two-member numeric quorum. This improves transport/schema reliability but does not establish numeric availability or accuracy. All failed pilots remain retained; council numeric promotion remains refused.
