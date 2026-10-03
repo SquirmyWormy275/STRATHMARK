@@ -5,6 +5,7 @@
 - Stream encrypted archive input/output in bounded bulk chunks through native GPG, preserving complete authenticated readback, source checks and atomic no-overwrite publication. Clean up the process and feeder on failure.
 - Add native tests for oversized pipe input, truncated authentication tails, early encryption failure and unsafe tar members.
 - Record two rejected sparse-history experiment families and historical workbook review. Keep the original rc6 model and prospective protocol available for their exact future comparison; this release claims no numeric improvement.
+- Seal freeze-export checksums before calculating the digest. Add an evidence-verified legacy companion repair that preserves the original timestamp and cohort without changing its original file.
 
 ## [3.0.0rc6] - 2026-10-03
 

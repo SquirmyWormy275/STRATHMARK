@@ -1,14 +1,18 @@
 import hashlib
 import json
+import sys
 from copy import deepcopy
 
 import pytest
 
+from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.contracts.forecasts import DISTRIBUTION_SCHEMA_VERSION
 from strathmark.v3.factory.accuracy_audit import (
     attest_benchmark,
     compare_rows,
     freeze_protocol,
+    main,
+    repair_exported_freeze,
     triage_rows,
     verify_benchmark,
     verify_prospective,
@@ -243,3 +247,86 @@ def test_benchmark_refuses_unsigned_summary_changes_and_changed_file_bytes():
     changed = {**summary, "bundle_digest": "c" * 64}
     with pytest.raises(ValueError, match="summary differs"):
         verify_benchmark(changed, values)
+
+
+def test_cli_freeze_output_can_be_used_without_modification(tmp_path, monkeypatch):
+    old = rows()
+    for r in old:
+        r["occurred_at_utc"] = "2025-01-01T12:00:00.000Z"
+    components = {
+        "bundle_digest": "a" * 64,
+        "formula_digest": "b" * 64,
+        "source_implementation_digest": "c" * 64,
+    }
+    (tmp_path / "private-row-receipts.json").write_text(json.dumps(old))
+    (tmp_path / "summary.json").write_text(json.dumps(attested(components, old)))
+    output = tmp_path / "frozen.json"
+    monkeypatch.setattr(
+        sys, "argv", ["accuracy", "freeze", "--benchmark", str(tmp_path), "--output", str(output)]
+    )
+    assert main() == 0
+    protocol = json.loads(output.read_text())
+    future = rows()
+    for i, r in enumerate(future):
+        r.update(
+            row_id=f"evidence:future-{i}",
+            tournament_id=f"tournament:future-{i // 3}",
+            occurred_at_utc="2027-01-01T12:00:00.000Z",
+        )
+    assert verify_prospective(protocol, attested(components, future), future)["row_count"] == 30
+
+
+def legacy_freeze():
+    old = rows()
+    for r in old:
+        r["occurred_at_utc"] = "2025-01-01T12:00:00.000Z"
+    summary = attested(
+        {
+            "bundle_digest": "a" * 64,
+            "formula_digest": "b" * 64,
+            "source_implementation_digest": "c" * 64,
+        },
+        old,
+    )
+    protocol = freeze_protocol(summary, old, now="2026-10-03T12:00:00.000Z")
+    del protocol["examined_receipt_file_sha256"]
+    protocol["digest"] = canonical_digest({k: v for k, v in protocol.items() if k != "digest"})
+    protocol["receipt_file_sha256"] = summary["row_receipts_sha256"]
+    return protocol, summary, old
+
+
+def test_legacy_freeze_repair_preserves_timestamp_and_original_evidence():
+    protocol, summary, old = legacy_freeze()
+    original = deepcopy(protocol)
+    repaired = repair_exported_freeze(
+        protocol, summary, old, receipt_file_sha256=summary["row_receipts_sha256"]
+    )
+    assert protocol == original
+    assert repaired["not_before_utc"] == protocol["not_before_utc"]
+    assert repaired["components"] == protocol["components"]
+    assert repaired["examined_row_ids"] == protocol["examined_row_ids"]
+    assert repaired["examined_tournament_ids"] == protocol["examined_tournament_ids"]
+    assert repaired["repaired_from_protocol_digest"] == protocol["digest"]
+    with pytest.raises(ValueError, match="previously examined"):
+        verify_prospective(repaired, summary, old)
+    repaired["examined_receipt_file_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="protocol digest"):
+        verify_prospective(repaired, summary, old)
+
+
+@pytest.mark.parametrize("change", ["receipt", "date", "cohort"])
+def test_legacy_freeze_repair_refuses_substituted_evidence(change):
+    protocol, summary, old = legacy_freeze()
+    if change == "receipt":
+        protocol["receipt_file_sha256"] = "f" * 64
+    elif change == "date":
+        protocol["not_before_utc"] = "2020-01-01T00:00:00.000Z"
+    else:
+        protocol["examined_row_ids"] = []
+        protocol["digest"] = canonical_digest(
+            {k: v for k, v in protocol.items() if k not in {"digest", "receipt_file_sha256"}}
+        )
+    with pytest.raises(ValueError, match="legacy freeze"):
+        repair_exported_freeze(
+            protocol, summary, old, receipt_file_sha256=summary["row_receipts_sha256"]
+        )

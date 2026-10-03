@@ -106,3 +106,10 @@ A separate TRAIN/TUNE-only pass tested eight population-context settings and eig
 Read-only review of seven distinct historical workbook versions found no recorded dates for the 20 undated current results. A private review packet retains the 21 possible repeated pairs with empty fields for original round/heat evidence. Dates were not inferred and results were not removed. The current rc6 development ensemble still averages 23.12 seconds overall and 85.05 on its 20 same-event-history-zero evaluation cases.
 
 The existing rc6 prospective protocol remains frozen to its original model, Formula and implementation. Retain that exact profile for its future comparison; an rc7 recovery implementation does not satisfy a protocol pinned to rc6. Collection still requires 100 genuinely later results from ten new competition groups. Recovery performance changes do not claim a diagnostic accuracy improvement.
+
+The rc7 accuracy CLI fixes a freeze-export defect: the old CLI appended the examined file checksum after calculating the protocol digest. New freezes bind that checksum before sealing. For a legacy export, `repair-freeze` verifies the exact signed examined benchmark and original digest, then writes a separate companion with the same original freeze timestamp, components and excluded rows/groups. It refuses substituted evidence and never rewrites the original protocol or moves its cutoff forward.
+
+```bash
+strathmark-v3-accuracy repair-freeze --protocol /private/original-frozen-protocol.json \
+  --benchmark /private/exact-examined-benchmark --output /private/repaired-protocol.json
+```
