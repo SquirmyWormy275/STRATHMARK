@@ -291,7 +291,7 @@ class LinuxLifecycleStore:
                 / f"linux-competition-{self.signer.identity.key_id[-16:]}-{head['sequence']:08d}-{head['event_digest'][:16]}.tar.gz"
             )
             files = {
-                str(path.relative_to(Path(staging))): sha256(path.read_bytes()).hexdigest()
+                path.relative_to(Path(staging)).as_posix(): sha256(path.read_bytes()).hexdigest()
                 for path in snapshot.rglob("*")
                 if path.is_file()
             }
