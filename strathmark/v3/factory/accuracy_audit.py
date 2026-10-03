@@ -325,6 +325,7 @@ def freeze_protocol(summary, examined_rows, *, now=None):
         "not_before_utc": now,
         "components": {k: summary[k] for k in COMPONENTS},
         "examined_receipts_digest": summary["row_receipts_digest"],
+        "examined_receipt_file_sha256": summary["row_receipts_sha256"],
         "examined_benchmark_attestation_digest": SignedManifest.from_dict(
             summary["benchmark_attestation"]
         ).body_digest,
@@ -337,6 +338,31 @@ def freeze_protocol(summary, examined_rows, *, now=None):
     }
     value["digest"] = canonical_digest(value)
     return value
+
+
+def repair_exported_freeze(protocol, summary, rows, *, receipt_file_sha256):
+    """Repair the legacy CLI's trailing metadata using the exact examined evidence.
+
+    Never re-freeze at the present time or accept a different examined cohort.
+    The original protocol stays intact; the caller writes a separate companion.
+    """
+    verify_benchmark(summary, rows, receipt_file_sha256=receipt_file_sha256)
+    body = {k: v for k, v in protocol.items() if k not in {"digest", "receipt_file_sha256"}}
+    if (
+        "examined_receipt_file_sha256" in body
+        or canonical_digest(body) != protocol.get("digest")
+        or protocol.get("receipt_file_sha256") != receipt_file_sha256
+    ):
+        raise ValueError("legacy freeze digest or examined receipt file differs")
+    repaired = freeze_protocol(summary, rows, now=protocol["created_at_utc"])
+    expected = {
+        k: v for k, v in repaired.items() if k not in {"digest", "examined_receipt_file_sha256"}
+    }
+    if body != expected:
+        raise ValueError("legacy freeze differs from its exact examined benchmark")
+    repaired["repaired_from_protocol_digest"] = protocol["digest"]
+    repaired["digest"] = canonical_digest({k: v for k, v in repaired.items() if k != "digest"})
+    return repaired
 
 
 def verify_prospective(protocol, summary, rows):
@@ -453,13 +479,13 @@ def _write(path, value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
-    for name in ("triage", "freeze", "prospective", "compare"):
+    for name in ("triage", "freeze", "repair-freeze", "prospective", "compare"):
         command = sub.add_parser(name)
         command.add_argument("--benchmark", type=Path, required=True)
         command.add_argument("--output", type=Path, required=True)
         if name == "compare":
             command.add_argument("--baseline", type=Path, required=True)
-        if name == "prospective":
+        if name in {"prospective", "repair-freeze"}:
             command.add_argument("--protocol", type=Path, required=True)
     workbook = sub.add_parser("workbook")
     workbook.add_argument("--workbook", type=Path, required=True)
@@ -495,6 +521,13 @@ def main():
         result = triage_rows(rows)
     elif args.operation == "freeze":
         result = freeze_protocol(summary, rows)
+    elif args.operation == "repair-freeze":
+        result = repair_exported_freeze(
+            _load(args.protocol),
+            summary,
+            rows,
+            receipt_file_sha256=hashlib.sha256(rows_path.read_bytes()).hexdigest(),
+        )
     elif args.operation == "prospective":
         result = verify_prospective(_load(args.protocol), summary, rows)
         result["enough_evidence"] = (
@@ -504,7 +537,8 @@ def main():
         result["triage"] = triage_rows(rows)
     else:
         result = compare_rows(_load(args.baseline / "private-row-receipts.json"), rows)
-    result["receipt_file_sha256"] = hashlib.sha256(rows_path.read_bytes()).hexdigest()
+    if args.operation not in {"freeze", "repair-freeze"}:
+        result["receipt_file_sha256"] = hashlib.sha256(rows_path.read_bytes()).hexdigest()
     _write(args.output, result)
     print(
         json.dumps(

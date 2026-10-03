@@ -14,11 +14,13 @@ import os
 import re
 import subprocess
 import tarfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 SCHEMA = "strath-encrypted-recovery-v1"
+CHUNK_BYTES = 1024 * 1024
 
 
 def sha(path):
@@ -75,19 +77,66 @@ def _sync(path):
         os.close(descriptor)
 
 
-def plaintext_sha(path, policy):
-    """Hash the entire decrypted archive without exposing or storing its contents."""
+@contextmanager
+def _gpg_stream(path, policy, arguments):
+    """Feed GPG in bounded bulk reads, then require its authenticated completion.
+
+    GPG's small direct reads can be very slow on removable NTFS volumes. Pipes
+    keep those reads in memory; only this feeder touches the source filesystem.
+    Output must be consumed concurrently so neither pipe can fill and deadlock.
+    """
     with subprocess.Popen(
-        _command(policy) + ["--decrypt", str(path)],
+        _command(policy) + arguments,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     ) as process:
+        failures = []
+        stopped = threading.Event()
+
+        def feed():
+            try:
+                with Path(path).open("rb") as incoming, process.stdin:
+                    while not stopped.is_set():
+                        chunk = incoming.read(CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        process.stdin.write(chunk)
+            except BrokenPipeError:
+                # An early GPG exit is rejected by the return-code check below.
+                failures.append(ValueError("GPG closed its archive input early"))
+            except BaseException as exc:
+                failures.append(exc)
+                process.kill()
+
+        feeder = threading.Thread(target=feed, name="strath-gpg-input")
+        feeder.start()
+        try:
+            yield process.stdout
+            # A tar reader can stop before GPG's authenticated end marker.
+            while process.stdout.read(CHUNK_BYTES):
+                pass
+            process.stdout.close()
+            returncode = process.wait()
+            feeder.join()
+            if returncode != 0 or failures:
+                cause = failures[0] if failures else None
+                raise ValueError("archive failed authenticated GPG processing") from cause
+        finally:
+            stopped.set()
+            if process.poll() is None:
+                process.kill()
+            process.stdout.close()
+            process.wait()
+            feeder.join()
+
+
+def plaintext_sha(path, policy):
+    """Hash the entire decrypted archive without exposing or storing its contents."""
+    with _gpg_stream(path, policy, ["--decrypt"]) as stream:
         digest = hashlib.sha256()
-        for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
+        for chunk in iter(lambda: stream.read(CHUNK_BYTES), b""):
             digest.update(chunk)
-        process.stdout.close()
-        if process.wait() != 0:
-            raise ValueError("encrypted archive failed authenticated GPG decryption")
     return digest.hexdigest()
 
 
@@ -143,31 +192,28 @@ def encrypt_file(source, destination, policy_path):
         temporary_receipt = receipt.with_name(receipt.name + "." + token + ".next")
         created = []
         try:
-            with source.open("rb") as incoming:
-                outgoing = _private_file(temporary)
-                created.append(temporary)
-                with outgoing:
-                    completed = subprocess.run(
-                        _command(policy)
-                        + [
-                            "--trust-model",
-                            "always",
-                            "--recipient",
-                            policy["recipient_fingerprint"],
-                            "--compress-algo",
-                            "none",
-                            "--cipher-algo",
-                            "AES256",
-                            "--encrypt",
-                        ],
-                        stdin=incoming,
-                        stdout=outgoing,
-                        stderr=subprocess.PIPE,
-                    )
-                    if completed.returncode != 0:
-                        raise ValueError("GPG could not encrypt to the recovery recipient")
-                    outgoing.flush()
-                    os.fsync(outgoing.fileno())
+            outgoing = _private_file(temporary)
+            created.append(temporary)
+            with outgoing:
+                with _gpg_stream(
+                    source,
+                    policy,
+                    [
+                        "--trust-model",
+                        "always",
+                        "--recipient",
+                        policy["recipient_fingerprint"],
+                        "--compress-algo",
+                        "none",
+                        "--cipher-algo",
+                        "AES256",
+                        "--encrypt",
+                    ],
+                ) as stream:
+                    for chunk in iter(lambda: stream.read(CHUNK_BYTES), b""):
+                        outgoing.write(chunk)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
             if plaintext_sha(temporary, policy) != expected or sha(source) != expected:
                 raise ValueError("encrypted archive readback or source stability check failed")
             result = {
@@ -221,40 +267,25 @@ def tar_digests(path, policy_path):
     """Read all decrypted tar members without creating a plaintext archive."""
     policy = load_policy(policy_path)
     result = {}
-    with subprocess.Popen(
-        _command(policy) + ["--decrypt", str(path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ) as process:
-        try:
-            with tarfile.open(fileobj=process.stdout, mode="r|gz") as archive:
-                for member in archive:
-                    if (
-                        member.issym()
-                        or member.islnk()
-                        or Path(member.name).is_absolute()
-                        or ".." in Path(member.name).parts
-                    ):
-                        raise ValueError("encrypted competition archive contains unsafe members")
-                    if not member.isfile():
-                        continue
-                    if member.name in result:
-                        raise ValueError("encrypted competition archive repeats a member")
-                    digest = hashlib.sha256()
-                    stream = archive.extractfile(member)
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                    result[member.name] = digest.hexdigest()
-            # Drain through GPG's authenticated end marker, even after tar EOF.
-            while process.stdout.read(1024 * 1024):
-                pass
-            process.stdout.close()
-            if process.wait() != 0:
-                raise ValueError("encrypted tar failed authenticated GPG decryption")
-        except Exception:
-            process.kill()
-            process.wait()
-            raise
+    with _gpg_stream(path, policy, ["--decrypt"]) as stream:
+        with tarfile.open(fileobj=stream, mode="r|gz") as archive:
+            for member in archive:
+                if (
+                    member.issym()
+                    or member.islnk()
+                    or Path(member.name).is_absolute()
+                    or ".." in Path(member.name).parts
+                ):
+                    raise ValueError("encrypted competition archive contains unsafe members")
+                if not member.isfile():
+                    continue
+                if member.name in result:
+                    raise ValueError("encrypted competition archive repeats a member")
+                digest = hashlib.sha256()
+                stream = archive.extractfile(member)
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                result[member.name] = digest.hexdigest()
     return result
 
 

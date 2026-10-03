@@ -1,6 +1,6 @@
 # Accuracy and local council evaluation
 
-STRATHMARK 3.0.0rc6 adds Formula tail improvements, full-row regression controls, prospective freezing and encrypted recovery to the separate Linux profile. STRATHEX 7.4.1 keeps explicit V2/V3 selection and retained installation profiles. The rc5 development evidence below remains visibly historical; issued marks, judge placings and Windows CNG eligibility are separate from these accuracy comparisons.
+STRATHMARK 3.0.0rc7 and STRATHEX 7.4.2 provide buffered encrypted recovery and evidence-verified prospective export repair for the separate Linux profile. The rc6 Formula/model and prospective comparison remain retained; explicit V2/V3 selection and saved competition identities are preserved. The rc5 development evidence below remains visibly historical; issued marks, judge placings and Windows CNG eligibility are separate from these accuracy comparisons.
 
 ## Chronological development benchmark
 
@@ -98,3 +98,18 @@ The prospective protocol freezes exact model, Formula and implementation hashes,
 The revised local council uses bounded relevant history, ordered response schemas and explicitly declared conversions of earlier raw cuts into the target context. Original raw milliseconds remain present; unsupported conversions remain null. The bootstrap conversion policy is pinned and is not another assessor's forecast. Raw provider errors and bounded correction attempts remain private evidence. The final conversion pilot validates all 84 responses, with 25 committed Ministral responses and 59 valid abstentions across the three families. Qwen and Gemma abstain on every selected row, so none of the 28 rows reaches the two-member numeric quorum. This improves transport/schema reliability but does not establish numeric availability or accuracy. All failed pilots remain retained; council numeric promotion remains refused.
 
 Benchmark row files are now bound by both byte and canonical digests to a signed local development summary. Freeze/prospective checks verify that binding before accepting rows; copying a different receipt file or editing the summary is refused. The included ephemeral signer establishes file consistency, not independently trusted execution or production eligibility. Candidate evaluation freezes and rechecks both Formula and ML artifacts. Local council validation enforces the exact generated committed fact-code set even if the provider ignores its JSON schema.
+
+## Subsequent sparse-history experiments
+
+A separate TRAIN/TUNE-only pass tested eight population-context settings and eight physical-seconds/relative-time quantile settings. The existing model was reproduced at 12.96994 seconds TUNE MAE. The best peer-context setting scored 14.03288 seconds; the best physical-seconds setting scored 13.02195. Their sparse-history errors were 53.10 and 45.05 seconds versus the existing 44.81. Neither candidate improved the selection objective, so neither was calibrated, evaluated on EVAL or installed. The 19 sparse TUNE results cover only three competition groups. More tuning trials are not independent validation.
+
+Read-only review of seven distinct historical workbook versions found no recorded dates for the 20 undated current results. A private review packet retains the 21 possible repeated pairs with empty fields for original round/heat evidence. Dates were not inferred and results were not removed. The current rc6 development ensemble still averages 23.12 seconds overall and 85.05 on its 20 same-event-history-zero evaluation cases.
+
+The existing rc6 prospective protocol remains frozen to its original model, Formula and implementation. Retain that exact profile for its future comparison; an rc7 recovery implementation does not satisfy a protocol pinned to rc6. Collection still requires 100 genuinely later results from ten new competition groups. Recovery performance changes do not claim a diagnostic accuracy improvement.
+
+The rc7 accuracy CLI fixes a freeze-export defect: the old CLI appended the examined file checksum after calculating the protocol digest. New freezes bind that checksum before sealing. For a legacy export, `repair-freeze` verifies the exact signed examined benchmark and original digest, then writes a separate companion with the same original freeze timestamp, components and excluded rows/groups. It refuses substituted evidence and never rewrites the original protocol or moves its cutoff forward.
+
+```bash
+strathmark-v3-accuracy repair-freeze --protocol /private/original-frozen-protocol.json \
+  --benchmark /private/exact-examined-benchmark --output /private/repaired-protocol.json
+```
