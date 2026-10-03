@@ -1,5 +1,7 @@
 # STRATHEX Consumer Contract
 
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
 The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
 
 ## Current authority status

@@ -1,5 +1,7 @@
 # Onboarding
 
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
 ## Current status
 
 STRATHMARK 3.0.0rc4 contains the complete separate [Linux local competition profile](docs/V3_LINUX_COMPETITION.md): actual Formula/ML, persistent signed local authority, explicit judge review and issue, complete outcomes and official placings, settlement/corrections, same-round freezing, later-round learning, restart, and verified recovery. STRATHEX 7.3 selects V2 or this local V3 profile deliberately per competition. The LLM council is unavailable and requires degraded/individual review. Private training needs explicit owner authorization and an isolated copy; tests remain synthetic.

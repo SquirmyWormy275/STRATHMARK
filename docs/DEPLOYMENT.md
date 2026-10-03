@@ -1,5 +1,7 @@
 # Deployment, Recovery, and Engine Eligibility
 
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
 Current Linux local competitions are documented in [Linux competition workflow](V3_LINUX_COMPETITION.md). This separate rc4 profile supports the complete lifecycle with Formula/ML and persistent local keys; the Windows V7 qualification gates below remain unchanged.
 
 The retained preview profile, [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.

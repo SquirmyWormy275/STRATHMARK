@@ -1,5 +1,7 @@
 # Prediction Engine V3
 
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
 The retained preview profile, [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
 
 ## Release and authority status
