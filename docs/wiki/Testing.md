@@ -1,13 +1,8 @@
 # Testing and Release Proof
 
-The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
+The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
 
-V3.0.0rc3 is a release candidate that tracks all 232 in-repository
-requirements. Core implementation and contract tests exist; installed lifecycle composition and qualification remain unfinished. Its
-checked-in development-key rehearsal is source-bound and must pass the release verifier.
-V2 remains the globally trusted production authority, V3 is not production-eligible,
-and no production authority has changed. Tests and
-verifiers never switch authority.
+STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 For qualification, run V3 tests and release proof in the designated Python 3.13 environment with the
 exact V3 release lock installed. The package and V2 compatibility matrix remains Python

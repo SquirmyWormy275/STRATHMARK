@@ -9,12 +9,16 @@ It preserves the released V2 engine and contains the V3 adaptive ensemble releas
 
 ## Current release state
 
-V3 is a `3.0.0rc3` release candidate that tracks all 232 requirements in
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
+The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc4** with STRATHEX **7.3.2**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below.
+
+The Windows V7 profile in V3 is a `3.0.0rc4` release candidate that tracks all 232 requirements in
 the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle
 still needs its operational composition and qualification. The
 checked-in development-key rehearsal is valid only for the source commit and digests it
 names and must pass the release verifier; it is not production evidence. V2 remains the
-globally trusted production authority. V3 is not production-eligible, no production
+globally trusted production authority. V3 has not received Windows CNG production eligibility, no production
 authority has changed, and V2 is not audit-only.
 
 The current integration model is **competition-scoped selection**, not one global engine
@@ -28,7 +32,7 @@ consumer responsibilities.
 The distinction matters:
 
 - **V2.0.0 / V2.0.1** are published on PyPI. The 2.0.1 patch changes packaging documentation and version metadata; it preserves the V2 numeric engine. STRATHEX retains its reviewed exact 2.0.0 Git source pin.
-- **V3.0.0rc3** has separate code, contracts, storage, and tests. The formatted
+- **V3.0.0rc4** provides the separate Linux local workflow. The historical formatted
   five-run Windows result-to-ready benchmark completed with a maximum of **3.414
   seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
   development-key rehearsal attestation are candidate outputs, not permanent claims
@@ -50,15 +54,11 @@ cannot simply be copied into another.
 
 ## Linux and Windows
 
-V3 now has a separately installed Linux numeric candidate that executes Formula,
-trained ML, pooling, and optimization through STRATHEX's explicit V2/V3 selector.
-See [Linux V3 candidate](docs/V3_LINUX_CANDIDATE.md). Its output is a numeric preview;
-approval, official issue, settlement, and next-round learning require the full V7
-runtime. Models trained on private history are kept outside the repository.
+The [Linux competition runtime](docs/V3_LINUX_COMPETITION.md) supports the complete local lifecycle through STRATHEX's selector. The older [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) remains available for existing preview scopes. Private model artifacts are kept outside the repository.
 
 The V2 library and API run on Linux and Windows with Python 3.10–3.13; Python 3.13 is recommended for current development. No separate fork is required. Current repository builds also provide `strathmark demo` (or `python -m strathmark demo`), an offline calculation with synthetic competitors that opens no operator database. The existing V2 PyPI releases expose the library/API; this new demonstration command is available in the maintenance source build.
 
-For a source installation and portable V3 verification, follow [Linux setup](docs/LINUX.md). Portable tests and replay do not qualify the Windows native optimizer, installed models, non-exportable CNG identities, or exact machine-bound release evidence. V3 is not production-eligible.
+For a source installation and portable V3 verification, follow [Linux setup](docs/LINUX.md). Portable tests and replay do not qualify the Windows native optimizer, installed models, non-exportable CNG identities, or exact machine-bound release evidence. V3 has not received Windows CNG production eligibility.
 
 ## Install the trusted V2 release
 

@@ -1,5 +1,7 @@
 # Competition Engine Selection
 
+The current separate Linux competition profile (STRATHMARK 3.0.0rc4 / STRATHEX 7.3.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+
 ## Current authority status
 
 V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc3 is a separate

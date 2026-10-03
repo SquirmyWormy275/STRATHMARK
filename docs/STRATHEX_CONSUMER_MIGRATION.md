@@ -1,5 +1,7 @@
 # STRATHEX Competition-Scoped Engine Consumer Contract
 
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
 ## Current status
 
 V3.0.0rc1 is a release candidate that tracks all 232 in-repository

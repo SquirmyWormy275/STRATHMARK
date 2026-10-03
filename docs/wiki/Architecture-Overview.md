@@ -1,14 +1,14 @@
 # Architecture Overview
 
-The [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs Formula, trained ML, pooling, and optimization for unissued previews. Approval, issue, settlement, next-round learning, and production qualification remain unavailable in that profile.
+Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+
+The current separate Linux competition profile (STRATHMARK 3.0.0rc4 / STRATHEX 7.3.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+
+The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs Formula, trained ML, pooling, and optimization for unissued previews. Approval, issue, settlement, next-round learning, and production qualification remain unavailable in that profile.
 
 ## Current authority status
 
-V3.0.0rc3 is a release candidate that tracks all 232 in-repository
-requirements. Core implementation and contract tests exist; full installed lifecycle composition and qualification remain unfinished. Its
-checked-in development-key rehearsal is source-bound and does not change authority. V2
-remains the globally trusted production authority, V3 is not production-eligible, and
-V2 is not audit-only.
+STRATHMARK 3.0.0rc4 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
 
 V2 and V3 are separate engines. V2 keeps its released prior-only model, ledger, and
 shadow contract. V3 uses a new namespace, closed contracts, an append-only SQLite event
