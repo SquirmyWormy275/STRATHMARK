@@ -391,10 +391,11 @@ jobs:
     name: Required CI
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [build]
+    needs: [build, accuracy-preview]
     if: always()
     steps:
       - name: Require installed distributions and all prerequisite gates
         env:
           BUILD_RESULT: ${{ needs.build.result }}
-        run: test "$BUILD_RESULT" = success
+          PREVIEW_RESULT: ${{ needs.accuracy-preview.result }}
+        run: test "$BUILD_RESULT" = success && test "$PREVIEW_RESULT" = success
