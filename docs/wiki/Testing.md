@@ -1,56 +1,57 @@
-# Testing and Release Proof
+# Contributor setup and testing
 
-The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
+Use Python 3.13 for V3. Read
+[ONBOARDING](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/ONBOARDING.md)
+and [how handicaps work](Handicap-Mark-Math) before changing prediction behavior.
 
-STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+## Install development dependencies
 
-For qualification, run V3 tests and release proof in the designated Python 3.13 environment with the
-exact V3 release lock installed. The package and V2 compatibility matrix remains Python
-3.10-3.13; those older interpreters intentionally exclude `tests/v3`. Enabling SQLite
-`trusted_schema` to make an older bundled SQLite accept V3's expression indexes is not a
-valid compatibility fix.
+In a separate virtual environment, from the repository root:
 
-Every run must use isolated V2 and V3 databases and a unique pytest base directory:
+```bash
+python -m pip install -e ".[dev,api]"
+python -m pip install -r requirements/v3-release.lock
+```
 
-    $env:STRATHMARK_TEST_DB = '1'
-    $env:STRATHMARK_DB_PATH = "$PWD\.tmp\wiki-v2.sqlite3"
-    $env:STRATHMARK_V3_DB_PATH = "$PWD\.tmp\wiki-v3.sqlite3"
-    python -m pytest tests/v3 -q --basetemp .tmp/wiki-v3 -p no:cacheprovider
+## Run portable tests on Linux
 
-The V3 suite covers contracts, canonicalization, event authority, migrations,
-formula/ML/LLM assessors, capability, credibility, pooling, disagreement, optimizer,
-rolling preparation, approval, issue, settlement, factory, API/security, recovery,
-production eligibility, documented examples, and installed artifacts.
+Use a fresh directory so tests cannot open a live workbook or database:
 
-Whole-domain proof is:
+```bash
+scratch=$(mktemp -d)
+export STRATHMARK_TEST_DB=1
+export STRATHMARK_DB_PATH="$scratch/v2.sqlite3"
+export STRATHMARK_V3_DB_PATH="$scratch/v3.sqlite3"
+export STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION=0
+python -m pytest tests --basetemp "$scratch/pytest" -p no:cacheprovider
+python scripts/replay_v3.py
+python scripts/freeze_v3_consumer_contract.py --check
+```
 
-    python scripts/replay_v3.py
-    python scripts/run_v3_release_evidence.py --local-model qwen3.5:9b --local-model ministral-3:8b
-    $source = (git rev-parse HEAD).Trim()
-    python scripts/verify_v3_release.py --evidence benchmarks/v3/v3_executable_evidence.json --emit-rehearsal $source --output-attestation benchmarks/v3/v3_release_attestation.json
-    python scripts/verify_v3_release.py
-    python scripts/verify_v3_release.py --require-production
+The portable flag skips the independent workbook-engine rebuild. It is for portable
+testing, not designated release qualification. Use [formula qualification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/FORMULA_RUNTIME.md)
+for that environment. Python 3.10–3.12 compatibility runs cover V2 and exclude `tests/v3`.
+Do not enable SQLite `trusted_schema` to bypass an incompatible V3 interpreter.
 
-The evidence runner requires an unchanged committed tree and pinned installed models;
-it builds and installs the exact wheel. The ordinary verifier rejects missing, stale,
-failed, substituted, or tampered proof. After a fresh rehearsal is emitted, the ordinary
-verifier passes and the last command must fail with production_attestation_required. A
-production pass requires a separate CNG-backed artifact and still does not perform the
-consumer switch.
+## Routine checks
 
-Factory tests prove the local composition/scheduler and bounded evaluator exchange. They
-do not prove production family executors, authoritative local settlement metrics, OS
-identity/ACL separation, provisioned CNG keys, or CI execution; final evidence must use
-those real installed components.
+```bash
+python -m ruff check .
+python -m ruff format --check .
+python scripts/check_docs.py
+python -m build
+python scripts/smoke_installed_distribution.py --kind wheel
+python scripts/smoke_installed_distribution.py --kind sdist
+```
 
-The separate post-format result-to-ready manifest records five completed Windows trials
-and a 3.414-second maximum against the 120-second limit. It retains exact source digests
-and per-component timing as one component of the exact-wheel release evidence.
+The installed smokes use disposable inputs outside the checkout. Prediction changes
+need a failing regression before the fix; fixtures and tests remain synthetic.
+Owner-authorized historical evaluation belongs in an isolated read-only copy, not a
+live test database.
 
-The preserved V2 suite uses another isolated database and remains authoritative evidence
-for V2 behavior. Optional-provider live smokes are opt-in and cannot replace deterministic
-contract fakes, temporal replay, or installed-wheel verification.
+## Release evidence
 
-See [Deployment](Deployment.md) for the full gate.
-
-Portable Linux verification uses Python 3.13, isolated synthetic data, and `STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION=0` as described in the [Linux guide](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/LINUX.md). It does not qualify the production installation.
+[Deployment](Deployment) links the complete designated rehearsal and production
+verification procedure. A rehearsal is bound to its committed source, exact wheel,
+dependencies and machine. Passing portable tests does not provision Windows production
+keys or qualify the operational council/factory.

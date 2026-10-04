@@ -1,43 +1,35 @@
-# STRATHEX Consumer Contract
+# Use STRATHMARK through STRATHEX
 
-Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+[STRATHEX](https://github.com/SquirmyWormy275/STRATHEX) is the judge-facing terminal
+application. It handles rosters, events, stands, review, result entry, advancement,
+payouts, saves and Excel exports. STRATHMARK supplies predictions and marks.
 
-The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
+## Start an event
 
-## Current authority status
+Follow the [STRATHEX quick start](https://github.com/SquirmyWormy275/STRATHEX/wiki/Quick-Start).
+Choose V2 or a configured V3 runtime when creating the event or tournament. All
+children of a tournament inherit its engine. The first numeric operation locks it.
 
-STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+V2 normally runs in the STRATHEX Python process. Linux V3 runs in a separately
+installed interpreter with its trained model and persistent local authority.
+The authenticated V7 service is a different integration profile.
 
-For V2-selected competition roots, STRATHEX continues to use the frozen V2 shadow
-contract. The V3 adapter is
-a separate dependency pinned to one exact commit, wheel, OpenAPI digest, release
-evidence digest, and service identity. STRATHEX owns human authentication/RBAC, roster,
-schedule, issue permissions, official results, publication, and payouts. STRATHMARK owns
-numeric evidence, field receipts, and settlement evidence.
+## Linux V3 workflow
 
-The V3 workflow opens one deliberately selected competition root, freezes the round,
-prepares rolling cards early, obtains signed field-independent seed times when fields do
-not yet exist, then assembles each complete exact field against one
-same-round epoch, surfaces normal green/amber sheets for ordinary batch approval and red
-or degraded sheets for the appropriate deliberate lane, records exact selected and
-excluded receipt approvals, acknowledges issue separately and atomically, settles the
-complete issued roster atomically, closes all seven derivation reactions without
-inventing an approval decision, and advances evidence only at the next round boundary.
-Displayed marks are never copied between fields.
+Seeding times come first. Generate the exact heats and stands, calculate the whole
+field, review it, approve it and confirm issue separately. Then record all outcomes,
+authorize official placings and settle the round before advancing.
 
-Pre-field receipts have `purpose=pre_field_seeding_only` and `issued_mark=false`. They
-may order or group competitors, but they are not start sheets. Exact fields and stands
-must first exist and be synchronized before `/v3/fields/assemble` may produce marks.
+The LLM council is unavailable, so fields need deliberate degraded or individual
+review. A preview-only profile cannot issue official sheets or record competition
+results. See [engine choice](Competition-Engine-Selection).
 
-A standalone event selects V2 or V3 once. A tournament selects once during creation and
-all child events and rounds inherit; child selectors are forbidden. Different roots may
-choose different eligible engines, but one root never mixes or silently falls back.
+## Resuming and retrying
 
-STRATHMARK's frozen V7 contract now contains all 18 numeric lifecycle paths. The external
-STRATHEX installation must still prove its exact dependency pin, durable outbox,
-immutable local acknowledgments, and restart behavior before V3 production eligibility.
+Keep the original source, model, key and saved state. A timeout can leave a command's
+outcome uncertain; retry the exact saved command instead of inventing a new one.
+The selected engine never falls back to the other engine.
 
-A production-CNG-signed pre-switch handoff still declares V2 current and requires a
-separate release authorization before V3 can become an eligible choice. It is not a
-global engine selection. See the canonical
-[consumer migration](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/STRATHEX_CONSUMER_MIGRATION.md).
+Developers implementing the authenticated service adapter should read the
+[consumer migration guide](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/STRATHEX_CONSUMER_MIGRATION.md)
+for contract pins, signed receipt verification, durable outboxes and human authorization.

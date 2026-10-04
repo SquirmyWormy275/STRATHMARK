@@ -32,18 +32,19 @@ def _prose(path: Path) -> str:
     return " ".join(_read(path).split()).casefold()
 
 
-def test_public_guides_share_one_explicit_release_and_authority_status() -> None:
-    required = (
-        "release candidate",
-        "rehearsal",
-        "source-bound",
-        "V2 remains",
-        "V3 is not production-eligible",
-    )
-    for path in CURRENT_GUIDES:
+def test_overview_pages_distinguish_the_available_runtime_profiles() -> None:
+    # Status belongs on the overviews, not as an identical paragraph on every
+    # task guide. Linux competition readiness differs from Windows V7 eligibility.
+    for path in (
+        ROOT / "README.md",
+        ROOT / "docs/wiki/Home.md",
+        ROOT / "docs/wiki/Prediction-Engine-V3.md",
+    ):
         text = _prose(path)
-        for statement in required:
-            assert statement.casefold() in text, f"{path}: missing {statement!r}"
+        assert "v2" in text
+        assert "linux" in text and "competition" in text
+        assert "windows" in text and "rehearsal" in text
+        assert "qualification" in text and "incomplete" in text
 
 
 def test_v3_contract_table_matches_the_frozen_openapi_document() -> None:
@@ -86,12 +87,16 @@ def test_every_frozen_openapi_example_validates_against_its_schema() -> None:
     assert validated >= 20
 
 
-def test_readme_python_examples_execute_against_the_current_tree() -> None:
-    examples = re.findall(r"```python\n(.*?)```", _read(ROOT / "README.md"), re.DOTALL)
+def test_public_python_examples_execute_against_the_current_tree() -> None:
+    examples = [
+        (path, example)
+        for path in (ROOT / "README.md", ROOT / "docs/wiki/Quick-Start.md")
+        for example in re.findall(r"```python\n(.*?)```", _read(path), re.DOTALL)
+    ]
     assert examples
-    for index, example in enumerate(examples):
+    for index, (path, example) in enumerate(examples):
         namespace = {"__name__": f"strathmark_documented_example_{index}"}
-        exec(compile(example, f"README.md:python-block-{index + 1}", "exec"), namespace)
+        exec(compile(example, f"{path}:python-block-{index + 1}", "exec"), namespace)
 
 
 def test_deployment_documents_every_runtime_configuration_key() -> None:

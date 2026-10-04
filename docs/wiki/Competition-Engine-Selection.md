@@ -1,95 +1,44 @@
-# Competition Engine Selection
+# Choose V2 or V3
 
-The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+The choice is made in STRATHEX when you create an event or tournament. V2 and V3
+are both available choices when the corresponding runtime is configured.
 
-## Current authority status
+## What are the choices?
 
-V2 remains STRATHMARK's globally trusted production authority. V3.0.0rc3 is a separate
-release candidate and is not production-eligible. A development-key rehearsal, V7 route,
-or selection record does not change that status.
+| Choice | Use |
+| --- | --- |
+| V2 | Established local predictions and handicap calculation. |
+| V3 with `LINUX READY` | Configured Linux competition runtime, including review, issue, results and later rounds. |
+| V3 with `NUMERIC PREVIEW ONLY` | Older preview profile. Proposed times and marks only; no official issue or results workflow. |
+| V3 with `REHEARSAL` | Development service. Does not establish Windows production eligibility. |
 
-## The pivot
+Linux V3 uses Formula and trained ML. Its LLM council is unavailable, so affected
+fields need explicit degraded or individual review. See [V3](Prediction-Engine-V3).
 
-STRATHEX can also explicitly select the Linux numeric candidate for previews.
-This profile binds its installed code, Formula, and trained model digests instead
-of claiming V7 service identity. It supplies mark-free seeding and proposed marks,
-with no approval, issue, settlement, or next-round authority. Changing an artifact
-blocks the saved root. See the
-[candidate guide](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md).
+## When is the choice locked?
 
-The earlier deployment design assumed one global V2-to-V3 consumer switch. The current
-design keeps both engines explicit so judges can test an eligible V3 on deliberately
-chosen competitions, compare real operating feedback, and continue choosing V2
-elsewhere. Production eligibility enables an engine as a choice; it does not select that
-engine for a competition.
+A single event chooses during setup. A tournament chooses once at creation;
+all of its events, heats and finals inherit that choice. Nothing is selected by
+default. The first numeric operation locks the selection.
 
-This pivot changes the authority workflow, not the internal numeric definition of V2 or
-V3. Historical V2 receipts and dated V3 planning documents remain evidence of their
-versions and decisions.
+A later competition can choose a different engine. An existing competition cannot
+switch engines to repair a failed calculation. If the selected engine is unavailable,
+restore that engine and its original installation before continuing.
 
-## Selection rules
+## Why does V3 show times before marks?
 
-- A standalone event is a competition root and selects one engine during event setup.
-- A tournament selects one engine during tournament creation.
-- Every child event, heat, quarter-final, semi-final, divisional final, and grand final
-  inherits the tournament selection.
-- Child units do not expose or accept another engine selector.
-- There is no default. The judge or upstream authority must deliberately choose.
-- The first authoritative numeric action locks the selection.
-- Different competition roots may use different eligible engines concurrently.
-- One root never mixes V2 and V3 receipts, changes engine in place, or invokes the other
-  engine as a silent fallback.
+Seeding comes before exact heats and stands exist. V3 first supplies raw-time
+forecasts to sort or group competitors. These forecasts contain no start marks.
 
-The immutable selection records the root ID, engine, execution mode, selecting actor,
-selection time, reason, exact V7 consumer-contract digest, and exact STRATHMARK source
-commit. V3 scope-open authority and consequential receipts repeat that binding so the
-choice can be audited after restart.
+Once the actual field and stands exist, V3 calculates the whole field's marks.
+Those proposed marks go through review and a separate issue confirmation. A seeding
+forecast cannot serve as an official start sheet.
 
-An unavailable selected engine blocks new numeric work for that scope. Recovery uses the
-same engine's durable authority. A later competition may deliberately select another
-eligible engine, but that does not reinterpret or repair the original scope.
+## Resuming an event
 
-## Prediction before fields exist
+Keep the saved competition, original model, signing key and exact runtime together.
+Changing the installed source or model can block a saved V3 competition; it does
+not silently update its predictions. See [Deployment and recovery](Deployment).
 
-Tournament seeding happens before exact fields and stand assignments may exist. V7 adds
-`POST /v3/forecasts/pre-field` for that stage. The request binds an ordered competitor
-set, target event/material context, frozen round epoch, forecast-set revision, and hard
-deadline. It does not require or invent a field or stand identity.
-
-The signed response contains marginal raw-time distributions and p50 seed times. Its
-authority is intentionally limited:
-
-```text
-purpose = pre_field_seeding_only
-issued_mark = false
-```
-
-These values may support sorting, seeding, or grouping. They are not marks, a start
-sheet, an approval candidate, or official issue evidence. A p50 seed time must never be
-printed in the mark column.
-
-## Marks require the exact field
-
-Once STRATHEX creates the actual field and stand assignments, it synchronizes those
-versioned facts and calls `POST /v3/fields/assemble`. Field assembly validates the
-competition selection, round epoch, evidence, bundle, roster order, and revisions. It
-then pools the compatible competitor cards jointly, evaluates disagreement and the
-fairness frontier, and rebases the complete field to Mark 3.
-
-Only that exact-field receipt can carry displayed V3 marks into judge review and issue.
-Marks from independently rebased heats are never copied into a later field.
-
-## V7 contract boundary
-
-The frozen contract is `strathmark.v3-consumer-contract.v7` with 18 paths. Consumers
-must verify the installed OpenAPI bytes, sibling SHA-256, exact source commit, and service
-status. STRATHMARK authenticates the upstream service; human RBAC, the selection UI,
-official issue, judging, publication, and payouts remain tournament-manager authority.
-
-The authenticated status includes the public P-256 identity that verifies V3 pre-field
-receipts. Its binding digest ties that signer identity to the exact service source and
-consumer contract. A consumer must verify that binding and the receipt signature before
-using forecast rows for seeding; neither the key ID nor an unsigned forecast is enough.
-
-See [STRATHEX Consumer](STRATHEX-Consumer.md), [REST API](REST-API.md), and
-[Deployment](Deployment.md) for integration, retry, and eligibility requirements.
+The [Accuracy Preview](Accuracy-Preview) is a separate program, not another engine
+choice in the competition selector.

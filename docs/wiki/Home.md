@@ -1,64 +1,38 @@
-# STRATHMARK Wiki
+# STRATHMARK
 
-The separate [accuracy preview](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/tools/accuracy-preview/README.md)
-is a runnable frozen-calibration cutting-time comparison, without official mark or
-competition authority. It preserves the selected V2/V3 engine and the installed model.
+STRATHMARK predicts cutting times and calculates handicap start marks. Judges
+operate it through [STRATHEX](https://github.com/SquirmyWormy275/STRATHEX/wiki).
+Developers can also use its Python library and APIs.
 
-Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+## Find what you need
 
-The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+| I want to… | Start here |
+| --- | --- |
+| Install the library | [Installation](Installation) |
+| Calculate a sample field | [Quick start](Quick-Start) |
+| Run a competition | [STRATHEX](STRATHEX-Consumer) |
+| Choose V2 or V3 | [Engine selection](Competition-Engine-Selection) |
+| Understand handicap marks | [How handicaps work](Handicap-Mark-Math) |
+| Try the accuracy changes | [Accuracy Preview](Accuracy-Preview) |
+| Back up or restore V3 | [Deployment and recovery](Deployment) |
+| Find an answer quickly | [FAQ](FAQ) |
 
-## Current authority status
+## What works today?
 
-STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+**V2** is the established engine for Linux and Windows. **Linux V3**, using
+STRATHMARK 3.0.0rc7 with STRATHEX 7.4.2, supports a full local competition workflow.
+It requires a configured trained model, persistent signing key and independent
+backups. It uses Formula and ML; its LLM council is unavailable.
 
-See [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md)
-for the retained preview profile and its historical lifecycle limits; current full Linux operation uses the competition runbook above.
+The Windows V7 service is for development and rehearsal; production qualification
+is incomplete. Older numeric-preview competitions keep their original limitations.
+See [V3](Prediction-Engine-V3) for the differences.
 
-The current product model selects one eligible engine per competition root rather than
-performing one global replacement. A standalone event selects once; a tournament selects
-once and every child inherits. Separate roots may use different eligible engines, but a
-root never mixes V2 and V3 or silently falls back.
+The accuracy changes are runnable in a separate preview program. They have not
+replaced the competition model.
 
-STRATHMARK is an offline-capable woodchopping prediction and handicap-mark system. V3
-adds independent formula, hierarchical ML, and numeric LLM-council forecasts; automatic
-accuracy-earned weighting; full-field Mark-3 rebasing; between-round capability updates;
-and a fast exception-first judge workflow. The local event store remains race-day
-numeric authority and cloud services are never required to issue or settle a race.
+## For developers
 
-The factory composition/scheduler and bounded CNG evaluator entrypoint are runnable
-seams. Concrete family executors, local settlement metrics, production OS/CNG identities,
-exact-source CI, external STRATHEX forwarding, and production eligibility remain explicit
-gates.
-
-The improved Linux candidate and local three-family diagnostic are documented in [accuracy evaluation](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ACCURACY_AND_COUNCIL.md). [Portable installation and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) preserve original saved-competition environments.
-
-## Start here
-
-1. [Handicap foundations](Handicap-Mark-Math.md) — mandatory timeless domain reading.
-2. [Prediction Engine V3](Prediction-Engine-V3.md) — successor release candidate and pivot.
-3. [Competition engine selection](Competition-Engine-Selection.md) — one immutable choice per root.
-4. [Architecture](Architecture-Overview.md) — V2/V3 system boundaries.
-5. [Deployment](Deployment.md) — rehearsal, recovery, and eligibility.
-6. [STRATHEX consumer](STRATHEX-Consumer.md) — upstream authority and adapter contract.
-7. [Historical V2 engine](Prediction-Engine-V2.md) — preserved trusted V2 contract.
-
-## What must not be confused
-
-- A smaller mark starts earlier; a larger mark waits longer.
-- A displayed mark is field-relative. Reconstruct and rebase every later-round field.
-- Same-round heats use one epoch; results enter at the next round boundary.
-- Both faster and slower valid performances update evidence, but no model infers motive.
-- Once a sheet is issued, the first legal completion wins. No adjusted placing exists.
-- STRATHMARK authenticates one upstream service. Human RBAC and official results remain
-  in the tournament manager.
-- The V7, 18-path contract separates pre-field seeding, exact-field marks, approval, and
-  issue. Pre-field forecasts are signed but always say `issued_mark=false`.
-- A rehearsal attestation is not a production attestation and never switches authority.
-
-The post-format five-run Windows result-to-ready benchmark recorded a 3.414-second
-maximum against the 120-second limit. It is focused performance evidence, not final
-exact-wheel or production evidence.
-
-The canonical repository documentation is [Onboarding](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/ONBOARDING.md) and
-[Prediction Engine V3](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V3.md).
+[Architecture](Architecture-Overview), [REST API](REST-API) and [testing](Testing)
+cover integration. The detailed versioned specifications remain in the
+[repository](https://github.com/SquirmyWormy275/STRATHMARK/tree/main/docs).

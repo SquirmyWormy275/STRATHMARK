@@ -1,39 +1,34 @@
-# LLM Integration
+# LLM integration
 
-## Version boundary
+## What is active?
 
-The V3 release candidate uses numeric LLM-council forecasting and source-bound release
-verification; its development-key rehearsal does not change authority. V2 remains the
-globally trusted production authority, V3 is not production-eligible, and no production
-authority has changed.
+| Runtime | Numeric role of LLMs |
+| --- | --- |
+| V2 | None. Optional explanatory text does not change predictions. |
+| Linux V3 competition | Council unavailable. Formula and trained ML provide the forecasts. |
+| V3 council research/service design | Separate model evaluation and qualification; not a promoted Linux competition assessor. |
 
-In V2, LLM integrations are narrative-only and the legacy LLM result key is always
-empty. That remains exact for V2.
+Installing Ollama, an LLM extra or a model does not make it part of a competition's
+numeric prediction. Linux V3 fields require explicit review with the council absent.
 
-In V3, two distinct local model families and one selected pinned cloud model form a
-blind numeric council. They receive the same canonical pseudonymous evidence and cannot
-see the formula, ML, one another, marks, roster ordering, names, or outcome. A
-deterministic wrapper validates schema, bounds, identity/ordering invariance, artifact
-identity, latency, and abstention. Schema validity alone never qualifies a model.
+## The council design
 
-Each member forecast remains immutable. The council aggregate is one outer assessor
-beside the formula and ML hierarchy; it does not vote on official results or human
-intent. Missing, late, or invalid members abstain and are never relabeled as another
-model. Rolling competitor cards keep slow inference outside final field assembly.
+The wider V3 design has two distinct local model families and one pinned cloud model.
+They see the same pseudonymous sporting evidence, without names, marks, outcomes,
+Formula/ML predictions or each other's answers. Each valid forecast is preserved.
+The aggregate council is one assessor alongside Formula and ML.
 
-Local inference is scheduled one loaded model at a time on the designated GPU. Cloud
-credentials are scoped, redacted, and optional. Neither Ollama nor cloud availability is
-required for local receipt authority, issue, lookup, or settlement.
+Invalid, late or unavailable members abstain. A schema-valid answer alone does not
+establish accuracy. Evaluation also needs calibration, identity/order invariance,
+latency, failure handling and rollback evidence.
 
-The live rolling scheduler binds the promoted council identity, card-scoped provider
-tokens, and member deadlines into the executable request. Cloud calls may overlap while
-local GPU calls remain serialized. Each member outcome and council aggregate is sealed;
-restart replays those receipts without another provider call. A provider failure becomes
-an auditable unavailable member, never a fabricated forecast. A generic symbolic job is
-only a compatibility seam and cannot operate the live council path.
+## Diagnostics
 
-Model candidates are promoted only by the signed automated factory using temporal
-replay, calibration, semantic/invariance tests, latency/capacity, failure handling, and
-rollback evidence. Production roles require non-exportable Windows CNG identities.
+The separately retained local three-family diagnostic has its own availability and
+accuracy limits. It is not the operational council and has not been promoted to
+competition prediction. Read the
+[accuracy and council report](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ACCURACY_AND_COUNCIL.md)
+for the actual measurements.
 
-See [Prediction Engine V3](Prediction-Engine-V3.md).
+The [V3 specification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V3.md)
+covers provider scheduling, receipts and qualification.

@@ -1,15 +1,19 @@
-# Wiki source
+# Maintaining the wiki
 
-The retained preview profile, [Linux numeric candidate](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_CANDIDATE.md) separately runs real Formula/ML numeric previews through STRATHEX 7.2. It uses a subprocess contract, without V7 approval, issue, settlement, next-round learning, or production authority. The full authenticated V7 lifecycle requires operational composition and installation qualification.
+This directory is the versioned source for the separate STRATHMARK GitHub wiki.
+Edit pages here, check links, and merge the documentation before publishing.
 
-This directory is the canonical source for the STRATHMARK GitHub wiki. Publish it only
-after the matching repository documentation is merged and separately authorized.
+```bash
+python scripts/check_docs.py
+python scripts/publish_wiki.py --mode preview
+python scripts/publish_wiki.py --mode publish
+python scripts/publish_wiki.py --mode check
+```
 
-STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+Publish from the exact clean merged `main` commit. The publisher copies maintained
+pages, pushes the wiki, fetches it again and verifies every remote page. It preserves
+unrelated wiki files. A repository merge alone does not update the wiki.
 
-Pages that retain V2 formulas or compatibility behavior must label them as V2-specific.
-Pages that describe V3 must state the rehearsal/production boundary. Wiki publication
-does not authorize a code release, deployment, model promotion, database migration, or
-consumer switch.
-
-Use `python scripts/publish_wiki.py --mode preview` to review changes, then `--mode publish` from the exact clean merged main commit. Publication fetches and verifies the remote pages; `--mode check` verifies synchronization without writing.
+Keep V2, Linux V3, Windows V7 rehearsal and separate preview behavior clear. Label
+historical behavior by version. Publishing documentation does not deploy code or
+promote a model. This file is a maintainer guide and is not published as a wiki page.

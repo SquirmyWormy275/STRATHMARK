@@ -1,232 +1,86 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/SquirmyWormy275/STRATHMARK/main/assets/strathmark_logo.png" alt="STRATHMARK" width="480"/>
-</p>
-
 # STRATHMARK
 
-STRATHMARK is an offline-capable woodchopping prediction and handicap-mark engine.
-It preserves the released V2 engine and contains the V3 adaptive ensemble release candidate.
+STRATHMARK predicts raw woodchopping times and calculates handicap start marks.
+[STRATHEX](https://github.com/SquirmyWormy275/STRATHEX) is the application judges use
+to set up events, review marks and enter results. Use STRATHMARK directly when you
+need the Python library or an API for another application.
 
-## Current release state
+## Which version should I use?
 
-Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
+| Version or tool | What you can use it for |
+| --- | --- |
+| **V2** | The established prediction engine. Runs locally on Linux and Windows. |
+| **V3 Linux competition runtime** | Formula and trained ML predictions, reviewed and issued fields, results, recovery and learning between rounds. Requires a configured local installation. |
+| **V3 Windows V7 service** | Development and rehearsal. Windows production qualification is incomplete. |
+| **Accuracy Preview** | Compare a frozen calibration candidate with the baseline. It does not change competition predictions. |
 
-The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc7** with STRATHEX **7.4.2**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below. Accuracy evaluation, training roles, calibration and the local diagnostic council are described in [accuracy and council evaluation](docs/ACCURACY_AND_COUNCIL.md). STRATHEX provides a [portable installer and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) with separate retained release profiles.
+The current Linux pair is **STRATHMARK 3.0.0rc7 + STRATHEX 7.4.2**. Judges choose
+V2 or V3 when creating each event or tournament. A tournament's events and rounds
+keep that choice. See [engine selection](docs/wiki/Competition-Engine-Selection.md).
 
-The separately packaged [accuracy preview](tools/accuracy-preview/README.md) compares
-baseline and frozen candidate cutting times using read-only snapshots. It does not
-issue marks, replace the competition model or alter V2/V3 selection. Its 2.81%
-historical development gain remains below the installation requirement.
+## Run a competition
 
-The Windows V7 profile in V3 is a `3.0.0rc7` release candidate that tracks all 232 requirements in
-the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle
-still needs its operational composition and qualification. The
-checked-in development-key rehearsal is valid only for the source commit and digests it
-names and must pass the release verifier; it is not production evidence. V2 remains the
-globally trusted production authority. V3 has not received Windows CNG production eligibility, no production
-authority has changed, and V2 is not audit-only.
+Start with [STRATHEX's quick start](https://github.com/SquirmyWormy275/STRATHEX/wiki/Quick-Start).
+For Linux V3, follow the [competition setup guide](docs/V3_LINUX_COMPETITION.md).
+It covers the separate Python 3.13 environment, trained model, signing key, backup
+location and judge workflow. Private models and competition data are supplied by
+the operator; they are not included in the public package.
 
-The current integration model is **competition-scoped selection**, not one global engine
-replacement. A standalone event selects once at event setup. A tournament selects once
-at tournament creation, and every child event and round inherits that choice. Different
-competition roots may use different eligible engines, but one root never mixes V2 and
-V3 and never silently falls back. STRATHMARK supplies the V7 contract for that workflow;
-the external STRATHEX adapter and its installed rehearsal remain separately versioned
-consumer responsibilities.
+The Linux runtime uses Formula and ML. Its LLM council is unavailable, so judges
+must explicitly review affected fields. The Windows V7 service has different
+installation and qualification requirements.
 
-The distinction matters:
+## Install the V2 library
 
-- **V2.0.0 / V2.0.1** are published on PyPI. The 2.0.1 patch changes packaging documentation and version metadata; it preserves the V2 numeric engine. STRATHEX retains its reviewed exact 2.0.0 Git source pin.
-- **V3.0.0rc7** provides the separate Linux local workflow. The historical formatted
-  five-run Windows result-to-ready benchmark completed with a maximum of **3.414
-  seconds**, well inside the 120-second requirement. Exact-wheel evidence and a
-  development-key rehearsal attestation are candidate outputs, not permanent claims
-  that survive a source change.
-- **Factory qualification** has a runnable local composition/scheduler and a bounded
-  production-CNG evaluator entrypoint. Concrete formula/ML/LLM family executors, the
-  local settled-evidence metric evaluator, installation OS identities and ACLs, and CNG
-  provisioning are still deployment gates; their absence cannot be replaced by mocks.
-- **Production-eligible V3** does not exist until a non-exportable Windows CNG identity
-  signs the exact production evidence and a separately authorized zero-open-tournament
-  eligibility handoff is completed. That production identity has not been provisioned.
-  Eligibility would make V3 available for deliberate selection; it would not select V3
-  globally or remove V2.
-
-Start with the mandatory domain source of truth,
-[`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md). It explains why a
-smaller mark starts earlier, how rebasing preserves a race, and why a mark from one field
-cannot simply be copied into another.
-
-## Linux and Windows
-
-The [Linux competition runtime](docs/V3_LINUX_COMPETITION.md) supports the complete local lifecycle through STRATHEX's selector. The older [Linux numeric candidate](docs/V3_LINUX_CANDIDATE.md) remains available for existing preview scopes. Private model artifacts are kept outside the repository.
-
-The V2 library and API run on Linux and Windows with Python 3.10–3.13; Python 3.13 is recommended for current development. No separate fork is required. Current repository builds also provide `strathmark demo` (or `python -m strathmark demo`), an offline calculation with synthetic competitors that opens no operator database. The existing V2 PyPI releases expose the library/API; this new demonstration command is available in the maintenance source build.
-
-For a source installation and portable V3 verification, follow [Linux setup](docs/LINUX.md). Portable tests and replay do not qualify the Windows native optimizer, installed models, non-exportable CNG identities, or exact machine-bound release evidence. V3 has not received Windows CNG production eligibility.
-
-## Install the trusted V2 release
+Use Python 3.10–3.13; Python 3.13 is recommended. In your virtual environment:
 
 ```bash
 python -m pip install "strathmark==2.0.1"
-python -m pip install "strathmark[api]==2.0.1"
+python -c "import strathmark; print(strathmark.__version__)"
 ```
 
-The V2 tag is not a V3 installation. For development and rehearsal of V3, use an exact
-authorized source commit and install its locked dependencies in an isolated environment.
-Do not point a development checkout at a production database or treat installation as
-production eligibility.
+Version 2.0.1 preserves the 2.0.0 numeric engine. STRATHEX keeps its reviewed 2.0.0
+source dependency. Follow the [Python example](docs/wiki/Quick-Start.md) to calculate
+a small synthetic field, or [Installation](docs/wiki/Installation.md) for API setup.
 
-## V2 Python example
+## Try the source-build demo
 
-```python
-from datetime import date
+From this repository, with Python 3.13:
 
-from strathmark import HandicapCalculator
-from strathmark.predictor import (
-    CompetitorRecord,
-    HistoricalResult,
-    PredictionContext,
-    WoodProfile,
-)
-
-competitors = [
-    CompetitorRecord(
-        name="Alice",
-        competitor_id="competitor-alice",
-        gender="F",
-        history=[HistoricalResult("SB", 28.4, "Pine", 300, 5, date(2025, 3, 1))],
-    ),
-    CompetitorRecord(
-        name="Bob",
-        competitor_id="competitor-bob",
-        gender="M",
-        history=[HistoricalResult("SB", 35.2, "Pine", 300, 5, date(2025, 3, 1))],
-    ),
-]
-
-results = HandicapCalculator().calculate(
-    competitors,
-    WoodProfile(species="Pine", diameter_mm=300, quality=5),
-    event_code="SB",
-    context=PredictionContext(prediction_as_of=date(2026, 1, 1)),
-)
-for result in results:
-    print(result.name, result.predicted_time, result.mark, result.interval)
+```bash
+python -m venv .venv
+# Linux: source .venv/bin/activate
+# Windows PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+strathmark demo
 ```
 
-This remains V2 behavior: one prior-only model, a deterministic joint optimizer, an
-exclusive historical date cutoff, and five compatibility keys. Numeric LLM output is
-retired in V2. These are versioned V2 facts, not V3 constraints.
+The demo calculates a synthetic V2 field and opens no competition database. It is
+included in the current source build; it is not a command in the older V2 PyPI release.
 
-V2 was the right correction for the evidence available in 2026: it removed temporal
-leakage, unsafe cascade labels, and uncalibrated confidence while keeping race-day work
-deterministic and offline. The pivot happened when the product contract expanded to a
-live multi-round process that must compare independent methods, learn between rounds,
-preserve component disagreement, and prepare the next field inside the show cadence.
-Those requirements conflict with V2's deliberately single-authority, date-only receipt
-shape, so V3 is a separate engine rather than a silent patch to V2.
+## Understand the marks
 
-## What V3 changes
+A smaller mark starts earlier. A faster expected competitor gets a larger mark and
+waits longer. Marks are calculated for the complete field, so a heat's displayed
+marks cannot simply be copied into a final with different competitors.
 
-V3 generates and preserves three independent numeric views of the same sealed evidence:
+[How handicaps work](docs/wiki/Handicap-Mark-Math.md) explains cutting time, start
+counts, rebasing and the role of officials with worked examples.
 
-1. a transparent robust formula;
-2. an independent hierarchical ML system; and
-3. a blind council of two local LLM families plus one selected cloud model.
+## Accuracy Preview
 
-Valid forecasts are calibrated, scored against settled results, and pooled using
-accuracy-earned weights. Disagreement remains visible as uncertainty and as a
-green/amber/red consequence class. Every race—including each later-round field—is
-reconstructed and rebased so its slowest expected competitor starts at Mark 3. Every
-valid completion can update later rounds, while all heats in the same round share one
-frozen evidence epoch.
+The [separate preview program](tools/accuracy-preview/README.md) is implemented.
+Its frozen candidate reduced average error from **23.12 to 22.47 seconds** on
+278 previously examined historical results. That 2.81% improvement misses the 5%
+qualification target and has no independent future validation. The changes are
+available in the preview; they are **not enabled in competition predictions**.
 
-This design makes coasting less useful without pretending a model can infer motive.
-Overperformance and underperformance both affect capability evidence. Issued marks and
-legal winners remain immutable.
+## More help
 
-### Why selection is competition-scoped
+- [Wiki](https://github.com/SquirmyWormy275/STRATHMARK/wiki): installation, examples and explanations.
+- [V2](docs/PREDICTION_ENGINE_V2.md) and [V3](docs/PREDICTION_ENGINE_V3.md): detailed engine specifications.
+- [Onboarding](ONBOARDING.md): contributor instructions and test isolation.
+- [Deployment](docs/DEPLOYMENT.md): service qualification and recovery requirements.
+- [Changelog](CHANGELOG.md): release history.
 
-The earlier deployment design assumed one global V2-to-V3 endpoint cutover. The product
-pivot keeps both engines explicit so judges can test V3 on deliberately chosen
-competitions, compare real operating feedback, and still choose V2 elsewhere. Locking
-the choice at the competition root prevents an event, heat, or final from changing its
-numeric authority after evidence has begun to accumulate. This is an authority and
-auditability change, not a change to how either engine calculates its own predictions.
-
-Read [`docs/PREDICTION_ENGINE_V3.md`](docs/PREDICTION_ENGINE_V3.md) for the complete
-mechanism, pivot rationale, REST surface, recovery rules, and eligibility gate.
-
-## V3 consumer contract
-
-V3 exposes a separate 18-path `/v3/*` service contract, version
-`strathmark.v3-consumer-contract.v7`. The canonical installed
-artifact is `strathmark/v3/contracts/v3_consumer.openapi.json`; its sibling SHA-256 file
-freezes exact bytes. The tournament manager must pin both. The dedicated
-`POST /v3/approvals/decide` route records one authenticated, idempotent decision over
-multiple exact receipt ID/digest/revision bindings plus explicit exclusions. It is
-separate from official issue acknowledgment.
-
-`POST /v3/forecasts/pre-field` returns a signed, field-independent forecast set for
-seeding or grouping competitors before stands and exact fields exist. Its receipt says
-`purpose=pre_field_seeding_only` and `issued_mark=false`; it cannot be printed as a start
-sheet or treated as a mark. Only `POST /v3/fields/assemble`, after the exact field and
-roster have been synchronized, performs joint optimization and produces field-relative
-marks.
-
-Authenticated `GET /v3/status` publishes the current pre-field P-256 signer identity:
-stable key ID, key class, provider, DER public key, canonical identity digest, and a
-binding digest over that identity plus the exact source commit and installed consumer
-contract. Consumers must validate that binding before trusting a signed pre-field
-receipt; a key ID from the receipt alone is not a trust anchor.
-
-STRATHMARK authenticates the calling service, not human roles. Upstream actor headers are
-audit metadata. Human login, RBAC, official issue, results, publication, and payouts stay
-in the tournament manager. Loopback is the default; non-loopback operation additionally
-requires pinned mutual TLS.
-
-See [`docs/STRATHEX_CONSUMER_MIGRATION.md`](docs/STRATHEX_CONSUMER_MIGRATION.md). Do not
-switch a live consumer merely because the V3 endpoints import or the rehearsal passes.
-This repository does not certify a consumer deployment. STRATHEX must still prove its
-durable outbox, immutable acknowledgments, exact V7 pin, lifecycle orchestration, and
-restart behavior in an installed-adapter rehearsal.
-
-## Reproduce the V3 rehearsal
-
-Use isolated paths:
-
-```powershell
-$env:STRATHMARK_TEST_DB = '1'
-$env:STRATHMARK_DB_PATH = "$PWD\.tmp\readme-v2.sqlite3"
-$env:STRATHMARK_V3_DB_PATH = "$PWD\.tmp\readme-v3.sqlite3"
-python scripts/replay_v3.py
-python scripts/run_v3_release_evidence.py --local-model qwen3.5:9b --local-model ministral-3:8b
-$source = (git rev-parse HEAD).Trim()
-python scripts/verify_v3_release.py --evidence benchmarks/v3/v3_executable_evidence.json --emit-rehearsal $source --output-attestation benchmarks/v3/v3_release_attestation.json
-python scripts/verify_v3_release.py
-python scripts/verify_v3_release.py --require-production
-```
-
-Run the evidence command only from the exact committed candidate with the two pinned
-local models installed. It builds and installs the wheel, executes all twelve proof
-classes, and signs a source-bound evidence envelope. The ordinary verifier must then
-pass. The production-required verifier must reject the ephemeral rehearsal with
-`production_attestation_required`. These commands leave authority unchanged. Against the
-missing, stale, failed, or tampered artifacts, even the ordinary verifier must fail closed.
-
-## Documentation
-
-- [Onboarding](ONBOARDING.md)
-- [Handicap foundations](docs/wiki/Handicap-Mark-Math.md)
-- [V3 engine](docs/PREDICTION_ENGINE_V3.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Deployment and eligibility](docs/DEPLOYMENT.md)
-- [Package release boundary](docs/PACKAGE_RELEASE.md)
-- [STRATHEX consumer migration](docs/STRATHEX_CONSUMER_MIGRATION.md)
-- [Historical V2 engine](docs/PREDICTION_ENGINE_V2.md)
-- [Changelog](CHANGELOG.md)
-
-## License
-
-[Apache 2.0](LICENSE)
+[Apache 2.0 license](LICENSE).
