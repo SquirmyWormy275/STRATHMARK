@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "strath-accuracy-preview"
+version = "0.1.0"
+description = "Separate frozen-calibration cutting-time preview for STRATHMARK"
+requires-python = ">=3.13,<3.14"
+dependencies = ["strathmark==3.0.0rc7", "catboost==1.2.10", "cryptography==50.0.2"]
+
+[project.scripts]
+strath-accuracy-preview = "strath_accuracy_preview.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["strath_accuracy_preview"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/strath_accuracy_preview", "/tests", "/pyproject.toml", "/README.md"]

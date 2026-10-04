@@ -1,5 +1,9 @@
 # STRATHMARK Wiki
 
+The separate [accuracy preview](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/tools/accuracy-preview/README.md)
+is a runnable frozen-calibration cutting-time comparison, without official mark or
+competition authority. It preserves the selected V2/V3 engine and the installed model.
+
 Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
 
 The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.

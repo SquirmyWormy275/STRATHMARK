@@ -1,5 +1,10 @@
 # Installation
 
+The separately installed [accuracy preview](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/tools/accuracy-preview/README.md)
+compares baseline and candidate cutting times on read-only snapshots. It is a research
+tool with no official marks or competition authority; deliberate V2/V3 selection remains
+in STRATHEX. Its historical 2.81% gain has not met installation requirements.
+
 The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
 
 > **Authority status.** The commands below install the trusted V2.0.0 release. The V3
