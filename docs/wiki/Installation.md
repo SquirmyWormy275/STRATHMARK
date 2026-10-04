@@ -9,7 +9,21 @@ Choose the setup that matches your job:
 
 ## V2 library
 
-Use Python 3.10–3.13. Create and activate a virtual environment, then install:
+Use Python 3.10–3.13. Python 3.13 is recommended. Create the environment on Linux:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+```
+
+Or in Windows PowerShell:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Then install:
 
 ```bash
 python -m pip install "strathmark==2.0.1"

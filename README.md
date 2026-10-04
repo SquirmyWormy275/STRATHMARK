@@ -45,12 +45,20 @@ a small synthetic field, or [Installation](docs/wiki/Installation.md) for API se
 
 ## Try the source-build demo
 
-From this repository, with Python 3.13:
+From this repository, on Linux:
 
 ```bash
-python -m venv .venv
-# Linux: source .venv/bin/activate
-# Windows PowerShell: .\.venv\Scripts\Activate.ps1
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+strathmark demo
+```
+
+Or on Windows PowerShell, with Python 3.13 installed:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 strathmark demo
 ```
