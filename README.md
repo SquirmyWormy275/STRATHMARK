@@ -13,6 +13,11 @@ Under the Windows CNG qualification policy, V3 is not production-eligible. Its r
 
 The separate [Linux competition profile](docs/V3_LINUX_COMPETITION.md) is runnable in STRATHMARK **3.0.0rc7** with STRATHEX **7.4.2**. It supports explicit V2/V3 choice, actual Formula + trained ML, signed local approval and issue, complete outcomes, settlement, restart, and later-round learning. Its local installation authority is distinct from the Windows CNG qualification described below. Accuracy evaluation, training roles, calibration and the local diagnostic council are described in [accuracy and council evaluation](docs/ACCURACY_AND_COUNCIL.md). STRATHEX provides a [portable installer and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) with separate retained release profiles.
 
+The separately packaged [accuracy preview](tools/accuracy-preview/README.md) compares
+baseline and frozen candidate cutting times using read-only snapshots. It does not
+issue marks, replace the competition model or alter V2/V3 selection. Its 2.81%
+historical development gain remains below the installation requirement.
+
 The Windows V7 profile in V3 is a `3.0.0rc7` release candidate that tracks all 232 requirements in
 the V3 plan. Core modules and contract tests exist; the full installed V7 lifecycle
 still needs its operational composition and qualification. The

@@ -1,5 +1,34 @@
 # Accuracy and local council evaluation
 
+## Separate frozen calibration preview
+
+[STRATH accuracy preview 0.1.0](../tools/accuracy-preview/README.md) is an independently
+packaged terminal program alongside the unchanged rc7 numeric runtime. It shows original
+baseline and frozen candidate raw cutting times side by side, with intervals and prior
+history routing. It has no mark, issue, settlement or engine-selection operation. The
+public wheel contains only code; owner data, weights and calibration remain private.
+
+A subsequent nine-family research pass screened 28 configurations and produced no
+candidate meeting all original gates. The best trial with at least 90% observed overall
+and first-appearance interval coverage scored 22.47473 seconds MAE versus the baseline
+23.12494 on all 278 examined 2025+ rows in 20 competition groups. First-appearance MAE
+decreased from 85.04505 to 76.51895 seconds on 20 rows; supported-history MAE changed
+from 18.32493 to 18.28526 seconds. P90 error changed from 70.120 to 67.271 seconds.
+The 2.81% overall gain fails the original 5% requirement. Multiple hypotheses and
+post-hoc combinations were examined; descriptive group bootstraps and calibration-group
+omission checks do not provide independent qualification. The installed model remains
+unchanged. Available dated history ends on 2026-02-06 and supplies no genuinely later
+outcomes after the preserved prospective freeze.
+
+The preview loads the already-frozen joint first-appearance PIT maps and supported
+scale, verifies exact component/native-source identities, and reconstructs the original
+ML distribution before applying calibration. No settings are fitted during forecasting.
+The earlier private peer-context helper excluded exact matches; eight affected settings
+were corrected and repeated unchanged, and still failed selection. That helper defect
+was not a demonstrated product inference defect. Original failed experiments and signed
+competition records are retained. See the tool runbook for synthetic checks, read-only
+snapshot creation, private packaging and historical development comparisons.
+
 STRATHMARK 3.0.0rc7 and STRATHEX 7.4.2 provide buffered encrypted recovery and evidence-verified prospective export repair for the separate Linux profile. The rc6 Formula/model and prospective comparison remain retained; explicit V2/V3 selection and saved competition identities are preserved. The rc5 development evidence below remains visibly historical; issued marks, judge placings and Windows CNG eligibility are separate from these accuracy comparisons.
 
 ## Chronological development benchmark
