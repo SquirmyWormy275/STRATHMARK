@@ -8,6 +8,9 @@ A time prediction, its interval and a simulation answer different questions.
 | Performance `std_dev` | Expected race-to-race variation, in seconds; used by the public simulator. |
 | Optimizer samples | Fixed joint draws used internally to compare possible mark sheets. |
 
+The interval row describes normal core predictions. Overrides omit the interval;
+degraded fallback intervals are broad priors. See [V2 exceptions](Prediction-Engine-V2).
+
 Do not turn the interval width directly into race noise. V2 performance spread comes
 from event history or bounded defaults. V3 preserves component distributions and
 pooled uncertainty under its own contract.
