@@ -1,32 +1,23 @@
-# Legacy Prediction Keys in V2
+# Legacy prediction keys in V2
 
-> **Historical/current-V2 page.** V3 is a separate formula/ML/LLM release candidate
-> ensemble and contract. The V3 rehearsal is source-bound and does not change authority;
-> V2 remains the globally trusted production authority and V3 is not production-eligible.
-> The mapping below applies only to
-> V2 compatibility and is not V3 architecture.
+Older consumers expect five result keys. V2 keeps those keys as a compatibility view
+of its prediction engine; it does not run the old numeric selection cascade.
 
-The pre-2.0 numeric cascade is superseded. STRATHMARK now runs one Prediction Engine V2
-bundle and projects its results into the five keys older consumers expect.
+| Key | Meaning |
+| --- | --- |
+| `manual` | Explicit operator time override; uncalibrated and excluded from model-training evidence. |
+| `llm` | Always `None` numerically. |
+| `ml` | Optional promoted residual correction; inactive in the 2.0.0 release. |
+| `baseline` | The V2 core prediction. |
+| `panel` | Broad Standing Block/Underhand prior used for degraded fallback. |
 
-```text
-manual   operator-supplied time; authoritative, uncalibrated, not training evidence
-llm      None; LLMs cannot produce or adjust numeric predictions
-ml       promoted residual correction to V2, if active
-baseline authoritative V2 hierarchical core
-panel    static broad SB/UH prior for degraded fallback
-```
+Selection order is manual override, active residual, core, then panel. A normal
+non-manual 2.0.0 prediction therefore uses `baseline`.
 
-Selection is manual, promoted residual, core, then panel. The 2.0.0 packaged residual
-is inactive, so a normal non-manual prediction is `baseline`.
+Compatibility inputs such as quality, heat, division or tournament context may still
+be accepted, but inactive factors do not change the prediction. Read the returned
+warnings, versions, cutoff and degraded state. See [V2](Prediction-Engine-V2).
 
-Legacy `results_df`, `ml_model`, `llm_client`, division, tournament, heat, quality, and
-field-strength inputs remain accepted where needed for compatibility but do not alter a
-V2 number. They must not be described as active evidence.
-
-Every result may include interval, engine/model/calibration versions, cutoff,
-provenance, warnings, ignored factors, and degraded state. See [Prediction Engine
-V2](Prediction-Engine-V2) for the active mechanism.
-
-`STRATHMARK_PREDICTION_ENGINE=legacy` is a temporary baseline-only rollback. It applies
-the cutoff, removes inactive context, and never restores numeric LLM behavior.
+`STRATHMARK_PREDICTION_ENGINE=legacy` is a temporary baseline-only rollback mode.
+It still applies the cutoff and does not restore numeric LLM behavior. These keys
+and that mode are V2-specific; [V3](Prediction-Engine-V3) has a separate contract.

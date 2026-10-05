@@ -1,51 +1,63 @@
 # Installation
 
-The separately installed [accuracy preview](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/tools/accuracy-preview/README.md)
-compares baseline and candidate cutting times on read-only snapshots. It is a research
-tool with no official marks or competition authority; deliberate V2/V3 selection remains
-in STRATHEX. Its historical 2.81% gain has not met installation requirements.
+Choose the setup that matches your job:
 
-The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+- **Running an event:** install [STRATHEX](https://github.com/SquirmyWormy275/STRATHEX/wiki/Quick-Start).
+- **Using the prediction library:** install V2 below.
+- **Running Linux V3:** follow the [competition setup guide](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md).
+- **Trying the calibration changes:** see [Accuracy Preview](Accuracy-Preview).
 
-> **Authority status.** The commands below install the trusted V2.0.0 release. The V3
-> release candidate is in later source and is under exact-source verification, but no production authority
-> has changed. Installing a V3-capable wheel does not switch a consumer.
+## V2 library
 
-Python 3.10 or newer is required for the normal package and trusted V2 engine. V3
-rehearsal and race-day authority require the designated Python 3.13 environment plus
-`requirements/v3-release.lock`; Python 3.10-3.12 are not supported V3 authority
-environments. Never enable SQLite `trusted_schema` to bypass that boundary.
+Use Python 3.10–3.13. Python 3.13 is recommended. Create the environment on Linux:
 
 ```bash
-python -m pip install "strathmark @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
-python -m pip install "strathmark[api] @ git+https://github.com/SquirmyWormy275/STRATHMARK.git@v2.0.0"
+python3.13 -m venv .venv
+source .venv/bin/activate
 ```
 
-Version 2.0.0 is published as the immutable `v2.0.0` Git tag and GitHub release;
-there is no PyPI distribution for this version. High-assurance consumers may pin the
-exact release commit. Optional extras are `api`, `ml`, `db`, `llm`, and `dev`.
+Or in Windows PowerShell:
 
-The V2 NumPy/Pandas core and validated JSON artifact are in the base wheel. Installing
-`ml` does not activate a residual model; promotion evidence and a compatible artifact
-are still required. Installing `llm` does not add numeric prediction authority.
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
 
-Verify an install:
+Then install:
 
 ```bash
+python -m pip install "strathmark==2.0.1"
 python -c "import strathmark; print(strathmark.__version__)"
-python train_model.py
 ```
 
-The second command is for a source checkout and verifies the published artifact/report
-without reopening locked rows.
+Both 2.0.0 and 2.0.1 are published on PyPI. The 2.0.1 patch changes packaging
+metadata and documentation; the V2 calculations are unchanged. STRATHEX pins its
+reviewed 2.0.0 source separately.
 
-For API use:
+Next, run the [Python example](Quick-Start).
+
+## V2 API
+
+Install the API dependencies in the same environment:
 
 ```bash
-uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
+python -m pip install "strathmark[api]==2.0.1"
 ```
 
-Check `/health`; core and calibration should be available. Residual inactive and Ollama
-unavailable are expected/acceptable for numeric 2.0.0 operation.
+Then follow [REST API](REST-API) to choose an explicit database path and start the
+server on loopback.
+The public calculation endpoint does not require Ollama or a residual ML model.
 
-See [portable Linux profiles and rollback](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md) for offline installation and retained older competitions.
+## Current source build
+
+The repository version is 3.0.0rc7. Use Python 3.13 and install from the repository
+root into its own environment:
+
+```bash
+python -m pip install -e .
+strathmark demo
+```
+
+This synthetic demo uses V2 calculations and opens no operator database. To work
+on V3, follow [contributor setup](Testing) and install the exact release lock.
+Installing the source build does not select V3 for an existing competition.

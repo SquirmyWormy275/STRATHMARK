@@ -1,22 +1,24 @@
-# Wood and Diameter in V2
+# Wood and diameter in V2
 
-> **V2-specific behavior.** The V3 release candidate uses versioned event, diameter,
-> species/material, property, taxonomy, and conversion evidence. Its checked-in evidence
-> is rehearsal-tier; V2 remains globally authoritative and V3 is not production-eligible.
+V2 compares the target and historical diameter/species. It uses six packaged timber
+properties: Janka hardness, specific gravity, crush strength, shear strength,
+modulus of rupture and modulus of elasticity.
 
-V2 uses target/historical diameter and species joined to six physical properties:
-Janka hardness, specific gravity, crush strength, shear strength, modulus of rupture,
-and modulus of elasticity. Diameter enters as a clamped log ratio to the model reference
-and is learned with event-specific behavior.
+Diameter enters through a bounded log ratio to the model's reference size, with
+behavior learned for each event. This is not the old QAA interpolation table.
 
-Unknown or missing species do not inherit a fabricated known-species label. They use
-pooled property values plus an explicit missing indicator, and uncertainty/warnings can
-reflect unsupported conditions.
+## Unknown species
 
-`WoodProfile.quality` and historical `quality` remain required/accepted by compatible
-data structures, but quality and moisture are numeric no-ops in V2. The old effective-
-Janka quality formula and LLM quality multiplier are superseded. Exact log/block/batch
-identity is also inactive until tournament software captures it with provenance.
+Unknown or missing species use pooled property values and a missing indicator.
+They are not relabeled as a known species based on a similar name. Warnings and
+uncertainty can reflect unsupported conditions.
 
-Adding a species or property requires a one-to-one code join and temporal validation;
-free-text similarity is not sufficient model evidence.
+## Quality and other fields
+
+`WoodProfile.quality` remains accepted for compatibility, but quality and moisture
+are numeric no-ops in V2. The former effective-Janka quality formula and LLM quality
+multiplier are retired. Exact block or batch identity is also inactive.
+
+Adding a species/property requires a reliable one-to-one code join and temporal
+validation. See [V2](Prediction-Engine-V2). V3 carries versioned event/material context
+under its separate [contract](Prediction-Engine-V3).

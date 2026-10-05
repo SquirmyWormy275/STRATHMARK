@@ -1,95 +1,60 @@
 # Prediction Engine V2
 
-> **Preserved V2 contract.** V3 is a separate release candidate whose rehearsal is
-> source-bound and does not change authority. V2 remains the globally trusted production
-> authority; V3 is not production-eligible.
-> Everything below remains exact for V2 receipts and must not be generalized into V3.
+V2 is the established prediction engine. It estimates positive cutting times from
+prior results, then chooses handicap marks for the complete field. Version 2.0.1
+preserves the 2.0.0 calculations.
 
-STRATHMARK 2.0.0 uses one robust hierarchical log-time model, not a numeric
-LLM/ML/baseline cascade. One exclusive UTC cutoff and one immutable model bundle apply
-to every competitor in a field.
+## What affects a prediction?
 
-## Active evidence
+The model uses stable competitor identity, event, dated cutting times, diameter,
+species and the packaged timber properties. Gender is an active category, with a
+separate missing category. Personal history is combined with population estimates,
+so sparse history does not become an overconfident personal average.
 
-- stable competitor identity and strictly prior dated history;
-- event (`SB` or `UH`), result date, and measured positive time;
-- target and historical diameter and species;
-- Janka hardness, specific gravity, crush strength, shear, MOR, and MOE, with the
-  canonical species lookup packaged inside the checksummed core artifact;
-- gender (`M`, `F`, or missing).
+Only valid results **before** `prediction_as_of` are admitted. Same-day, future,
+undated and invalid rows are excluded. Earlier results contribute recency, bounded
+trend and cross-event information. See [recency](Time-Decay-Weighting).
 
-Derived features include 730-day recency, history depth, partially pooled same-event
-state, bounded trend, cross-event state, missing flags, and log-diameter ratio. Unknown
-species use pooled property values plus a missing indicator. Same-day, future,
-invalid-date, and undated rows are excluded.
+Quality, moisture, division, heat, lane, weather, equipment, fatigue and same-tournament
+weighting do not change V2 numbers. Accepted compatibility fields are disclosed as
+ignored rather than presented as measured effects. See [wood and diameter](Wood-and-Diameter-Scaling).
 
-## Inactive numeric inputs
+## What comes back?
 
-Division, round/heat, venue, lane/stand, run order, exact material identity,
-quality/moisture, weather, equipment, fatigue, penalty/DNF status, same-tournament
-weighting, and field strength are no-ops until provenance-backed capture and temporal
-validation support a future model version.
+Normal core predictions contain a predicted median time, a calibrated central 90%
+interval, a separate performance standard deviation and the calculated mark.
+Manual overrides have `interval=None`. A degraded panel fallback supplies a broad
+prior interval with `calibration_state="broad_prior"`, not the core's calibration
+guarantee. Versions, cutoff, warnings and degraded state show which case was used.
 
-## Outputs and compatibility
+The optional residual correction is inactive in the 2.0.0 release. LLM output cannot
+supply numeric predictions. [Legacy keys](Prediction-Cascade) explains the five-key
+compatibility view.
 
-The core returns a positive median and chronological split-conformal central 90%
-interval. That interval describes the predictive distribution of a future finish;
-`std_dev` remains a separate absolute-seconds performance summary for compatibility.
-Settled drift coverage is measured against the interval actually issued for each
-prediction, not reconstructed from residual quantiles.
+## How are marks chosen?
 
-The five legacy keys map as follows:
+The optimizer compares whole-field sheets using 2,048 fixed simulation samples and
+at most eight coordinate passes. It prioritizes equal model-implied winning chances,
+then expected finish spread, departure from rounded time-gap marks, and a stable
+input-order tie-break.
 
-| Key | V2 meaning |
-| --- | --- |
-| `manual` | uncalibrated operator override |
-| `llm` | always `None` numerically |
-| `ml` | promoted optional residual, otherwise `None` |
-| `baseline` | authoritative V2 core |
-| `panel` | broad event-prior fallback |
+Marks are bounded integers from 3 to 183, preserve median ordering and include a
+Mark 3. If the search fails, V2 returns a bounded rounded-gap sheet and exposes the
+fallback. [Simulation](Variance-and-Monte-Carlo) explains the different uncertainty measures.
 
-The optional residual is inactive in 2.0.0. LLMs are narrative-only.
+## Published accuracy evidence
 
-## Marks
+The frozen 128-row temporal test recorded MAE of 16.1301 seconds against 20.5172 for
+the strict incumbent; RMSE was 33.6904 against 44.4791. Central 90% interval coverage
+was 94.53%. These figures apply to that workbook and split, not every future event.
 
-The field optimizer uses 2,048 deterministic common-random samples and at most eight
-coordinate passes. It minimizes equal-win-probability error, expected finish spread,
-departure from rounded median-gap marks, then the input-order mark tuple. Marks are
-bounded integers, preserve median ordering, keep equal-median input order, and include
-at least one Mark 3. Failure returns the bounded rounded-gap sheet.
+In the source checkout, `python train_model.py` verifies the published report and
+artifact without reopening the locked test. Do not rerun `--open-locked-test` for
+that release. Current preview experiments use separate evidence.
 
-## Locked evidence
+## Integration
 
-On the frozen 128-row temporal test: MAE was 16.1301 seconds versus 20.5172 for the
-strict incumbent (21.38% lower); RMSE was 33.6904 versus 44.4791 (24.26% lower); 90%
-interval coverage was 94.53%. These results apply only to that workbook and split.
-Cohort samples are smaller and this is not proof of universal accuracy or real-world
-fairness.
-
-Verify published evidence without reopening the locked rows:
-
-```bash
-python train_model.py
-```
-
-Do not rerun `--open-locked-test` for this release.
-
-## Trusted evidence
-
-Public prediction routes are stateless. Authenticated `/ledger/calculate` requires a
-request ID and stable competitor IDs, writes one local append-only SQLite transaction,
-and mirrors to Supabase only best-effort through a replayable local outbox. Each ledger
-process uses one bounded worker, which reclaims overflowed and restart-surviving rows
-from that durable outbox. Scans, replay batches, and concurrent work are bounded; the
-append-only queue has no destructive hard cap pending an archive/compaction and
-finite-capacity policy. `GET /health?prediction_as_of=YYYY-MM-DD` evaluates artifact
-compatibility for a historical exclusive cutoff.
-Settlements are immutable revisions. The ledger stores hashes, stable IDs, versions,
-numeric allowlisted features, predictions,
-marks, and settlement provenance—not names, notes, or raw bodies. Migrations 005-007
-force RLS, restrict append RPCs to `service_role`, preserve versioned request-hash
-compatibility, and add the closed shadow receipt/numeric-revision mirror without
-rewriting old evidence.
-
-For the complete source-controlled contract, see
-[`docs/PREDICTION_ENGINE_V2.md`](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md).
+Public calculation is stateless. Authenticated ledger and shadow routes are separate
+facilities for stored receipts and settlements. They are not automatically used by
+STRATHEX's direct calculation. See [REST API](REST-API) and the
+[full V2 specification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/PREDICTION_ENGINE_V2.md).

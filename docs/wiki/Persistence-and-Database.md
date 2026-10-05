@@ -1,38 +1,37 @@
-# Persistence and Database
+# Storage and recovery
 
-The current separate Linux competition profile (STRATHMARK 3.0.0rc7 / STRATHEX 7.4.2) supports explicit engine choice, real Formula/ML, local signed approval and issue, settlement, restart, and later-round learning. See the [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md). Windows CNG production qualification remains separate; the LLM council is unavailable in this local profile.
+The files you need depend on the selected runtime. A public calculation response
+and a stored official competition receipt are different records.
 
-## Authority status
+## V2
 
-V3 is a release candidate whose source-bound rehearsal does not change authority. V2
-remains the globally trusted production authority, V3 is not production-eligible, and
-no production authority has changed.
+`ResultStore` holds historical results. `PredictionLedger` and the authenticated
+shadow contract hold their own trusted receipts. Public `/calculate` reads its
+request and does not automatically write either ledger.
 
-V2 uses the local result store, trusted prediction ledger, shadow receipts, and optional
-Supabase mirror documented by the V2 contract.
+An optional Supabase mirror is a secondary copy. Local outbox records allow later
+replay after a failed mirror write; the mirror is not race-day calculation authority.
 
-V3 uses a separate local SQLite event authority. Events are closed, canonical,
-hash-chained, consecutively versioned, and appended through idempotent expected-version
-commands. Projections are disposable views rebuilt from the log. Large canonical
-evidence, forecasts, and bundles live in content-addressed blob storage and are bound by
-digest.
+## Linux V3
 
-Prepared cards, fields, approvals, issue acknowledgments, credentials, jobs, and
-settlements are explicit aggregates. Exact retries recover original bytes. Changed
-retries, stale versions, illegal transitions, gaps, duplicates, and tampering fail
-closed. A typed approval decision atomically binds selected and excluded receipt
-revisions; it remains distinct from issue authority. A batch issue commits all fields or
-none; issued receipts never mutate. Live
-settlement requires the complete issued roster and commits observations and settlement
-as one command. Seven source-bound reactions must then close durably before the
-derivation barrier opens; reaction automation never creates a judge approval decision.
+The local runtime stores signed command history, receipts and settlements in SQLite,
+with a separate retained head and persistent signing identity. STRATHEX also keeps
+its saved workflow and command acknowledgments.
 
-The optional mirror/archive is best-effort and asynchronous. It is not required for
-calculation, issue, lookup, settlement, recovery, or model scoring. V2 import is a
-repeatable read-only snapshot; V2 and V3 never become concurrent trusted writers.
+An exact retry returns the original committed result. Reusing an ID with changed
+inputs is rejected. Approval does not issue a sheet. Settlement binds the complete
+issued field; official corrections append revisions rather than overwrite history.
 
-Tests and rehearsals must set STRATHMARK_TEST_DB=1 plus unique V2 and V3 database and
-base paths. Known production identifiers and default operator paths are rejected.
+Preserve these files as a set. Do not edit the database, replace the signing key or
+upgrade a saved competition's runtime files in place. See [recovery](Deployment).
 
-See the canonical [architecture](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md) and
-[deployment runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md).
+## V7 service
+
+The wider service uses an append-only event log, rebuildable projections and
+content-addressed evidence. Version checks and idempotent commands reject stale or
+changed requests. Settlement reactions must complete before later derivations proceed.
+The [architecture specification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/ARCHITECTURE.md)
+describes that storage contract in detail.
+
+Tests use disposable databases and synthetic inputs. Keep operator paths out of
+[test and rehearsal environments](Testing).
