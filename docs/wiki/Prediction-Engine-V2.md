@@ -21,9 +21,11 @@ ignored rather than presented as measured effects. See [wood and diameter](Wood-
 
 ## What comes back?
 
-Each result contains a predicted median time, a calibrated central 90% interval,
-a separate performance standard deviation, and the calculated mark. Versions,
-cutoff, warnings and degraded state explain which model and evidence were used.
+Normal core predictions contain a predicted median time, a calibrated central 90%
+interval, a separate performance standard deviation and the calculated mark.
+Manual overrides have `interval=None`. A degraded panel fallback supplies a broad
+prior interval with `calibration_state="broad_prior"`, not the core's calibration
+guarantee. Versions, cutoff, warnings and degraded state show which case was used.
 
 The optional residual correction is inactive in the 2.0.0 release. LLM output cannot
 supply numeric predictions. [Legacy keys](Prediction-Cascade) explains the five-key

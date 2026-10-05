@@ -12,8 +12,12 @@ V2 also uses bounded trend and validated borrowing from earlier cross-event resu
 It does not apply the old 65/80/90/97% same-tournament weights. Heat IDs, round counts
 and `tournament_time` do not change V2 numbers.
 
-For a final, V2 recalculates the advancing field with its original exclusive date
-cutoff. Linux V3 has a different policy: all fields in a round share frozen evidence,
+STRATHEX recalculates a V2 final with the event's saved original date cutoff.
+Direct library callers must supply the same `PredictionContext.prediction_as_of`
+for each calculation; the stateless library does not remember a competition's
+previous cutoff. A later cutoff can admit newer dated results.
+
+Linux V3 has a different policy: all fields in a round share frozen evidence,
 and valid settled results can contribute at a later-round boundary.
 
 See [V2](Prediction-Engine-V2) and [V3](Prediction-Engine-V3) for their full behavior.

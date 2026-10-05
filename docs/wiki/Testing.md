@@ -25,8 +25,11 @@ export STRATHMARK_V3_DB_PATH="$scratch/v3.sqlite3"
 export STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION=0
 python -m pytest tests --basetemp "$scratch/pytest" -p no:cacheprovider
 python scripts/replay_v3.py
-python scripts/freeze_v3_consumer_contract.py --check
 ```
+
+The documented-example tests in this suite verify the frozen OpenAPI checksum,
+route table and examples. `freeze_v3_consumer_contract.py` regenerates the contract;
+it is not a verification command.
 
 The portable flag skips the independent workbook-engine rebuild. It is for portable
 testing, not designated release qualification. Use [formula qualification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/FORMULA_RUNTIME.md)

@@ -31,8 +31,15 @@ strath-accuracy-preview
 
 The menu offers a saved accuracy comparison, cutting-time previews and competitor
 IDs. The packaged CLI also has snapshot, pack, status, forecast and audit commands;
-use `strath-accuracy-preview --help` to see them. A direct package installation needs
-explicit candidate and workbook paths for `menu`.
+use `strath-accuracy-preview --help` to see them. With a direct package installation,
+supply the subcommand and your actual candidate and workbook paths:
+
+```bash
+strath-accuracy-preview menu --candidate /absolute/path/to/candidate --workbook /absolute/path/to/history-copy.xlsx
+```
+
+Add `--report /absolute/path/to/audit.json` to load a saved comparison report.
+The bare command above works only through the configured workstation wrapper.
 
 For installation and those paths, follow the
 [preview runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/tools/accuracy-preview/README.md).
