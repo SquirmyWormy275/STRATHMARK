@@ -1,20 +1,64 @@
 # Package Release Boundary
 
-STRATHMARK publication is a separate authorization boundary from repository merge,
-passing CI, and V3 rehearsal evidence. None of those states publishes a package or
-enables V3 production authority.
+## Standing publication authorization
 
-## First public package
+On 2026-10-12 the owner authorized publishing the current STRATHMARK version to
+PyPI immediately and keeping PyPI automatically updated with future versions.
+`3.0.0rc7` is published from immutable source tag `v3.0.0rc7`, commit
+`ca12329a3c7fefccb54d6a432711cdb2da2c00db`, authorized by annotated tag
+`pypi-v3.0.0rc7`. V2 portable library releases `2.0.0` and `2.0.1` remain available.
 
-The first public package candidate is the immutable V2 portable library at
-`strathmark==2.0.0`, source tag `v2.0.0`, commit
-`a231ad65fe82317516cc82a282761d73adb0c0e3`. It does not promise V3 production
-eligibility. The current `3.0.0rc7` package is not a substitute for that V2 release.
+Publication implements this standing order; it does not enable V3 production
+authority, migrate competition data, promote a model or select a competition engine.
+Release candidates retain their Python prerelease version. Install the latest
+candidate with `python -m pip install --upgrade --pre strathmark`; ordinary upgrades
+continue selecting the latest stable version until a final release is published.
 
-The historical `v2.0.0` tag is lightweight and must not be moved or replaced. A
-separately authorized, protected, annotated `pypi-v2.0.0` tag must point to that
-same commit. The publisher verifies both tags, their peeled commits, the checked-out
-commit, and `[project].version` before it builds anything.
+## Automatic release sequence
+
+1. Bump `[project].version` for changed package behavior or contents, update the
+   changelog, and merge through the existing required CI checks.
+2. **Publish to PyPI** runs automatically after successful push CI on `main`.
+   Failed CI, pull-request CI and fork CI cannot authorize an upload. If `main`
+   advances while CI runs, publication waits for that newer commit's own CI.
+3. The publisher checks the exact version on PyPI. Complete, non-yanked versions
+   are skipped; missing versions proceed. An incomplete or yanked release fails
+   for review rather than being silently treated as complete.
+4. The publisher creates annotated `v<version>` and `pypi-v<version>` tags at the
+   verified commit. Existing tags are preserved. An existing source tag must match
+   the version, be an ancestor of maintained `main`, and have its own successful
+   main CI. The annotated publication tag must authorize that exact source commit.
+5. The builder checks out the immutable authorized source, verifies both tags,
+   version and checkout cleanliness, builds wheel and sdist, runs `twine check`,
+   and installs both outside the checkout. Every extra declared by the exact
+   wheel is also installed and checked.
+6. The `pypi` environment publishes those exact artifacts through OIDC trusted
+   publishing. A final job checks PyPI's filenames and SHA-256 hashes against the
+   built files and verifies an isolated indexed installation and synthetic demo.
+
+The workflow runs on `main` and retains the `pypi` environment's main-only deployment
+rule. The environment no longer requires a separate manual reviewer for each version:
+the owner's standing order supplies publication authorization. Tag protection permits
+creation while retaining update, force-update and deletion restrictions. This allows
+the workflow's scoped `GITHUB_TOKEN` to create release tags without storing a personal
+token. Only the publication job receives `id-token: write`; it executes no source code.
+Concurrent publications are serialized and no uploaded version is overwritten.
+
+## Manual recovery and TestPyPI
+
+The manual **Publish to PyPI** dispatch remains available on `main`, with an existing
+annotated `pypi-v<version>` authorization tag. It runs the same immutable-source and
+artifact checks. Use it to retry a failed publication after correcting its cause.
+Do not retag an already published version; ship a new version for changed contents.
+
+**Rehearse package on TestPyPI** remains a separate optional manual workflow using
+the `testpypi` environment, its reviewer protection, and its own trusted publisher.
+TestPyPI is not a dependency of automatic production-index publication.
+
+The PyPI trusted publisher identity is owner `SquirmyWormy275`, repository
+`STRATHMARK`, workflow `publish.yml`, environment `pypi`. Retain that identity when
+maintaining automation. A successful GitHub release upload alone does not prove a
+PyPI upload succeeded: verify the public files and indexed installation.
 
 ## Platform truth
 
@@ -27,35 +71,9 @@ requires the designated Windows installation, non-exportable CNG identities and
 qualified three-assessor factory. The wheel retains the Windows optimizer DLL,
 so the project makes no blanket OS-independent metadata claim.
 
-GitHub rc7 wheel/source/checksum assets document the local Linux profile. They do
-not dispatch the separately guarded PyPI publisher or replace the immutable V2
-portable library release. Package publication, local operator readiness, and
-Windows production eligibility remain distinct.
-
-## Guarded publication sequence
-
-1. Merge the guarded workflows and this policy to `main`.
-2. Configure active GitHub tag rulesets protecting `v*` and `pypi-v*`.
-3. Configure the `testpypi` GitHub environment with required reviewers and a
-   `main`-only deployment-branch rule, then configure its TestPyPI trusted publisher.
-4. Create the annotated `pypi-v2.0.0` authorization tag at the existing `v2.0.0`
-   commit only after explicit release authorization.
-5. Run **Rehearse package on TestPyPI** from `main` with `pypi-v2.0.0` and review
-   the exact artifact/install evidence.
-6. Configure the `pypi` environment with required reviewers and a `main`-only
-   deployment-branch rule, then configure the PyPI pending trusted publisher for
-   owner `SquirmyWormy275`, repository `STRATHMARK`, workflow `publish.yml`,
-   environment `pypi`.
-7. After a separate explicit production-publication approval, run **Publish to PyPI**
-   from `main` with the same annotated tag.
-
-Both workflows use OIDC trusted publishing, require environment approval, build an
-sdist and wheel, run `twine check`, and install the exact artifacts outside the source
-checkout. Declared extras are installed from the exact wheel in isolated environments.
-The workflows fail closed if dispatched from any branch other than `main` or if the
-authorization tag, source tag, version, checkout, or cleanliness checks disagree.
-
-Creating tags, changing GitHub/PyPI settings, uploading to TestPyPI/PyPI, and enabling
-V3 production selection are deliberately outside ordinary code delivery.
-
-Public wheel and source archives exclude operator workbooks and signing keys. The source archive retains the synthetic Formula golden workbook. Reproducing workbook-backed V2 release checks requires the separate exact workbook pinned by the existing acceptance manifest; the released V2 algorithm, model and acceptance hashes are unchanged. The installed-distribution smoke refuses an archive containing either historical root workbook.
+Public wheel and source archives exclude operator workbooks and signing keys. The
+source archive retains the synthetic Formula golden workbook. Reproducing workbook-
+backed V2 release checks requires the separate exact workbook pinned by the existing
+acceptance manifest; the released V2 algorithm, model and acceptance hashes are
+unchanged. The installed-distribution smoke refuses an archive containing either
+historical root workbook.
