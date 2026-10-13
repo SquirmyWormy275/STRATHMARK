@@ -75,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
                 "-c",
                 "import os; from importlib.metadata import version; "
                 "import strathmark; import strathmark.v3; "
-                "assert version('strathmark') == os.environ['EXPECTED_STRATHMARK_VERSION']",
+                "assert version('strathmark') == strathmark.__version__ "
+                "== os.environ['EXPECTED_STRATHMARK_VERSION']",
             ],
             check=True,
             cwd=root,

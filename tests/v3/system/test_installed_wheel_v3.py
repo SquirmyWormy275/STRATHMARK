@@ -5,9 +5,14 @@ import sys
 import zipfile
 from pathlib import Path
 
+from scripts.verify_release_tag import tomllib
+
 
 def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[3]
+    project_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
     dist = tmp_path / "dist"
     completed = subprocess.run(
         [
@@ -29,7 +34,7 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     wheels = tuple(dist.glob("*.whl"))
     assert len(wheels) == 1
     wheel = wheels[0]
-    assert wheel.name.startswith("strathmark-3.0.0rc7-")
+    assert wheel.name.startswith(f"strathmark-{project_version}-")
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         entry_points_name = next(
@@ -93,8 +98,8 @@ import re
 from importlib.metadata import distribution, version
 import strathmark
 v3 = load_v3_consumer_contract()
-assert strathmark.__version__ == "3.0.0rc7"
-assert version("strathmark") == "3.0.0rc7"
+assert strathmark.__version__ == sys.argv[3]
+assert version("strathmark") == sys.argv[3]
 console_scripts = {
     item.name: item.value
     for item in distribution("strathmark").entry_points
@@ -163,6 +168,7 @@ print("installed-v3-contract-ok")
             probe,
             str(installed_root),
             str(tmp_path / "installed-smoke.sqlite3"),
+            project_version,
         ],
         cwd=tmp_path,
         capture_output=True,

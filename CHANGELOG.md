@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.0rc8] - 2026-10-13
+
+- Publish new package versions to PyPI automatically after successful main CI, with immutable source/authorization tags, exact wheel and source installation checks, optional-extra validation, and public artifact hash and installation verification.
+- Record the owner's standing publication order and the automatic release/recovery policy. Preserve prerelease versioning and separate competition authority.
+- Include the current reader-facing README/wiki and separate frozen-calibration accuracy preview tooling in the source release.
+- Read the expected installed-wheel version from project metadata so future version bumps retain package/runtime version agreement checks.
+
 ## [3.0.0rc7] - 2026-10-03
 
 - Stream encrypted archive input/output in bounded bulk chunks through native GPG, preserving complete authenticated readback, source checks and atomic no-overwrite publication. Clean up the process and feeder on failure.

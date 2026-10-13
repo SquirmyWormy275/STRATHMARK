@@ -43,6 +43,15 @@ Version 2.0.1 preserves the 2.0.0 numeric engine. STRATHEX keeps its reviewed 2.
 source dependency. Follow the [Python example](docs/wiki/Quick-Start.md) to calculate
 a small synthetic field, or [Installation](docs/wiki/Installation.md) for API setup.
 
+For the latest library release candidate, use a separate virtual environment:
+
+```bash
+python -m pip install --upgrade --pre strathmark
+```
+
+New package versions publish to PyPI automatically after successful main CI. See
+the [package release policy](docs/PACKAGE_RELEASE.md) for versioning and recovery.
+
 ## Try the source-build demo
 
 From this repository, on Linux:
