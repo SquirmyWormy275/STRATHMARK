@@ -1,6 +1,10 @@
 name: Publish to PyPI
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -12,13 +16,45 @@ permissions:
   contents: read
 
 concurrency:
-  group: publication-${{ github.workflow }}-${{ inputs.release_tag }}
+  group: strathmark-pypi-publication
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Prepare automatic release after successful main CI
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Resolve exact version and preserve existing immutable tags
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python -m scripts.prepare_pypi_release
+
   prepare:
     name: Verify, build, and rehearse exact release artifacts
-    if: github.ref == 'refs/heads/main'
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -33,7 +69,7 @@ jobs:
       - name: Check out the exact authorized tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: refs/tags/${{ inputs.release_tag }}
+          ref: refs/tags/${{ needs.resolve.outputs.release_tag }}
           fetch-depth: 0
           path: release-source
 
@@ -44,7 +80,7 @@ jobs:
       - name: Verify immutable source and annotated publication authorization
         working-directory: release-source
         env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: python ../release-tools/scripts/verify_release_tag.py --repository . --tag "$RELEASE_TAG"
 
       - name: Build and check sdist and wheel
@@ -62,13 +98,13 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: strathmark-${{ inputs.release_tag }}
+          name: strathmark-${{ needs.resolve.outputs.release_tag }}
           path: release-source/dist/*
           if-no-files-found: error
 
   extras:
     name: Install every extra declared by the exact wheel
-    needs: prepare
+    needs: [resolve, prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -81,14 +117,14 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: strathmark-${{ inputs.release_tag }}
+          name: strathmark-${{ needs.resolve.outputs.release_tag }}
           path: dist
       - name: Install and validate core plus artifact-declared extras
         run: python release-tools/scripts/smoke_installed_distribution.py --dist-dir dist --kind wheel --all-extras --smoke core
 
   publish:
     name: Publish reviewed artifacts
-    needs: [prepare, extras]
+    needs: [resolve, prepare, extras]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -99,7 +135,28 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: strathmark-${{ inputs.release_tag }}
+          name: strathmark-${{ needs.resolve.outputs.release_tag }}
           path: dist
       - name: Publish exact reviewed artifacts to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+
+  verify-published:
+    name: Verify public files and install from PyPI
+    needs: [resolve, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: strathmark-${{ needs.resolve.outputs.release_tag }}
+          path: dist
+      - name: Verify indexed artifact hashes and install the exact published version
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: python scripts/verify_pypi_publication.py --dist-dir dist --version "${RELEASE_TAG#pypi-v}"

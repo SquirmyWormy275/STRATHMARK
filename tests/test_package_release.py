@@ -102,9 +102,12 @@ def test_publication_workflows_are_tag_bound_and_rehearse_exact_artifacts():
     publish = (root / ".github/workflows/publish.yml").read_text(encoding="utf-8")
     test_publish = (root / ".github/workflows/test-publish.yml").read_text(encoding="utf-8")
 
-    for workflow in (publish, test_publish):
+    for workflow, release_tag in (
+        (publish, "needs.resolve.outputs.release_tag"),
+        (test_publish, "inputs.release_tag"),
+    ):
         assert "release_tag:" in workflow
-        assert "refs/tags/${{ inputs.release_tag }}" in workflow
+        assert "refs/tags/${{ " + release_tag + " }}" in workflow
         assert "scripts/verify_release_tag.py" in workflow
         assert "python -m twine check dist/*" in workflow
         assert "--kind wheel" in workflow
@@ -112,9 +115,13 @@ def test_publication_workflows_are_tag_bound_and_rehearse_exact_artifacts():
         assert "--all-extras" in workflow
         assert "id-token: write" in workflow
         assert '--tag "${{ inputs.release_tag }}"' not in workflow
-        assert "RELEASE_TAG: ${{ inputs.release_tag }}" in workflow
+        assert "RELEASE_TAG: ${{ " + release_tag + " }}" in workflow
 
     assert "environment: pypi" in publish
+    assert "workflow_run:" in publish
+    assert "workflows: [CI]" in publish
+    assert "python -m scripts.prepare_pypi_release" in publish
+    assert "scripts/verify_pypi_publication.py" in publish
     assert "repository-url: https://test.pypi.org/legacy/" in test_publish
     assert "environment: testpypi" in test_publish
 

@@ -332,4 +332,4 @@ __all__ = [
     "score_prediction_accuracy",
 ]
 
-__version__ = "3.0.0rc7"
+__version__ = "3.0.0rc8"
