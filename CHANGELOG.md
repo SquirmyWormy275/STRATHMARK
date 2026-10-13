@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.0.0rc9] - 2026-10-13
+
+- Create GitHub Releases automatically after exact PyPI artifact and installation verification. Stage source-bound changelog notes, matching wheel/source archives and SHA256SUMS before publication; preserve prerelease classification and reject conflicting assets on retry.
+- Open owner-assigned repository alerts for failed main CI or publication runs, deduplicate repeated deliveries, and close recovered alerts after a later successful run. A skipped publisher cannot hide an unrecovered publication failure.
+- Document the standing GitHub release and failure-alert policy alongside automatic PyPI publication. Preserve existing engine selection, numeric models, operator profiles and competition authority.
+
 ## [3.0.0rc8] - 2026-10-13
 
 - Publish new package versions to PyPI automatically after successful main CI, with immutable source/authorization tags, exact wheel and source installation checks, optional-extra validation, and public artifact hash and installation verification.

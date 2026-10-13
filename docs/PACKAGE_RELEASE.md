@@ -6,6 +6,8 @@ On 2026-10-12 the owner authorized publishing the current STRATHMARK version to
 PyPI immediately and keeping PyPI automatically updated with future versions.
 `3.0.0rc8` packages that automatic publisher and the current maintained source;
 its tags and publication are created by the successful-main-CI release sequence.
+`3.0.0rc9` adds automatic matching GitHub Releases and owner-assigned failure alerts,
+authorized by the owner on 2026-10-13.
 `3.0.0rc7` is published from immutable source tag `v3.0.0rc7`, commit
 `ca12329a3c7fefccb54d6a432711cdb2da2c00db`, authorized by annotated tag
 `pypi-v3.0.0rc7`. V2 portable library releases `2.0.0` and `2.0.1` remain available.
@@ -37,6 +39,12 @@ continue selecting the latest stable version until a final release is published.
 6. The `pypi` environment publishes those exact artifacts through OIDC trusted
    publishing. A final job checks PyPI's filenames and SHA-256 hashes against the
    built files and verifies an isolated indexed installation and synthetic demo.
+7. Only after public verification succeeds, a separate job creates a GitHub Release
+   draft on the existing source tag. It reads this version's changelog from that
+   immutable source, uploads the exact wheel/sdist and `SHA256SUMS`, verifies GitHub
+   asset hashes, then publishes the release. Candidates remain prereleases and do
+   not replace the latest stable release. Interrupted drafts resume without replacing
+   files; published releases are accepted on retry only when all assets match.
 
 The workflow runs on `main` and retains the `pypi` environment's main-only deployment
 rule. The environment no longer requires a separate manual reviewer for each version:
@@ -46,11 +54,23 @@ the workflow's scoped `GITHUB_TOKEN` to create release tags without storing a pe
 token. Only the publication job receives `id-token: write`; it executes no source code.
 Concurrent publications are serialized and no uploaded version is overwritten.
 
+The GitHub Release job has `contents: write` and executes maintained release tooling,
+without an OIDC publication token. The separate **Release failure alerts** workflow
+opens one issue per failed main CI/publication workflow, assigned to the repository
+owner, with a direct run link. Repeated failures update that issue and notify its
+assignee. Later successful runs close recovered alerts; an older success or skipped
+publication cannot hide an unrecovered release failure. Alerts ignore forks, PR CI,
+and deliberately canceled runs. They include public run metadata, not workflow logs.
+Account-level web/email delivery preferences remain unchanged.
+
 ## Manual recovery and TestPyPI
 
 The manual **Publish to PyPI** dispatch remains available on `main`, with an existing
 annotated `pypi-v<version>` authorization tag. It runs the same immutable-source and
-artifact checks. Use it to retry a failed publication after correcting its cause.
+artifact checks. Use it to retry a failed publication after correcting its cause
+only when no PyPI upload has completed. After an upload, use GitHub's **Re-run failed
+jobs** on that run to recover verification or GitHub Release publication using the
+original exact artifacts; a fresh dispatch must not attempt to upload the same version.
 Do not retag an already published version; ship a new version for changed contents.
 
 **Rehearse package on TestPyPI** remains a separate optional manual workflow using
