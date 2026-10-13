@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.publish_github_release import publish_release, run_gh
+from scripts.publish_github_release import publish_release, release_notes, run_gh
+from scripts.verify_release_tag import verify_release_tag
 from tests.test_package_release import _git, _release_repository
 
 
@@ -41,6 +42,7 @@ def _fixture(tmp_path, version="3.0.0rc9"):
 class GitHub:
     def __init__(self, tag, *, draft=True):
         self.release = {"tag_name": tag, "draft": draft, "prerelease": "rc" in tag, "assets": []}
+        self.release.update(name="STRATHMARK " + tag.removeprefix("v"), body="")
         self.exists = False
         self.commands = []
         self.notes = ""
@@ -54,6 +56,7 @@ class GitHub:
         if args[:2] == ["release", "create"]:
             self.exists = True
             self.notes = Path(args[args.index("--notes-file") + 1]).read_text()
+            self.release["body"] = self.notes
         elif args[:2] == ["release", "upload"]:
             asset = Path(args[3])
             self.release["assets"].append(
@@ -95,6 +98,7 @@ def test_draft_retry_uploads_only_missing_assets(tmp_path):
     source, dist, metadata = _fixture(tmp_path)
     github = GitHub("v3.0.0rc9")
     github.exists = True
+    github.release["body"] = release_notes(source, verify_release_tag(source, "pypi-v3.0.0rc9"))
     artifact = next(dist.glob("*.whl"))
     github(["release", "upload", "v3.0.0rc9", str(artifact)])
     github.commands.clear()
@@ -110,6 +114,7 @@ def test_conflicting_asset_is_never_replaced(tmp_path, draft):
     source, dist, metadata = _fixture(tmp_path)
     github = GitHub("v3.0.0rc9", draft=draft)
     github.exists = True
+    github.release["body"] = release_notes(source, verify_release_tag(source, "pypi-v3.0.0rc9"))
     artifact = next(dist.glob("*.whl"))
     github(["release", "upload", "v3.0.0rc9", str(artifact)])
     github.release["assets"][0]["digest"] = "sha256:" + "0" * 64
@@ -155,3 +160,18 @@ def test_api_errors_cannot_be_misread_as_missing_release(tmp_path):
 def test_github_cli_wrapper_decodes_issue_list_json(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "[]"))
     assert run_gh(["issue", "list", "--json", "number,title,body"]) == []
+
+
+@pytest.mark.parametrize("draft", [True, False])
+@pytest.mark.parametrize("field", ["name", "body"])
+def test_existing_release_notes_and_title_must_match_exact_source(tmp_path, draft, field):
+    source, dist, metadata = _fixture(tmp_path)
+    github = GitHub("v3.0.0rc9", draft=draft)
+    github.exists = True
+    github.release["body"] = release_notes(source, verify_release_tag(source, "pypi-v3.0.0rc9"))
+    github.release[field] = "Stale manual content"
+    with pytest.raises(ValueError, match="notes or title"):
+        publish_release(
+            source, dist, "pypi-v3.0.0rc9", "owner/STRATHMARK", gh=github, metadata=metadata
+        )
+    assert len(github.commands) == 1

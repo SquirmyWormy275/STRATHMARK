@@ -81,6 +81,7 @@ def publish_release(
         ) as reply:
             metadata = json.load(reply)
     verify_artifact_metadata(dist, verified.version, metadata)
+    expected_notes = release_notes(source, verified)
     artifacts = sorted([*dist.glob("*.whl"), *dist.glob("*.tar.gz")])
     expected = {
         p.name: (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_size) for p in artifacts
@@ -106,7 +107,7 @@ def publish_release(
         )
         if existing is None:
             notes = root / "release-notes.md"
-            notes.write_text(release_notes(source, verified), encoding="utf-8")
+            notes.write_text(expected_notes, encoding="utf-8")
             command = [
                 "release",
                 "create",
@@ -126,6 +127,11 @@ def publish_release(
             existing = gh(["api", endpoint])
         if existing["tag_name"] != verified.source_tag or existing["prerelease"] != prerelease:
             raise ValueError("GitHub release tag or prerelease classification differs")
+        if (
+            existing.get("name") != f"STRATHMARK {verified.version}"
+            or existing.get("body", "").replace("\r\n", "\n").strip() != expected_notes.strip()
+        ):
+            raise ValueError("GitHub release notes or title differ from immutable source")
         validate_assets(existing, expected, complete=not existing["draft"])
         if not existing["draft"]:
             print(f"GitHub {verified.source_tag}: published assets already match PyPI")

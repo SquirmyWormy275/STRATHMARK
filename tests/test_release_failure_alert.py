@@ -1,13 +1,11 @@
-"""Release alerts reject fork runs, deduplicate retries, and preserve newer failures."""
-
-from __future__ import annotations
+"""Alerts authenticate ownership and bind recovery to the exact failed run."""
 
 from pathlib import Path
 
 from scripts.report_release_failure import report_failure
 
 
-def _event(conclusion="failure", *, number=10):
+def _event(conclusion="failure", *, attempt=1, run_id=12345):
     return {
         "repository": {"full_name": "owner/STRATHMARK"},
         "workflow_run": {
@@ -17,100 +15,122 @@ def _event(conclusion="failure", *, number=10):
             "name": "Publish to PyPI",
             "event": "workflow_run",
             "conclusion": conclusion,
-            "id": 12345,
-            "run_number": number,
-            "run_attempt": 1,
+            "id": run_id,
+            "run_number": 10,
+            "run_attempt": attempt,
         },
     }
 
 
+class GitHub:
+    def __init__(self):
+        self.commands = []
+        self.issues = []
+        self.job_conclusion = "success"
+
+    def __call__(self, args):
+        self.commands.append(args)
+        if args[0] == "api":
+            if "/issues?" in args[1]:
+                assert "state=all" in args[1] and "--paginate" in args
+                return [self.issues]
+            return {
+                "jobs": [
+                    {
+                        "name": "Publish matching GitHub Release after PyPI verification",
+                        "conclusion": self.job_conclusion,
+                    }
+                ]
+            }
+        if "--body-file" in args:
+            body = Path(args[args.index("--body-file") + 1]).read_text()
+        if args[:2] == ["issue", "create"]:
+            assert args[args.index("--assignee") + 1] == "owner"
+            assert "https://github.com/owner/STRATHMARK/actions/runs/12345" in body
+            self.issues.append(
+                {
+                    "number": 7,
+                    "title": args[args.index("--title") + 1],
+                    "body": body,
+                    "state": "open",
+                    "user": {"id": 41898282, "type": "Bot"},
+                }
+            )
+        elif args[:2] == ["issue", "edit"]:
+            self.issues[0]["body"] = body
+        elif args[:2] == ["issue", "close"]:
+            self.issues[0]["state"] = "closed"
+        elif args[:2] == ["issue", "reopen"]:
+            self.issues[0]["state"] = "open"
+        return None
+
+
 def test_failure_creates_assigned_alert_and_duplicate_delivery_is_a_noop():
-    commands = []
-    issues = []
-
-    def github(args):
-        commands.append(args)
-        if args[:2] == ["issue", "list"]:
-            return issues
-        assert args[:2] == ["issue", "create"]
-        assert args[args.index("--assignee") + 1] == "owner"
-        body = Path(args[args.index("--body-file") + 1]).read_text()
-        assert "https://github.com/owner/STRATHMARK/actions/runs/12345" in body
-        issues.append({"number": 7, "title": args[args.index("--title") + 1], "body": body})
-
+    github = GitHub()
     report_failure(_event(), "owner/STRATHMARK", gh=github)
     report_failure(_event(), "owner/STRATHMARK", gh=github)
-    assert len(commands) == 3
+    assert len(github.commands) == 3
 
 
-def test_success_closes_alert_but_older_success_cannot_hide_newer_failure():
-    commands = []
-    issue = {
-        "number": 7,
-        "title": "Release automation failure: Publish to PyPI",
-        "body": "<!-- strathmark-release-alert: 10:1 -->",
-    }
-
-    def github(args):
-        commands.append(args)
-        if args[0] == "api":
-            return {
-                "jobs": [
-                    {
-                        "name": "Publish matching GitHub Release after PyPI verification",
-                        "conclusion": "success",
-                    }
-                ]
-            }
-        return [issue] if args[:2] == ["issue", "list"] else None
-
-    report_failure(_event("success", number=9), "owner/STRATHMARK", gh=github)
-    assert len(commands) == 1
-    report_failure(_event("success", number=11), "owner/STRATHMARK", gh=github)
-    assert commands[-1][:3] == ["issue", "close", "7"]
-
-
-def test_skipped_publisher_cannot_close_an_unrecovered_release_alert():
-    commands = []
-
-    def github(args):
-        commands.append(args)
-        if args[0] == "api":
-            return {
-                "jobs": [
-                    {
-                        "name": "Publish matching GitHub Release after PyPI verification",
-                        "conclusion": "skipped",
-                    }
-                ]
-            }
-        return [
-            {
-                "number": 7,
-                "title": "Release automation failure: Publish to PyPI",
-                "body": "<!-- strathmark-release-alert: 9:1 -->",
-            }
-        ]
-
-    report_failure(_event("success"), "owner/STRATHMARK", gh=github)
-    assert len(commands) == 2
-
-
-def test_new_failure_updates_one_existing_alert_and_notifies_the_assignee():
-    commands = []
-
-    def github(args):
-        commands.append(args)
-        return [
-            {
-                "number": 7,
-                "title": "Release automation failure: Publish to PyPI",
-                "body": "<!-- strathmark-release-alert: 9:1 -->",
-            }
-        ]
-
+def test_only_same_run_recovery_closes_the_failed_release_alert():
+    github = GitHub()
     report_failure(_event(), "owner/STRATHMARK", gh=github)
-    assert [args[1] for args in commands] == ["list", "edit", "comment"]
+    report_failure(_event("success", run_id=54321), "owner/STRATHMARK", gh=github)
+    assert github.issues[0]["state"] == "open"
+    report_failure(_event("success", attempt=2), "owner/STRATHMARK", gh=github)
+    assert github.issues[0]["state"] == "closed"
+    assert "12345:2" in github.issues[0]["body"]
+
+
+def test_delayed_old_failure_cannot_reopen_recovered_alert():
+    github = GitHub()
+    report_failure(_event(), "owner/STRATHMARK", gh=github)
+    report_failure(_event("success", attempt=2), "owner/STRATHMARK", gh=github)
+    before = len(github.commands)
+    report_failure(_event(), "owner/STRATHMARK", gh=github)
+    report_failure(_event(attempt=2), "owner/STRATHMARK", gh=github)
+    assert len(github.commands) == before + 2
+    assert github.issues[0]["state"] == "closed"
+
+
+def test_newer_failed_attempt_reopens_one_recovered_alert():
+    github = GitHub()
+    report_failure(_event(), "owner/STRATHMARK", gh=github)
+    report_failure(_event("success", attempt=2), "owner/STRATHMARK", gh=github)
+    report_failure(_event(attempt=3), "owner/STRATHMARK", gh=github)
+    assert len(github.issues) == 1 and github.issues[0]["state"] == "open"
+    assert any(args[:2] == ["issue", "reopen"] for args in github.commands)
+
+
+def test_skipped_publisher_cannot_hide_unrecovered_failure():
+    github = GitHub()
+    report_failure(_event(), "owner/STRATHMARK", gh=github)
+    github.job_conclusion = "skipped"
+    report_failure(_event("success", attempt=2), "owner/STRATHMARK", gh=github)
+    assert github.issues[0]["state"] == "open"
+
+
+def test_forged_public_issue_cannot_suppress_real_alert():
+    github = GitHub()
+    github.issues.append(
+        {
+            "number": 99,
+            "title": "Release automation failure: Publish to PyPI (run 12345)",
+            "body": "<!-- strathmark-release-alert: 12345:999999999 -->",
+            "state": "open",
+            "user": {"id": 123, "type": "User"},
+        }
+    )
+    report_failure(_event(), "owner/STRATHMARK", gh=github)
+    assert len(github.issues) == 2
+    assert github.issues[0]["body"].endswith("999999999 -->")
+
+
+def test_older_success_cannot_hide_newer_failure_in_the_same_run():
+    github = GitHub()
+    report_failure(_event(attempt=3), "owner/STRATHMARK", gh=github)
+    report_failure(_event("success", attempt=2), "owner/STRATHMARK", gh=github)
+    assert github.issues[0]["state"] == "open"
 
 
 def test_fork_pull_request_and_canceled_ci_never_open_release_alerts():

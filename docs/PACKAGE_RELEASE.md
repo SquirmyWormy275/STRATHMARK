@@ -45,6 +45,8 @@ continue selecting the latest stable version until a final release is published.
    asset hashes, then publishes the release. Candidates remain prereleases and do
    not replace the latest stable release. Interrupted drafts resume without replacing
    files; published releases are accepted on retry only when all assets match.
+   Existing draft/published titles and notes must also match the immutable source;
+   stale manual text fails for review rather than being silently published.
 
 The workflow runs on `main` and retains the `pypi` environment's main-only deployment
 rule. The environment no longer requires a separate manual reviewer for each version:
@@ -56,11 +58,15 @@ Concurrent publications are serialized and no uploaded version is overwritten.
 
 The GitHub Release job has `contents: write` and executes maintained release tooling,
 without an OIDC publication token. The separate **Release failure alerts** workflow
-opens one issue per failed main CI/publication workflow, assigned to the repository
-owner, with a direct run link. Repeated failures update that issue and notify its
-assignee. Later successful runs close recovered alerts; an older success or skipped
-publication cannot hide an unrecovered release failure. Alerts ignore forks, PR CI,
-and deliberately canceled runs. They include public run metadata, not workflow logs.
+opens one issue per failed main CI/publication run, assigned to the repository
+owner, with a direct run link. Only issues authored by GitHub Actions' verified bot
+identity are trusted. Failed retry attempts update that issue and notify its assignee.
+A successful retry of that same run closes its alert; another version, an older
+success, or skipped publication cannot hide an unrecovered release. Closed recovery
+markers prevent delayed old failure events from reopening resolved alerts. Alerts
+ignore forks, PR CI, and deliberately canceled runs. They include public run metadata,
+not workflow logs. Historical CI code failures may be reviewed and closed manually
+after their fix ships, without rewriting the failed source commit.
 Account-level web/email delivery preferences remain unchanged.
 
 ## Manual recovery and TestPyPI
