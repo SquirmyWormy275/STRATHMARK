@@ -43,6 +43,7 @@ class GitHub:
     def __init__(self, tag, *, draft=True):
         self.release = {"tag_name": tag, "draft": draft, "prerelease": "rc" in tag, "assets": []}
         self.release.update(name="STRATHMARK " + tag.removeprefix("v"), body="")
+        self.release["id"] = 42
         self.exists = False
         self.commands = []
         self.notes = ""
@@ -50,10 +51,16 @@ class GitHub:
     def __call__(self, args):
         self.commands.append(args)
         if args[0] == "api":
+            if "/releases?" in args[1]:
+                return [[self.release]] if self.exists else [[]]
+            if "/releases/tags/" in args[1] and self.release["draft"]:
+                raise subprocess.CalledProcessError(1, args, stderr="HTTP 404: Not Found")
             if not self.exists:
                 raise subprocess.CalledProcessError(1, args, stderr="HTTP 404: Not Found")
             return self.release
         if args[:2] == ["release", "create"]:
+            if self.exists:
+                raise subprocess.CalledProcessError(1, args, stderr="HTTP 422: Already exists")
             self.exists = True
             self.notes = Path(args[args.index("--notes-file") + 1]).read_text()
             self.release["body"] = self.notes
@@ -160,6 +167,18 @@ def test_api_errors_cannot_be_misread_as_missing_release(tmp_path):
 def test_github_cli_wrapper_decodes_issue_list_json(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "[]"))
     assert run_gh(["issue", "list", "--json", "number,title,body"]) == []
+
+
+def test_draft_lookup_uses_authenticated_listing_and_id_not_published_only_tag_endpoint(tmp_path):
+    source, dist, metadata = _fixture(tmp_path)
+    github = GitHub("v3.0.0rc9")
+    publish_release(
+        source, dist, "pypi-v3.0.0rc9", "owner/STRATHMARK", gh=github, metadata=metadata
+    )
+    reads = [args[1] for args in github.commands if args[0] == "api"]
+    assert any("/releases?" in endpoint for endpoint in reads)
+    assert any(endpoint.endswith("/releases/42") for endpoint in reads)
+    assert all("/releases/tags/" not in endpoint for endpoint in reads)
 
 
 @pytest.mark.parametrize("draft", [True, False])

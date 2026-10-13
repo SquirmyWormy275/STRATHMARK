@@ -8,6 +8,10 @@ PyPI immediately and keeping PyPI automatically updated with future versions.
 its tags and publication are created by the successful-main-CI release sequence.
 `3.0.0rc9` adds automatic matching GitHub Releases and owner-assigned failure alerts,
 authorized by the owner on 2026-10-13.
+`3.0.0rc10` fixes draft discovery/readback using the authenticated paginated release
+collection and immutable release ID. GitHub's by-tag endpoint exposes published
+releases only; rc9's first GitHub publication stopped at draft readback and raised
+an owner-assigned alert after its PyPI upload and indexed installation passed.
 `3.0.0rc7` is published from immutable source tag `v3.0.0rc7`, commit
 `ca12329a3c7fefccb54d6a432711cdb2da2c00db`, authorized by annotated tag
 `pypi-v3.0.0rc7`. V2 portable library releases `2.0.0` and `2.0.1` remain available.

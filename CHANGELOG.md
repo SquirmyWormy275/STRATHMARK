@@ -1,5 +1,10 @@
 # Changelog
 
+## [3.0.0rc10] - 2026-10-13
+
+- Discover GitHub release drafts through the authenticated paginated release collection and read them back by immutable release ID. GitHub's by-tag endpoint exposes published releases only; the first rc9 publication correctly stopped and alerted during draft readback.
+- Model that real API behavior in publication regressions, including new draft creation, interrupted-draft recovery and stable/prerelease publication. Preserve rc9's source/publication tags and uploaded PyPI files while recovering its GitHub Release.
+
 ## [3.0.0rc9] - 2026-10-13
 
 - Create GitHub Releases automatically after exact PyPI artifact and installation verification. Stage source-bound changelog notes, matching wheel/source archives and SHA256SUMS before publication; preserve prerelease classification and reject conflicting assets on retry.

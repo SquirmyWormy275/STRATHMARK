@@ -21,6 +21,16 @@ def run_gh(args: list[str]) -> dict | list | None:
     return json.loads(reply.stdout) if args[0] == "api" or "--json" in args else None
 
 
+def find_release(repository: str, tag: str, gh: Callable) -> dict | None:
+    # The by-tag endpoint exposes only published releases. The authenticated
+    # collection also includes drafts; retain the returned ID for all readback.
+    pages = gh(["api", f"repos/{repository}/releases?per_page=100", "--paginate", "--slurp"])
+    matches = [release for page in pages for release in page if release["tag_name"] == tag]
+    if len(matches) > 1:
+        raise ValueError("multiple GitHub releases identify the same source tag")
+    return matches[0] if matches else None
+
+
 def release_notes(source: Path, release: VerifiedReleaseTag) -> str:
     changelog = (source / "CHANGELOG.md").read_text(encoding="utf-8")
     match = re.search(
@@ -64,7 +74,7 @@ def publish_release(
     authorization_tag: str,
     repository: str,
     *,
-    gh: Callable[[list[str]], dict | None] = run_gh,
+    gh: Callable[[list[str]], dict | list | None] = run_gh,
     metadata: dict | None = None,
 ) -> None:
     verified = verify_release_tag(source, authorization_tag)
@@ -87,13 +97,7 @@ def publish_release(
         p.name: (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_size) for p in artifacts
     }
     prerelease = bool(re.search(r"(?:a|b|rc)[0-9]+|\.dev[0-9]+", verified.version))
-    endpoint = f"repos/{repository}/releases/tags/{verified.source_tag}"
-    try:
-        existing = gh(["api", endpoint])
-    except subprocess.CalledProcessError as error:
-        if "HTTP 404" not in (error.stderr or ""):
-            raise
-        existing = None
+    existing = find_release(repository, verified.source_tag, gh)
     with tempfile.TemporaryDirectory(prefix="strathmark-github-release-") as directory:
         root = Path(directory)
         checksums = root / "SHA256SUMS"
@@ -124,12 +128,15 @@ def publish_release(
             if prerelease:
                 command += ["--prerelease", "--latest=false"]
             gh(command)
-            existing = gh(["api", endpoint])
+            existing = find_release(repository, verified.source_tag, gh)
+            if existing is None:
+                raise ValueError("new draft is missing from the authenticated release listing")
+        endpoint = f"repos/{repository}/releases/{int(existing['id'])}"
         if existing["tag_name"] != verified.source_tag or existing["prerelease"] != prerelease:
             raise ValueError("GitHub release tag or prerelease classification differs")
         if (
             existing.get("name") != f"STRATHMARK {verified.version}"
-            or existing.get("body", "").replace("\r\n", "\n").strip() != expected_notes.strip()
+            or (existing.get("body") or "").replace("\r\n", "\n").strip() != expected_notes.strip()
         ):
             raise ValueError("GitHub release notes or title differ from immutable source")
         validate_assets(existing, expected, complete=not existing["draft"])
