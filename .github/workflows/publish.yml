@@ -159,4 +159,14 @@ jobs:
       - name: Verify indexed artifact hashes and install the exact published version
         env:
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
-        run: python scripts/verify_pypi_publication.py --dist-dir dist --version "${RELEASE_TAG#pypi-v}"
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if python scripts/verify_pypi_publication.py --dist-dir dist --version "${RELEASE_TAG#pypi-v}"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 6 ]; then
+              echo "PyPI's package index may still be propagating; retrying verification in 15 seconds."
+              sleep 15
+            fi
+          done
+          exit 1
