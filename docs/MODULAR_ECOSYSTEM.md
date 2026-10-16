@@ -29,7 +29,8 @@ environment. GUI dependencies are optional.
 
 ## Numerical policy
 
-Numerical engine selection and mark policy are separate immutable root facts.
+Numerical engine selection is immutable at the tournament root. Each event
+records its own immutable mark policy, inherited by all of its rounds.
 `v2-optimizer.v1` retains the existing joint optimizer and rounded/clipped
 fallback (historical system ceiling 183). The new `mark3-ceil180.v1` policy
 uses unchanged V2 raw-time predictions and explicitly computes
