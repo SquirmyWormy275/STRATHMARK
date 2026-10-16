@@ -17,6 +17,10 @@ Developers can also use its Python library and APIs.
 | Back up or restore V3 | [Deployment and recovery](Deployment) |
 | Find an answer quickly | [FAQ](FAQ) |
 
+The standalone CLI and optional shared workspace also operate synthetic delegated
+events with persistent review, issue, outcomes, progression and corrections. See
+[Managed events](Managed-Events). Official activation remains disabled.
+
 ## What works today?
 
 **V2** is the established engine for Linux and Windows. **Linux V3**, using

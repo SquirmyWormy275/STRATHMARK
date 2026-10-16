@@ -1,5 +1,10 @@
 # Onboarding
 
+The standalone supplied-data CLI and optional GUI now share
+[managed event operations](docs/MANAGED_EVENTS.md). Their first bounded profile is
+synthetic V2 SB/UH; supported old V3 installations retain their exact runtime and
+frozen identities. See [current ownership](docs/MODULAR_ECOSYSTEM.md).
+
 Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
 
 ## Current status

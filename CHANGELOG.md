@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.0.0rc11] - 2026-10-16
+
+- Add presentation-independent, persistent synthetic SB/UH managed events over
+  the unchanged V2 numerical engine, with explicit versioned mark policies.
+- Add supplied-data calculation/event CLI, optional authenticated shared workspace,
+  exact retries, editor handover, multi-round results/corrections and fenced local recovery.
+- Add source-attributed per-attempt export, two-show installed CLI verification and
+  honest synthetic evaluation reports. Existing V3/frozen prospective identities
+  and official-use qualification gates remain separate; no model is promoted.
+
 ## [3.0.0rc10] - 2026-10-13
 
 - Discover GitHub release drafts through the authenticated paginated release collection and read them back by immutable release ID. GitHub's by-tag endpoint exposes published releases only; the first rc9 publication correctly stopped and alerted during draft readback.

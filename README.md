@@ -1,6 +1,10 @@
 # STRATHMARK
 
 STRATHMARK predicts raw woodchopping times and calculates handicap start marks.
+[Managed event operations](docs/MANAGED_EVENTS.md) add a supplied-data standalone
+CLI and optional shared workspace over one persistent event. The initial profile
+uses real V2 numerics for synthetic SB/UH rehearsals; official activation is
+disabled. Calculation-only access and existing V3 profiles remain independent.
 [STRATHEX](https://github.com/SquirmyWormy275/STRATHEX) is the application judges use
 to set up events, review marks and enter results. Use STRATHMARK directly when you
 need the Python library or an API for another application.
