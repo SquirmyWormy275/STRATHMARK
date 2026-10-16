@@ -1,5 +1,21 @@
 # Accuracy and local council evaluation
 
+## Reproducible modes after modular extraction
+
+`strathmark evaluate synthetic --output /tmp/new-evaluation` runs the packaged
+real V2 engine on generated evidence and writes JSON plus a readable report.
+It retains unmatched/hard cases, availability, MAE/median/tails, interval coverage
+and width, matched-baseline denominators and context/history slices. It tests
+plumbing and numerics; its manufactured targets do not establish real accuracy.
+
+Authorized read-only historical replay continues through `strathmark-v3-benchmark`
+and the separate preview/audit tools below. No additional private replay or
+training is authorized by modular implementation. Prospective evaluation keeps
+`strathmark-v3-accuracy prospective` and the original minimum of 100 later results
+from ten new competitions. Absent future observations remain pending collection.
+The rc11 refactor changes implementation identity: retain the original frozen
+runtime/protocol and do not rebind its hashes or transfer its qualification.
+
 ## Separate frozen calibration preview
 
 [STRATH accuracy preview 0.1.0](../tools/accuracy-preview/README.md) is an independently

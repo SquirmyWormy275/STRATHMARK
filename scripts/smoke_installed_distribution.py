@@ -319,6 +319,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         subprocess.run([str(executable), "--help"], check=True, cwd=root)
         print("Installed offline V2 demo and console entry point passed.")
+        subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-m",
+                "strathmark.events.verification",
+                "--output",
+                str(root / "managed-cli"),
+            ],
+            check=True,
+            cwd=root,
+            timeout=240,
+        )
+        subprocess.run(
+            [
+                str(executable),
+                "evaluate",
+                "synthetic",
+                "--output",
+                str(root / "synthetic-evaluation"),
+            ],
+            check=True,
+            cwd=root,
+            timeout=60,
+        )
+        print("Installed supplied-data CLI, two-show lifecycle and synthetic evaluation passed.")
     return 0
 
 

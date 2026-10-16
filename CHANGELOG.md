@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.0.0rc11] - 2026-10-16
+
+- Freeze engine and mark policy at each managed competition root; require accepted
+  earlier-round corrections before re-finalization and retain director decisions.
+- Bind source attempts with canonical structured identities, support slash-bearing
+  print identifiers, and publish fenced transfers without overwriting late targets.
+  Older unpublished managed checkpoints are inspection-only in the final candidate.
+
+- Add presentation-independent, persistent synthetic SB/UH managed events over
+  the unchanged V2 numerical engine, with explicit versioned mark policies.
+- Add supplied-data calculation/event CLI, optional authenticated shared workspace,
+  exact retries, editor handover, multi-round results/corrections and fenced local recovery.
+- Add source-attributed per-attempt export, two-show installed CLI verification and
+  honest synthetic evaluation reports. Existing V3/frozen prospective identities
+  and official-use qualification gates remain separate; no model is promoted.
+
 ## [3.0.0rc10] - 2026-10-13
 
 - Discover GitHub release drafts through the authenticated paginated release collection and read them back by immutable release ID. GitHub's by-tag endpoint exposes published releases only; the first rc9 publication correctly stopped and alerted during draft readback.

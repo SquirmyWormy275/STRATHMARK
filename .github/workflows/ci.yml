@@ -81,7 +81,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install portable test dependencies
-        run: pip install -e ".[dev,api]"
+        run: pip install -e ".[dev,api,workspace]"
 
       # The exact release lock describes the designated Python 3.13 rehearsal
       # machine; it is not a cross-version constraints file (for example, its

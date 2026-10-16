@@ -1,5 +1,10 @@
 # Agent Instructions
 
+The approved [modular agreement](docs/MODULAR_ECOSYSTEM.md) and
+[implemented managed contract](docs/MANAGED_EVENTS.md) distinguish calculation-only
+consumer authority from delegated operations. Preserve the existing numerical
+engines and frozen contracts. Synthetic managed v1 is not production activation.
+
 ## Required domain reading
 
 Before analyzing, changing, or reviewing handicap predictions, marks, start sheets,

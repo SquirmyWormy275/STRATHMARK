@@ -22,6 +22,7 @@
 
 **Operate and develop**
 
+- [Managed events and standalone CLI](Managed-Events)
 - [STRATHEX integration](STRATHEX-Consumer)
 - [Deployment and recovery](Deployment)
 - [Storage](Persistence-and-Database)

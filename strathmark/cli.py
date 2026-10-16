@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from datetime import date
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "evaluate":
+        from strathmark.events.evaluation import main as evaluate_main
+
+        evaluate_main(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] != "demo":
+        from strathmark.events.cli import main as event_main
+
+        event_main(sys.argv[1:])
+        return
     parser = argparse.ArgumentParser(description="STRATHMARK portable offline V2 calculation demo.")
     parser.add_argument("command", choices=("demo",))
     parser.parse_args()

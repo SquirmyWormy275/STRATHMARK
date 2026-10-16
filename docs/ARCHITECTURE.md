@@ -182,6 +182,13 @@ traditional/manual. Silent partial state and automatic V2/V3 dual authority are 
 
 ## Official-system boundary
 
+For calculation-only and the frozen legacy contracts, the following upstream
+split remains applicable. New delegated events instead use the opt-in
+[event-operations boundary](MODULAR_ECOSYSTEM.md): STRATHMARK owns their operational
+fields, issue, outcomes and advancement for authenticated officials. Hosts retain
+registration, whole-show scheduling, accepted projections, points and payouts.
+The initial managed v1 profile is synthetic-only; it does not enable V3 or live use.
+
 STRATHMARK owns numeric prediction and receipt evidence. The tournament manager owns
 human authentication/RBAC, roster and schedule authority, official issue, judging,
 results, publication, points, protests, and payouts. Actor/action/trace headers entering
