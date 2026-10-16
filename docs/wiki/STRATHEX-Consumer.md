@@ -1,8 +1,11 @@
 # Use STRATHMARK through STRATHEX
 
 [STRATHEX](https://github.com/SquirmyWormy275/STRATHEX) is the judge-facing terminal
-application. It handles rosters, events, stands, review, result entry, advancement,
-payouts, saves and Excel exports. STRATHMARK supplies predictions and marks.
+application. Its retained competition workflows handle rosters, events, stands, review, result entry, advancement,
+payouts, saves and Excel exports. Those calculation-only clients use STRATHMARK
+predictions and marks. New synthetic delegated sessions can instead open the
+[shared managed CLI/workspace](Managed-Events); STRATHMARK owns their event
+operations and STRATHEX does not open or migrate a legacy workbook.
 
 ## Start an event
 

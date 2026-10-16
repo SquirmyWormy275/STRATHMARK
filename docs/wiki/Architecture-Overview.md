@@ -1,7 +1,11 @@
 # Architecture
 
-STRATHMARK calculates predictions and marks. STRATHEX manages the competition,
-judge workflow, roster names, official outcomes and exports.
+Calculation-only clients use STRATHMARK predictions and marks while retaining
+their own judge workflow, rosters, outcomes and exports. New explicitly delegated
+sessions use [shared managed operations](Managed-Events) for fields, review, issue,
+results and progression. The host keeps registration, whole-show resources,
+accepted projections, points and payouts. CLI and optional GUI share one authority.
+Existing V2/V3 profiles below retain their versioned contracts.
 
 ## The calculation paths
 

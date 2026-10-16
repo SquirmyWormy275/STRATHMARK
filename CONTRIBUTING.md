@@ -11,7 +11,9 @@ Read [`docs/wiki/Handicap-Mark-Math.md`](docs/wiki/Handicap-Mark-Math.md), then
 pip install -e ".[dev,api]"
 ```
 
-Optional extras are `ml`, `llm`, `db`, and `security`. Installing a library grants no
+Optional extras include `workspace` for the shared synthetic event GUI, plus
+`ml`, `llm`, `db`, and `security`. Calculation-only and CLI installations do not
+need the workspace extra. Installing a library grants no
 numeric or production authority. V2 uses LLM integrations only for narrative features;
 V3 uses pinned local/cloud candidates only through its deterministic wrappers and signed
 factory lifecycle.
