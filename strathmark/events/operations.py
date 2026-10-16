@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -12,6 +11,7 @@ from pathlib import Path
 from . import numerics
 from .contracts import (
     CONTRACT,
+    SOURCE_ID_VERSION,
     EventError,
     closed,
     decimal_text,
@@ -22,7 +22,7 @@ from .contracts import (
     number,
     validate_config,
 )
-from .store import EventStore, atomic_json
+from .store import EventStore, atomic_json, publish_file_exclusive, sync_directory
 
 
 class EventOperations:
@@ -54,6 +54,8 @@ class EventOperations:
                 selection = json.loads(root[0])
                 if (
                     selection["engine"] != config["engine"]
+                    or selection.get("mark_policy") != config["mark_policy"]
+                    or selection.get("source_identity_version") != SOURCE_ID_VERSION
                     or selection["numeric_identity"] != identity
                 ):
                     raise EventError(
@@ -62,6 +64,8 @@ class EventOperations:
             else:
                 selection = {
                     "engine": config["engine"],
+                    "mark_policy": config["mark_policy"],
+                    "source_identity_version": SOURCE_ID_VERSION,
                     "numeric_identity": identity,
                     "runtime": "local",
                     "contract": CONTRACT,
@@ -78,6 +82,7 @@ class EventOperations:
                 "event_id": config["event_id"],
                 "show_id": config["show_id"],
                 "revision": 1,
+                "source_identity_version": SOURCE_ID_VERSION,
                 "config": deepcopy(config),
                 "editor": editor,
                 "status": "open",
@@ -113,6 +118,10 @@ class EventOperations:
             previous = self.store.retry(db, event_id, principal.actor_id, request_id, binding)
             if previous:
                 return previous
+            if state.get("source_identity_version") != SOURCE_ID_VERSION:
+                raise EventError(
+                    "incompatible_managed_checkpoint: resume its original candidate; inspection only in this runtime"
+                )
             if state["revision"] != expected_revision:
                 raise EventError("stale_event_revision")
             if state["editor"] != editor:
@@ -276,6 +285,28 @@ class EventOperations:
                 or not payload["reason"].strip()
             ):
                 raise EventError("director_reason_required")
+            if not state["progression_review"]:
+                raise EventError("no_progression_review_pending")
+            state.setdefault("progression_decisions", []).append(
+                {
+                    "revision": state["revision"] + 1,
+                    "actor_id": principal.actor_id,
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                    "reason": payload["reason"],
+                    "retained_issue_ids": [
+                        h["issue_id"]
+                        for r in state["rounds"]
+                        for h in r["fields"]
+                        if h.get("issue_id")
+                    ],
+                    "result_digests": [
+                        h["result_revisions"][-1]["digest"]
+                        for r in state["rounds"]
+                        for h in r["fields"]
+                        if h["result_revisions"]
+                    ],
+                }
+            )
             state["progression_review"] = False
         elif action == "finalize":
             closed(payload, set())
@@ -289,6 +320,12 @@ class EventOperations:
                 h["state"] != "accepted" for h in round_["fields"]
             ):
                 raise EventError("complete_accepted_final_required")
+            if any(
+                not h["result_revisions"] or not h["result_revisions"][-1]["accepted"]
+                for r in state["rounds"]
+                for h in r["fields"]
+            ):
+                raise EventError("all_summary_results_must_be_accepted")
             state["status"] = "finalized"
             state["summary"] = self._summary(state)
             state["summary_revision"] = state.get("summary_revision", 0) + 1
@@ -515,7 +552,15 @@ class EventOperations:
     @staticmethod
     def _queue_attempts(state, heat, result):
         for outcome in result["outcomes"]:
-            source_id = f"{state['event_id']}:{heat['heat_id']}:{outcome['entry_id']}"
+            source_id = "attempt:" + digest(
+                [
+                    state["config"]["source_show_id"],
+                    state["config"]["tournament_id"],
+                    state["event_id"],
+                    heat["heat_id"],
+                    outcome["entry_id"],
+                ]
+            )
             predecessor = next(
                 (
                     item
@@ -590,6 +635,7 @@ class EventOperations:
             "schema_version": CONTRACT,
             "event_id": event_id,
             "event_revision": state["revision"],
+            "source_identity_version": state.get("source_identity_version"),
             "show_id": state["show_id"],
             "source_show_id": state["config"]["source_show_id"],
             "status": state["status"],
@@ -597,6 +643,7 @@ class EventOperations:
             "official_use": False,
             "numeric_identity": state["numeric_identity"],
             "rounds": state["rounds"],
+            "progression_decisions": state.get("progression_decisions", []),
             "summary": state.get("summary"),
             "summary_revision": state.get("summary_revision", 0),
             "deliveries": state["exports"],
@@ -608,7 +655,10 @@ class EventOperations:
         state = self.read(principal, event_id)
         package = {"schema_version": CONTRACT, "state": state}
         package["digest"] = digest(package)
-        atomic_json(path, package)
+        try:
+            atomic_json(path, package, replace=False)
+        except FileExistsError as exc:
+            raise EventError("backup_destination_exists") from exc
         return package["digest"]
 
     def verify_backup(self, path, event_id):
@@ -677,6 +727,15 @@ class EventOperations:
                 "SELECT actor_id,request_id,binding,response FROM commands WHERE event_id=? ORDER BY sequence",
                 (event_id,),
             ).fetchall()
+        with target.store.transaction() as db:
+            db.execute(
+                "INSERT INTO roots VALUES (?,?,?)",
+                (
+                    state["show_id"],
+                    state["config"]["tournament_id"],
+                    encode(state["root_selection"]),
+                ),
+            )
         for actor_id, original_id, binding, response in commands:
             with target.store.transaction() as db:
                 target.store.append(
@@ -688,14 +747,6 @@ class EventOperations:
         resumed["recovery_source"] = source_digest
         self._audit(resumed, principal, "restore_fenced_authority", request_id)
         with target.store.transaction() as db:
-            db.execute(
-                "INSERT INTO roots VALUES (?,?,?)",
-                (
-                    resumed["show_id"],
-                    resumed["config"]["tournament_id"],
-                    encode(resumed["root_selection"]),
-                ),
-            )
             target.store.append(
                 db,
                 event_id,
@@ -709,7 +760,21 @@ class EventOperations:
         head = json.loads(target.store.head.read_text())
         head["database_path"] = str(destination)
         atomic_json(target.store.head, head)
-        os.replace(target.store.path, destination)
-        os.replace(target.store.head, destination.with_suffix(destination.suffix + ".head.json"))
+        try:
+            publish_file_exclusive(target.store.path, destination)
+            publish_file_exclusive(
+                target.store.head, destination.with_suffix(destination.suffix + ".head.json")
+            )
+        except FileExistsError as exc:
+            raise EventError(
+                "recovery_destination_collision: source remains fenced; explicit reconciliation required"
+            ) from exc
+        except OSError as exc:
+            raise EventError(
+                "recovery_publication_failed: source remains fenced; explicit reconciliation required"
+            ) from exc
+        target.store.path.unlink()
+        target.store.head.unlink()
         stage.rmdir()
+        sync_directory(destination.parent)
         return EventOperations(destination).read(principal, event_id)

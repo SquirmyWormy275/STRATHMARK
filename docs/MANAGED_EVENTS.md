@@ -27,7 +27,7 @@ strathmark event status --database /private/events.sqlite3 \
 Edit the generated synthetic configuration or supply your own supported JSON.
 The example's 275 mm wood does not change Missoula's actual wood configuration.
 The root records the required `selection_reason`, actor, time and numeric runtime
-identity. Children inherit it and reject a different numeric environment.
+identity and mark policy. Children inherit it and reject a different numeric environment.
 Names are display data; every consequential operation binds entry, host and
 engine identities. History requires source references and dates strictly before
 `prediction_as_of`. `event_date` identifies the source occurrence. Unknown
@@ -74,9 +74,14 @@ Equal completions share positions. Eliminated entries share the latest-round
 placing tier; times from separately rebased heats are never compared to invent
 a cross-heat order. The final is one field.
 
+Source attempt IDs use a versioned hash of the structured show/tournament/event/heat/entry
+identity; delimiter-bearing IDs cannot collide.
+
 Corrections append source revisions. Unissued dependent fields are invalidated;
 issued fields and their history remain frozen with a visible progression-review
-gate. Host points/payout corrections remain separate, explicit actions.
+gate. A director retention decision preserves its reason, actor, time and exact
+result/issue bindings in state and export. Every latest result used by a summary
+must be accepted before finalization, including retained earlier-round corrections. Host points/payout corrections remain separate, explicit actions.
 
 ## Optional shared workspace
 
@@ -136,8 +141,9 @@ cloud/local or V2/V3 failover exists.
 event identity, request ID, expected revision and current editor. It fences the
 source before reconstructing the event and accepted receipts into pristine local
 storage. The fenced source cannot target another destination. Exact completed
-transfer retry reopens that same target. Interrupted transfers remain blocked for
-explicit reconciliation. The head binds its absolute authority path; copying the DB/head pair to another
+transfer retry reopens that same target. Publication atomically refuses an existing target; a late collision preserves
+the other authority and leaves the source fenced. Interrupted transfers remain
+blocked for explicit reconciliation. The head binds its absolute authority path; copying the DB/head pair to another
 path is refused. Never restore both old files over the current original location:
 that requires an independent current-head record outside this storage pair.
 An old checkpoint cannot independently establish current
@@ -156,3 +162,13 @@ restore fencing, browser CSRF and scope. Reports distinguish synthetic numerical
 execution from historical accuracy, prospective qualification, provider recovery
 and independent human rehearsal. Existing historical replay, frozen prospective
 and separate preview commands remain in [accuracy evaluation](ACCURACY_AND_COUNCIL.md).
+
+## Earlier unpublished development checkpoints
+
+The final managed candidate declares `source_identity_version: canonical-tuple.v1`
+in capabilities, state and export. Earlier unpublished rc11 development checkpoints
+with concatenated attempt identities remain available for inspection/export, but
+new mutations are refused rather than mixing identity schemes or rewriting old
+receipts. Resume those synthetic experiments only with their original preserved
+artifact, or start a fresh occurrence with the final candidate. This is not a
+migration of an official show. Established V2/V3 and STRATHEX saves are unaffected.

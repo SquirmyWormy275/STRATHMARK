@@ -2,6 +2,12 @@
 
 ## [3.0.0rc11] - 2026-10-16
 
+- Freeze engine and mark policy at each managed competition root; require accepted
+  earlier-round corrections before re-finalization and retain director decisions.
+- Bind source attempts with canonical structured identities, support slash-bearing
+  print identifiers, and publish fenced transfers without overwriting late targets.
+  Older unpublished managed checkpoints are inspection-only in the final candidate.
+
 - Add presentation-independent, persistent synthetic SB/UH managed events over
   the unchanged V2 numerical engine, with explicit versioned mark policies.
 - Add supplied-data calculation/event CLI, optional authenticated shared workspace,

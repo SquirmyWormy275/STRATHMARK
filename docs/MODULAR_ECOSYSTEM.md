@@ -30,8 +30,8 @@ environment. GUI dependencies are optional.
 
 ## Numerical policy
 
-Numerical engine selection is immutable at the tournament root. Each event
-records its own immutable mark policy, inherited by all of its rounds.
+Numerical engine and mark policy are immutable at the tournament root. Events
+and rounds inherit that selection; children cannot substitute another policy.
 `v2-optimizer.v1` retains the existing joint optimizer and rounded/clipped
 fallback (historical system ceiling 183). The new `mark3-ceil180.v1` policy
 uses unchanged V2 raw-time predictions and explicitly computes
@@ -55,7 +55,8 @@ receipt before checking a stale version; changed retries conflict. Editor
 handover changes event revision but not physical-field identity. Issue freezes
 the sheet. Result corrections append revisions and invalidate unissued
 descendants; issued descendants require an explicit review and cannot be
-silently replaced. Host acceptance, publication and payout settlement are
+silently replaced. Director retention records its reason and exact result/issue
+bindings; finalization requires every latest summary result to be accepted. Host acceptance, publication and payout settlement are
 separate from event finalization.
 
 SQLite transactions commit state, revision history, accepted command receipts

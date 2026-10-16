@@ -10,6 +10,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 CONTRACT = "strathmark.managed-event.v1"
+SOURCE_ID_VERSION = "canonical-tuple.v1"
 POLICIES = ("v2-optimizer.v1", "mark3-ceil180.v1")
 
 
@@ -245,6 +246,7 @@ def capabilities():
     return {
         "schema_version": CONTRACT,
         "package_version": __version__,
+        "source_identity_version": SOURCE_ID_VERSION,
         "runtime": {
             "transport": "local_library_or_trusted_process",
             "tested_python": ["3.10", "3.11", "3.12", "3.13"],

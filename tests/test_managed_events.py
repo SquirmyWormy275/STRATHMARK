@@ -414,3 +414,219 @@ def test_copying_database_and_head_cannot_create_parallel_authority(ops, tmp_pat
     shutil.copyfile(ops.store.head, duplicate.with_suffix(".sqlite3.head.json"))
     with pytest.raises(EventError, match="authority_location_changed"):
         EventOperations(duplicate)
+
+
+def test_child_cannot_change_root_mark_policy(ops):
+    state = create(ops)
+    config = synthetic_event()
+    config["event_id"] += ":other-policy"
+    config["mark_policy"] = "v2-optimizer.v1"
+    with pytest.raises(EventError, match="root_selection_immutable"):
+        ops.create(principal(), "other-policy", config, "cli")
+    assert ops.read(principal(), state["event_id"]) == state
+
+
+def corrected_issued_progression(ops, *, retain=True):
+    config = synthetic_event()
+    config["roster"] = config["roster"][:4]
+    config["round_rules"] = [
+        {"round_id": "qualifying", "capacity": 2, "qualifiers_per_heat": 1},
+        {"round_id": "final", "capacity": 2, "qualifiers_per_heat": 0},
+    ]
+    state = ops.create(principal(), "create", config, "cli")
+    state = operate_round(ops, state, 0)
+    state = command(ops, state, "advance")
+    state = operate_round(ops, state, 1)
+    state = command(ops, state, "finalize")
+    heat = state["rounds"][0]["fields"][0]
+    result = heat["result_revisions"][-1]
+    state = command(
+        ops,
+        state,
+        "correct",
+        {
+            "heat_id": heat["heat_id"],
+            "issue_id": heat["issue_id"],
+            "supersedes": result["digest"],
+            "reason": "Synthetic qualifier correction after final issue",
+            "outcomes": [
+                {"entry_id": row["entry_id"], "status": "dnf"} for row in result["outcomes"]
+            ],
+        },
+    )
+    assert state["progression_review"]
+    if not retain:
+        return state
+    return command(
+        ops,
+        state,
+        "retain_downstream",
+        {"reason": "Director retains completed final under the show appeal decision"},
+    )
+
+
+def test_refinalization_requires_accepting_every_summary_revision(ops):
+    state = corrected_issued_progression(ops)
+    with pytest.raises(EventError, match="all_summary_results_must_be_accepted"):
+        command(ops, state, "finalize")
+    heat = state["rounds"][0]["fields"][0]
+    state = command(
+        ops,
+        state,
+        "accept",
+        {"heat_id": heat["heat_id"], "result_digest": heat["result_revisions"][-1]["digest"]},
+    )
+    state = command(ops, state, "finalize")
+    assert state["summary_revision"] == 2 and len(state["exports"]) == 8
+
+
+def test_retention_reason_and_bindings_survive_restart_and_export(ops):
+    state = corrected_issued_progression(ops)
+    reopened = EventOperations(ops.store.path)
+    decision = reopened.export(principal(), state["event_id"])["progression_decisions"][-1]
+    assert decision["reason"] == "Director retains completed final under the show appeal decision"
+    assert decision["actor_id"] == principal().actor_id
+    assert state["rounds"][-1]["fields"][0]["issue_id"] in decision["retained_issue_ids"]
+    assert (
+        state["rounds"][0]["fields"][0]["result_revisions"][-1]["digest"]
+        in decision["result_digests"]
+    )
+
+
+def test_delimiter_bearing_identifiers_cannot_collide_in_source_streams(ops):
+    config = synthetic_event()
+    config["roster"] = config["roster"][:2]
+    config["roster"][0]["entry_id"] = "b"
+    config["roster"][1]["entry_id"] = "a:b"
+    config["round_rules"] = [
+        {"round_id": "qualifying", "capacity": 1, "qualifiers_per_heat": 1},
+        {"round_id": "final", "capacity": 2, "qualifiers_per_heat": 0},
+    ]
+    state = ops.create(principal(), "create", config, "cli")
+    state = command(
+        ops,
+        state,
+        "fields",
+        {
+            "fields": [
+                {"heat_id": "h:a", "entries": ["b"], "stands": ["1"]},
+                {"heat_id": "h", "entries": ["a:b"], "stands": ["1"]},
+            ]
+        },
+    )
+    for heat_id, entry in [("h:a", "b"), ("h", "a:b")]:
+        state = command(ops, state, "calculate", {"heat_id": heat_id})
+        _, heat = ops._heat(state, heat_id)
+        state = command(
+            ops, state, "review", {"heat_id": heat_id, "sheet_digest": heat["sheet"]["digest"]}
+        )
+        state = command(
+            ops,
+            state,
+            "issue",
+            {"heat_id": heat_id, "sheet_digest": heat["sheet"]["digest"], "confirm": True},
+        )
+        _, heat = ops._heat(state, heat_id)
+        state = command(
+            ops,
+            state,
+            "outcomes",
+            {
+                "heat_id": heat_id,
+                "issue_id": heat["issue_id"],
+                "outcomes": [
+                    {
+                        "entry_id": entry,
+                        "status": "finished",
+                        "timer1_seconds": "20",
+                        "timer2_seconds": "20",
+                    }
+                ],
+            },
+        )
+        _, heat = ops._heat(state, heat_id)
+        state = command(
+            ops,
+            state,
+            "accept",
+            {"heat_id": heat_id, "result_digest": heat["result_revisions"][-1]["digest"]},
+        )
+    deliveries = ops.export(principal(), state["event_id"])["deliveries"]
+    assert len({item["delivery_id"] for item in deliveries}) == 2
+    assert len({item["payload"]["source_result_id"] for item in deliveries}) == 2
+    assert all(item["payload"]["supersedes_source_digest"] is None for item in deliveries)
+
+
+def test_late_transfer_destination_collision_preserves_other_authority(ops, tmp_path, monkeypatch):
+    import hashlib
+
+    from strathmark.events import operations
+
+    state = create(ops)
+    destination = tmp_path / "late-target.sqlite3"
+    original = EventOperations
+    other_state = None
+    before = None
+
+    def initialize(path):
+        nonlocal other_state, before
+        target = original(path)
+        if ".transfer" in str(path):
+            other = original(destination)
+            other_state = other.create(
+                principal("synthetic:second-show"),
+                "other",
+                synthetic_event("synthetic:second-show"),
+                "cli",
+            )
+            before = [
+                hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in (other.store.path, other.store.head)
+            ]
+        return target
+
+    monkeypatch.setattr(operations, "EventOperations", initialize)
+    with pytest.raises(EventError, match="collision"):
+        ops.transfer_to(
+            principal(),
+            state["event_id"],
+            destination,
+            request_id="transfer",
+            expected_revision=state["revision"],
+            editor="cli",
+        )
+    other = original(destination)
+    assert other.read(principal("synthetic:second-show"), other_state["event_id"]) == other_state
+    assert [
+        hashlib.sha256(p.read_bytes()).hexdigest() for p in (other.store.path, other.store.head)
+    ] == before
+    assert ops.read(principal(), state["event_id"])["status"] == "fenced"
+
+
+def test_older_unpublished_identity_scheme_is_inspection_only(ops):
+    state = create(ops)
+    state.pop("source_identity_version", None)
+    with ops.store.transaction() as db:
+        ops.store.append(
+            db,
+            state["event_id"],
+            principal().actor_id,
+            "older-checkpoint",
+            "synthetic-legacy-fixture",
+            state,
+        )
+    assert ops.read(principal(), state["event_id"]) == state
+    with pytest.raises(EventError, match="incompatible_managed_checkpoint"):
+        command(ops, state, "handover", {"editor": "gui"})
+
+
+def test_root_projection_cannot_diverge_from_immutable_command_evidence(ops):
+    state = create(ops)
+    with ops.store.connection() as db:
+        changed = dict(state["root_selection"], mark_policy="v2-optimizer.v1")
+        from strathmark.events.contracts import encode
+
+        db.execute("UPDATE roots SET selection=?", (encode(changed),))
+        db.commit()
+    with pytest.raises(EventError, match="corrupt_competition_root"):
+        EventOperations(ops.store.path)

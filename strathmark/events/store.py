@@ -12,7 +12,23 @@ from pathlib import Path
 from .contracts import CONTRACT, EventError, digest, encode
 
 
-def atomic_json(path, value):
+def sync_directory(path):
+    if hasattr(os, "O_DIRECTORY"):
+        directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def publish_file_exclusive(source, destination):
+    # Staging and destination share a filesystem. link() atomically refuses
+    # an existing target; neither a concurrent authority nor its head is replaced.
+    os.link(source, destination)
+    sync_directory(Path(destination).parent)
+
+
+def atomic_json(path, value, *, replace=True):
     path = Path(path)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".event-head-")
     try:
@@ -20,13 +36,11 @@ def atomic_json(path, value):
             output.write(encode(value))
             output.flush()
             os.fsync(output.fileno())
-        os.replace(name, path)
-        if hasattr(os, "O_DIRECTORY"):
-            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+        if replace:
+            os.replace(name, path)
+        else:
+            os.link(name, path)
+        sync_directory(path.parent)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -119,6 +133,13 @@ class EventStore:
                 ).fetchone()
                 if not latest or latest[0] != state:
                     raise EventError("corrupt_event_projection")
+                snapshot = json.loads(state)
+                root = db.execute(
+                    "SELECT selection FROM roots WHERE show_id=? AND tournament_id=?",
+                    (snapshot["show_id"], snapshot["config"]["tournament_id"]),
+                ).fetchone()
+                if not root or root[0] != encode(snapshot["root_selection"]):
+                    raise EventError("corrupt_competition_root_selection")
             if "pending_tip" in head:
                 atomic_json(self.head, {"tip": tip, "database_path": str(self.path)})
         except (OSError, KeyError, TypeError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
