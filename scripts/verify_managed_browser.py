@@ -161,6 +161,12 @@ try:
             "narrow viewport contains tables without page overflow",
             page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"),
         )
+        check(
+            "mobile result columns remain readable and scroll within tables",
+            page.locator("table").first.evaluate(
+                'table => table.scrollWidth > table.clientWidth && table.querySelector("th").clientHeight < 60'
+            ),
+        )
         page.screenshot(path=str(root / "workspace-mobile.png"), full_page=True)
         printed = context.new_page()
         printed.goto(
