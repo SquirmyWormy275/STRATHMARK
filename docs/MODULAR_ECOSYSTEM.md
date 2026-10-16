@@ -1,7 +1,8 @@
 # Modular tournament agreement
 
-Approved implementation direction, 2026-10-15. Execution evidence lives in
-[Missoula's status record](https://github.com/SquirmyWormy275/Missoula-Pro-Am-Manager/blob/main/docs/MODULAR_EXECUTION_STATUS.md).
+Approved implementation direction, 2026-10-15. Missoula [PR 125](https://github.com/SquirmyWormy275/Missoula-Pro-Am-Manager/pull/125)
+retains its independent backup/recovery merge gate. Execution evidence lives in
+[Missoula's status record](https://github.com/SquirmyWormy275/Missoula-Pro-Am-Manager/blob/feature/modular-events-20261015/docs/MODULAR_EXECUTION_STATUS.md).
 
 STRATHMARK has two distinct boundaries. Calculation-only clients retain their
 own event workflow. Delegated clients use `strathmark.events` for persistent
