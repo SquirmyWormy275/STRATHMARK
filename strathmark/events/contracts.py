@@ -240,8 +240,38 @@ def validate_config(config):
 
 
 def capabilities():
+    from strathmark import __version__
+
     return {
         "schema_version": CONTRACT,
+        "package_version": __version__,
+        "runtime": {
+            "transport": "local_library_or_trusted_process",
+            "tested_python": ["3.10", "3.11", "3.12", "3.13"],
+            "hosted_production_qualified": False,
+        },
+        "operations": [
+            "create",
+            "read",
+            "forecast",
+            "fields",
+            "calculate",
+            "review",
+            "issue",
+            "outcomes",
+            "accept",
+            "advance",
+            "finalize",
+            "correct",
+            "retain_downstream",
+            "configure",
+            "handover",
+            "export",
+            "delivery",
+            "fence",
+        ],
+        "local_recovery_commands": ["backup", "transfer"],
+        "calculation_only": True,
         "engines": ["v2"],
         "disciplines": ["SB", "UH"],
         "formats": ["handicap"],
