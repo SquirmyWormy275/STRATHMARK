@@ -76,6 +76,10 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     probe = r"""
 import sys
 sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from strathmark.private_storage import private_directory
+# The caller owns this fresh pytest fixture, including all installed probe data.
+private_directory(Path.cwd())
 from strathmark.consumer_contract import load_shadow_consumer_contract
 from strathmark.v3.api.app import create_v3_app
 from strathmark.v3.api.auth import InMemoryCredentialSecretStore, ServiceCredentialRegistry
