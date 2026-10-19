@@ -546,9 +546,32 @@ class CheckpointRegistry:
     but it can never verify after losing the independently anchored event.
     """
 
-    def __init__(self, root: Path | str, *, bootstrap_identity: IntegrityKeyIdentity) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        bootstrap_identity: IntegrityKeyIdentity,
+        witness: object | None = None,
+        allow_unwitnessed_rehearsal: bool = False,
+    ) -> None:
         if not isinstance(bootstrap_identity, IntegrityKeyIdentity):
             raise IntegrityError("checkpoint registry requires a bootstrap key identity")
+        from strathmark.v3.infrastructure.terminal_witness import WitnessBinding
+
+        if witness is None and allow_unwitnessed_rehearsal is not True:
+            raise IntegrityError("checkpoint registry requires an independent terminal witness")
+        if witness is not None and not isinstance(witness, WitnessBinding):
+            raise IntegrityError("checkpoint terminal witness is invalid")
+        self._rotation_witness = (
+            None
+            if witness is None
+            else WitnessBinding(witness.witness, witness.scope + "/rotations")
+        )
+        self._checkpoint_witness = (
+            None
+            if witness is None
+            else WitnessBinding(witness.witness, witness.scope + "/checkpoints")
+        )
         self.root = Path(root).expanduser().resolve(strict=False)
         self.rotations_root = self.root / "rotations"
         self.checkpoints_root = self.root / "checkpoints"
@@ -566,13 +589,57 @@ class CheckpointRegistry:
         self._bootstrap_identity = bootstrap_identity
         self._trust_store, self._active_identity, self._rotation_digest = self._load_rotations()
         self._checkpoints = self._load_checkpoints()
+        self._require_terminal_witnesses()
+
+    def _require_terminal_witnesses(self) -> None:
+        from strathmark.v3.infrastructure.terminal_witness import WitnessError, registry_state
+
+        try:
+            if self._rotation_witness is not None:
+                self._rotation_witness.require(
+                    registry_state(
+                        len(_numbered_registry_paths(self.rotations_root, "rotation")),
+                        self._rotation_digest,
+                    )
+                )
+            if self._checkpoint_witness is not None:
+                self._checkpoint_witness.require(
+                    registry_state(
+                        len(self._checkpoints),
+                        "0" * 64
+                        if not self._checkpoints
+                        else self._checkpoints[-1].manifest.body_digest,
+                    )
+                )
+        except WitnessError as exc:
+            raise IntegrityError(str(exc)) from exc
+
+    def _refresh_witnessed(self) -> None:
+        if self._rotation_witness is not None or self._checkpoint_witness is not None:
+            self._trust_store, self._active_identity, self._rotation_digest = self._load_rotations()
+            self._checkpoints = self._load_checkpoints()
+            self._require_terminal_witnesses()
+
+    @staticmethod
+    def _advance_witness(witness: object, sequence: int, previous: str, digest: str) -> None:
+        from strathmark.v3.infrastructure.terminal_witness import WitnessError, registry_state
+
+        if witness is not None:
+            try:
+                witness.advance(
+                    registry_state(sequence - 1, previous), registry_state(sequence, digest)
+                )
+            except WitnessError as exc:
+                raise IntegrityError(str(exc)) from exc
 
     @property
     def trust_store(self) -> IntegrityTrustStore:
+        self._refresh_witnessed()
         return self._trust_store
 
     @property
     def active_identity(self) -> IntegrityKeyIdentity:
+        self._refresh_witnessed()
         return self._active_identity
 
     def rotate_key(
@@ -582,6 +649,7 @@ class CheckpointRegistry:
         *,
         created_at: str,
     ) -> SignedManifest:
+        self._refresh_witnessed()
         if current_signer.identity != self._active_identity:
             raise IntegrityError("key rotation must be signed by the active registry key")
         sequence = len(tuple(self.rotations_root.glob("*.json"))) + 1
@@ -600,6 +668,9 @@ class CheckpointRegistry:
             if verify_manifest(winner, self._trust_store) != payload:
                 raise IntegrityError("rotation sequence already binds different material")
             manifest = winner
+        self._advance_witness(
+            self._rotation_witness, sequence, self._rotation_digest, manifest.body_digest
+        )
         self._trust_store, self._active_identity, self._rotation_digest = self._load_rotations()
         return manifest
 
@@ -611,6 +682,7 @@ class CheckpointRegistry:
         created_at: str,
         outbox: Any | None = None,
     ) -> TrustedCheckpoint:
+        self._refresh_witnessed()
         if signer.identity != self._active_identity:
             raise IntegrityError("checkpoint must be signed by the active registry key")
         previous = self._checkpoints[-1] if self._checkpoints else None
@@ -652,6 +724,12 @@ class CheckpointRegistry:
                 raise IntegrityError("checkpoint sequence already binds different material")
             manifest = winner
             encoded = canonical_bytes(winner.to_dict())
+        self._advance_witness(
+            self._checkpoint_witness,
+            sequence,
+            "0" * 64 if previous is None else previous.manifest.body_digest,
+            manifest.body_digest,
+        )
         self._checkpoints = self._load_checkpoints()
         checkpoint = self._checkpoints[-1]
         if outbox is not None:
@@ -668,11 +746,13 @@ class CheckpointRegistry:
         return checkpoint
 
     def latest_checkpoint(self) -> TrustedCheckpoint:
+        self._refresh_witnessed()
         if not self._checkpoints:
             raise IntegrityError("checkpoint registry contains no trusted checkpoint")
         return self._checkpoints[-1]
 
     def verify_checkpoint(self, manifest: SignedManifest) -> TrustedCheckpoint:
+        self._refresh_witnessed()
         if not any(item.manifest == manifest for item in self._checkpoints):
             raise IntegrityError("checkpoint is not present in the immutable registry")
         payload = verify_manifest(manifest, self._trust_store)

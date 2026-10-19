@@ -150,7 +150,9 @@ def test_verified_checkpoint_restore_matches_genesis_and_replays_only_suffix(
     checkpoint_digest = projections.capture_projection_checkpoint()
     signer = P256EphemeralSigner.generate("integrity-key:projection-checkpoint")
     registry = CheckpointRegistry(
-        tmp_path / "checkpoint-registry", bootstrap_identity=signer.identity
+        tmp_path / "checkpoint-registry",
+        allow_unwitnessed_rehearsal=True,
+        bootstrap_identity=signer.identity,
     )
     checkpoint = registry.create_checkpoint(database, signer=signer, created_at=NOW)
     assert checkpoint.projection_digest == checkpoint_digest
@@ -176,7 +178,9 @@ def test_verified_checkpoint_restore_rejects_tampered_snapshot(tmp_path) -> None
     digest = projections.capture_projection_checkpoint()
     signer = P256EphemeralSigner.generate("integrity-key:tampered-projection-checkpoint")
     registry = CheckpointRegistry(
-        tmp_path / "checkpoint-registry", bootstrap_identity=signer.identity
+        tmp_path / "checkpoint-registry",
+        allow_unwitnessed_rehearsal=True,
+        bootstrap_identity=signer.identity,
     )
     registry.create_checkpoint(database, signer=signer, created_at=NOW)
     with sqlite3.connect(database) as connection:

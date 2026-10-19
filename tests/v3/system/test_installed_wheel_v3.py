@@ -112,6 +112,11 @@ assert set(v3["paths"]) == EXPECTED_V3_CONSUMER_PATHS
 assert all(path.startswith("/v3/") for path in v3["paths"])
 assert len(v3_consumer_contract_digest()) == 64
 assert all(not path.startswith("/v3/") for path in load_shadow_consumer_contract()["paths"])
+from strathmark.v3.infrastructure.event_authority import enable_unwitnessed_rehearsal
+from strathmark.v3.infrastructure.integrity import P256EphemeralSigner
+enable_unwitnessed_rehearsal(
+    sys.argv[2], signer=P256EphemeralSigner.generate("integrity-key:installed-rehearsal")
+)
 registry = ServiceCredentialRegistry(SQLiteEventStore(sys.argv[2]), InMemoryCredentialSecretStore())
 registry.bootstrap_offline(
     principal_id="actor:installed-smoke",

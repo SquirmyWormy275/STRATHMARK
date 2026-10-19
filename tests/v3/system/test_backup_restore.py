@@ -97,7 +97,9 @@ def _backup_manager(
         blob_store=blobs,
         signer=signer,
         trust_store=IntegrityTrustStore((signer.identity,)),
-        checkpoint_registry=CheckpointRegistry(registry_root, bootstrap_identity=signer.identity),
+        checkpoint_registry=CheckpointRegistry(
+            registry_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+        ),
         critical_journal=CriticalJournal(
             registry_root.parent / f"{registry_root.name}-journal",
             signer=signer,
@@ -694,7 +696,9 @@ def test_archive_needs_two_distinct_verified_copies_one_off_host_and_closed_evid
         authorizations=(RemoteAttesterAuthorization(remote_key_identity, remote_identity),),
     )
     checkpoint_registry = CheckpointRegistry(
-        tmp_path / "archive-checkpoints", bootstrap_identity=signer.identity
+        tmp_path / "archive-checkpoints",
+        allow_unwitnessed_rehearsal=True,
+        bootstrap_identity=signer.identity,
     )
     checkpoint_registry.create_checkpoint(database, signer=signer, created_at=NOW)
     archive = ArchiveManager(
@@ -848,7 +852,9 @@ def test_archive_prefix_rejects_interleaved_tournament_that_remains_open(
             ),
         ),
     )
-    registry = CheckpointRegistry(tmp_path / "checkpoints", bootstrap_identity=identity)
+    registry = CheckpointRegistry(
+        tmp_path / "checkpoints", allow_unwitnessed_rehearsal=True, bootstrap_identity=identity
+    )
     registry.create_checkpoint(database, signer=signer, created_at=NOW)
     archive = ArchiveManager(
         database,
@@ -922,7 +928,9 @@ def test_backup_public_contract_and_disk_policy_rejection_matrix(tmp_path: Path)
     SQLiteEventStore(database)
     signer = P256EphemeralSigner.generate("integrity-key:backup-validation")
     blobs = ContentAddressedBlobStore(tmp_path / "blobs")
-    registry = CheckpointRegistry(tmp_path / "registry", bootstrap_identity=signer.identity)
+    registry = CheckpointRegistry(
+        tmp_path / "registry", allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     journal = CriticalJournal(
         tmp_path / "journal",
         signer=signer,
@@ -1600,7 +1608,11 @@ def test_archive_proof_and_index_attack_matrix(
         local_trust_store=trust,
         authorizations=(RemoteAttesterAuthorization(remote_identity, storage),),
     )
-    registry = CheckpointRegistry(tmp_path / "archive-registry", bootstrap_identity=local_identity)
+    registry = CheckpointRegistry(
+        tmp_path / "archive-registry",
+        allow_unwitnessed_rehearsal=True,
+        bootstrap_identity=local_identity,
+    )
     registry.create_checkpoint(database, signer=signer, created_at=NOW)
     with pytest.raises(BackupError, match="typed remote"):
         ArchiveManager(
@@ -1952,7 +1964,11 @@ def test_backup_receipt_fallback_open_archive_host_and_size_boundaries(
                 ),
             ),
         )
-    registry = CheckpointRegistry(tmp_path / "open-registry", bootstrap_identity=local_identity)
+    registry = CheckpointRegistry(
+        tmp_path / "open-registry",
+        allow_unwitnessed_rehearsal=True,
+        bootstrap_identity=local_identity,
+    )
     registry.create_checkpoint(open_database, signer=local_signer, created_at=NOW)
     archive = ArchiveManager(
         open_database,
@@ -2034,3 +2050,33 @@ def test_backup_receipt_fallback_open_archive_host_and_size_boundaries(
                 )
             with pytest.raises(BackupError, match="already exists"):
                 function(source, destination)
+
+
+def test_restore_verifies_temporary_copy_before_publishing(tmp_path, monkeypatch):
+    database = tmp_path / "authority.sqlite3"
+    SQLiteEventStore(database)
+    blobs = ContentAddressedBlobStore(tmp_path / "blobs")
+    signer = P256EphemeralSigner.generate("integrity-key:restore-swap")
+    manager = _backup_manager(database, blobs, signer, tmp_path / "checkpoints")
+    backup = manager.create_online_backup(
+        tmp_path / "backup",
+        required_blobs=(),
+        pinned_bundle_digest="b" * 64,
+        issues=(),
+        created_at=NOW,
+    )
+    original = manager._verify_database
+
+    def reject_copy(path, *args):
+        if path.name.endswith(".tmp"):
+            raise BackupIntegrityError("copied authority was changed")
+        return original(path, *args)
+
+    monkeypatch.setattr(manager, "_verify_database", reject_copy)
+    destination = tmp_path / "restored.sqlite3"
+    with pytest.raises(BackupIntegrityError, match="copied authority"):
+        manager.restore_verified(
+            backup, destination, installed_bundle_digest="b" * 64, manager_receipts={}
+        )
+    assert not destination.exists()
+    assert not tuple(tmp_path.glob(".restored.sqlite3.*.tmp"))

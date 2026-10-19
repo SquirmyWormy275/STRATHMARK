@@ -58,6 +58,8 @@ from strathmark.v3.infrastructure.blobs import (
     BlobRetention,
     ContentAddressedBlobStore,
 )
+from strathmark.v3.infrastructure.event_authority import enable_unwitnessed_rehearsal
+from strathmark.v3.infrastructure.integrity import P256EphemeralSigner
 from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
 from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict, SQLiteEventStore
 
@@ -797,6 +799,9 @@ def build_replay_report(*, fault_plan: ReplayFaultPlan | None = None) -> dict[st
         raise TypeError("replay fault plan must be typed")
     with TemporaryDirectory(prefix="strathmark-v3-replay-") as directory:
         root = Path(directory)
+        enable_unwitnessed_rehearsal(
+            root, signer=P256EphemeralSigner.generate("integrity-key:acceptance-rehearsal")
+        )
         database = root / "replay.sqlite3"
         fields, immutable_receipt = _execute_tournament(database)
         replay = verify_race_day_replay(fields)

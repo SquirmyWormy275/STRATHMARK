@@ -50,7 +50,7 @@ from strathmark.v3.application.pipeline_builder import (  # noqa: E402
 from strathmark.v3.assessors.formula import FormulaManifest  # noqa: E402
 from strathmark.v3.composition import (  # noqa: E402
     V3ServiceIdentity,
-    compose_v3_application_gateway,
+    compose_v3_rehearsal_gateway,
 )
 from strathmark.v3.consumer_contract import v3_consumer_contract_digest  # noqa: E402
 from strathmark.v3.contracts.canonical import canonical_digest  # noqa: E402
@@ -167,6 +167,7 @@ def _runtime(
     persist_field_snapshot: bool = True,
     schedule_cards: bool = True,
     pre_field_sign_barrier: threading.Barrier | None = None,
+    clock=None,
 ):
     database = tmp_path / "runtime.sqlite3"
     store, field, build, _lifecycle = _bootstrap(
@@ -428,7 +429,7 @@ def _runtime(
         )
     )
     reactions = _TrackingSettlementReactions(database, fail_once=fail_reactions_once)
-    gateway = compose_v3_application_gateway(
+    gateway = compose_v3_rehearsal_gateway(
         database_path=database,
         signer=store._signer,
         trust_store=store._trust_store,
@@ -436,7 +437,7 @@ def _runtime(
         job_repository=repository,
         issue_coordinator=issue_coordinator,
         settlement_reactions=reactions,
-        clock=lambda: "2026-08-25T18:00:00.000Z",
+        clock=clock or (lambda: NOW),
         service_identity=(
             None
             if service_source_commit is None
@@ -446,7 +447,7 @@ def _runtime(
     if verified_cutover is not None:
         gateway = V3ApplicationGateway(
             gateway._services,
-            clock=lambda: "2026-08-25T18:00:00.000Z",
+            clock=clock or (lambda: NOW),
             verified_cutover=lambda: verified_cutover,
             service_identity=gateway._service_identity,
         )
@@ -1780,7 +1781,7 @@ def test_gateway_composition_requires_same_database_settlement_reactions(
 ) -> None:
     _client, _credential, store, _field, _reactions, repository = _runtime(tmp_path)
     with pytest.raises((TypeError, ValueError), match="settlement reactions"):
-        compose_v3_application_gateway(
+        compose_v3_rehearsal_gateway(
             database_path=store.database_path,
             signer=store._signer,
             trust_store=store._trust_store,
@@ -1799,7 +1800,7 @@ def test_gateway_composition_requires_same_database_settlement_reactions(
 
     wrong_rolling = _TrackingSettlementReactions(tmp_path / "wrong-rolling.sqlite3")
     with pytest.raises(ValueError, match="rolling reactions"):
-        compose_v3_application_gateway(
+        compose_v3_rehearsal_gateway(
             database_path=store.database_path,
             signer=store._signer,
             trust_store=store._trust_store,
@@ -1818,7 +1819,7 @@ def test_gateway_composition_requires_same_database_settlement_reactions(
         )
 
     rolling = _TrackingSettlementReactions(store.database_path)
-    gateway = compose_v3_application_gateway(
+    gateway = compose_v3_rehearsal_gateway(
         database_path=store.database_path,
         signer=store._signer,
         trust_store=store._trust_store,
@@ -1836,3 +1837,28 @@ def test_gateway_composition_requires_same_database_settlement_reactions(
         clock=lambda: "2026-08-25T18:00:00.000Z",
     )
     assert gateway._services.lifecycle._reaction_port is rolling
+
+
+def test_pre_field_receipt_uses_service_clock_and_recovers_only_timely_work(tmp_path):
+    current = [NOW]
+    client, credential, _store, field, _reactions, _repository = _runtime(
+        tmp_path, persist_field_snapshot=False, clock=lambda: current[0]
+    )
+    payload = _pre_field_payload(field)
+    payload["requested_at_utc"] = "2026-08-24T17:59:00.000Z"
+    first = client.post(
+        "/v3/forecasts/pre-field", headers=_headers(credential, "trusted-time"), json=payload
+    )
+    assert first.status_code == 200, first.text
+    receipt = json.loads(first.json()["canonical_receipt_json"])
+    assert receipt["created_at"] == NOW
+    current[0] = "2026-08-25T18:00:00.000Z"
+    replay = client.post(
+        "/v3/forecasts/pre-field", headers=_headers(credential, "trusted-time"), json=payload
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["canonical_receipt_json"] == first.json()["canonical_receipt_json"]
+    late = client.post(
+        "/v3/forecasts/pre-field", headers=_headers(credential, "late-new-work"), json=payload
+    )
+    assert late.status_code == 409, late.text

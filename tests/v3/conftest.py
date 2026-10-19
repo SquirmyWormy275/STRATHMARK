@@ -49,3 +49,13 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["STRATHMARK_DB_PATH"] = str(database_root / "legacy-v2.sqlite3")
     for variable, root in roots.items():
         os.environ[variable] = str(root)
+
+    # Deliberate synthetic-only opt-in. Runtime composition never consults test
+    # environment variables to grant this exception, and the operational gateway
+    # still requires a separately provisioned authenticated authority.
+    from strathmark.v3.infrastructure.event_authority import enable_unwitnessed_rehearsal
+    from strathmark.v3.infrastructure.integrity import P256EphemeralSigner
+
+    enable_unwitnessed_rehearsal(
+        base_temp, signer=P256EphemeralSigner.generate("integrity-key:test-rehearsal")
+    )

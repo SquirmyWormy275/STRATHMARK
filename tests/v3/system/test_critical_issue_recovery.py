@@ -601,6 +601,7 @@ def test_checkpoint_registry_detects_database_tail_loss_and_replays_exact_bytes(
     )
     registry = CheckpointRegistry(
         tmp_path / "checkpoint-registry",
+        allow_unwitnessed_rehearsal=True,
         bootstrap_identity=signer.identity,
     )
     checkpoint = registry.create_checkpoint(database, signer=signer, created_at=NOW, outbox=outbox)
@@ -623,13 +624,17 @@ def test_checkpoint_registry_rotation_restart_gap_and_old_checkpoint_verificatio
     old = P256EphemeralSigner.generate("integrity-key:old-checkpoint")
     new = P256EphemeralSigner.generate("integrity-key:new-checkpoint")
     root = tmp_path / "checkpoint-registry"
-    registry = CheckpointRegistry(root, bootstrap_identity=old.identity)
+    registry = CheckpointRegistry(
+        root, allow_unwitnessed_rehearsal=True, bootstrap_identity=old.identity
+    )
     projections = SQLiteProjectionStore(database)
     projections.capture_projection_checkpoint()
     first = registry.create_checkpoint(database, signer=old, created_at=NOW)
     assert projections.rebuild_from_checkpoint_registry(registry)
     registry.rotate_key(old, new.identity, created_at=NOW)
-    restarted = CheckpointRegistry(root, bootstrap_identity=old.identity)
+    restarted = CheckpointRegistry(
+        root, allow_unwitnessed_rehearsal=True, bootstrap_identity=old.identity
+    )
     assert restarted.verify_checkpoint(first.manifest) == first
     second = restarted.create_checkpoint(database, signer=new, created_at=NOW)
     assert restarted.latest_checkpoint() == second
@@ -637,7 +642,7 @@ def test_checkpoint_registry_rotation_restart_gap_and_old_checkpoint_verificatio
     rotation = next((root / "rotations").glob("*.json"))
     rotation.rename(rotation.with_name("0000000000000002.json"))
     with pytest.raises(IntegrityError, match="gap|sequence"):
-        CheckpointRegistry(root, bootstrap_identity=old.identity)
+        CheckpointRegistry(root, allow_unwitnessed_rehearsal=True, bootstrap_identity=old.identity)
 
 
 def test_checkpoint_advance_rejects_rollback_and_same_height_fork_after_restart(
@@ -667,10 +672,12 @@ def test_checkpoint_advance_rejects_rollback_and_same_height_fork_after_restart(
     )
     signer = P256EphemeralSigner.generate("integrity-key:ancestry")
     root = tmp_path / "ancestry-registry"
-    CheckpointRegistry(root, bootstrap_identity=signer.identity).create_checkpoint(
-        database, signer=signer, created_at=NOW
+    CheckpointRegistry(
+        root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    ).create_checkpoint(database, signer=signer, created_at=NOW)
+    restarted = CheckpointRegistry(
+        root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
     )
-    restarted = CheckpointRegistry(root, bootstrap_identity=signer.identity)
     with pytest.raises(IntegrityError, match="rolls back"):
         restarted.create_checkpoint(stale, signer=signer, created_at=NOW)
     with pytest.raises(IntegrityError, match="does not descend"):
@@ -683,9 +690,9 @@ def test_checkpoint_advance_rejects_rollback_and_same_height_fork_after_restart(
             expected=1,
         )
     )
-    advanced = CheckpointRegistry(root, bootstrap_identity=signer.identity).create_checkpoint(
-        database, signer=signer, created_at=NOW
-    )
+    advanced = CheckpointRegistry(
+        root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    ).create_checkpoint(database, signer=signer, created_at=NOW)
     assert advanced.authority_sequence == 2
 
 
@@ -699,7 +706,9 @@ def test_checkpoint_rejects_same_sequence_fact_drift_and_inconsistent_ancestry_p
     SQLiteEventStore(database)
     signer = P256EphemeralSigner.generate("integrity-key:same-sequence")
     registry = CheckpointRegistry(
-        tmp_path / "same-sequence-registry", bootstrap_identity=signer.identity
+        tmp_path / "same-sequence-registry",
+        allow_unwitnessed_rehearsal=True,
+        bootstrap_identity=signer.identity,
     )
     registry.create_checkpoint(database, signer=signer, created_at=NOW)
     facts = module._database_checkpoint_facts(database)
@@ -749,8 +758,12 @@ def test_concurrent_checkpoint_and_rotation_publish_exact_retry_or_material_conf
         return outcomes
 
     checkpoint_root = tmp_path / "checkpoint-race"
-    first = CheckpointRegistry(checkpoint_root, bootstrap_identity=signer.identity)
-    second = CheckpointRegistry(checkpoint_root, bootstrap_identity=signer.identity)
+    first = CheckpointRegistry(
+        checkpoint_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
+    second = CheckpointRegistry(
+        checkpoint_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     same = race_pair(
         lambda: first.create_checkpoint(database, signer=signer, created_at=NOW),
         lambda: second.create_checkpoint(database, signer=signer, created_at=NOW),
@@ -765,19 +778,29 @@ def test_concurrent_checkpoint_and_rotation_publish_exact_retry_or_material_conf
         )
     )
     conflict_root = tmp_path / "checkpoint-conflict"
-    left = CheckpointRegistry(conflict_root, bootstrap_identity=signer.identity)
-    right = CheckpointRegistry(conflict_root, bootstrap_identity=signer.identity)
+    left = CheckpointRegistry(
+        conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
+    right = CheckpointRegistry(
+        conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     different = race_pair(
         lambda: left.create_checkpoint(database, signer=signer, created_at=NOW),
         lambda: right.create_checkpoint(changed_database, signer=signer, created_at=NOW),
     )
     assert sum(item is not None for item in different) == 1
-    assert CheckpointRegistry(conflict_root, bootstrap_identity=signer.identity).latest_checkpoint()
+    assert CheckpointRegistry(
+        conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    ).latest_checkpoint()
 
     next_key = P256EphemeralSigner.generate("integrity-key:next-same")
     rotation_root = tmp_path / "rotation-race"
-    first_rotation = CheckpointRegistry(rotation_root, bootstrap_identity=signer.identity)
-    second_rotation = CheckpointRegistry(rotation_root, bootstrap_identity=signer.identity)
+    first_rotation = CheckpointRegistry(
+        rotation_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
+    second_rotation = CheckpointRegistry(
+        rotation_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     same_rotation = race_pair(
         lambda: first_rotation.rotate_key(signer, next_key.identity, created_at=NOW),
         lambda: second_rotation.rotate_key(signer, next_key.identity, created_at=NOW),
@@ -786,8 +809,12 @@ def test_concurrent_checkpoint_and_rotation_publish_exact_retry_or_material_conf
 
     other_key = P256EphemeralSigner.generate("integrity-key:next-other")
     rotation_conflict_root = tmp_path / "rotation-conflict"
-    first_rotation = CheckpointRegistry(rotation_conflict_root, bootstrap_identity=signer.identity)
-    second_rotation = CheckpointRegistry(rotation_conflict_root, bootstrap_identity=signer.identity)
+    first_rotation = CheckpointRegistry(
+        rotation_conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
+    second_rotation = CheckpointRegistry(
+        rotation_conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     different_rotation = race_pair(
         lambda: first_rotation.rotate_key(signer, next_key.identity, created_at=NOW),
         lambda: second_rotation.rotate_key(signer, other_key.identity, created_at=NOW),
@@ -804,9 +831,9 @@ def test_registry_record_read_retries_transient_os_failure_but_remains_bounded(
     database = tmp_path / "authority.sqlite3"
     SQLiteEventStore(database)
     root = tmp_path / "registry"
-    CheckpointRegistry(root, bootstrap_identity=signer.identity).create_checkpoint(
-        database, signer=signer, created_at=NOW
-    )
+    CheckpointRegistry(
+        root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    ).create_checkpoint(database, signer=signer, created_at=NOW)
     record = (root / "checkpoints" / "0000000000000001.json").resolve()
     original_open = Path.open
     transient_attempts = 0
@@ -821,7 +848,7 @@ def test_registry_record_read_retries_transient_os_failure_but_remains_bounded(
     with monkeypatch.context() as context:
         context.setattr(Path, "open", transient_open)
         checkpoint = CheckpointRegistry(
-            root, bootstrap_identity=signer.identity
+            root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
         ).latest_checkpoint()
     assert checkpoint.checkpoint_sequence == 1
     assert transient_attempts == 2
@@ -838,12 +865,16 @@ def test_registry_record_read_retries_transient_os_failure_but_remains_bounded(
     with monkeypatch.context() as context:
         context.setattr(Path, "open", permanently_unreadable)
         with pytest.raises(IntegrityError, match="temporarily unreadable"):
-            CheckpointRegistry(root, bootstrap_identity=signer.identity)
+            CheckpointRegistry(
+                root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+            )
     assert permanent_attempts == module._REGISTRY_READ_ATTEMPTS
 
     record.write_bytes(b"x" * (module._REGISTRY_RECORD_MAX_BYTES + 1))
     with pytest.raises(IntegrityError, match="bounded size limit"):
-        CheckpointRegistry(root, bootstrap_identity=signer.identity)
+        CheckpointRegistry(
+            root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+        )
 
 
 def _manifest_with_body(
@@ -1016,9 +1047,13 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
     signer = P256EphemeralSigner.generate("integrity-key:registry-coverage")
     other = P256EphemeralSigner.generate("integrity-key:registry-other")
     with pytest.raises(IntegrityError, match="bootstrap"):
-        CheckpointRegistry(tmp_path / "bad", bootstrap_identity="bad")  # type: ignore[arg-type]
+        CheckpointRegistry(
+            tmp_path / "bad", allow_unwitnessed_rehearsal=True, bootstrap_identity="bad"
+        )  # type: ignore[arg-type]
 
-    empty = CheckpointRegistry(tmp_path / "empty", bootstrap_identity=signer.identity)
+    empty = CheckpointRegistry(
+        tmp_path / "empty", allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     assert empty.trust_store.identity(signer.identity.key_id) == signer.identity
     assert empty.active_identity == signer.identity
     with pytest.raises(IntegrityError, match="no trusted"):
@@ -1047,9 +1082,13 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
     assert empty.verify_database(database, require_current=False) == checkpoint
 
     conflicting = tmp_path / "bootstrap-conflict"
-    CheckpointRegistry(conflicting, bootstrap_identity=signer.identity)
+    CheckpointRegistry(
+        conflicting, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     with pytest.raises(IntegrityError, match="differs"):
-        CheckpointRegistry(conflicting, bootstrap_identity=other.identity)
+        CheckpointRegistry(
+            conflicting, allow_unwitnessed_rehearsal=True, bootstrap_identity=other.identity
+        )
 
     original_read_bytes = Path.read_bytes
 
@@ -1061,7 +1100,11 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
     with monkeypatch.context() as context:
         context.setattr(Path, "read_bytes", unreadable)
         with pytest.raises(IntegrityError, match="cannot be read"):
-            CheckpointRegistry(tmp_path / "unreadable", bootstrap_identity=signer.identity)
+            CheckpointRegistry(
+                tmp_path / "unreadable",
+                allow_unwitnessed_rehearsal=True,
+                bootstrap_identity=signer.identity,
+            )
 
     # Every signed rotation/checkpoint linkage field fails closed independently.
     def write_rotation(root: Path, payload: dict[str, object], *, key=P256EphemeralSigner) -> None:
@@ -1095,12 +1138,18 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
     )
     for index, (payload, message) in enumerate(cases):
         root = tmp_path / f"rotation-invalid-{index}"
-        CheckpointRegistry(root, bootstrap_identity=signer.identity)
+        CheckpointRegistry(
+            root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+        )
         write_rotation(root, payload)
         with pytest.raises(IntegrityError, match=message):
-            CheckpointRegistry(root, bootstrap_identity=signer.identity)
+            CheckpointRegistry(
+                root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+            )
     wrong_signer_root = tmp_path / "rotation-wrong-signer"
-    CheckpointRegistry(wrong_signer_root, bootstrap_identity=signer.identity)
+    CheckpointRegistry(
+        wrong_signer_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     wrong = sign_manifest(
         "key_rotation",
         {
@@ -1115,7 +1164,9 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
         canonical_bytes(wrong.to_dict())
     )
     with pytest.raises(IntegrityError, match="active key|trusted"):
-        CheckpointRegistry(wrong_signer_root, bootstrap_identity=signer.identity)
+        CheckpointRegistry(
+            wrong_signer_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+        )
 
     checkpoint_payload = verify_manifest(checkpoint.manifest, empty.trust_store)
     for index, (field, value, message) in enumerate(
@@ -1125,13 +1176,17 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
         )
     ):
         root = tmp_path / f"checkpoint-invalid-{index}"
-        CheckpointRegistry(root, bootstrap_identity=signer.identity)
+        CheckpointRegistry(
+            root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+        )
         payload = dict(checkpoint_payload)
         payload[field] = value
         bad = sign_manifest("checkpoint", payload, signer=signer, created_at=NOW)
         (root / "checkpoints" / "0000000000000001.json").write_bytes(canonical_bytes(bad.to_dict()))
         with pytest.raises(IntegrityError, match=message):
-            CheckpointRegistry(root, bootstrap_identity=signer.identity)
+            CheckpointRegistry(
+                root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+            )
 
     schema_bad = tmp_path / "schema-bad.sqlite3"
     SQLiteEventStore(schema_bad)
@@ -1142,8 +1197,12 @@ def test_checkpoint_registry_rejection_and_tamper_matrix(
 
     # A stale registry instance must reject a sequence already won by different DB facts.
     conflict_root = tmp_path / "deterministic-checkpoint-conflict"
-    winner = CheckpointRegistry(conflict_root, bootstrap_identity=signer.identity)
-    stale_writer = CheckpointRegistry(conflict_root, bootstrap_identity=signer.identity)
+    winner = CheckpointRegistry(
+        conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
+    stale_writer = CheckpointRegistry(
+        conflict_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=signer.identity
+    )
     winner.create_checkpoint(database, signer=signer, created_at=NOW)
     alternate_database = tmp_path / "alternate-authority.sqlite3"
     SQLiteEventStore(alternate_database)

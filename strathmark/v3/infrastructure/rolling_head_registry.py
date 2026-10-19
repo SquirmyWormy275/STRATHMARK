@@ -27,6 +27,11 @@ from strathmark.v3.infrastructure.integrity import (
     sign_manifest,
     verify_manifest,
 )
+from strathmark.v3.infrastructure.terminal_witness import (
+    WitnessBinding,
+    WitnessError,
+    registry_state,
+)
 
 ZERO_DIGEST = "0" * 64
 RECORD_SCHEMA_VERSION = "strathmark-v3-external-rolling-head-v1"
@@ -77,6 +82,8 @@ class ExternalRollingHeadRegistry:
         signer: P256Signer,
         refresh_threshold: int = MAX_REFRESH_THRESHOLD,
         max_elapsed_ms: int = 300_000,
+        witness: WitnessBinding | None = None,
+        allow_unwitnessed_rehearsal: bool = False,
     ) -> None:
         if isinstance(root, bool) or not isinstance(root, (Path, str)):
             raise RollingHeadRegistryError("rolling-head registry root is invalid")
@@ -110,6 +117,13 @@ class ExternalRollingHeadRegistry:
             or max_elapsed_ms <= 0
         ):
             raise RollingHeadRegistryError("rolling-head elapsed RPO is invalid")
+        if witness is None and allow_unwitnessed_rehearsal is not True:
+            raise RollingHeadRegistryError(
+                "rolling-head registry requires an independent terminal witness"
+            )
+        if witness is not None and not isinstance(witness, WitnessBinding):
+            raise RollingHeadRegistryError("rolling-head terminal witness is invalid")
+        self._witness = witness
         self.root = Path(root).expanduser().resolve(strict=False)
         self.heads_root = self.root / "heads"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -121,13 +135,33 @@ class ExternalRollingHeadRegistry:
         self.max_elapsed_ms = max_elapsed_ms
         self._install_bootstrap_identity(bootstrap_identity)
         self._records = self._load_records()
+        self._require_terminal_witness()
+
+    def _require_terminal_witness(self) -> None:
+        if self._witness is not None:
+            try:
+                self._witness.require(
+                    registry_state(
+                        len(self._records),
+                        ZERO_DIGEST if not self._records else self._records[-1].registry_digest,
+                    )
+                )
+            except WitnessError as exc:
+                raise RollingHeadRegistryError(str(exc)) from exc
+
+    def _refresh_witnessed(self) -> None:
+        if self._witness is not None:
+            self._records = self._load_records()
+            self._require_terminal_witness()
 
     @property
     def record_count(self) -> int:
+        self._refresh_witnessed()
         return len(self._records)
 
     @property
     def latest_expected_head(self) -> RollingRestartExpectedHead | None:
+        self._refresh_witnessed()
         return None if not self._records else self._records[-1].expected_head
 
     def open_repository(
@@ -268,6 +302,7 @@ class ExternalRollingHeadRegistry:
             raise RollingHeadRegistryError(
                 "rolling-head publication requires a verified restart receipt"
             )
+        self._refresh_witnessed()
         latest = None if not self._records else self._records[-1]
         if latest is not None:
             if receipt.checkpoint_sequence < latest.rolling_checkpoint_sequence:
@@ -306,6 +341,14 @@ class ExternalRollingHeadRegistry:
             manifest,
         )
         self._publish_record(record)
+        if self._witness is not None:
+            try:
+                self._witness.advance(
+                    registry_state(sequence - 1, prior_digest),
+                    registry_state(sequence, record.registry_digest),
+                )
+            except WitnessError as exc:
+                raise RollingHeadRegistryError(str(exc)) from exc
         self._records = self._load_records()
         winner = self._records[-1]
         if winner != record:

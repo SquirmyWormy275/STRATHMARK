@@ -72,3 +72,13 @@ its admission slot until the network call actually exits. At most two such calls
 may remain; further calls decline immediately instead of accumulating threads or
 queued requests. A returned response is closed after the byte/deadline checks.
 This optional narrative path does not change numeric forecasts or marks.
+
+
+Operational V3 gateways now require independently authenticated current event and
+command-result authority. Signed checkpoint, key-rotation and rolling-head
+registries require an independent monotonic terminal witness to reject deleted
+tails. Reaction rebuilding verifies its authority under the writer lock before
+replacing any views. See [Authority trust and migration](AUTHORITY_TRUST.md) for
+backend provisioning, preserved-evidence migration, explicit rehearsal exceptions
+and the fail-closed uncertain-commit incident procedure. No production witness
+backend is included or provisioned by this package update.

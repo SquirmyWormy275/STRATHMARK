@@ -16,6 +16,12 @@ request handling, local input, model loading, storage and release provenance.
 - POSIX authority files and new private roots use explicit owner-only permissions.
   Blob reads retain verified handles and restore verifies the copied database before
   activation. Windows ACL verification remains an installation requirement.
+- Operational V3 event and command-result authority and signed registry heads
+  require an independently provisioned monotonic witness. Missing or mismatched
+  current trust stops operation and preserves existing evidence. See
+  [authority trust and migration](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/AUTHORITY_TRUST.md)
+  for provisioning and integrity-incident recovery; the package does not supply a
+  production witness backend.
 - Manual PyPI recovery requires successful main CI for the exact tagged source.
   Release evidence records controlled tool, environment and executable identities.
 
