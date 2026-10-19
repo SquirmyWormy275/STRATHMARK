@@ -333,7 +333,9 @@ $env:STRATHMARK_TEST_DB = '1'
 $env:STRATHMARK_DB_PATH = "$PWD\.tmp\v2-proof.sqlite3"
 $env:STRATHMARK_V3_DB_PATH = "$PWD\.tmp\v3-proof.sqlite3"
 python scripts/replay_v3.py
-python scripts/run_v3_release_evidence.py --local-model qwen3.5:9b --local-model ministral-3:8b
+python -m pip install -r requirements/v3-evidence-tools.lock
+# Use the administrator-approved NVIDIA executable path and independently recorded hash.
+python -I scripts/run_v3_release_evidence.py --nvidia-smi "$approvedNvidiaPath" --nvidia-smi-sha256 "$approvedNvidiaSha256" --local-model qwen3.5:9b --local-model ministral-3:8b
 $source = (git rev-parse HEAD).Trim()
 python scripts/verify_v3_release.py --evidence benchmarks/v3/v3_executable_evidence.json --emit-rehearsal $source --output-attestation benchmarks/v3/v3_release_attestation.json
 python scripts/verify_v3_release.py

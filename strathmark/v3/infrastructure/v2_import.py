@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -374,7 +375,12 @@ def open_v2_readonly(
 ) -> Iterator[sqlite3.Connection]:
     """Open V2 with SQLite-enforced read-only and query-only policy."""
 
-    source = Path(source_path).expanduser().resolve(strict=True)
+    from strathmark.private_storage import reject_links
+
+    source = reject_links(source_path)
+    if source.stat().st_size > 67_108_864:
+        raise V2ImportError("V2 source exceeds the 64 MiB import budget")
+    deadline = deadline or SQLiteDeadline(timeout_seconds=60)
     if not source.is_file():
         raise FileNotFoundError(source)
     if deadline is not None and not isinstance(deadline, SQLiteDeadline):
@@ -387,7 +393,7 @@ def open_v2_readonly(
     else:
         timeout_ms = DEFAULT_CONNECTION_POLICY.busy_timeout_ms
     connection = sqlite3.connect(
-        f"{source.as_uri()}?mode=ro",
+        f"{source.as_uri()}?mode=ro&nofollow=1",
         uri=True,
         isolation_level=None,
         timeout=timeout_ms / 1000,
@@ -417,8 +423,13 @@ def import_v2_snapshot(
 ) -> V2ImportResult:
     """Verify one stable V2 snapshot and append its ineligible V3 import event."""
 
-    source = Path(source_path).expanduser().resolve(strict=True)
-    destination = Path(destination_path).expanduser().resolve(strict=False)
+    from strathmark.private_storage import reject_links
+
+    source = reject_links(source_path)
+    if source.stat().st_size > 67_108_864:
+        raise V2ImportError("V2 source exceeds the 64 MiB import budget")
+    deadline = deadline or SQLiteDeadline(timeout_seconds=60)
+    destination = reject_links(destination_path)
     _reject_same_file(source, destination)
     normalized_cutoff = _require_cutoff(cutoff)
     before = _source_file_manifest(source)
@@ -430,8 +441,24 @@ def import_v2_snapshot(
     primary_error: BaseException | None = None
     completed = False
     try:
-        snapshot = _read_source_snapshot(source, cutoff=normalized_cutoff, deadline=deadline)
-        repeated = _read_source_snapshot(source, cutoff=normalized_cutoff, deadline=deadline)
+        from strathmark.input_limits import read_bounded_file
+        from strathmark.private_storage import private_directory, private_file
+
+        # SQLite reads only a private snapshot of exactly the bytes hashed above.
+        raw = read_bounded_file(source)
+        if hashlib.sha256(raw).hexdigest() != before[0][2]:
+            raise V2SourceChangedError("V2 source changed before the private snapshot")
+        deadline.raise_if_expired()
+        with tempfile.TemporaryDirectory(prefix="strathmark-v2-import-") as staging:
+            snapshot_path = private_file(private_directory(staging) / "source.sqlite3")
+            snapshot_path.write_bytes(raw)
+            del raw
+            snapshot = _read_source_snapshot(
+                snapshot_path, cutoff=normalized_cutoff, deadline=deadline
+            )
+            repeated = _read_source_snapshot(
+                snapshot_path, cutoff=normalized_cutoff, deadline=deadline
+            )
         if snapshot != repeated or _source_file_manifest(source) != before:
             raise V2SourceChangedError("V2 source changed between consistent snapshot reads")
         with open_v3_connection(destination) as v3:
@@ -495,6 +522,8 @@ def _source_file_manifest(
         if not candidate.exists():
             observed.append((candidate.name, None, None))
             continue
+        if candidate.stat().st_size > 67_108_864:
+            raise V2ImportError("V2 source file exceeds import byte budget")
         digest = hashlib.sha256()
         size = 0
         with candidate.open("rb") as handle:
@@ -536,6 +565,14 @@ def _read_source_snapshot(
             if foreign_key_errors:
                 raise V2SourceIntegrityError("V2 SQLite foreign_key_check failed")
             catalog, table_names = _catalog(connection)
+            if len(table_names) > 128:
+                raise V2ImportError("V2 source exceeds table budget")
+            total_rows = 0
+            for table in table_names:
+                quoted = table.replace('"', '""')
+                total_rows += connection.execute(f'SELECT count(*) FROM "{quoted}"').fetchone()[0]
+                if total_rows > 100_000:
+                    raise V2ImportError("V2 source exceeds aggregate row budget")
             profile_ids = _validate_profiles(connection, table_names)
             _verify_evidence(connection, table_names)
             _verify_shadow_and_settlements(connection, table_names)
@@ -1122,7 +1159,7 @@ def _build_importable_evidence(
         "SELECT snapshot_digest, ordinal, row_digest, competitor_id, event_code, "
         "time_seconds, species, diameter_mm, quality, competition_id, heat_id, result_date "
         "FROM evidence_snapshot_rows ORDER BY snapshot_digest, ordinal"
-    ).fetchall()
+    )
     for ordinal, row in enumerate(rows):
         value = {
             "schema_version": "strathmark-v3-imported-v2-evidence-row-v1",

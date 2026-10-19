@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts.publish_github_release import publish_release, release_notes, run_gh
-from scripts.verify_release_tag import verify_release_tag
+from scripts.verify_release_tag import ReleaseTagError, verify_release_tag
 from tests.test_package_release import _git, _release_repository
 
 
@@ -140,6 +140,32 @@ def test_pypi_substitution_cannot_create_github_release(tmp_path):
     with pytest.raises(ValueError, match="hash differs"):
         publish_release(
             source, dist, "pypi-v3.0.0rc9", "owner/STRATHMARK", gh=github, metadata=metadata
+        )
+    assert not github.commands
+
+
+@pytest.mark.parametrize("move_source", [False, True])
+def test_tag_change_after_build_cannot_publish_github_release(tmp_path, move_source):
+    source, dist, metadata = _fixture(tmp_path)
+    commit = _git(source, "rev-parse", "HEAD")
+    authorization_oid = _git(source, "rev-parse", "refs/tags/pypi-v3.0.0rc9")
+    if move_source:
+        (source / "unreviewed.txt").write_text("changed after CI", encoding="utf-8")
+        _git(source, "add", "unreviewed.txt")
+        _git(source, "commit", "-m", "unreviewed source")
+        _git(source, "tag", "-f", "-a", "v3.0.0rc9", "-m", "moved source")
+    _git(source, "tag", "-f", "-a", "pypi-v3.0.0rc9", "-m", "moved authorization")
+    github = GitHub("v3.0.0rc9")
+    with pytest.raises(ReleaseTagError, match="CI-authorized commit|changed after CI"):
+        publish_release(
+            source,
+            dist,
+            "pypi-v3.0.0rc9",
+            "owner/STRATHMARK",
+            expected_commit=commit,
+            expected_authorization_oid=authorization_oid,
+            gh=github,
+            metadata=metadata,
         )
     assert not github.commands
 

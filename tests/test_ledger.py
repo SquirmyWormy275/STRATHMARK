@@ -12,6 +12,7 @@ import threading
 import time
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import date
 
 import pytest
@@ -821,10 +822,17 @@ def test_automatic_mirror_scan_memory_is_bounded_by_page_not_backlog(tmp_path, m
         return "failed"
 
     monkeypatch.setattr(ledger, "_deliver_pending", fail_without_allocating)
-    tracemalloc.start()
-    ledger._mirror_worker_loop()
-    _, peak_bytes = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    # Open and validate the real private database before measuring pagination.
+    # Reuse this one connection so native ACL/connection setup allocations do
+    # not enter the scan's memory budget. The real queries and all rows remain.
+    with ledger._connect() as scan_connection:
+        monkeypatch.setattr(ledger, "_connect", lambda: nullcontext(scan_connection))
+        tracemalloc.start()
+        try:
+            ledger._mirror_worker_loop()
+            _, peak_bytes = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
 
     assert attempts == backlog
     assert peak_bytes < 350_000

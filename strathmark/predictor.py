@@ -501,7 +501,7 @@ class StaticPredictionProvider(PredictionEngineProvider):
 
 
 class FilePredictionProvider(PredictionEngineProvider):
-    """Thread-safe artifact loader with environment, local, package precedence."""
+    """Thread-safe artifact loader for packaged or explicitly pinned owner artifacts."""
 
     def __init__(self) -> None:
         self._lock = _threading.RLock()
@@ -519,6 +519,8 @@ class FilePredictionProvider(PredictionEngineProvider):
             _path_signature(core_path),
             str(residual_path) if residual_path else None,
             _path_signature(residual_path),
+            os.environ.get("STRATHMARK_PREDICTION_CORE_SHA256", ""),
+            os.environ.get("STRATHMARK_PREDICTION_RESIDUAL_MANIFEST_SHA256", ""),
             cutoff,
         )
         with self._lock:
@@ -543,10 +545,6 @@ def _resolve_core_artifact_path() -> tuple[Optional[Path], str]:
     configured = os.environ.get(prediction_config.CORE_ARTIFACT_ENV, "").strip()
     if configured:
         return Path(configured).expanduser(), "environment"
-    for candidate in prediction_config.LOCAL_CORE_PATHS:
-        path = Path(candidate)
-        if path.is_file():
-            return path, "local"
     package_path = Path(__file__).resolve().parent / prediction_config.PACKAGE_CORE_PATH
     if package_path.is_file():
         return package_path, "package"
@@ -557,12 +555,23 @@ def _resolve_residual_artifact_path(core_path: Optional[Path]) -> Optional[Path]
     configured = os.environ.get(prediction_config.RESIDUAL_ARTIFACT_ENV, "").strip()
     if configured:
         return Path(configured).expanduser()
-    if core_path is not None:
-        sibling = core_path.parent / "residual"
-        if sibling.is_dir():
-            return sibling
-    local = Path("models/prediction_v2/residual")
-    return local if local.is_dir() else None
+    return None
+
+
+def _verify_owner_artifact(path: Path, raw: bytes, pin_name: str) -> None:
+    import hashlib
+    import stat
+
+    expected = os.environ.get(pin_name, "").strip().lower()
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError("Explicit model artifacts require absolute non-link paths")
+    metadata = path.stat()
+    if os.name == "posix" and (
+        metadata.st_uid != os.getuid() or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise ValueError("Explicit model artifacts must be owner controlled")
+    if len(expected) != 64 or hashlib.sha256(raw).hexdigest() != expected:
+        raise ValueError("Explicit model artifact differs from external digest pin")
 
 
 def _path_signature(path: Optional[Path]) -> Optional[tuple[int, int]]:
@@ -590,7 +599,12 @@ def _load_prediction_bundle(
             degraded=True,
         )
     try:
-        core = PredictionV2Model.from_json(core_path.read_bytes())
+        from strathmark.input_limits import read_bounded_file
+
+        raw = read_bounded_file(core_path)
+        if source == "environment":
+            _verify_owner_artifact(core_path, raw, "STRATHMARK_PREDICTION_CORE_SHA256")
+        core = PredictionV2Model.from_json(raw)
     except (OSError, ValueError, TypeError):
         return PredictionBundle(
             source=source,
@@ -603,12 +617,27 @@ def _load_prediction_bundle(
     loaded = None
     residual = None
     if residual_path is not None:
-        loaded = load_residual_artifact(
-            residual_path,
-            expected_core_checksum=core.source_checksum,
-            expected_core_artifact_checksum=core.artifact_fingerprint(),
-            prediction_as_of=prediction_as_of,
-        )
+        try:
+            raw_manifest = read_bounded_file(residual_path / "manifest.json", 1_048_576)
+            _verify_owner_artifact(
+                residual_path / "manifest.json",
+                raw_manifest,
+                "STRATHMARK_PREDICTION_RESIDUAL_MANIFEST_SHA256",
+            )
+        except (OSError, ValueError):
+            from strathmark.residual import ResidualArtifactLoad
+
+            loaded = ResidualArtifactLoad(warning="residual_artifact_untrusted", degraded=True)
+        else:
+            loaded = load_residual_artifact(
+                residual_path,
+                expected_core_checksum=core.source_checksum,
+                expected_core_artifact_checksum=core.artifact_fingerprint(),
+                prediction_as_of=prediction_as_of,
+                expected_manifest_sha256=os.environ.get(
+                    "STRATHMARK_PREDICTION_RESIDUAL_MANIFEST_SHA256"
+                ),
+            )
         residual = ResidualRuntime(loaded)
     warnings: list[str] = []
     if loaded is not None and loaded.warning:

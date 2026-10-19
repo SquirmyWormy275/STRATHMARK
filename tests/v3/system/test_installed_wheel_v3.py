@@ -76,6 +76,10 @@ def test_installed_wheel_contains_and_verifies_distinct_v3_contract(tmp_path: Pa
     probe = r"""
 import sys
 sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from strathmark.private_storage import private_directory
+# The caller owns this fresh pytest fixture, including all installed probe data.
+private_directory(Path.cwd())
 from strathmark.consumer_contract import load_shadow_consumer_contract
 from strathmark.v3.api.app import create_v3_app
 from strathmark.v3.api.auth import InMemoryCredentialSecretStore, ServiceCredentialRegistry
@@ -112,6 +116,11 @@ assert set(v3["paths"]) == EXPECTED_V3_CONSUMER_PATHS
 assert all(path.startswith("/v3/") for path in v3["paths"])
 assert len(v3_consumer_contract_digest()) == 64
 assert all(not path.startswith("/v3/") for path in load_shadow_consumer_contract()["paths"])
+from strathmark.v3.infrastructure.event_authority import enable_unwitnessed_rehearsal
+from strathmark.v3.infrastructure.integrity import P256EphemeralSigner
+enable_unwitnessed_rehearsal(
+    sys.argv[2], signer=P256EphemeralSigner.generate("integrity-key:installed-rehearsal")
+)
 registry = ServiceCredentialRegistry(SQLiteEventStore(sys.argv[2]), InMemoryCredentialSecretStore())
 registry.bootstrap_offline(
     principal_id="actor:installed-smoke",

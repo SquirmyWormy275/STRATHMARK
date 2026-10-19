@@ -206,6 +206,8 @@ class PreFieldForecastService:
         )
         if recovered is not None:
             return recovered, True
+        if created_at > snapshot.hard_deadline_at:
+            raise PreFieldForecastError("pre-field deadline has expired")
         self._source.prepare(snapshot, observed_at=created_at)
         inputs = self._source.load_current(snapshot)
         if (

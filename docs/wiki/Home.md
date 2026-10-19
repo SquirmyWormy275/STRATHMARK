@@ -23,10 +23,12 @@ events with persistent review, issue, outcomes, progression and corrections. See
 
 ## What works today?
 
-**V2** is the established engine for Linux and Windows. **Linux V3**, using
-STRATHMARK 3.0.0rc7 with STRATHEX 7.4.2, supports a full local competition workflow.
-It requires a configured trained model, persistent signing key and independent
-backups. It uses Formula and ML; its LLM council is unavailable.
+**V2** is the established engine for Linux and Windows. New **Linux V3** profiles
+use STRATHMARK 3.0.0rc12 with STRATHEX 7.4.4 for the full local competition workflow.
+They require a configured trained model, persistent signing key and independent
+backups; package installation alone does not activate a profile. Retained rc7/7.4.2
+competitions keep their original exact runtime and saved identities. Linux uses
+Formula and ML; its LLM council is unavailable.
 
 The Windows V7 service is for development and rehearsal; production qualification
 is incomplete. Older numeric-preview competitions keep their original limitations.

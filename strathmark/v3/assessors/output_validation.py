@@ -145,6 +145,11 @@ def _decode(raw: bytes) -> Mapping[str, Any]:
 def _distribution(value: object) -> PositiveTimeDistribution:
     if not isinstance(value, list) or len(value) != len(REQUIRED_QUANTILES):
         raise LLMOutputError("invalid_quantiles")
+    if any(
+        not isinstance(item, dict) or item.get("probability") != expected
+        for item, expected in zip(value, REQUIRED_QUANTILES)
+    ):
+        raise LLMOutputError("invalid_quantiles")
     try:
         points = tuple(QuantilePoint.from_dict(item) for item in value)
         if tuple(item.probability for item in points) != REQUIRED_QUANTILES:

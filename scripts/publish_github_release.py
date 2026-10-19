@@ -74,10 +74,17 @@ def publish_release(
     authorization_tag: str,
     repository: str,
     *,
+    expected_commit: str | None = None,
+    expected_authorization_oid: str | None = None,
     gh: Callable[[list[str]], dict | list | None] = run_gh,
     metadata: dict | None = None,
 ) -> None:
-    verified = verify_release_tag(source, authorization_tag)
+    verified = verify_release_tag(
+        source,
+        authorization_tag,
+        expected_commit=expected_commit,
+        expected_authorization_oid=expected_authorization_oid,
+    )
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("expected an owner/repository identity")
     if not re.fullmatch(
@@ -165,8 +172,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dist-dir", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--repository", required=True)
+    parser.add_argument("--commit", required=True)
+    parser.add_argument("--authorization-oid", required=True)
     args = parser.parse_args(argv)
-    publish_release(args.source, args.dist_dir, args.tag, args.repository)
+    publish_release(
+        args.source,
+        args.dist_dir,
+        args.tag,
+        args.repository,
+        expected_commit=args.commit,
+        expected_authorization_oid=args.authorization_oid,
+    )
     return 0
 
 

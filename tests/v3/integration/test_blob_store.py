@@ -146,7 +146,7 @@ def test_verified_blob_lease_closes_every_handle_after_lock_or_unlock_failure(
     store = ContentAddressedBlobStore(tmp_path / "blobs")
     first = store.publish(_blob_payload(b"lock-failure"), metadata=_metadata())
     first_path = store.path_for(first.digest)
-    original_open = Path.open
+    original_open = module.os.fdopen
     opened = []
 
     def tracked_open(path, *args, **kwargs):
@@ -157,7 +157,7 @@ def test_verified_blob_lease_closes_every_handle_after_lock_or_unlock_failure(
     def fail_lock(_handle, _length):
         raise OSError("busy")
 
-    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(module.os, "fdopen", tracked_open)
     monkeypatch.setattr(module, "_lock_blob_handle", fail_lock)
     with pytest.raises(BlobIntegrityError, match="leased immutably"):
         with store.verified_lease(first):

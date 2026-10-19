@@ -623,10 +623,7 @@ class PredictionEngineConfig:
     CORE_ARTIFACT_ENV: str = "STRATHMARK_PREDICTION_CORE_ARTIFACT"
     RESIDUAL_ARTIFACT_ENV: str = "STRATHMARK_PREDICTION_RESIDUAL_ARTIFACT"
     DEFAULT_ENGINE: str = "v2"
-    LOCAL_CORE_PATHS: tuple[str, ...] = (
-        "models/prediction_v2_core.json",
-        "models/prediction_v2/core.json",
-    )
+    LOCAL_CORE_PATHS: tuple[str, ...] = ()
     PACKAGE_CORE_PATH: str = "models/prediction_v2_core.json"
 
     def selected_engine(self) -> str:

@@ -19,6 +19,7 @@ import pytest
 import strathmark.v3.assessors.llm_council as council
 import strathmark.v3.infrastructure.cloud as cloud_module
 import strathmark.v3.infrastructure.ollama as ollama_module
+from strathmark.private_storage import private_directory
 from strathmark.v3.application.capacity import (
     CapacityManifest,
     CapacityUse,
@@ -105,6 +106,7 @@ from strathmark.v3.infrastructure.sqlite.jobs import (
 
 _CLOUD_TRUSTED_IDENTITIES = []
 _TEST_TEMP = tempfile.TemporaryDirectory(prefix="strathmark-u11-")
+private_directory(_TEST_TEMP.name)
 _TEST_LEASE_AUTHORITY: PersistedLeaseAuthority | None = None
 _TEST_REPOSITORIES: dict[str, DurableJobRepository] = {}
 _TEST_JOB_SEQUENCE = itertools.count(1)

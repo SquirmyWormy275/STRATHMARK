@@ -538,7 +538,10 @@ class ResultStore:
         self._evidence_health_lock = threading.Lock()
         self._cached_evidence_health_status: Optional[EvidenceSnapshotStatus] = None
         self._cached_evidence_health_signature: Optional[tuple[Any, ...]] = None
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        if self._path.parent == _DEFAULT_DB_DIR:
+            from strathmark.private_storage import private_directory
+
+            private_directory(_DEFAULT_DB_DIR)
         self._init_schema()
 
     # ------------------------------------------------------------------
@@ -551,6 +554,9 @@ class ResultStore:
             timeout_ms = query_deadline.remaining_milliseconds()
         else:
             timeout_ms = 5_000
+        from strathmark.private_storage import private_file
+
+        private_file(self._path)
         conn = sqlite3.connect(
             str(self._path),
             check_same_thread=False,

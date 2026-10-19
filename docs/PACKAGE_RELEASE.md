@@ -77,7 +77,10 @@ Account-level web/email delivery preferences remain unchanged.
 
 The manual **Publish to PyPI** dispatch remains available on `main`, with an existing
 annotated `pypi-v<version>` authorization tag. It runs the same immutable-source and
-artifact checks. Use it to retry a failed publication after correcting its cause
+artifact checks. Recovery also requires the exact source commit to be an ancestor
+of maintained `main` with completed, successful same-repository push CI. The resolved
+commit and annotated tag object are carried into artifact verification, so moving
+a tag between jobs fails closed. Use it to retry a failed publication after correcting its cause
 only when no PyPI upload has completed. After an upload, use GitHub's **Re-run failed
 jobs** on that run to recover verification or GitHub Release publication using the
 original exact artifacts; a fresh dispatch must not attempt to upload the same version.
@@ -93,6 +96,20 @@ maintaining automation. A successful GitHub release upload alone does not prove 
 PyPI upload succeeded: verify the public files and indexed installation.
 
 ## Platform truth
+
+Executable V3 rehearsal evidence uses the exact runtime lock and separate
+`requirements/v3-evidence-tools.lock`. Run the committed candidate from a fresh
+checkout with `python -I scripts/run_v3_release_evidence.py`. Untracked root hooks
+and ignored executable inputs are rejected. Child processes receive a recorded
+environment allowlist, isolated Python, disabled automatic pytest plugins, no
+package-index access, and disposable authority paths. The evidence binds the Python
+binary digest and exact build/test tool versions. NVIDIA telemetry requires an
+absolute administrator-approved executable and independently recorded SHA-256 via
+`--nvidia-smi` and `--nvidia-smi-sha256`; it never searches the caller's `PATH`.
+Do not obtain the approved hash from an untrusted file presented for this run.
+
+The executable-evidence payload is now v2. Older evidence must be regenerated on
+the designated host; none of these changes grants Windows CNG production eligibility.
 
 V2 is a portable Python library. STRATHMARK 3.0.0rc7 also supplies the separate
 [Linux local competition profile](V3_LINUX_COMPETITION.md), using real Formula/ML,

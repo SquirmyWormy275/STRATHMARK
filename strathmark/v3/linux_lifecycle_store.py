@@ -25,6 +25,7 @@ from typing import Callable
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from strathmark.private_storage import private_directory, reject_links
 from strathmark.v3.contracts.canonical import canonical_bytes, canonical_digest
 from strathmark.v3.infrastructure.integrity import (
     IntegrityKeyClass,
@@ -51,10 +52,18 @@ def digest(value: object) -> str:
     return canonical_digest(value, max_bytes=MAX_BYTES)
 
 
+def _authority_path(path: Path) -> Path:
+    try:
+        return reject_links(path) if os.name == "posix" else path
+    except (OSError, ValueError) as error:
+        raise LinuxLifecycleError(f"unsafe installation authority path: {error}") from error
+
+
 def _private(path: Path) -> None:
+    path = _authority_path(path)
     if path.is_symlink():
         raise LinuxLifecycleError("installation material cannot be a symlink")
-    stat = path.stat()
+    stat = path.lstat()
     if os.name == "posix" and (stat.st_uid != os.geteuid() or stat.st_mode & 0o077):
         raise LinuxLifecycleError("installation material must be owned by this user and private")
 
@@ -69,6 +78,7 @@ def _sync_directory(path: Path) -> None:
 
 
 def _write_private(path: Path, raw: bytes, *, replace: bool = False) -> None:
+    path = _authority_path(path)
     temporary = (
         path.with_name(path.name + "." + secrets.token_hex(8) + ".next") if replace else path
     )
@@ -88,14 +98,11 @@ def _write_private(path: Path, raw: bytes, *, replace: bool = False) -> None:
 
 def _archive_digests(path):
     try:
-        with tarfile.open(path, "r:gz") as archive:
-            members = [item for item in archive.getmembers() if item.isfile()]
-            if len({item.name for item in members}) != len(members):
-                raise LinuxLifecycleError("recovery archive has duplicate members")
-            return {
-                item.name: sha256(archive.extractfile(item).read()).hexdigest() for item in members
-            }
-    except (OSError, tarfile.TarError, EOFError, zlib.error) as error:
+        from strathmark.input_limits import tar_stream_digests
+
+        with open(path, "rb") as stream:
+            return tar_stream_digests(stream)
+    except (OSError, ValueError, tarfile.TarError, EOFError, zlib.error) as error:
         raise LinuxLifecycleError("recovery archive is corrupted") from error
 
 
@@ -129,10 +136,12 @@ class LinuxLifecycleStore:
 
     @classmethod
     def initialize(cls, root: Path | str) -> LinuxLifecycleStore:
-        root = Path(root).expanduser().absolute()
+        root = _authority_path(Path(root).expanduser().absolute())
         if root.is_symlink():
             raise LinuxLifecycleError("installation root cannot be a symlink")
-        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if not root.parent.exists():
+            private_directory(root.parent)
+        root.mkdir(mode=0o700, exist_ok=True)
         _private(root)
         key_path = root / "installation-key.pem"
         identity_path = root / "installation-identity.json"
@@ -204,6 +213,8 @@ class LinuxLifecycleStore:
 
     @contextmanager
     def _connect(self):
+        _private(self.root)
+        _private(self.database)
         connection = sqlite3.connect(self.database, timeout=30, isolation_level=None)
         try:
             connection.execute("PRAGMA trusted_schema=OFF")
@@ -216,6 +227,7 @@ class LinuxLifecycleStore:
     @contextmanager
     def _writer_lock(self):
         """Serialize verified readers with commits and the retained head replacement."""
+        _private(self.root)
         descriptor = os.open(self.root / "writer.lock", os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if os.name == "posix":
@@ -336,7 +348,9 @@ class LinuxLifecycleStore:
                 if tar_digests(encrypted, encryption_policy) != files:
                     raise LinuxLifecycleError("encrypted independent archive readback differs")
                 return encrypted
+            _authority_path(target)
             if target.exists():
+                _private(target)
                 if _archive_digests(target) != files:
                     raise LinuxLifecycleError("existing recovery archive readback differs")
                 return target
@@ -459,8 +473,11 @@ class LinuxLifecycleStore:
 
     def backup(self, destination: Path | str) -> dict:
         """Export one independently verifiable, complete local authority snapshot."""
-        destination = Path(destination).expanduser().absolute()
-        destination.mkdir(parents=True, mode=0o700, exist_ok=False)
+        destination = _authority_path(Path(destination).expanduser().absolute())
+        if not destination.parent.exists():
+            private_directory(destination.parent)
+        destination.mkdir(mode=0o700, exist_ok=False)
+        _private(destination)
         with self._writer_lock(), self._connect() as source:
             source.execute("BEGIN IMMEDIATE")
             state, head = self._verify(source)

@@ -126,7 +126,7 @@ class VerifiedBlobLease:
         metadata_path = self._store._metadata_path(self._reference)
         try:
             for path in (content_path, metadata_path):
-                handle = path.open("rb")
+                handle = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb")
                 try:
                     length = max(1, os.fstat(handle.fileno()).st_size)
                     _lock_blob_handle(handle, length)
@@ -141,7 +141,7 @@ class VerifiedBlobLease:
             if _file_digest(content_handle) != self._reference.digest:
                 raise BlobIntegrityError("required blob digest differs from its reference")
             metadata_handle.seek(0)
-            observed_metadata = metadata_handle.read()
+            observed_metadata = metadata_handle.read(1_048_577)
             metadata_handle.seek(0)
             if observed_metadata != canonical_bytes(self._reference.to_dict()):
                 raise BlobIntegrityError("required blob metadata differs from its reference")
@@ -160,6 +160,19 @@ class VerifiedBlobLease:
 
     def __exit__(self, *_exc: object) -> None:
         self._release()
+
+    def read(self) -> bytes:
+        self.verify_current()
+        stream = self._handles[0][0]
+        stream.seek(0)
+        payload = stream.read(self._reference.byte_count + 1)
+        if (
+            len(payload) != self._reference.byte_count
+            or hashlib.sha256(payload).hexdigest() != self._reference.digest
+        ):
+            raise BlobIntegrityError("leased blob changed while reading")
+        self.verify_current()
+        return payload
 
     def verify_current(self) -> StoredBlobReference:
         if len(self._handles) != 2 or len(self._snapshots) != 2:
@@ -206,10 +219,12 @@ class ContentAddressedBlobStore:
             raise BlobStoreError("blob root must be a filesystem path")
         if not isinstance(create, bool):
             raise BlobStoreError("blob create mode must be boolean")
-        self.root = Path(root).expanduser().resolve(strict=False)
+        from strathmark.private_storage import private_directory, reject_links
+
+        self.root = reject_links(root)
         self.read_only = not create
         if create:
-            self.root.mkdir(parents=True, exist_ok=True)
+            private_directory(self.root)
         elif not self.root.is_dir():
             raise BlobIntegrityError("existing blob root is missing")
 
@@ -241,7 +256,9 @@ class ContentAddressedBlobStore:
             retention_class=metadata.retention,
         )
         directory = self._directory(digest)
-        directory.mkdir(parents=True, exist_ok=True)
+        from strathmark.private_storage import private_directory
+
+        private_directory(directory)
         content_path = self.path_for(digest)
         metadata_path = self._metadata_path(reference)
         content_temp = directory / f".{digest}.{uuid.uuid4().hex}.tmp"
@@ -326,8 +343,8 @@ class ContentAddressedBlobStore:
         return VerifiedBlobLease(self, reference)
 
     def read(self, reference: StoredBlobReference) -> bytes:
-        self.verify(reference)
-        return self.path_for(reference.digest).read_bytes()
+        with self.verified_lease(reference) as lease:
+            return lease.read()
 
     def path_for(self, digest: str) -> Path:
         self._require_digest(digest)
@@ -358,7 +375,9 @@ class ContentAddressedBlobStore:
         write_stage: str,
         fsync_stage: str,
     ) -> None:
-        with path.open("xb") as handle:
+        from strathmark.private_storage import open_private_exclusive
+
+        with os.fdopen(open_private_exclusive(path), "wb") as handle:
             handle.write(payload)
             handle.flush()
             _fault(fault_hook, write_stage)

@@ -2,7 +2,9 @@
 
 ## Linux V3 competitions
 
-Use STRATHMARK 3.0.0rc7 with STRATHEX 7.4.2 in separate Python 3.13 environments.
+For new profiles, use STRATHMARK 3.0.0rc12 with STRATHEX 7.4.4 in separate Python
+3.13 environments. Retained rc7/7.4.2 competitions keep their exact original
+runtime, model, signing authority and data; never upgrade them in place.
 The V3 environment needs the exact release lock, a verified trained model and a
 persistent local signing authority. The operator launcher requires an existing
 backup directory on a different filesystem from the live workbook.
@@ -21,6 +23,17 @@ Restore into a new private directory and verify the recovered files before openi
 it. On Linux, the authority directory needs mode 700 and key, identity, head and
 database files need mode 600. Do not initialize a replacement key over an existing
 competition or edit the database to repair a command.
+
+Authority paths also need trusted ancestors. On POSIX, parent directories must
+belong to the current user or root, with no group/other write access unless they
+have the sticky bit. Safe 755 parents and trusted sticky temporary roots remain
+supported; shared writable locations are refused without changing their modes.
+Store database files inside a dedicated subdirectory of a sticky temporary root:
+their immediate parent must prevent peers from precreating journal/WAL siblings.
+This applies to local databases, workspace secrets and plaintext backups.
+Authenticated encrypted archives may still use a separate removable filesystem
+with permissive emulated modes. See
+[Security hardening](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/SECURITY_HARDENING.md).
 
 For profile selection and rollback, use the
 [portable installer guide](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md).
@@ -42,3 +55,9 @@ Windows production qualification is incomplete. It requires the designated insta
 composition, non-exportable CNG signing identities, exact production evidence and a
 separately authorized eligibility handoff. A development-key rehearsal cannot supply
 that authority. See the [Windows deployment specification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md).
+
+Fresh rehearsal evidence also requires the exact evidence-tool lock, isolated Python
+(`python -I`), a clean committed checkout, and an independently approved NVIDIA tool
+path and digest. Its v2 receipts record the effective child environment, Python
+binary digest and tool versions. Existing receipts must be regenerated; a successful
+Linux regression run does not substitute for designated Windows execution.

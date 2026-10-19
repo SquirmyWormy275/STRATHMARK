@@ -245,7 +245,29 @@ def compose_production_ml_authorities(
     return candidate, audit
 
 
-def compose_v3_application_gateway(
+def compose_v3_application_gateway(*, event_authority: object, **configuration: object):
+    """Operational gateway; independent current authority is mandatory."""
+    from strathmark.v3.infrastructure.event_authority import bind_event_authority
+
+    bind_event_authority(configuration["database_path"], event_authority)
+    return _compose_v3_application_gateway(**configuration)
+
+
+def compose_v3_rehearsal_gateway(**configuration: object):
+    """Explicit synthetic rehearsal only; cannot accept an installation signer."""
+    from strathmark.v3.infrastructure.event_authority import enable_unwitnessed_rehearsal
+    from strathmark.v3.infrastructure.integrity import IntegrityKeyClass
+
+    signer = configuration.get("signer")
+    if getattr(getattr(signer, "identity", None), "key_class", None) is not (
+        IntegrityKeyClass.DEVELOPMENT_EPHEMERAL
+    ):
+        raise ConfigurationError("rehearsal gateway requires an ephemeral development signer")
+    enable_unwitnessed_rehearsal(configuration["database_path"], signer=signer)
+    return _compose_v3_application_gateway(**configuration)
+
+
+def _compose_v3_application_gateway(
     *,
     database_path: Path | str,
     signer: object,
@@ -481,5 +503,6 @@ __all__ = [
     "compose_test_ml_audit_authority",
     "compose_test_ml_candidate_authority",
     "compose_v3_application_gateway",
+    "compose_v3_rehearsal_gateway",
     "resolve_runtime_config",
 ]

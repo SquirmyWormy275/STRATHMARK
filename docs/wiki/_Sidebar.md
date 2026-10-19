@@ -26,6 +26,7 @@
 - [STRATHEX integration](STRATHEX-Consumer)
 - [Deployment and recovery](Deployment)
 - [Storage](Persistence-and-Database)
+- [Security maintenance](Security-Maintenance)
 - [Architecture](Architecture-Overview)
 - [REST API](REST-API)
 - [Testing](Testing)

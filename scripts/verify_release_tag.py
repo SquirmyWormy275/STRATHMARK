@@ -41,7 +41,13 @@ def _rev_parse(repository: Path, revision: str) -> str:
     return completed.stdout.strip()
 
 
-def verify_release_tag(repository: Path, authorization_tag: str) -> VerifiedReleaseTag:
+def verify_release_tag(
+    repository: Path,
+    authorization_tag: str,
+    *,
+    expected_commit: str | None = None,
+    expected_authorization_oid: str | None = None,
+) -> VerifiedReleaseTag:
     repository = repository.resolve()
     prefix = "pypi-v"
     if not authorization_tag.startswith(prefix) or len(authorization_tag) == len(prefix):
@@ -61,6 +67,13 @@ def verify_release_tag(repository: Path, authorization_tag: str) -> VerifiedRele
         )
 
     authorization_commit = _rev_parse(repository, f"{authorization_ref}^{{commit}}")
+    if expected_commit is not None and authorization_commit != expected_commit:
+        raise ReleaseTagError("publication source differs from the CI-authorized commit")
+    if (
+        expected_authorization_oid is not None
+        and _rev_parse(repository, authorization_ref) != expected_authorization_oid
+    ):
+        raise ReleaseTagError("publication authorization tag changed after CI verification")
     source_commit = _rev_parse(repository, f"{source_ref}^{{commit}}")
     head_commit = _rev_parse(repository, "HEAD^{commit}")
     if authorization_commit != source_commit:
@@ -100,8 +113,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--tag", required=True)
+    parser.add_argument("--commit")
+    parser.add_argument("--authorization-oid")
     args = parser.parse_args(argv)
-    verified = verify_release_tag(args.repository, args.tag)
+    verified = verify_release_tag(
+        args.repository,
+        args.tag,
+        expected_commit=args.commit,
+        expected_authorization_oid=args.authorization_oid,
+    )
     print(
         f"release source verified: {verified.source_tag} / "
         f"{verified.authorization_tag} / {verified.commit}"

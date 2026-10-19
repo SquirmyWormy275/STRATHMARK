@@ -214,10 +214,13 @@ def test_outbox_trust_rotation_survives_restart_and_preserves_old_signatures(
 
     new = P256EphemeralSigner.generate("integrity-key:outbox-new")
     registry_root = tmp_path / "integrity-registry"
-    registry = CheckpointRegistry(registry_root, bootstrap_identity=old.identity)
+    registry = CheckpointRegistry(
+        registry_root, allow_unwitnessed_rehearsal=True, bootstrap_identity=old.identity
+    )
     registry.rotate_key(old, new.identity, created_at="2026-08-23T00:00:01.500Z")
     restarted_registry = CheckpointRegistry(
         registry_root,
+        allow_unwitnessed_rehearsal=True,
         bootstrap_identity=old.identity,
     )
     assert restarted_registry.active_identity == new.identity

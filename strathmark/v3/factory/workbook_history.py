@@ -35,13 +35,16 @@ def load_workbook_history(path: Path | str, *, cutoff_at_utc: str) -> WorkbookHi
     from openpyxl import load_workbook
 
     path = Path(path).resolve(strict=True)
-    before = path.read_bytes()
+    from strathmark.input_limits import bounded_workbook
+
+    source = bounded_workbook(path)
+    before = source.getvalue()
     digest = sha256(before).hexdigest()
     cutoff = datetime.fromisoformat(cutoff_at_utc.replace("Z", "+00:00"))
     if cutoff.tzinfo is None:
         raise ValueError("historical cutoff must include a timezone")
     excluded: Counter[str] = Counter()
-    workbook = load_workbook(path, read_only=True, data_only=True)
+    workbook = load_workbook(source, read_only=True, data_only=True)
     try:
         sheets = {sheet.title.lower(): sheet for sheet in workbook}
         if not {"competitor", "wood", "results"} <= set(sheets):

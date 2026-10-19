@@ -39,3 +39,12 @@ def _is_live_db_test_environment() -> tuple[bool, str]:
 
 _LIVE_OK, LIVE_DB_SKIP_REASON = _is_live_db_test_environment()
 live_db_required = pytest.mark.skipif(not _LIVE_OK, reason=LIVE_DB_SKIP_REASON)
+
+
+@pytest.fixture(autouse=True)
+def private_windows_test_root(request):
+    """Explicitly provision synthetic roots; production never guesses ownership."""
+    if os.name == "nt":
+        from strathmark.private_storage import private_directory
+
+        private_directory(request.getfixturevalue("tmp_path"))

@@ -599,7 +599,10 @@ class PredictionLedger:
         if db_path is None:
             db_path = os.environ.get(_ENV_VAR) or _DEFAULT_PATH
         self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.parent == _DEFAULT_PATH.parent:
+            from strathmark.private_storage import private_directory
+
+            private_directory(_DEFAULT_PATH.parent)
         self._mirror = mirror
         self._delivery_lock = threading.Lock()
         self._worker_lock = threading.Lock()
@@ -616,6 +619,9 @@ class PredictionLedger:
     def _connect(
         self, *, query_deadline: Optional[SQLiteQueryDeadline] = None
     ) -> sqlite3.Connection:
+        from strathmark.private_storage import private_file
+
+        private_file(self.path)
         conn = sqlite3.connect(
             str(self.path),
             timeout=30.0,

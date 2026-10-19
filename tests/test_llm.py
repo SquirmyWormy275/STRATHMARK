@@ -1,11 +1,66 @@
 """Tests for strathmark/llm.py — Ollama connection management + Gemini fallback."""
 
+import threading
 import time
 from unittest import mock
 
 import requests
 
 from strathmark.llm import call_ollama, check_ollama_connection, reset_ollama_status
+
+
+def test_slow_headers_have_total_deadline_and_retain_bounded_admission(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import strathmark.llm as llm
+
+    release = threading.Event()
+    received = []
+
+    class SlowHeaders(BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append(self.path)
+            self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n")
+            self.wfile.flush()
+            release.wait(5)
+            try:
+                self.wfile.write(b'Content-Length: 17\r\n\r\n{"response":"ok"}')
+                self.wfile.flush()
+            except OSError:
+                pass
+
+        def log_message(self, *_):
+            pass
+
+    capacity = threading.BoundedSemaphore(2)
+    monkeypatch.setattr(llm, "_ollama_capacity", capacity)
+    monkeypatch.setattr(llm, "_OLLAMA_TOTAL_SECONDS", 0.1)
+    monkeypatch.setattr(llm, "_call_gemini", lambda **_: None)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHeaders)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/api/generate"
+    try:
+        for _ in range(2):
+            reset_ollama_status()
+            started = time.monotonic()
+            assert call_ollama("synthetic", ollama_url=url) is None
+            assert time.monotonic() - started < 1
+        assert len(received) == 2
+        reset_ollama_status()
+        assert call_ollama("synthetic", ollama_url=url) is None
+        assert len(received) == 2  # no replacement worker while timed-out I/O persists
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+        # Ensure real workers have closed responses and returned both permits.
+        assert capacity.acquire(timeout=2)
+        assert capacity.acquire(timeout=2)
+        capacity.release()
+        capacity.release()
+        reset_ollama_status()
 
 
 class TestOllamaConnection:
@@ -87,7 +142,8 @@ class TestCallOllamaFailFast:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
         captured: dict = {}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, stream=False):
+            assert stream is True
             captured["timeout"] = timeout
             raise requests.exceptions.ConnectionError()
 

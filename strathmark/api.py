@@ -32,6 +32,7 @@ Optional dependency:
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hmac
 import os
@@ -125,6 +126,7 @@ if not _FASTAPI_AVAILABLE:
 
 
 class HistoricalResultSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     event_code: Literal["SB", "UH"]
     time_seconds: float = Field(
         ge=rules.MIN_MARK_SECONDS,
@@ -143,8 +145,9 @@ class HistoricalResultSchema(BaseModel):
 
 
 class CompetitorSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=100)
-    history: List[HistoricalResultSchema] = Field(default_factory=list)
+    history: List[HistoricalResultSchema] = Field(default_factory=list, max_length=1000)
     division: Optional[str] = Field(default=None, max_length=100)
     manual_time_override: Optional[float] = Field(
         default=None, ge=rules.MIN_MARK_SECONDS, le=rules.MAX_TIME_LIMIT_SECONDS
@@ -157,6 +160,7 @@ class CompetitorSchema(BaseModel):
 
 
 class WoodSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     species: str = Field(min_length=1, max_length=100)
     diameter_mm: float = Field(
         ge=data_req.MIN_DIAMETER_MM,
@@ -167,12 +171,19 @@ class WoodSchema(BaseModel):
 
 
 class CalculateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     competitors: List[CompetitorSchema] = Field(max_length=64)
     wood: WoodSchema
     event_code: Literal["SB", "UH"]
-    tournament_results: Optional[Dict[str, float]] = None
-    manual_overrides: Optional[Dict[str, float]] = None
+    tournament_results: Optional[Dict[str, float]] = Field(default=None, max_length=64)
+    manual_overrides: Optional[Dict[str, float]] = Field(default=None, max_length=64)
     prediction_as_of: Optional[date] = None
+
+    @model_validator(mode="after")
+    def _bounded_history(self):
+        if sum(len(competitor.history) for competitor in self.competitors) > 4000:
+            raise ValueError("Field history exceeds 4000 rows.")
+        return self
 
 
 class LedgerCalculateRequest(CalculateRequest):
@@ -213,6 +224,7 @@ class MarkResultResponse(BaseModel):
 
 
 class PredictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     competitor: CompetitorSchema
     wood: WoodSchema
     event_code: Literal["SB", "UH"]
@@ -964,14 +976,22 @@ class TrustedShadowRequestGate:
             return
 
         body = bytearray()
+        deadline = asyncio.get_running_loop().time() + 10
         while True:
-            message = await receive()
+            try:
+                message = await asyncio.wait_for(
+                    receive(), min(2, deadline - asyncio.get_running_loop().time())
+                )
+            except TimeoutError:
+                await self._reject(scope, receive, send, 408, "Request body deadline expired.")
+                return
             if message.get("type") == "http.disconnect":
                 return
-            body.extend(message.get("body", b""))
-            if len(body) > _MAX_SHADOW_BODY_BYTES:
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > _MAX_SHADOW_BODY_BYTES:
                 await self._reject(scope, receive, send, 413, "Trusted shadow body is too large.")
                 return
+            body.extend(chunk)
             if not message.get("more_body", False):
                 break
         if len(body) != declared_length:
@@ -1019,6 +1039,9 @@ app = FastAPI(
     version=_V2_API_CONTRACT_VERSION,
 )
 app.add_middleware(TrustedShadowRequestGate)
+from strathmark.request_limits import BoundedRequestMiddleware
+
+app.add_middleware(BoundedRequestMiddleware)
 
 
 @app.exception_handler(RequestValidationError)

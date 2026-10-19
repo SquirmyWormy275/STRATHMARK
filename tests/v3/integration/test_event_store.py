@@ -1065,6 +1065,9 @@ def test_startup_and_explicit_verify_wrap_nonintegrity_failures(
     monkeypatch.setattr(event_store_module, "migrate_connection", broken_migration)
     with pytest.raises(EventStoreIntegrityError, match="startup"):
         SQLiteEventStore(tmp_path / "new.sqlite3")
+    # Verification inspects the current schema without applying migrations.
+    store.verify()
+    monkeypatch.setattr(event_store_module, "canonical_schema_digest", broken_migration)
     with pytest.raises(EventStoreIntegrityError, match="verification failed"):
         store.verify()
 

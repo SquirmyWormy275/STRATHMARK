@@ -290,6 +290,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not args.offline:
             subprocess.run([str(python), "-m", "pip", "check"], check=True, cwd=root)
+        # This newly created disposable root is ours to provision. Use the
+        # installed helper before either smoke opens storage; never tighten the
+        # shared temporary parent or depend on its inherited Windows ACL.
+        subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-c",
+                "from pathlib import Path; "
+                "from strathmark.private_storage import private_directory; "
+                "private_directory(Path.cwd())",
+            ],
+            check=True,
+            cwd=root,
+        )
         subprocess.run(
             [
                 str(python),

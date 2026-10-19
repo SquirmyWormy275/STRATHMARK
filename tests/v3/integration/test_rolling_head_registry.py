@@ -36,6 +36,7 @@ def _registry(
 ) -> ExternalRollingHeadRegistry:
     return ExternalRollingHeadRegistry(
         root,
+        allow_unwitnessed_rehearsal=True,
         bootstrap_identity=signer.identity,
         trust_store=trust or IntegrityTrustStore((signer.identity,)),
         active_identity=signer.identity,
@@ -194,6 +195,7 @@ def test_registry_detects_external_record_gap_and_active_key_mismatch(
     with pytest.raises(RollingHeadRegistryError, match="active signer identity"):
         ExternalRollingHeadRegistry(
             clean,
+            allow_unwitnessed_rehearsal=True,
             bootstrap_identity=old.identity,
             trust_store=IntegrityTrustStore((old.identity, new.identity)),
             active_identity=new.identity,
@@ -273,6 +275,7 @@ def test_registry_rotates_active_signer_without_rejecting_historical_records(
     combined_trust = IntegrityTrustStore((old.identity, new.identity))
     rotated = ExternalRollingHeadRegistry(
         root,
+        allow_unwitnessed_rehearsal=True,
         bootstrap_identity=old.identity,
         trust_store=combined_trust,
         active_identity=new.identity,
@@ -370,6 +373,7 @@ def test_registry_bootstrap_identity_no_clobber_rejects_conflicting_writer(
     with pytest.raises(RollingHeadRegistryError, match="bootstrap key mismatch"):
         ExternalRollingHeadRegistry(
             root,
+            allow_unwitnessed_rehearsal=True,
             bootstrap_identity=conflict.identity,
             trust_store=IntegrityTrustStore((first.identity, conflict.identity)),
             active_identity=conflict.identity,

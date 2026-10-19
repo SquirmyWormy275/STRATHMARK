@@ -22,6 +22,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.evidence_execution import (  # noqa: E402
+    evidence_environment,
+    isolated_python_argv,
+    pinned_executable,
+)
+
 
 def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
@@ -31,13 +39,19 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _nvidia_sample() -> dict[str, Any]:
+def _nvidia_sample(path: Path, expected_sha256: str) -> dict[str, Any]:
+    identity = pinned_executable(path, expected_sha256)
     command = [
-        "nvidia-smi",
+        identity["path"],
         "--query-gpu=name,memory.total,memory.used,temperature.gpu,power.draw",
         "--format=csv,noheader,nounits",
     ]
-    completed = subprocess.run(command, capture_output=True, timeout=15, check=False)
+    environment = {"PATH": os.defpath}
+    if os.name == "nt":
+        environment["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+    completed = subprocess.run(
+        command, env=environment, capture_output=True, timeout=15, check=False
+    )
     if completed.returncode != 0:
         raise RuntimeError("NVIDIA telemetry command failed")
     lines = completed.stdout.decode("utf-8").strip().splitlines()
@@ -96,7 +110,7 @@ def _run_pytest(
     root: Path, selectors: list[str], base: Path, env: dict[str, str]
 ) -> dict[str, Any]:
     argv = [
-        str(Path(sys.executable).resolve()),
+        str(Path(sys.executable).absolute()),
         "-m",
         "pytest",
         *selectors,
@@ -106,11 +120,13 @@ def _run_pytest(
         "--basetemp",
         base.as_posix(),
     ]
+    argv = isolated_python_argv(argv)
+    environment = evidence_environment(env)
     started = time.perf_counter_ns()
     completed = subprocess.run(
         argv,
         cwd=root,
-        env={**os.environ, **env},
+        env=environment,
         capture_output=True,
         timeout=900,
         check=False,
@@ -122,6 +138,8 @@ def _run_pytest(
         raise RuntimeError("bounded stress pytest command failed")
     return {
         "argv": argv,
+        "environment": environment,
+        "executable_sha256": _sha(Path(argv[0]).resolve().read_bytes()),
         "exit_code": completed.returncode,
         "passed": int(match.group("passed")),
         "duration_ms": duration_ms,
@@ -131,12 +149,19 @@ def _run_pytest(
 
 
 def build_report(
-    *, root: Path, models: tuple[str, ...], duration_seconds: int, max_temperature_c: int
+    *,
+    root: Path,
+    models: tuple[str, ...],
+    duration_seconds: int,
+    max_temperature_c: int,
+    nvidia_smi: Path,
+    nvidia_smi_sha256: str,
 ) -> dict[str, Any]:
     if not platform.system().lower().startswith("windows"):
         raise RuntimeError("Windows stress evidence requires the designated Windows host")
     if not models or any(not model.strip() for model in models):
         raise RuntimeError("at least one explicit local model is required")
+    telemetry_tool = pinned_executable(nvidia_smi, nvidia_smi_sha256)
     samples: list[dict[str, Any]] = []
     sampling_error: list[str] = []
     stop = threading.Event()
@@ -144,12 +169,12 @@ def build_report(
     def sample() -> None:
         while not stop.wait(0.25):
             try:
-                samples.append(_nvidia_sample())
+                samples.append(_nvidia_sample(nvidia_smi, nvidia_smi_sha256))
             except Exception as exc:  # preserve sampler failure for the main gate
                 sampling_error.append(str(exc))
                 stop.set()
 
-    samples.append(_nvidia_sample())
+    samples.append(_nvidia_sample(nvidia_smi, nvidia_smi_sha256))
     sampler = threading.Thread(target=sample, name="v3-release-gpu-sampler", daemon=True)
     sampler.start()
     runs: list[dict[str, Any]] = []
@@ -161,7 +186,7 @@ def build_report(
     finally:
         stop.set()
         sampler.join(timeout=5)
-        samples.append(_nvidia_sample())
+        samples.append(_nvidia_sample(nvidia_smi, nvidia_smi_sha256))
     if sampling_error or len(samples) < 3:
         raise RuntimeError("GPU telemetry sampling failed")
     if max(item["temperature_c"] for item in samples) > max_temperature_c:
@@ -207,6 +232,7 @@ def build_report(
         "models": list(models),
         "model_runs": runs,
         "gpu_samples": samples,
+        "telemetry_tool": telemetry_tool,
         "pressure_injection": pressure,
         "storage_injection": storage,
     }
@@ -215,6 +241,8 @@ def build_report(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--nvidia-smi", type=Path, required=True)
+    parser.add_argument("--nvidia-smi-sha256", required=True)
     parser.add_argument("--local-model", action="append", required=True)
     parser.add_argument("--duration-seconds", type=int, default=30)
     parser.add_argument("--max-temperature-c", type=int, default=87)
@@ -228,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
             models=tuple(arguments.local_model),
             duration_seconds=arguments.duration_seconds,
             max_temperature_c=arguments.max_temperature_c,
+            nvidia_smi=arguments.nvidia_smi,
+            nvidia_smi_sha256=arguments.nvidia_smi_sha256,
         )
     except Exception as exc:
         print(json.dumps({"result": "failed", "reason": str(exc)}, sort_keys=True), file=sys.stderr)

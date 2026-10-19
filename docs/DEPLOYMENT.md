@@ -2,13 +2,15 @@
 
 Under the Windows CNG qualification policy, V3 is not production-eligible. Its release candidate rehearsal evidence is source-bound and does not grant Windows production authority. V2 remains the established production baseline; the completed Linux local profile uses its separate operator policy.
 
-Current Linux local competitions are documented in [Linux competition workflow](V3_LINUX_COMPETITION.md). This separate rc4 profile supports the complete lifecycle with Formula/ML and persistent local keys; the Windows V7 qualification gates below remain unchanged.
+Current Linux local competitions are documented in [Linux competition workflow](V3_LINUX_COMPETITION.md). For new profiles, the reviewed rc12/STRATHEX 7.4.4 pair supports the complete lifecycle with Formula/ML and persistent local keys; the Windows V7 qualification gates below remain unchanged.
 
 The retained preview profile, [Linux numeric candidate](V3_LINUX_CANDIDATE.md) runs Formula, trained ML, pooling, and optimization for unissued previews. It does not support approval, issue, settlement, next-round learning, or production qualification.
 
 ## Authority status
 
-STRATHMARK 3.0.0rc7 provides the complete separate Linux local competition profile: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+STRATHMARK 3.0.0rc12 with STRATHEX 7.4.4 provides the complete separate Linux local competition profile for new installations: real Formula/ML, deliberate V2/V3 choice, exact fields, approval, separate issue, judge-authorized outcomes, settlement, restart, corrections, verified independent recovery, and later-round learning. The [Linux competition runbook](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md) describes its operator policy and persistent local signer. The LLM council is unavailable in this profile. V2 remains the established production baseline. Windows V7 CNG and full three-assessor factory qualification remain separate installation gates; ephemeral rehearsal signatures do not satisfy them.
+
+Retained rc7/7.4.2 competitions keep their original exact runtime, source, model, signing authority and saved evidence. Install upgrades separately for new profiles; package installation does not activate a profile or migrate saved work.
 
 This runbook distinguishes four states that must never be collapsed:
 
@@ -50,7 +52,11 @@ indexes; that changes the security contract instead of satisfying it.
 - Bootstrap and last-key recovery are offline operations and require the listener to be
   stopped. Ordinary authenticated key rotation is online: install the next credential,
   verify overlap, move clients, then revoke the old credential.
-- Do not bind V3 outside loopback without pinned mutual TLS and expected-host validation.
+- STRATHEX V7 clients require verified HTTPS even on loopback, plus the signer identity
+  digest provisioned independently from trusted installation configuration. Readiness
+  must match that digest; never bootstrap signing trust from the network response.
+  Non-loopback service operation also requires pinned mutual TLS and expected-host
+  validation. These client requirements do not change the frozen V7 schema.
 - Never copy a development private key or ephemeral signer into a production role.
 - No verifier, test, or signed pre-switch handoff performs the final endpoint switch.
 
@@ -72,7 +78,9 @@ $env:STRATHMARK_V3_INTEGRITY_KEY_ROOT = "$PWD\.tmp\deployment-keys"
 
 python -m pytest tests/v3 -q --basetemp .tmp/deployment-pytest -p no:cacheprovider
 python scripts/replay_v3.py
-python scripts/run_v3_release_evidence.py --local-model qwen3.5:9b --local-model ministral-3:8b
+python -m pip install -r requirements/v3-evidence-tools.lock
+# Use the administrator-approved NVIDIA executable path and independently recorded hash.
+python -I scripts/run_v3_release_evidence.py --nvidia-smi "$approvedNvidiaPath" --nvidia-smi-sha256 "$approvedNvidiaSha256" --local-model qwen3.5:9b --local-model ministral-3:8b
 $source = (git rev-parse HEAD).Trim()
 python scripts/verify_v3_release.py --evidence benchmarks/v3/v3_executable_evidence.json --emit-rehearsal $source --output-attestation benchmarks/v3/v3_release_attestation.json
 python scripts/verify_v3_release.py

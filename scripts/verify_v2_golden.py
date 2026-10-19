@@ -22,6 +22,7 @@ from strathmark.predictor import (
     StaticPredictionProvider,
     WoodProfile,
 )
+from strathmark.private_storage import private_directory
 
 GOLDEN_SCHEMA = "prediction-v2-golden/v1"
 DEFAULT_ARTIFACT = Path("strathmark/models/prediction_v2_core.json")
@@ -113,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     with tempfile.TemporaryDirectory(prefix="strathmark-golden-") as directory:
+        private_directory(directory)
         actual = build_golden(
             artifact_path=args.artifact,
             db_path=Path(directory) / "golden.db",

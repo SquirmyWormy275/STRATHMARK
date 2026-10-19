@@ -1,7 +1,8 @@
 """Append-only SQLite event authority with atomic idempotent commands.
 
-All payload construction happens before ``BEGIN IMMEDIATE``.  The transaction
-contains only bounded validation, canonical envelope assembly, and row writes.
+Payload construction precedes ``BEGIN IMMEDIATE``. Authenticated operational
+writes additionally replay authority, stream the result-ledger digest, and advance
+the independent witness under that writer lock before acknowledgment.
 """
 
 from __future__ import annotations
@@ -27,6 +28,11 @@ from strathmark.v3.contracts.evidence import require_utc_milliseconds
 from strathmark.v3.contracts.identifiers import deterministic_identifier
 from strathmark.v3.contracts.statuses import LifecycleStatus
 from strathmark.v3.domain.state_machines import replay, transition
+from strathmark.v3.infrastructure.event_authority import (
+    event_authority_for,
+    is_unwitnessed_rehearsal,
+    require_event_authority,
+)
 from strathmark.v3.infrastructure.integrity import (
     CriticalDatabaseCommit,
     CriticalIssueCoordinator,
@@ -191,13 +197,14 @@ def _has_hotpath_schema(connection: sqlite3.Connection) -> bool:
 
 
 class SQLiteEventStore:
-    """One connection-per-operation adapter over the U3 authority schema."""
+    """SQLite authority adapter; writes need authenticated trust or explicit rehearsal."""
 
     def __init__(
         self,
         database_path: Path | str,
         *,
         trusted_anchor: AuthorityAnchor | None = None,
+        require_current_anchor: bool = False,
     ) -> None:
         if isinstance(database_path, bool) or not isinstance(database_path, (Path, str)):
             raise EventStoreError("database_path must be a filesystem path")
@@ -205,12 +212,27 @@ class SQLiteEventStore:
         if trusted_anchor is not None and not isinstance(trusted_anchor, AuthorityAnchor):
             raise EventStoreError("trusted_anchor must be an AuthorityAnchor")
         self._trusted_anchor = trusted_anchor
+        self._require_current_anchor = require_current_anchor
+        # Inspect existing untrusted history without schema/checkpoint writes.
+        # Legacy evidence must survive a refusal to grant operational authority.
+        if (
+            self._database_path.exists()
+            and trusted_anchor is None
+            and not is_unwitnessed_rehearsal(self._database_path)
+        ):
+            with open_v3_connection(self._database_path, read_only=True) as connection:
+                connection.execute("BEGIN")
+                has_events = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v3_events'"
+                ).fetchone()
+                if has_events is not None:
+                    self._verify_connection(connection)
         try:
             with open_v3_connection(self._database_path) as connection:
                 migrate_connection(connection)
-                self._verify_connection(connection)
-                if _has_hotpath_schema(connection):
-                    with immediate_transaction(connection):
+                with immediate_transaction(connection):
+                    self._verify_connection(connection)
+                    if _has_hotpath_schema(connection):
                         self._write_deep_checkpoint(connection)
         except EventStoreIntegrityError:
             raise
@@ -232,12 +254,13 @@ class SQLiteEventStore:
 
         if not isinstance(checkpoint_registry, CheckpointRegistry):
             raise EventStoreError("trusted startup requires a CheckpointRegistry")
-        checkpoint = checkpoint_registry.verify_database(database_path, require_current=False)
+        checkpoint = checkpoint_registry.verify_database(database_path, require_current=True)
         return cls(
             database_path,
             trusted_anchor=AuthorityAnchor(
                 checkpoint.authority_sequence, checkpoint.authority_digest
             ),
+            require_current_anchor=True,
         )
 
     @property
@@ -270,6 +293,11 @@ class SQLiteEventStore:
         try:
             with open_v3_connection(self._database_path) as connection:
                 with immediate_transaction(connection):
+                    authority = require_event_authority(self._database_path)
+                    previous = None
+                    if authority is not None:
+                        self._verify_connection(connection)
+                        previous = authority.verify_connection(connection)
                     from strathmark.v3.infrastructure.sqlite.rolling_restart import (
                         RollingRestartIntegrityError,
                         require_rolling_reaction_cursor_at_event_head,
@@ -342,6 +370,11 @@ class SQLiteEventStore:
                         ),
                     )
                     _fault(fault_hook, "after_result")
+                    if authority is not None:
+                        assert previous is not None
+                        authority.advance_connection(
+                            connection, previous, created_at=request.occurred_at_utc
+                        )
                     return _stored_result(
                         request.result_schema_version,
                         result_bytes,
@@ -357,14 +390,17 @@ class SQLiteEventStore:
             raise EventStoreConflict(str(exc)) from exc
 
     def verify(self) -> None:
-        """Rebuild and cryptographically verify all authority from genesis."""
+        """Replay consistency and require current authentication when operational."""
 
         try:
             with open_v3_connection(self._database_path) as connection:
-                migrate_connection(connection)
-                self._verify_connection(connection)
-                if _has_hotpath_schema(connection):
-                    with immediate_transaction(connection):
+                with immediate_transaction(connection):
+                    if canonical_schema_digest(connection) != EXPECTED_SCHEMA_DIGEST:
+                        raise EventStoreIntegrityError(
+                            "event-store integrity verification found schema drift"
+                        )
+                    self._verify_connection(connection)
+                    if _has_hotpath_schema(connection):
                         self._write_deep_checkpoint(connection)
         except EventStoreIntegrityError:
             raise
@@ -433,6 +469,7 @@ class SQLiteEventStore:
 
     def event_count(self) -> int:
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
             return int(connection.execute("SELECT COUNT(*) FROM v3_events").fetchone()[0])
 
     def event_at(self, global_sequence: int) -> EventEnvelope:
@@ -443,6 +480,7 @@ class SQLiteEventStore:
         ):
             raise EventStoreError("event sequence must be a positive integer")
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
             self._verify_connection(connection)
             row = connection.execute(
                 "SELECT envelope_json FROM v3_events WHERE global_sequence=?",
@@ -470,6 +508,9 @@ class SQLiteEventStore:
         """
 
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
+            if event_authority_for(self._database_path) is not None:
+                self._verify_connection(connection)
             row = connection.execute(
                 "SELECT principal_id, idempotency_key, command_digest, result_schema_version, "
                 "result_json, result_digest, first_global_sequence, last_global_sequence, "
@@ -505,6 +546,7 @@ class SQLiteEventStore:
 
     def global_sequences(self) -> tuple[int, ...]:
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
             return tuple(
                 int(row[0])
                 for row in connection.execute(
@@ -516,6 +558,7 @@ class SQLiteEventStore:
         """Return one fully verified authority snapshot without repeated whole-store replay."""
 
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
             self._verify_connection(connection)
             rows = connection.execute(
                 "SELECT envelope_json FROM v3_events ORDER BY global_sequence"
@@ -524,6 +567,7 @@ class SQLiteEventStore:
 
     def aggregate_head(self, aggregate_id: str) -> tuple[int, str] | None:
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
             row = connection.execute(
                 "SELECT aggregate_version, event_digest FROM v3_aggregate_heads "
                 "WHERE aggregate_id=?",
@@ -535,6 +579,7 @@ class SQLiteEventStore:
         """Return the verified current tip for independent checkpoint signing."""
 
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
             self._verify_connection(connection)
             row = connection.execute(
                 "SELECT global_sequence, event_digest FROM v3_events "
@@ -545,15 +590,21 @@ class SQLiteEventStore:
             return AuthorityAnchor(int(row[0]), str(row[1]))
 
     def verify_bounded_head(self) -> AuthorityAnchor:
-        """Verify the transactional authority tip without replaying lifetime history."""
+        """Verify the tip, including independent authentication when operational."""
 
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
+            if event_authority_for(self._database_path) is not None:
+                self._verify_connection(connection)
             return self._verify_bounded_head_connection(connection)
 
     def integrity_checkpoint_status(self) -> dict[str, object]:
         """Return bounded, database-authenticated deep-verification evidence."""
 
         with open_v3_connection(self._database_path, read_only=True) as connection:
+            connection.execute("BEGIN")
+            if event_authority_for(self._database_path) is not None:
+                self._verify_connection(connection)
             anchor = self._verify_bounded_head_connection(connection)
             row = connection.execute(
                 "SELECT aggregate_head_count,last_deep_verified_at,checkpoint_digest "
@@ -921,6 +972,17 @@ class SQLiteEventStore:
             self._verify_idempotency(connection, events)
             self._verify_historical_import_links(connection, events)
             self._verify_trusted_anchor(events)
+            authority = event_authority_for(self._database_path)
+            if authority is not None:
+                authority.verify_connection(connection)
+            elif (
+                events
+                and self._trusted_anchor is None
+                and not is_unwitnessed_rehearsal(self._database_path)
+            ):
+                raise EventStoreIntegrityError(
+                    "existing authority requires independent trust or explicit rehearsal"
+                )
         except EventStoreIntegrityError:
             raise
         except Exception as exc:
@@ -929,6 +991,12 @@ class SQLiteEventStore:
     def _verify_trusted_anchor(self, events: dict[int, EventEnvelope]) -> None:
         if self._trusted_anchor is None:
             return
+        if (
+            getattr(self, "_require_current_anchor", False)
+            and event_authority_for(self._database_path) is None
+            and max(events, default=0) != self._trusted_anchor.global_sequence
+        ):
+            raise EventStoreIntegrityError("authority differs from the exact current checkpoint")
         if self._trusted_anchor.global_sequence == 0:
             return
         anchored_event = events.get(self._trusted_anchor.global_sequence)
@@ -1282,6 +1350,7 @@ def verify_read_only_authority(
     path = Path(database_path).expanduser().resolve(strict=False)
     try:
         with open_v3_connection(path, read_only=True) as connection:
+            connection.execute("BEGIN")
             if canonical_schema_digest(connection) != EXPECTED_SCHEMA_DIGEST:
                 raise EventStoreIntegrityError("read-only authority schema is stale or different")
             verifier = object.__new__(SQLiteEventStore)

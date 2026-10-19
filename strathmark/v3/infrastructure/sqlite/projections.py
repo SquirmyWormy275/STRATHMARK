@@ -709,10 +709,20 @@ class SQLiteProjectionStore:
         return ReactionBarrier(int(incomplete[0]) - 1, frozenset())
 
     def rebuild_reaction_projection(self) -> str:
-        """Wipe U5 views and deterministically replay them from event genesis."""
+        """Replay verified authority under one writer lock before replacing views."""
 
+        from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+
+        event_store = SQLiteEventStore(self._database_path)
         with open_v3_connection(self._database_path) as connection:
             with immediate_transaction(connection):
+                # Reverify after acquiring the lock: a preflight check alone lets
+                # a competing writer change the authority before destructive replay.
+                event_store._verify_connection(connection)
+                rows = connection.execute(
+                    "SELECT envelope_json FROM v3_events ORDER BY global_sequence"
+                ).fetchall()
+                events = tuple(EventEnvelope.from_dict(json.loads(str(row[0]))) for row in rows)
                 for table in (
                     "v3_prepared_field_dependencies",
                     "v3_round_issue_seals",
@@ -739,10 +749,7 @@ class SQLiteProjectionStore:
                     ),
                 )
                 reset_rolling_reaction_cursor(connection)
-                rows = connection.execute(
-                    "SELECT envelope_json FROM v3_events ORDER BY global_sequence"
-                ).fetchall()
-                events = tuple(EventEnvelope.from_dict(json.loads(str(row[0]))) for row in rows)
+
                 for _command_id, grouped in groupby(
                     events, key=lambda item: str(item.command.command_id)
                 ):

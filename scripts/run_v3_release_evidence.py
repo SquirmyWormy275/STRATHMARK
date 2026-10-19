@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform
 import re
 import shutil
@@ -21,6 +20,24 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+ROOT = Path(__file__).resolve().parents[1]
+if __name__ == "__main__" and not sys.flags.isolated:
+    raise SystemExit("Run release evidence with python -I and an explicit script path")
+sys.dont_write_bytecode = True
+if __name__ == "__main__" and any(
+    path.exists() for path in (ROOT / "__pycache__", ROOT / "scripts/__pycache__")
+):
+    raise SystemExit("Release evidence requires a fresh checkout without cached bytecode")
+sys.path.insert(0, str(ROOT))
+from scripts.evidence_execution import (  # noqa: E402
+    evidence_environment,
+    isolated_python_argv,
+    require_clean_release_inputs,
+)
+
+if __name__ == "__main__":
+    require_clean_release_inputs(ROOT)
+
 try:
     from scripts.release_evidence import (
         EVIDENCE_SCHEMA,
@@ -28,7 +45,6 @@ try:
         create_evidence_envelope,
         dependency_snapshot,
         git_head,
-        require_clean_release_inputs,
         sha256_file,
         source_tree_digest,
         wheel_identity,
@@ -41,7 +57,6 @@ except ModuleNotFoundError:  # direct script execution
         create_evidence_envelope,
         dependency_snapshot,
         git_head,
-        require_clean_release_inputs,
         sha256_file,
         source_tree_digest,
         wheel_identity,
@@ -83,7 +98,7 @@ def _test_environment(run_directory: str, proof_name: str) -> dict[str, str]:
 
 def _pytest_argv(selectors: list[str], *, run_directory: str, proof_name: str) -> list[str]:
     return [
-        str(Path(sys.executable).resolve()),
+        str(Path(sys.executable).absolute()),
         "-m",
         "pytest",
         *selectors,
@@ -103,11 +118,13 @@ def _execute(
     timeout: int,
     pytest_command: bool = False,
 ) -> dict[str, Any]:
+    argv = isolated_python_argv(argv)
+    environment = evidence_environment(environment)
     started = time.perf_counter_ns()
     completed = subprocess.run(
         argv,
         cwd=ROOT,
-        env={**os.environ, **environment},
+        env=environment,
         capture_output=True,
         timeout=timeout,
         check=False,
@@ -130,6 +147,7 @@ def _execute(
         skipped = 0 if skipped_match is None else int(skipped_match.group("count"))
     step = {
         "operation": operation,
+        "executable_sha256": sha256_file(Path(argv[0]).resolve()),
         "argv": argv,
         "cwd": ".",
         "environment": environment,
@@ -196,7 +214,7 @@ def _installed_artifact_proof(
     build = _execute(
         "wheel_build",
         [
-            str(Path(sys.executable).resolve()),
+            str(Path(sys.executable).absolute()),
             "-m",
             "build",
             "--wheel",
@@ -222,7 +240,7 @@ def _installed_artifact_proof(
     install = _execute(
         "wheel_install",
         [
-            str(Path(sys.executable).resolve()),
+            str(Path(sys.executable).absolute()),
             "-m",
             "pip",
             "install",
@@ -239,7 +257,7 @@ def _installed_artifact_proof(
     probe = _execute(
         "installed_probe",
         [
-            str(Path(sys.executable).resolve()),
+            str(Path(sys.executable).absolute()),
             "-I",
             "scripts/probe_v3_release.py",
             "installed-wheel",
@@ -295,8 +313,14 @@ def build_evidence(
     artifact_directory: Path,
     local_models: tuple[str, ...],
     stress_seconds: int,
+    nvidia_smi: Path,
+    nvidia_smi_sha256: str,
 ) -> dict[str, Any]:
     require_clean_release_inputs(ROOT)
+    dependency_snapshot(ROOT / "requirements/v3-release.lock")
+    tool_lock_sha, tool_versions_digest = dependency_snapshot(
+        ROOT / "requirements/v3-evidence-tools.lock"
+    )
     source_commit = git_head(ROOT)
     source_digest = source_tree_digest(ROOT)
     run_directory = f".tmp/v3-release-evidence-{uuid4().hex}"
@@ -309,7 +333,7 @@ def build_evidence(
     dependency_step = _execute(
         "dependency_probe",
         [
-            str(Path(sys.executable).resolve()),
+            str(Path(sys.executable).absolute()),
             "scripts/probe_v3_release.py",
             "dependencies",
             "--lock",
@@ -366,7 +390,7 @@ def build_evidence(
         "result_to_ready",
         "result_to_ready_benchmark",
         [
-            str(Path(sys.executable).resolve()),
+            str(Path(sys.executable).absolute()),
             "scripts/benchmark_v3_result_to_ready.py",
             "--output",
             _relative(result_to_ready_run_output),
@@ -383,7 +407,7 @@ def build_evidence(
         "windows_capacity",
         "windows_capacity_benchmark",
         [
-            str(Path(sys.executable).resolve()),
+            str(Path(sys.executable).absolute()),
             "scripts/benchmark_v3_field_assembly.py",
             "--output",
             _relative(capacity_run_output),
@@ -395,14 +419,23 @@ def build_evidence(
     )
     stress_run_output = ROOT / run_directory / "windows-stress.json"
     stress_argv = [
-        str(Path(sys.executable).resolve()),
+        str(Path(sys.executable).absolute()),
         "scripts/run_v3_windows_stress.py",
         "--output",
         _relative(stress_run_output),
     ]
     for model in local_models:
         stress_argv.extend(["--local-model", model])
-    stress_argv.extend(["--duration-seconds", str(stress_seconds)])
+    stress_argv.extend(
+        [
+            "--duration-seconds",
+            str(stress_seconds),
+            "--nvidia-smi",
+            str(nvidia_smi),
+            "--nvidia-smi-sha256",
+            nvidia_smi_sha256,
+        ]
+    )
     stress = _machine_proof(
         "thermal_memory_storage_stress",
         "windows_stress_benchmark",
@@ -452,16 +485,23 @@ def build_evidence(
     if source_tree_digest(ROOT) != source_digest:
         raise RuntimeError("release source changed while executable evidence was running")
     lock_sha, versions_digest = dependency_snapshot(ROOT / "requirements/v3-release.lock")
+    if dependency_snapshot(ROOT / "requirements/v3-evidence-tools.lock") != (
+        tool_lock_sha,
+        tool_versions_digest,
+    ):
+        raise RuntimeError("release evidence tools changed while proofs were running")
     payload = {
         "schema_version": EVIDENCE_SCHEMA,
         "source_commit": source_commit,
         "source_tree_digest": source_digest,
         "platform": platform.platform(),
-        "python_executable": str(Path(sys.executable).resolve()),
+        "python_executable": str(Path(sys.executable).absolute()),
         "python_version": sys.version.split()[0],
         "run_directory": run_directory,
         "dependency_lock_sha256": lock_sha,
         "dependency_versions_digest": versions_digest,
+        "tool_lock_sha256": tool_lock_sha,
+        "tool_versions_digest": tool_versions_digest,
         "consumer_contract_sha256": sha256_file(
             ROOT / "strathmark/v3/contracts/v3_consumer.openapi.json"
         ),
@@ -481,11 +521,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact-directory", type=Path, default=DEFAULT_ARTIFACT_DIRECTORY)
     parser.add_argument("--local-model", action="append")
     parser.add_argument("--stress-seconds", type=int, default=30)
+    parser.add_argument("--nvidia-smi", type=Path)
+    parser.add_argument("--nvidia-smi-sha256")
     parser.add_argument("--list-proofs", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.list_proofs:
         print(json.dumps(PROOF_OPERATIONS, sort_keys=True, separators=(",", ":")))
         return 0
+    if not arguments.nvidia_smi or not arguments.nvidia_smi_sha256:
+        parser.error("approved --nvidia-smi path and --nvidia-smi-sha256 are required")
     if not arguments.local_model:
         parser.error("at least one --local-model is required")
     try:
@@ -495,6 +539,8 @@ def main(argv: list[str] | None = None) -> int:
             artifact_directory=arguments.artifact_directory,
             local_models=tuple(arguments.local_model),
             stress_seconds=arguments.stress_seconds,
+            nvidia_smi=arguments.nvidia_smi,
+            nvidia_smi_sha256=arguments.nvidia_smi_sha256,
         )
     except Exception as exc:
         print(json.dumps({"result": "failed", "reason": str(exc)}, sort_keys=True), file=sys.stderr)

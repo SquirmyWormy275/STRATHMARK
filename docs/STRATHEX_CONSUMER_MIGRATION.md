@@ -86,11 +86,18 @@ The contract version is `strathmark.v3-consumer-contract.v7` and contains 18 pat
 Any contract version, checksum, or exact source-commit mismatch makes V3 ineligible for
 new numeric work in that installation.
 
+STRATHEX requires certificate-verified HTTPS even on loopback, with hostname
+validation before transmitting the bearer credential. Provision the expected signer
+identity digest independently from trusted installation configuration through
+`STRATHMARK_V3_SIGNER_IDENTITY_DIGEST`; use `STRATHMARK_V3_CA_BUNDLE` for a private CA.
+Never establish that pin from the first network response.
+
 Before accepting `canonical_receipt_json` from `POST /v3/forecasts/pre-field`, read the
 authenticated `GET /v3/status` response and validate `pre_field_signer_trust`:
 
 1. recompute `identity_digest` from the canonical object containing exactly `key_id`,
-   `key_class`, `provider`, and `public_key_der_b64`;
+   `key_class`, `provider`, and `public_key_der_b64`, and require an exact match
+   to the independently provisioned expected signer digest;
 2. recompute `service_binding_digest` from the documented binding schema, exact
    `source_commit`, contract version/digest, and signer identity digest;
 3. parse the DER public key as P-256 and require manifest algorithm
