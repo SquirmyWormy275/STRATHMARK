@@ -226,3 +226,33 @@ Set-Acl -LiteralPath $path -AclObject $acl
         _assert_private(target)
     assert target.exists() is (scenario == "trusted_owner")
     assert _acl(root) == before
+
+
+def test_importer_provisions_fresh_temporary_root_before_reading_snapshot(tmp_path, monkeypatch):
+    from strathmark.v3.infrastructure import v2_import
+
+    source = tmp_path / "source.sqlite3"
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute("CREATE TABLE synthetic(value TEXT)")
+        connection.execute("INSERT INTO synthetic VALUES ('preserved source')")
+        connection.commit()
+    before = source.read_bytes()
+    inspected = []
+
+    class SnapshotObserved(Exception):
+        pass
+
+    def inspect(snapshot, **_kwargs):
+        _assert_private(snapshot.parent)
+        _assert_private(snapshot)
+        assert snapshot.read_bytes() == before
+        inspected.append(snapshot.parent)
+        raise SnapshotObserved
+
+    monkeypatch.setattr(v2_import, "_read_source_snapshot", inspect)
+    destination = tmp_path / "untouched-destination.sqlite3"
+    with pytest.raises(SnapshotObserved):
+        v2_import.import_v2_snapshot(source, destination, cutoff="2026-10-01T00:00:00.000Z")
+    assert len(inspected) == 1 and not inspected[0].exists()
+    assert source.read_bytes() == before
+    assert not destination.exists()

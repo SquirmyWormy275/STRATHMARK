@@ -442,7 +442,7 @@ def import_v2_snapshot(
     completed = False
     try:
         from strathmark.input_limits import read_bounded_file
-        from strathmark.private_storage import private_file
+        from strathmark.private_storage import private_directory, private_file
 
         # SQLite reads only a private snapshot of exactly the bytes hashed above.
         raw = read_bounded_file(source)
@@ -450,7 +450,7 @@ def import_v2_snapshot(
             raise V2SourceChangedError("V2 source changed before the private snapshot")
         deadline.raise_if_expired()
         with tempfile.TemporaryDirectory(prefix="strathmark-v2-import-") as staging:
-            snapshot_path = private_file(Path(staging) / "source.sqlite3")
+            snapshot_path = private_file(private_directory(staging) / "source.sqlite3")
             snapshot_path.write_bytes(raw)
             del raw
             snapshot = _read_source_snapshot(
