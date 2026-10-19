@@ -18,9 +18,12 @@ need the Python library or an API for another application.
 | **V3 Windows V7 service** | Development and rehearsal. Windows production qualification is incomplete. |
 | **Accuracy Preview** | Compare a frozen calibration candidate with the baseline. It does not change competition predictions. |
 
-The current Linux pair is **STRATHMARK 3.0.0rc7 + STRATHEX 7.4.2**. Judges choose
-V2 or V3 when creating each event or tournament. A tournament's events and rounds
-keep that choice. See [engine selection](docs/wiki/Competition-Engine-Selection.md).
+The reviewed pair for new Linux profiles is **STRATHMARK 3.0.0rc12 + STRATHEX 7.4.4**.
+Retained rc7/7.4.2 competitions keep their original exact installation, model,
+signing authority and saved data. Installing the new pair does not migrate or
+activate a profile. Judges choose V2 or V3 when creating each event or tournament;
+its events and rounds keep that choice. See
+[engine selection](docs/wiki/Competition-Engine-Selection.md).
 
 ## Run a competition
 
@@ -39,19 +42,16 @@ installation and qualification requirements.
 Use Python 3.10–3.13; Python 3.13 is recommended. In your virtual environment:
 
 ```bash
-python -m pip install "strathmark==2.0.1"
+python -m pip install "strathmark==3.0.0rc12"
 python -c "import strathmark; print(strathmark.__version__)"
 ```
 
-Version 2.0.1 preserves the 2.0.0 numeric engine. STRATHEX keeps its reviewed 2.0.0
-source dependency. Follow the [Python example](docs/wiki/Quick-Start.md) to calculate
-a small synthetic field, or [Installation](docs/wiki/Installation.md) for API setup.
-
-For the latest library release candidate, use a separate virtual environment:
-
-```bash
-python -m pip install --upgrade --pre strathmark
-```
+The maintained 3.0.0rc12 package retains the V2 `2.0.0` calculation contract.
+New STRATHEX 7.4.4 installations pin its exact reviewed security source. The older
+2.0.0/2.0.1 artifacts remain available for retained installations but do not contain
+these transport and storage fixes. Install upgrades in a separate environment.
+Follow the [Python example](docs/wiki/Quick-Start.md) to calculate a small synthetic
+field, or [Installation](docs/wiki/Installation.md) for API setup.
 
 New package versions publish to PyPI automatically after successful main CI. See
 the [package release policy](docs/PACKAGE_RELEASE.md) for versioning and recovery.

@@ -26,13 +26,15 @@ py -3.13 -m venv .venv
 Then install:
 
 ```bash
-python -m pip install "strathmark==2.0.1"
+python -m pip install "strathmark==3.0.0rc12"
 python -c "import strathmark; print(strathmark.__version__)"
 ```
 
-Both 2.0.0 and 2.0.1 are published on PyPI. The 2.0.1 patch changes packaging
-metadata and documentation; the V2 calculations are unchanged. STRATHEX pins its
-reviewed 2.0.0 source separately.
+The maintained 3.0.0rc12 package retains the V2 `2.0.0` calculation contract.
+STRATHEX 7.4.4 pins the exact reviewed security source for new installations.
+The immutable 2.0.0/2.0.1 artifacts remain available for retained installations;
+they do not contain the current transport and storage fixes. Keep source-bound
+competitions on their original environment and install upgrades separately.
 
 Next, run the [Python example](Quick-Start).
 
@@ -41,7 +43,7 @@ Next, run the [Python example](Quick-Start).
 Install the API dependencies in the same environment:
 
 ```bash
-python -m pip install "strathmark[api]==2.0.1"
+python -m pip install "strathmark[api]==3.0.0rc12"
 ```
 
 Then follow [REST API](REST-API) to choose an explicit database path and start the
@@ -68,11 +70,11 @@ Use the maintained 3.0.0rc12 candidate for the October 2026 input, transport and
 storage hardening. It publishes automatically after successful main CI:
 
 ```bash
-python -m pip install --upgrade --pre "strathmark[api]"
+python -m pip install "strathmark[api]==3.0.0rc12"
 python -c "import strathmark; print(strathmark.__version__)"
 ```
 
-Confirm the installed version is 3.0.0rc12 or newer. The stable 2.0.x artifacts
+Confirm the installed version is the reviewed 3.0.0rc12 release. The stable 2.0.x artifacts
 remain immutable. Install an upgrade in a separate environment and run a synthetic
 calculation before serving new work. Saved Linux V3 competitions retain their exact
 source, model and key identities; continue them with their original environment.

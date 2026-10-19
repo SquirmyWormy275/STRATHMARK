@@ -13,34 +13,46 @@ are separate applications; starting one does not start the other.
 
 ## Start the V2 API locally
 
-Install the [API extra](Installation), then choose an explicit database path.
+Install the maintained rc12 [API extra](Installation). Use a new dedicated data
+directory under your account; do not select a shared directory, checkout or home
+root. Provision this directory explicitly before opening its database. Existing
+authority paths require trusted ancestry; shared parents are never changed.
 
 Linux shell:
 
 ```bash
-mkdir -p api-data
-export STRATHMARK_DB_PATH="$PWD/api-data/results.db"
+export STRATHMARK_DB_PATH="$HOME/strathmark-api-data/results.db"
+python -c "import os; from pathlib import Path; from strathmark.private_storage import private_directory; private_directory(Path(os.environ['STRATHMARK_DB_PATH']).parent)"
 python -m uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 ```
 
 Windows PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force api-data | Out-Null
-$env:STRATHMARK_DB_PATH = Join-Path (Get-Location) "api-data/results.db"
+$env:STRATHMARK_DB_PATH = Join-Path $env:USERPROFILE "strathmark-api-data/results.db"
+python -c "import os; from pathlib import Path; from strathmark.private_storage import private_directory; private_directory(Path(os.environ['STRATHMARK_DB_PATH']).parent)"
 python -m uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 ```
 
 Open `http://127.0.0.1:8000/docs` for request examples and `/health` for model status.
 Public `/calculate` is stateless and unauthenticated; keep this example on loopback.
 The stored ledger/shadow routes require their own credentials and configuration.
+This plain-HTTP example is for isolated local API exploration. STRATHEX HTTP
+clients require a certificate-verified HTTPS endpoint even on loopback. Provision
+a certificate matching the configured hostname, serve TLS directly or through a
+trusted local TLS endpoint, and configure `STRATHMARK_API_CA_BUNDLE` when using a
+private CA. See the [consumer transport requirements](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/SECURITY_CLOUD_2026-10-19.md).
 
 ## Integrate the V7 service
 
 V7 has 18 routes and an exact OpenAPI checksum. Pin its contract and source identity,
 verify signed receipts, and use a bearer service credential plus `Idempotency-Key`
-for trusted POSTs. Loopback is the default; non-loopback service operation additionally
-requires pinned mutual TLS. Actor headers are audit metadata, not human permissions.
+for trusted POSTs. STRATHEX requires verified HTTPS even on loopback and an
+independently provisioned `STRATHMARK_V3_SIGNER_IDENTITY_DIGEST`. Configure
+`STRATHMARK_V3_CA_BUNDLE` for a private CA. The readiness identity must match the
+local pin; never learn that pin from a network response. Non-loopback service
+operation additionally requires pinned mutual TLS. Actor headers are audit
+metadata, not human permissions.
 
 Pre-field forecasts supply seed times and say `issued_mark=false`. Exact-field
 assembly produces marks. `/v3/approvals/decide` records review decisions;

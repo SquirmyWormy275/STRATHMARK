@@ -2,9 +2,11 @@
 
 ## Can I use V3 to run a Linux competition?
 
-Yes, with the configured Linux competition runtime: STRATHMARK 3.0.0rc7 and
-STRATHEX 7.4.2. It supports review, separate issue confirmation, official outcomes,
-corrections, recovery and later rounds. Start with
+Yes. New profiles use the configured Linux competition runtime: STRATHMARK
+3.0.0rc12 and STRATHEX 7.4.4. Retained rc7/7.4.2 competitions resume with their
+original exact runtime, model, signing authority and saved data. The new package
+pair does not configure or activate a profile. It supports review, separate issue
+confirmation, official outcomes, corrections, recovery and later rounds. Start with
 [STRATHEX setup](https://github.com/SquirmyWormy275/STRATHEX/wiki/Quick-Start).
 Windows V7 production qualification remains incomplete.
 

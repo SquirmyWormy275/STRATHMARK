@@ -2,7 +2,9 @@
 
 ## Linux V3 competitions
 
-Use STRATHMARK 3.0.0rc7 with STRATHEX 7.4.2 in separate Python 3.13 environments.
+For new profiles, use STRATHMARK 3.0.0rc12 with STRATHEX 7.4.4 in separate Python
+3.13 environments. Retained rc7/7.4.2 competitions keep their exact original
+runtime, model, signing authority and data; never upgrade them in place.
 The V3 environment needs the exact release lock, a verified trained model and a
 persistent local signing authority. The operator launcher requires an existing
 backup directory on a different filesystem from the live workbook.

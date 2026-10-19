@@ -1,8 +1,10 @@
 # Prediction Engine V2
 
 V2 is the established prediction engine. It estimates positive cutting times from
-prior results, then chooses handicap marks for the complete field. Version 2.0.1
-preserves the 2.0.0 calculations.
+prior results, then chooses handicap marks for the complete field. The maintained
+3.0.0rc12 package retains the `2.0.0` calculation contract and includes the current
+transport and storage fixes. Older 2.0.x artifacts lack those fixes; retain them
+only where an existing installation requires its original identity.
 
 ## What affects a prediction?
 
