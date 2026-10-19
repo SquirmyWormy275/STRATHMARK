@@ -13,7 +13,7 @@ are separate applications; starting one does not start the other.
 
 ## Start the V2 API locally
 
-Install the maintained rc12 [API extra](Installation). Use a new dedicated data
+Install the maintained rc13 [API extra](Installation). Use a new dedicated data
 directory under your account; do not select a shared directory, checkout or home
 root. Provision this directory explicitly before opening its database. Existing
 authority paths require trusted ancestry; shared parents are never changed.
@@ -64,7 +64,7 @@ The [frozen OpenAPI](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/str
 and [checksum](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/strathmark/v3/contracts/v3_consumer.openapi.sha256)
 are the integration reference. Windows production qualification remains incomplete.
 
-## Request limits in 3.0.0rc12
+## Request limits in 3.0.0rc13
 
 V2 request bodies are checked before JSON parsing and limited to 1 MiB. History
 is limited to 1,000 rows per competitor and 4,000 rows per field. Oversized input

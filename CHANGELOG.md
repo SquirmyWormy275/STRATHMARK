@@ -7,6 +7,18 @@
 - Bound encrypted input and decrypted output, reject nonregular inputs and use a GPG
   watchdog deadline while preserving trusted large-source allowances and existing keys.
 
+- Preserve health and authenticated V2 capacity under slow public bodies, and reject
+  V3 authentication overflow without an unbounded waiting queue.
+- Require signed promotion evidence for operational bundles; supplied diagnostic
+  evaluator metrics cannot authorize promotion or reopen a diagnostic bundle as live.
+- Apply bounded regular-file and workbook checks to administrative import paths,
+  and verify provider configuration, executable and log ancestry before use.
+- Pin release tooling to its own successful CI commit and all build dependencies to
+  reviewed wheel hashes. Recheck source and installed tool bytes after building.
+- Bind new qualification evidence to verified wheel contents, approved Python bytes
+  and an independently approved Formula runtime manifest; retain historical evidence
+  and existing immutable profiles without claiming fresh production qualification.
+
 ## [3.0.0rc12] - 2026-10-19
 
 - Bound public request bodies, aggregate history, slow receives, blocking work, archive
