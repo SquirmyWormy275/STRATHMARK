@@ -8,7 +8,7 @@ Designed for future projects (web apps, mobile, non-Python consumers)
 that cannot use the Python import API directly.
 
 Start the server after installing the ``api`` extra from the selected package source:
-    uvicorn strathmark.api:app --host 0.0.0.0 --port 8000
+    uvicorn strathmark.api:app --host 127.0.0.1 --port 8000
 
 STRATHEX uses the direct import API for offline operation and can select this REST API
 explicitly for integration demonstrations. Other projects may use either interface.
@@ -1041,7 +1041,16 @@ app = FastAPI(
 app.add_middleware(TrustedShadowRequestGate)
 from strathmark.request_limits import BoundedRequestMiddleware
 
-app.add_middleware(BoundedRequestMiddleware)
+
+def _trusted_body_admission(authorization: str) -> bool:
+    try:
+        require_results_token(authorization)
+    except HTTPException:
+        return False
+    return True
+
+
+app.add_middleware(BoundedRequestMiddleware, trusted_request=_trusted_body_admission)
 
 
 @app.exception_handler(RequestValidationError)

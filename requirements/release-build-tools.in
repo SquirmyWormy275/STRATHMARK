@@ -1,0 +1,4 @@
+# Artifact-producing release tools; regenerate the hash lock deliberately.
+build==1.6.1
+hatchling==1.32.4
+twine==7.0.0

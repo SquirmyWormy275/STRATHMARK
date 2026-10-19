@@ -242,7 +242,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="reuse installed dependencies and disable package-index access",
     )
+    parser.add_argument("--build-tools-lock", type=Path)
+    parser.add_argument("--build-tools-wheelhouse", type=Path)
     args = parser.parse_args(argv)
+    if bool(args.build_tools_lock) != bool(args.build_tools_wheelhouse):
+        parser.error("build tools require both a reviewed hash lock and its verified wheelhouse")
+    build_tools_lock = args.build_tools_lock.resolve() if args.build_tools_lock else None
+    build_tools_wheelhouse = (
+        args.build_tools_wheelhouse.resolve() if args.build_tools_wheelhouse else None
+    )
     pattern = "*.whl" if args.kind == "wheel" else "*.tar.gz"
     candidates = sorted(args.dist_dir.resolve().glob(pattern))
     if len(candidates) != 1:
@@ -276,6 +284,47 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run([*venv_command, str(environment)], check=True)
         python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         install_command = [str(python), "-m", "pip", "install"]
+        build_environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        tool_verification = None
+        if args.kind == "sdist" and build_tools_lock:
+            tool_verification = [
+                str(python),
+                "-I",
+                "-B",
+                str(Path(__file__).with_name("verify_toolchain.py")),
+                "--lock",
+                str(build_tools_lock),
+                "--wheelhouse",
+                str(build_tools_wheelhouse),
+            ]
+            subprocess.run(tool_verification, check=True, cwd=root, env=build_environment)
+            subprocess.run(
+                [
+                    str(python),
+                    "-I",
+                    "-B",
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-index",
+                    "--find-links",
+                    str(build_tools_wheelhouse),
+                    "--require-hashes",
+                    "--no-compile",
+                    "-r",
+                    str(build_tools_lock),
+                ],
+                check=True,
+                cwd=root,
+                env=build_environment,
+            )
+            subprocess.run(
+                [*tool_verification, "--installed"],
+                check=True,
+                cwd=root,
+                env=build_environment,
+            )
+            install_command.append("--no-build-isolation")
         if args.offline:
             install_command.extend(
                 ["--no-index", "--no-deps", "--no-build-isolation", "--no-cache-dir"]
@@ -287,7 +336,15 @@ def main(argv: list[str] | None = None) -> int:
             [*install_command, artifact],
             check=True,
             cwd=root,
+            env=build_environment,
         )
+        if tool_verification:
+            subprocess.run(
+                [*tool_verification, "--installed"],
+                check=True,
+                cwd=root,
+                env=build_environment,
+            )
         if not args.offline:
             subprocess.run([str(python), "-m", "pip", "check"], check=True, cwd=root)
         # This newly created disposable root is ours to provision. Use the

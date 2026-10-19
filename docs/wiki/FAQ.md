@@ -3,7 +3,7 @@
 ## Can I use V3 to run a Linux competition?
 
 Yes. New profiles use the configured Linux competition runtime: STRATHMARK
-3.0.0rc12 and STRATHEX 7.4.4. Retained rc7/7.4.2 competitions resume with their
+3.0.0rc13 and STRATHEX 7.4.5. Retained rc7/7.4.2 competitions resume with their
 original exact runtime, model, signing authority and saved data. The new package
 pair does not configure or activate a profile. It supports review, separate issue
 confirmation, official outcomes, corrections, recovery and later rounds. Start with

@@ -29,6 +29,8 @@ from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 
+from strathmark.input_limits import bounded_workbook
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 _log = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ def load_and_validate_workbook(
         Raises ValueError on critical structural failures.
     """
     try:
-        xl = pd.ExcelFile(path)
+        xl = pd.ExcelFile(bounded_workbook(path))
     except Exception as e:
         raise ValueError(f"Cannot open workbook '{path}': {e}")
 
@@ -70,11 +72,15 @@ def load_and_validate_workbook(
     required_sheets = {"Wood", "Competitor", "Results"}
     missing = required_sheets - sheets
     if missing:
+        xl.close()
         raise ValueError(f"Missing required sheets: {missing}. Found: {xl.sheet_names}")
 
-    wood_df = xl.parse("Wood")
-    competitor_df = xl.parse("Competitor")
-    results_df = xl.parse("Results")
+    try:
+        wood_df = xl.parse("Wood")
+        competitor_df = xl.parse("Competitor")
+        results_df = xl.parse("Results")
+    finally:
+        xl.close()
 
     # Normalize column names
     wood_df.columns = [str(c).strip().lower().replace(" ", "_") for c in wood_df.columns]

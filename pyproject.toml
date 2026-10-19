@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "strathmark"
-version = "3.0.0rc12"
+version = "3.0.0rc13"
 description = "Offline woodchopping handicap engine with trusted V2 and an auditable V3 adaptive-ensemble release candidate"
 readme = "README.md"
 requires-python = ">=3.10"

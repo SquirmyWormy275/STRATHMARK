@@ -1,4 +1,9 @@
-# Security hardening in 3.0.0rc12
+# Security hardening in 3.0.0rc12 and 3.0.0rc13
+
+The rc13 follow-up closes additional admission, recovery, administrative-input,
+provider-path, diagnostic-publication and toolchain boundaries. See the
+[verification record](SECURITY_VERIFICATION_2026-10-19.md) for scope and upgrade
+behavior. The rc12 protections below remain in place.
 
 The October 2026 Security Cloud review adds explicit limits and trust checks at
 public and local input boundaries. These changes preserve the packaged V2 model,

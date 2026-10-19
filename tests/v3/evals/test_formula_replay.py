@@ -217,7 +217,7 @@ def test_designated_verification_runs_independent_artifact_engine(tmp_path: Path
     required = os.environ.get("STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION", "1") != "0"
     if not required:
         pytest.skip("designated exact-workbook verification is disabled for this portable run")
-    from scripts.verify_formula_runtime import verify_runtime
+    from scripts.verify_formula_runtime import formula_environment, runtime_identity, verify_runtime
 
     node, node_modules = _artifact_engine_paths()
     if not node.is_file() or not node_modules.is_dir():
@@ -225,9 +225,13 @@ def test_designated_verification_runs_independent_artifact_engine(tmp_path: Path
             pytest.fail("independent Formula workbook engine is required but unavailable")
         pytest.skip("independent Formula workbook engine is unavailable and gate is disabled")
     try:
-        verify_runtime(node, node_modules)
+        identity = verify_runtime(node, node_modules)
     except ValueError as error:
         pytest.fail(str(error))
+    # Continue with the exact protected canonical targets authenticated above,
+    # even if a caller's installation aliases are retargeted after preflight.
+    node = Path(identity["node_path"])
+    node_modules = Path(identity["node_modules_path"])
     junction = tmp_path / "node_modules"
     if os.name == "nt":
         linked = subprocess.run(
@@ -239,7 +243,7 @@ def test_designated_verification_runs_independent_artifact_engine(tmp_path: Path
         assert linked.returncode == 0, linked.stderr or linked.stdout
     else:
         junction.symlink_to(node_modules, target_is_directory=True)
-    environment = os.environ.copy()
+    environment = formula_environment()
     environment.update(
         {
             "STRATHMARK_ARTIFACT_NODE_MODULES": str(node_modules),
@@ -256,8 +260,23 @@ def test_designated_verification_runs_independent_artifact_engine(tmp_path: Path
         timeout=120,
         check=False,
     )
+    after = runtime_identity(node, node_modules)
+    assert all(after[key] == identity[key] for key in after), "Formula tools changed during proof"
     assert verified.returncode == 0, verified.stderr or verified.stdout
     assert '"status": "verified"' in verified.stdout
+    (tmp_path / "formula-toolchain-verification.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "strathmark-formula-toolchain-proof-v1",
+                "toolchain": identity,
+                "stdout_sha256": hashlib.sha256(verified.stdout.encode()).hexdigest(),
+                "stderr_sha256": hashlib.sha256(verified.stderr.encode()).hexdigest(),
+                "result": "verified",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_required_engine_gate_does_not_silently_accept_missing_runtime(

@@ -171,6 +171,7 @@ class BundleRepository:
         *,
         trust_policy: FactoryTrustPolicy,
         production: bool = False,
+        allow_diagnostic_publication: bool = False,
     ) -> None:
         if not isinstance(trust_policy, FactoryTrustPolicy):
             raise ArtifactError("bundle repository requires a factory trust policy")
@@ -179,7 +180,14 @@ class BundleRepository:
         self.trust_policy = trust_policy
         if not isinstance(production, bool):
             raise ArtifactError("bundle repository production mode must be explicit")
+        if not isinstance(allow_diagnostic_publication, bool) or (
+            production and allow_diagnostic_publication
+        ):
+            raise ArtifactError(
+                "diagnostic publication requires an explicit nonproduction repository"
+            )
         self.production = production
+        self.allow_diagnostic_publication = allow_diagnostic_publication
 
     def publish(
         self,
@@ -215,10 +223,12 @@ class BundleRepository:
         )
         if not evaluation_report.passed:
             raise ArtifactError("failed evaluator report cannot publish a bundle")
+        if not self.allow_diagnostic_publication and not evaluation_report.promotion_authorized:
+            raise ArtifactError("diagnostic evaluator reports cannot authorize bundle publication")
         if evaluation_report.manifest.key_id == signer.identity.key_id:
             raise ArtifactError("evaluator and bundle authorization require separate signers")
         body = {
-            "schema_version": "strathmark-v3-whole-system-bundle-v1",
+            "schema_version": "strathmark-v3-whole-system-bundle-v2",
             "candidate_digest": candidate.candidate_digest,
             "candidate_lineage_digest": candidate.lineage_digest,
             "code_revision": candidate.code_revision,
@@ -238,6 +248,8 @@ class BundleRepository:
             "audit_generation_id": evaluation_report.generation_id,
             "evaluation_harness_digest": evaluation_report.harness_digest,
             "whole_domain": True,
+            "promotion_authorized": evaluation_report.promotion_authorized,
+            "promotion_evidence_digest": evaluation_report.promotion_evidence_digest,
         }
         bundle_digest = canonical_digest(body)
         payload = {**body, "bundle_digest": bundle_digest}
@@ -330,10 +342,24 @@ class BundleRepository:
             "whole_domain",
             "bundle_digest",
         }
-        if set(payload) != expected_fields or payload["schema_version"] != (
-            "strathmark-v3-whole-system-bundle-v1"
-        ):
+        schema = payload.get("schema_version")
+        if schema == "strathmark-v3-whole-system-bundle-v2":
+            expected_fields.update({"promotion_authorized", "promotion_evidence_digest"})
+            evidence = payload.get("promotion_evidence_digest")
+            if evidence is not None:
+                _digest(evidence, "bundle promotion evidence")
+            if payload.get("promotion_authorized") is not (evidence is not None):
+                raise ArtifactError("bundle promotion evidence and authorization differ")
+        elif schema != "strathmark-v3-whole-system-bundle-v1":
             raise ArtifactError("bundle payload schema is not closed")
+        if set(payload) != expected_fields:
+            raise ArtifactError("bundle payload schema is not closed")
+        if (
+            purpose is not ActivationPurpose.HISTORICAL_VERIFY
+            and not self.allow_diagnostic_publication
+            and payload.get("promotion_authorized") is not True
+        ):
+            raise ArtifactError("diagnostic or legacy bundle lacks promotion authorization")
         body = {name: payload[name] for name in payload if name != "bundle_digest"}
         if (
             payload["bundle_digest"] != bundle_digest
@@ -510,6 +536,8 @@ def _verify_report_for_publication(
         or payload.get("harness_digest") != report.harness_digest
         or payload.get("passed") is not report.passed
         or payload.get("failed_gates") != list(report.failed_gates)
+        or payload.get("promotion_authorized") is not report.promotion_authorized
+        or payload.get("promotion_evidence_digest") != report.promotion_evidence_digest
     ):
         raise ArtifactError("evaluator report binding differs from candidate or typed result")
 

@@ -291,9 +291,14 @@ def test_passing_diagnostic_report_cannot_cross_manual_promotion_boundary(tmp_pa
         occurred_at_utc=NOW,
         monotonic_elapsed_ms=2,
     )
-    installed = repository.publish(candidate, report, signer=bundle_signer, created_at=NOW)
+    with pytest.raises(ArtifactError, match="diagnostic"):
+        repository.publish(candidate, report, signer=bundle_signer, created_at=NOW)
+    rehearsal = BundleRepository(
+        repository.root, trust_policy=repository.trust_policy, allow_diagnostic_publication=True
+    )
+    installed = rehearsal.publish(candidate, report, signer=bundle_signer, created_at=NOW)
 
-    with pytest.raises(FactoryError, match="calibration authority"):
+    with pytest.raises(FactoryError, match="not installed and authorized"):
         service.promote(
             candidate,
             installed,

@@ -24,7 +24,7 @@ events with persistent review, issue, outcomes, progression and corrections. See
 ## What works today?
 
 **V2** is the established engine for Linux and Windows. New **Linux V3** profiles
-use STRATHMARK 3.0.0rc12 with STRATHEX 7.4.4 for the full local competition workflow.
+use STRATHMARK 3.0.0rc13 with STRATHEX 7.4.5 for the full local competition workflow.
 They require a configured trained model, persistent signing key and independent
 backups; package installation alone does not activate a profile. Retained rc7/7.4.2
 competitions keep their original exact runtime and saved identities. Linux uses

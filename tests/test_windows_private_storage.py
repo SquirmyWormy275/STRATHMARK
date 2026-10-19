@@ -291,3 +291,28 @@ def test_importer_provisions_fresh_temporary_root_before_reading_snapshot(tmp_pa
     assert len(inspected) == 1 and not inspected[0].exists()
     assert source.read_bytes() == before
     assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "target_kind,rights", [("file", "WriteData"), ("directory", "CreateFiles")]
+)
+def test_formula_tool_inputs_reject_peer_write_or_module_injection(tmp_path, target_kind, rights):
+    from scripts.verify_formula_runtime import _trusted_tool_input
+
+    root = private_directory(tmp_path / "formula-tools")
+    target = root if target_kind == "directory" else private_file(root / "node.exe")
+    if target_kind == "file":
+        target.write_bytes(b"approved synthetic tool")
+    _trusted_tool_input(target)
+    script = """
+$path = $env:STRATHMARK_ACL_TEST_PATH
+$acl = Get-Acl -LiteralPath $path
+$sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid,$env:STRATHMARK_TEST_RIGHTS,'Allow'))
+Set-Acl -LiteralPath $path -AclObject $acl
+"""
+    _powershell(script, STRATHMARK_ACL_TEST_PATH=str(target), STRATHMARK_TEST_RIGHTS=rights)
+    before = _acl(target)
+    with pytest.raises(PermissionError, match="SID=S-1-1-0"):
+        _trusted_tool_input(target)
+    assert _acl(target) == before, "tool verification must never change permissions"

@@ -96,7 +96,9 @@ jobs:
       # NumPy pin intentionally has no Python 3.10 build).
       - name: Install designated release lock
         if: matrix.python-version == '3.13'
-        run: python -m pip install -r requirements/v3-release.lock -r requirements/v3-evidence-tools.lock
+        run: |
+          python -m pip download --require-hashes --only-binary=:all: -r requirements/v3-verified.lock -d .tmp/verified-wheelhouse
+          python -m pip install --no-compile --force-reinstall --no-index --find-links .tmp/verified-wheelhouse --require-hashes -r requirements/v3-verified.lock
 
       - name: Prepare isolated storage paths
         run: python -m scripts.prepare_ci_storage --provision-authority
@@ -168,7 +170,8 @@ jobs:
       - name: Install complete V3 test dependencies
         run: |
           pip install -e ".[dev,api]"
-          python -m pip install -r requirements/v3-release.lock -r requirements/v3-evidence-tools.lock
+          python -m pip download --require-hashes --only-binary=:all: -r requirements/v3-verified.lock -d .tmp/verified-wheelhouse
+          python -m pip install --no-compile --force-reinstall --no-index --find-links .tmp/verified-wheelhouse --require-hashes -r requirements/v3-verified.lock
 
       - name: Prepare isolated storage paths
         run: python -m scripts.prepare_ci_storage --provision-authority
@@ -409,17 +412,26 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tools
-        run: pip install build
-
       - name: Prepare isolated storage paths
         run: python -m scripts.prepare_ci_storage
 
-      - name: Build sdist and wheel
-        run: python -m build
+      - name: Build with verified tool bytes
+        run: >-
+          python -m scripts.build_release
+          --wheelhouse "${{ runner.temp }}/release-build-wheels"
+          --provenance "${{ runner.temp }}/release-build-provenance.json"
 
       - name: Verify installed distribution outside checkout
-        run: python scripts/smoke_installed_distribution.py --kind ${{ matrix.kind }}
+        run: >-
+          python scripts/smoke_installed_distribution.py --kind ${{ matrix.kind }}
+          --build-tools-lock requirements/release-build-tools.lock
+          --build-tools-wheelhouse "${{ runner.temp }}/release-build-wheels"
+
+      - name: Recheck artifacts after installed rehearsal
+        run: >-
+          python -B -m scripts.build_release --verify-only
+          --wheelhouse "${{ runner.temp }}/release-build-wheels"
+          --provenance "${{ runner.temp }}/release-build-provenance.json"
 
   required:
     name: Required CI

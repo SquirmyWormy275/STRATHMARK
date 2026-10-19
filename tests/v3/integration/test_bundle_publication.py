@@ -53,7 +53,9 @@ def _repository(tmp_path, *, bundle_signer, evaluator_signer, retired=(), revoke
         retired_key_ids=retired,
         revoked_key_ids=revoked,
     )
-    return BundleRepository(tmp_path / "bundles", trust_policy=policy)
+    return BundleRepository(
+        tmp_path / "bundles", trust_policy=policy, allow_diagnostic_publication=True
+    )
 
 
 def test_bundle_publication_is_signed_content_addressed_and_immutable(tmp_path) -> None:
@@ -115,6 +117,51 @@ def test_partial_install_never_becomes_a_visible_bundle(tmp_path) -> None:
             fault_hook=crash,
         )
     assert repository.installed_digests() == ()
+
+
+def test_diagnostic_pass_cannot_cross_operational_publication_boundary(tmp_path) -> None:
+    candidate = _candidate()
+    evaluator = P256EphemeralSigner.generate("integrity-key:diagnostic-evaluator")
+    bundle = P256EphemeralSigner.generate("integrity-key:diagnostic-bundle")
+    report = _passing_report(tmp_path, candidate, evaluator)
+    rehearsal = _repository(tmp_path, bundle_signer=bundle, evaluator_signer=evaluator)
+    operational = BundleRepository(rehearsal.root, trust_policy=rehearsal.trust_policy)
+    assert report.passed and not report.promotion_authorized
+    with pytest.raises(ArtifactError, match="diagnostic"):
+        operational.publish(candidate, report, signer=bundle, created_at="2026-08-25T09:02:00.000Z")
+    assert operational.installed_digests() == ()
+    installed = rehearsal.publish(
+        candidate, report, signer=bundle, created_at="2026-08-25T09:02:00.000Z"
+    )
+    assert (
+        operational.verify(installed.bundle_digest, purpose=ActivationPurpose.HISTORICAL_VERIFY)
+        == installed
+    )
+    for purpose in (
+        ActivationPurpose.NEW_ACTIVATION,
+        ActivationPurpose.NEW_TOURNAMENT,
+        ActivationPurpose.PINNED_TOURNAMENT,
+    ):
+        with pytest.raises(ArtifactError, match="promotion authorization"):
+            operational.verify(installed.bundle_digest, purpose=purpose)
+    with pytest.raises(ArtifactError, match="nonproduction"):
+        BundleRepository(
+            tmp_path / "invalid",
+            trust_policy=rehearsal.trust_policy,
+            production=True,
+            allow_diagnostic_publication=True,
+        )
+
+
+def test_typed_promotion_claim_cannot_override_signed_diagnostic_report(tmp_path) -> None:
+    candidate = _candidate()
+    evaluator = P256EphemeralSigner.generate("integrity-key:diagnostic-forgery-evaluator")
+    bundle = P256EphemeralSigner.generate("integrity-key:diagnostic-forgery-bundle")
+    report = _passing_report(tmp_path, candidate, evaluator)
+    repository = _repository(tmp_path, bundle_signer=bundle, evaluator_signer=evaluator)
+    forged = replace(report, promotion_authorized=True, promotion_evidence_digest="a" * 64)
+    with pytest.raises(ArtifactError, match="binding"):
+        repository.publish(candidate, forged, signer=bundle, created_at="2026-08-25T09:02:00.000Z")
 
 
 def test_production_publication_rejects_exportable_or_ephemeral_signing_keys(tmp_path) -> None:

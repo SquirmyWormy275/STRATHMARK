@@ -1,6 +1,6 @@
 # Security maintenance
 
-The 3.0.0rc12 candidate applies the October 2026 Security Cloud fixes. The V2
+The 3.0.0rc13 candidate applies the October 2026 Security Cloud fixes. The V2
 numeric model and handicap policy remain the reviewed engine; the changes protect
 request handling, local input, model loading, storage and release provenance.
 
@@ -33,3 +33,25 @@ synthetic calculations first. Do not replace the exact runtime of a saved Linux
 V3 competition: source, model and signing identity are frozen for that competition.
 Preserve its original environment and verified recovery copies. Package publication
 does not grant Windows V3 production authority.
+
+## Verification follow-up in rc13
+
+The follow-up scan identified nine additional or residual boundaries. Public V2
+requests cannot consume the reserved authenticated pool or bodyless health route;
+V3 authentication overflow has no application waiter queue. Administrative Excel
+imports use the bounded parser, and local provider paths must have trusted ancestry.
+Diagnostic evaluator results cannot publish or reopen an operational bundle.
+
+Encrypted recovery inspection reports integrity only. Origin verification needs an
+independently retained plaintext digest or the exact trusted snapshot inventory;
+an adjacent unsigned receipt is not that authority. GPG input, expansion and
+execution have finite limits. Existing keys and encrypted archives are preserved.
+
+Release code runs from the successful CI commit, and the build uses reviewed
+wheel hashes with installed-byte checks. New qualification evidence similarly
+requires approved Python and Formula toolchain identities. Old evidence remains
+historical and does not grant fresh production eligibility.
+
+See the [complete follow-up scope](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/SECURITY_VERIFICATION_2026-10-19.md),
+[admission and promotion rules](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/VERIFICATION_ADMISSION_AND_PROMOTION.md)
+and [qualification toolchain](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/QUALIFICATION_TOOLCHAIN.md).

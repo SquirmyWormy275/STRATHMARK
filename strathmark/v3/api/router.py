@@ -63,7 +63,7 @@ class BoundedBlockingExecutor:
             or not 1 <= max_concurrency <= 64
         ):
             raise ValueError("blocking concurrency must be an integer from 1 to 64")
-        self._slots = asyncio.Semaphore(max_concurrency)
+        self._max_concurrency = max_concurrency
         self._active_count = 0
 
     @property
@@ -81,10 +81,9 @@ class BoundedBlockingExecutor:
             raise ValueError("blocking operation timeout must be from 1 to 60000 milliseconds")
         loop = asyncio.get_running_loop()
         started_at = loop.time()
-        try:
-            await asyncio.wait_for(self._slots.acquire(), timeout=timeout_ms / 1000)
-        except TimeoutError as exc:
-            raise BlockingOperationTimeout("blocking operation capacity deadline expired") from exc
+        # No await between admission and reservation: overflow never joins a waiter queue.
+        if self._active_count >= self._max_concurrency:
+            raise BlockingOperationTimeout("blocking operation capacity is exhausted")
         self._active_count += 1
         try:
             task = asyncio.create_task(
@@ -92,12 +91,10 @@ class BoundedBlockingExecutor:
             )
         except BaseException:
             self._active_count -= 1
-            self._slots.release()
             raise
 
         def finished(completed: asyncio.Task) -> None:
             self._active_count -= 1
-            self._slots.release()
             if not completed.cancelled():
                 completed.exception()
 

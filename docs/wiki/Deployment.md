@@ -2,7 +2,7 @@
 
 ## Linux V3 competitions
 
-For new profiles, use STRATHMARK 3.0.0rc12 with STRATHEX 7.4.4 in separate Python
+For new profiles, use STRATHMARK 3.0.0rc13 with STRATHEX 7.4.5 in separate Python
 3.13 environments. Retained rc7/7.4.2 competitions keep their exact original
 runtime, model, signing authority and data; never upgrade them in place.
 The V3 environment needs the exact release lock, a verified trained model and a
@@ -46,8 +46,18 @@ Keep a protected recovery-key copy separately from the workstation and archive d
 A public fingerprint alone cannot decrypt a backup. Preserve plaintext archives
 until encryption readback and recovery-key storage are verified.
 
-The runbooks cover policy fields, hard-link requirements, interrupted publication
-and restore checks.
+From rc13, later `verify` calls require an independently retained plaintext SHA256;
+never obtain it from the adjacent unsigned receipt. A public recipient-key holder
+can create ciphertext and a matching receipt, so successful decryption alone is not
+proof of origin. `inspect` is explicitly integrity-only for legacy archives. Native
+competition backup retries still compare all members to the trusted local snapshot.
+The GPG stream has finite input/output allowances and a watchdog; larger archives
+need a source/inventory-owned allowance. Receipt sizes cannot raise limits. Existing
+certification-only keys and archives remain readable without changing live policies.
+
+The runbook's [recovery trust and limits](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/V3_LINUX_COMPETITION.md#rc13-recovery-trust-and-processing-limits)
+also covers hard-link publication, the independent pin, restore checks and the
+remaining limitation when an operating-system file read stalls.
 
 ## Windows V7 service
 

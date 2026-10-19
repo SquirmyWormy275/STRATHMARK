@@ -6,11 +6,14 @@ from starlette.responses import JSONResponse
 
 
 class BoundedRequestMiddleware:
-    def __init__(self, app, *, max_bytes=1_048_576, max_inflight=16):
+    def __init__(self, app, *, max_bytes=1_048_576, max_inflight=16, trusted_request=None):
         self.app = app
         self.max_bytes = max_bytes
         self.max_inflight = max_inflight
         self.active = 0
+        self.trusted_active = 0
+        self._sources = {}
+        self._trusted_request = trusted_request
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or str(scope.get("path", "")).startswith("/v1/shadow/"):
@@ -21,13 +24,10 @@ class BoundedRequestMiddleware:
         async def reject(status, detail):
             await JSONResponse({"detail": detail}, status_code=status)(scope, receive, send)
 
-        if self.active >= self.max_inflight:
-            await reject(503, "Request capacity is exhausted.")
-            return
         headers = {}
         for key, value in scope.get("headers", []):
             key = key.lower()
-            if key in headers and key in (b"content-length", b"content-encoding"):
+            if key in headers and key in (b"content-length", b"content-encoding", b"authorization"):
                 await reject(400, "Duplicate request length or encoding.")
                 return
             headers[key] = value
@@ -42,7 +42,35 @@ class BoundedRequestMiddleware:
         if headers.get(b"content-encoding", b"identity") != b"identity":
             await reject(415, "Encoded request bodies are rejected.")
             return
-        self.active += 1
+        if scope.get("path") == "/health" and scope.get("method", "GET") in {"GET", "HEAD"}:
+            if length not in (None, 0) or b"transfer-encoding" in headers:
+                await reject(400, "Health accepts no request body.")
+                return
+
+            async def empty_receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            await self.app(scope, empty_receive, send)
+            return
+        authorization = headers.get(b"authorization", b"")
+        trusted = False
+        if self._trusted_request is not None and len(authorization) <= 8192:
+            try:
+                trusted = self._trusted_request(authorization.decode("ascii")) is True
+            except UnicodeError:
+                pass
+        source = str((scope.get("client") or ("unknown",))[0])
+        if trusted:
+            if self.trusted_active >= 4:
+                await reject(503, "Authenticated request capacity is exhausted.")
+                return
+            self.trusted_active += 1
+        else:
+            if self.active >= self.max_inflight or self._sources.get(source, 0) >= 4:
+                await reject(503, "Public request capacity is exhausted.")
+                return
+            self.active += 1
+            self._sources[source] = self._sources.get(source, 0) + 1
         try:
             body = bytearray()
             end = asyncio.get_running_loop().time() + 10
@@ -75,4 +103,12 @@ class BoundedRequestMiddleware:
 
             await self.app(scope, replay, send)
         finally:
-            self.active -= 1
+            if trusted:
+                self.trusted_active -= 1
+            else:
+                self.active -= 1
+                count = self._sources[source] - 1
+                if count:
+                    self._sources[source] = count
+                else:
+                    del self._sources[source]
