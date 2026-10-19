@@ -1,6 +1,6 @@
 # Security maintenance
 
-The 3.0.0rc13 candidate applies the October 2026 Security Cloud fixes. The V2
+The 3.0.0rc14 candidate applies the October 2026 Security Cloud fixes. The V2
 numeric model and handicap policy remain the reviewed engine; the changes protect
 request handling, local input, model loading, storage and release provenance.
 
@@ -55,3 +55,13 @@ historical and does not grant fresh production eligibility.
 See the [complete follow-up scope](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/SECURITY_VERIFICATION_2026-10-19.md),
 [admission and promotion rules](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/VERIFICATION_ADMISSION_AND_PROMOTION.md)
 and [qualification toolchain](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/QUALIFICATION_TOOLCHAIN.md).
+
+## Final scan follow-up in rc14
+
+The [rc14 security record](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/SECURITY_FINAL_SCAN_2026-10-19.md)
+covers health/shadow/password admission, parser metadata limits, private plaintext
+archives, same-read archive proof, and credential/snapshot concurrency. Full public
+request identities are reserved before lifecycle preparation and authenticated by
+the independent witness. Preserve pre-upgrade databases and original runtime profiles;
+legacy public keys without a complete request binding cannot be silently adopted.
+These changes do not grant Windows V3 production qualification.

@@ -4,7 +4,9 @@ import gzip
 import hashlib
 import io
 import os
+import re
 import stat
+import struct
 import tarfile
 import time
 import zipfile
@@ -41,6 +43,60 @@ def read_bounded_file(path, maximum=MAX_INPUT_BYTES):
         return raw
 
 
+def preflight_zip(raw):
+    """Bound directory parsing before ZipFile constructs any ZipInfo objects."""
+    if not isinstance(raw, bytes) or len(raw) > MAX_INPUT_BYTES:
+        raise ValueError("Archive exceeds input-byte budget")
+    end = raw.rfind(b"PK\x05\x06", max(0, len(raw) - 65557))
+    if end < 0 or end + 22 > len(raw):
+        raise ValueError("Archive has no bounded end directory")
+    _, disk, start_disk, disk_count, count, size, offset, comment = struct.unpack_from(
+        "<4s4H2IH", raw, end
+    )
+    if (
+        disk
+        or start_disk
+        or disk_count != count
+        or count > MAX_ARCHIVE_MEMBERS
+        or size > 1_048_576
+        or offset + size != end
+        or end + 22 + comment != len(raw)
+    ):
+        raise ValueError("Archive exceeds member or directory budget")
+    # Do not trust the declared count: Python walks the actual directory bytes.
+    cursor = offset
+    observed = 0
+    while cursor < end:
+        observed += 1
+        if (
+            observed > MAX_ARCHIVE_MEMBERS
+            or cursor + 46 > end
+            or raw[cursor : cursor + 4] != b"PK\x01\x02"
+        ):
+            raise ValueError("Archive exceeds member or directory budget")
+        name, extra, note, member_disk = struct.unpack_from("<4H", raw, cursor + 28)
+        if member_disk:
+            raise ValueError("Archive cannot span disks")
+        cursor += 46 + name + extra + note
+    if cursor != end or observed != count:
+        raise ValueError("Archive directory count or length differs")
+
+
+def _bounded_coordinate(value, label):
+    # Bound text before integer conversion or base-26 arithmetic. XML attributes
+    # are untrusted, and a deadline check after huge bigint work is too late.
+    if len(value) > 9 or re.fullmatch(r"[A-Za-z]{1,3}[1-9][0-9]{0,5}", value) is None:
+        raise ValueError(f"Workbook exceeds {label} coordinate budget")
+    column = 0
+    split = 0
+    for split, letter in enumerate(value):
+        if "0" <= letter <= "9":
+            break
+        column = column * 26 + ord(letter.upper()) - 64
+    if column > 256 or int(value[split:]) > 100_000:
+        raise ValueError(f"Workbook exceeds {label} budget")
+
+
 def check_zip(archive, *, stored_only=False, maximum=MAX_EXPANDED_BYTES):
     entries = archive.infolist()
     if len(entries) > MAX_ARCHIVE_MEMBERS:
@@ -59,6 +115,7 @@ def check_zip(archive, *, stored_only=False, maximum=MAX_EXPANDED_BYTES):
 
 def bounded_workbook(path):
     raw = read_bounded_file(path)
+    preflight_zip(raw)
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         check_zip(archive)
         sheets = [
@@ -74,28 +131,27 @@ def bounded_workbook(path):
             with archive.open(member) as stream:
                 for _, element in ElementTree.iterparse(stream, events=("end",)):
                     tag = element.tag.rsplit("}", 1)[-1]
-                    if tag == "row" and int(element.get("r", "0")) > 100_000:
-                        raise ValueError("Workbook exceeds row budget")
+                    if tag == "row":
+                        row = element.get("r", "0")
+                        if (
+                            len(row) > 6
+                            or not row.isascii()
+                            or not row.isdecimal()
+                            or int(row) > 100_000
+                        ):
+                            raise ValueError("Workbook exceeds row budget")
                     if tag == "c":
                         cells += 1
-                        coordinate = element.get("r", "A1")
-                        column = 0
-                        for letter in coordinate:
-                            if not letter.isalpha():
-                                break
-                            column = column * 26 + ord(letter.upper()) - 64
-                        if column > 256 or cells > 1_000_000:
+                        _bounded_coordinate(element.get("r", "A1"), "cell")
+                        if cells > 1_000_000:
                             raise ValueError("Workbook exceeds cell budget")
                     if tag == "dimension":
                         # A forged dimension can make read-only iteration expand empty rows.
-                        endpoint = element.get("ref", "A1").split(":")[-1]
-                        row = "".join(c for c in endpoint if c.isdigit())
-                        letters = "".join(c for c in endpoint if c.isalpha())
-                        column = 0
-                        for letter in letters:
-                            column = column * 26 + ord(letter.upper()) - 64
-                        if int(row or "0") > 100_000 or column > 256:
+                        dimension = element.get("ref", "A1")
+                        if len(dimension) > 19 or dimension.count(":") > 1:
                             raise ValueError("Workbook exceeds dimension budget")
+                        for endpoint in dimension.split(":"):
+                            _bounded_coordinate(endpoint, "dimension")
                     if time.monotonic() > deadline:
                         raise ValueError("Workbook preflight deadline expired")
                     element.clear()

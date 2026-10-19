@@ -1,4 +1,8 @@
-# Security hardening in 3.0.0rc12 and 3.0.0rc13
+# Security hardening through 3.0.0rc14
+
+The [rc14 follow-up](SECURITY_FINAL_SCAN_2026-10-19.md) adds authenticated public
+operation reservations, credential/snapshot race fixes, archive publication checks
+and bounded health, shadow and password work. Earlier fixes remain in place.
 
 The rc13 follow-up closes additional admission, recovery, administrative-input,
 provider-path, diagnostic-publication and toolchain boundaries. See the
@@ -19,8 +23,8 @@ selection. They do not qualify Windows V3 production authority.
 | V3 HTTP | Existing 1 MiB ceiling; 10-second body deadline and 2-second idle receive limit; public bodyless health bypasses authority admission |
 | V3 synchronous calls | Shared bounded executor retains its slot until the actual worker exits, including after HTTP timeout |
 | Canonical decimals | Fixed-point expansion must fit 128 characters before formatting |
-| Support ZIP | Stored entries only; at most 1,024 members and 8 MiB expanded data |
-| Workbook | 64 MiB input, 128 MiB expanded, 1,024 members, 200:1 maximum compression ratio; 32 worksheets, 100,000 rows, 256 columns and 1,000,000 populated cells |
+| Support ZIP | Stored entries only; at most 1,024 members and 8 MiB expanded data; directory preflight before ZIP object allocation |
+| Workbook | 1 MiB central-directory metadata and bounded coordinate text before numeric conversion; 64 MiB input, 128 MiB expanded, 1,024 members, 200:1 maximum compression ratio; 32 worksheets, 100,000 rows, 256 columns and 1,000,000 populated cells |
 | Recovery TAR | 1,024 members, 64 MiB per member, 128 MiB complete expanded stream and a 30-second processing deadline |
 | V2 import | 64 MiB source, 128 tables, 100,000 total rows and a mandatory 60-second default deadline |
 | Archive proof | 128 MiB package checked before allocation |

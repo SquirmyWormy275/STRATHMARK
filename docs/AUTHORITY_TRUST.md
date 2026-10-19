@@ -149,3 +149,29 @@ forensic replay against an explicitly supplied anchor. An ancestor anchor alone
 is not operational current authority. `from_checkpoint_registry` now requires
 the exact current signed checkpoint; future writes still require the operational
 event witness or an explicit rehearsal selection.
+
+## Public operation reservations from rc14
+
+Forward migration 0019 adds `v3_public_operation_bindings`. Before a gateway mutation
+can start preparatory phases, one SQLite writer transaction reserves its principal,
+public idempotency key, operation and canonical application payload digest. The
+transport deadline is excluded because it changes waiting behavior, not the requested
+authority operation. A conflicting operation or body is rejected before preparation.
+An exact retry retains its binding even after interruption between phases.
+
+These rows are authority, not a disposable projection or an unsigned local counter.
+The independent event witness binds their ordered digest from the first reservation.
+Deletion, alteration, rollback or a lost CAS acknowledgment fails closed like other
+authority changes. Empty migration preserves the previously signed facts; it does not
+automatically trust preexisting events. SQLite backup preserves reservations and new
+plaintext archive packages include their complete material. An independently reviewed
+nonempty baseline must also supply `expected_public_operations_digest` to
+`provision_reviewed_database`; derive it from reviewed independent evidence.
+
+Keep a verified pre-upgrade database copy and its exact retained runtime before
+opening older authority with this forward-only schema. Older public command IDs
+without a full request binding are refused; the runtime never guesses that binding
+from a retry. Complete historical retries with the retained runtime and its preserved
+pre-upgrade database, or perform an independently reviewed recovery. Never downgrade
+the migrated database, erase old commands or reset the witness. Existing Linux local
+profiles use their separate signed lifecycle store and are not migrated by this change.

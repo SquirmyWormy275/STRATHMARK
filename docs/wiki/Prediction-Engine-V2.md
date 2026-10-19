@@ -2,7 +2,7 @@
 
 V2 is the established prediction engine. It estimates positive cutting times from
 prior results, then chooses handicap marks for the complete field. The maintained
-3.0.0rc13 package retains the `2.0.0` calculation contract and includes the current
+3.0.0rc14 package retains the `2.0.0` calculation contract and includes the current
 transport and storage fixes. Older 2.0.x artifacts lack those fixes; retain them
 only where an existing installation requires its original identity.
 

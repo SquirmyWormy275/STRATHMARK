@@ -189,7 +189,7 @@ def test_gateway_binds_internal_services_and_exact_retries_to_witness(tmp_path):
         },
     )
     assert response.status_code == 200, response.text
-    assert witness.read("authority").generation == before_http + 1
+    assert witness.read("authority").generation == before_http + 2
     witness.unavailable = True
     with pytest.raises((EventStoreIntegrityError, WitnessError)):
         gateway._services.events.execute(_request())
@@ -473,3 +473,86 @@ def test_checkpoint_open_cannot_accept_a_suffix_added_after_checkpoint_verificat
         reader.events()
     with pytest.raises(IntegrityError, match="current signed checkpoint"):
         SQLiteEventStore.from_checkpoint_registry(database, registry)
+
+
+def test_public_operation_binding_survives_restart_and_rejects_tampering(tmp_path):
+    from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict
+
+    database = tmp_path / "bindings.sqlite3"
+    _authority(database)
+    store = SQLiteEventStore(database)
+    request = dict(
+        principal_id="actor:manager",
+        idempotency_key="command:public",
+        operation="open_scope",
+        payload={"scope_id": "tournament:one"},
+        created_at=NOW,
+    )
+    store.reserve_public_operation(**request)
+    reopened = SQLiteEventStore(database)
+    reopened.reserve_public_operation(**request)
+    with pytest.raises(EventStoreConflict, match="different input"):
+        reopened.reserve_public_operation(**{**request, "payload": {"scope_id": "tournament:two"}})
+    assert reopened.events() == ()  # Claim persists even before the first phase/crash.
+    with open_v3_connection(database) as connection:
+        connection.execute("DELETE FROM v3_public_operation_bindings")
+    with pytest.raises(EventStoreIntegrityError):
+        SQLiteEventStore(database)
+
+
+def test_concurrent_public_operation_claim_has_one_exact_winner(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict
+
+    database = tmp_path / "concurrent-bindings.sqlite3"
+    _authority(database)
+
+    def reserve(value):
+        try:
+            SQLiteEventStore(database).reserve_public_operation(
+                principal_id="actor:manager",
+                idempotency_key="command:shared",
+                operation="open_scope",
+                payload={"scope_id": value},
+                created_at=NOW,
+            )
+            return True
+        except EventStoreConflict:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        assert sorted(workers.map(reserve, ["tournament:one", "tournament:two"])) == [False, True]
+    SQLiteEventStore(database).verify()
+
+
+def test_empty_forward_binding_migration_preserves_old_witness(tmp_path):
+    database = tmp_path / "old-schema.sqlite3"
+    _authority(database)
+    with open_v3_connection(database) as connection:
+        connection.execute("DROP TABLE v3_public_operation_bindings")
+        connection.execute("DELETE FROM v3_schema_migrations WHERE version=19")
+    # The empty new table must not invent a different authority identity.
+    SQLiteEventStore(database).verify()
+
+
+def test_public_claim_cannot_survive_uncertain_witness_commit_silently(tmp_path):
+    database = tmp_path / "uncertain-claim.sqlite3"
+    _auth, witness = _authority(database)
+    store = SQLiteEventStore(database)
+    witness.fail_after_cas = True
+    with pytest.raises(WitnessError):
+        store.reserve_public_operation(
+            principal_id="actor:manager",
+            idempotency_key="command:uncertain",
+            operation="open_scope",
+            payload={},
+            created_at=NOW,
+        )
+    with open_v3_connection(database, read_only=True) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM v3_public_operation_bindings").fetchone()[0]
+            == 0
+        )
+    with pytest.raises(EventStoreIntegrityError):
+        SQLiteEventStore(database)

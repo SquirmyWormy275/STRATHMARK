@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any
 
 from strathmark.v3.api.router import RequestContext
@@ -201,6 +202,28 @@ class V3ServiceIdentity:
         )
 
 
+def _bound_public_operation(function):
+    @wraps(function)
+    def bound(self, payload, context):
+        try:
+            self._services.events.reserve_public_operation(
+                principal_id=str(context.principal.principal_id),
+                idempotency_key=str(context.command_id),
+                operation=function.__name__,
+                payload={key: value for key, value in payload.items() if key != "deadline_ms"},
+                created_at=self._clock(),
+            )
+        except EventStoreConflict:
+            self._conflict(
+                "approval_decision_conflicts"
+                if function.__name__ == "record_approval_decision"
+                else "idempotency_key_already_binds_different_input"
+            )
+        return function(self, payload, context)
+
+    return bound
+
+
 class V3ApplicationGateway:
     """Packaged implementation of :class:`V3ApplicationPort`."""
 
@@ -239,6 +262,7 @@ class V3ApplicationGateway:
         self._services.fields.verify()
         self._services.jobs.verify()
 
+    @_bound_public_operation
     def open_scope(self, payload: dict[str, Any], context: RequestContext) -> ScopeOpenResponse:
         selection = CompetitionEngineSelection.from_dict(payload["engine_selection"])
         self._require_selection_compatible(selection)
@@ -283,6 +307,7 @@ class V3ApplicationGateway:
             status="opened",
         )
 
+    @_bound_public_operation
     def synchronize_snapshot(
         self, payload: dict[str, Any], context: RequestContext
     ) -> SnapshotSyncResponse:
@@ -311,6 +336,7 @@ class V3ApplicationGateway:
             status="synchronized",
         )
 
+    @_bound_public_operation
     def freeze_round(self, payload: dict[str, Any], context: RequestContext) -> RoundFreezeResponse:
         self._require_scope_compatible(self._round_parent(payload["round_id"]))
         if self._round_state(payload["round_id"]) is None:
@@ -404,6 +430,7 @@ class V3ApplicationGateway:
             authority_sequence=max(page.source_global_sequence, page.decision_global_sequence),
         )
 
+    @_bound_public_operation
     def forecast_pre_field(
         self, payload: dict[str, Any], context: RequestContext
     ) -> PreFieldForecastResponse:
@@ -524,6 +551,7 @@ class V3ApplicationGateway:
             authority_sequence=source,
         )
 
+    @_bound_public_operation
     def close_round(self, payload: dict[str, Any], context: RequestContext) -> RoundCloseResponse:
         self._require_scope_compatible(self._round_parent(payload["round_id"]))
         if self._round_state(payload["round_id"]) == "round_frozen":
@@ -563,6 +591,7 @@ class V3ApplicationGateway:
             status="closed",
         )
 
+    @_bound_public_operation
     def close_scope(self, payload: dict[str, Any], context: RequestContext) -> ScopeCloseResponse:
         self._require_scope_compatible(payload["scope_id"])
         stored = self._services.lifecycle.close_tournament(
@@ -578,6 +607,7 @@ class V3ApplicationGateway:
             status="closed",
         )
 
+    @_bound_public_operation
     def prepare_card(
         self, payload: dict[str, Any], _context: RequestContext
     ) -> PrepareCardResponse:
@@ -612,6 +642,7 @@ class V3ApplicationGateway:
             authority_sequence=self._services.events.current_anchor().global_sequence,
         )
 
+    @_bound_public_operation
     def assemble_field(
         self, payload: dict[str, Any], context: RequestContext
     ) -> AssembleFieldResponse:
@@ -680,6 +711,7 @@ class V3ApplicationGateway:
             authority_sequence=self._receipt_sequence(str(receipt.receipt_id)),
         )
 
+    @_bound_public_operation
     def acknowledge_issue(
         self, payload: dict[str, Any], context: RequestContext
     ) -> IssueAcknowledgmentResponse:
@@ -762,6 +794,7 @@ class V3ApplicationGateway:
             recovery_marker_digest=acknowledgment.result_digest,
         )
 
+    @_bound_public_operation
     def record_approval_decision(
         self, payload: dict[str, Any], context: RequestContext
     ) -> ApprovalDecisionResponse:
@@ -852,6 +885,7 @@ class V3ApplicationGateway:
             authority_sequence=int(authority[0]),
         )
 
+    @_bound_public_operation
     def settle_result(self, payload: dict[str, Any], context: RequestContext) -> SettlementResponse:
         receipt = self._services.fields.verified_receipt(payload["receipt_id"])
         self._verify_issue_binding(payload["issue_batch_id"], payload["receipt_id"])

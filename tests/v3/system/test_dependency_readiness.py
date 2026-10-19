@@ -171,7 +171,8 @@ def test_support_export_is_bounded_signed_self_contained_and_redacted() -> None:
             "mode": "race_day",
         }
 
-    with pytest.raises(ValueError, match="digest"):
+    # Corrupt end-directory metadata now fails before ZIP object allocation.
+    with pytest.raises(ValueError, match="digest|directory"):
         verify_support_bundle(
             bundle[:-1] + bytes([bundle[-1] ^ 1]),
             trust_store=IntegrityTrustStore((signer.identity,)),

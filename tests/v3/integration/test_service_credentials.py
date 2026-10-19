@@ -474,7 +474,7 @@ def test_credential_command_id_validation_missing_secret_and_changed_revoke_retr
         registry.revoke(next_principal, rotated.key_id_digest, command_id=revoke_id)
 
 
-def test_secret_staging_is_removed_when_authority_append_fails(
+def test_secret_staging_is_retained_when_authority_acknowledgment_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     secrets = InMemoryCredentialSecretStore()
@@ -492,7 +492,7 @@ def test_secret_staging_is_removed_when_authority_append_fails(
             listener_stopped=True,
             credential="smv3.staged-key.staged-secret-123456789012",
         )
-    assert secrets.read("staged-key") is None
+    assert secrets.read("staged-key") == "staged-secret-123456789012"
 
 
 def test_private_contract_helpers_fail_closed(tmp_path: Path) -> None:
@@ -515,3 +515,90 @@ def test_private_contract_helpers_fail_closed(tmp_path: Path) -> None:
             SQLiteEventStore(tmp_path / "unbootstrapped.sqlite3"),
             InMemoryCredentialSecretStore(),
         ).authenticate("Bearer smv3.valid-key.valid-secret-value-123456")
+
+
+def test_concurrent_registries_cannot_replace_or_delete_rotation_winner(credentials, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    registry, events, secrets, clock = credentials
+    initial = registry.bootstrap_offline(principal_id="actor:manager", listener_stopped=True)
+    principal = registry.authenticate(f"Bearer {initial.credential}")
+    replica = ServiceCredentialRegistry(
+        SQLiteEventStore(events.database_path), secrets, clock=clock
+    )
+    command = principal.idempotency_key("concurrent-rotate")
+    entered, release = Event(), Event()
+    original_write = secrets.write
+
+    def hold_write(key, value):
+        original_write(key, value)
+        entered.set()
+        assert release.wait(20)
+
+    monkeypatch.setattr(secrets, "write", hold_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winner = pool.submit(registry.rotate, principal, command_id=command)
+        assert entered.wait(5)
+        try:
+            import subprocess
+
+            script = """
+import os,sys
+fd=os.open(sys.argv[1],os.O_RDWR)
+try:
+    if os.name == 'nt':
+        import msvcrt
+        msvcrt.locking(fd,msvcrt.LK_NBLCK,1)
+    else:
+        import fcntl
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except OSError:
+    print('busy')
+else:
+    raise SystemExit('a second process acquired the credential lock')
+finally:
+    os.close(fd)
+"""
+            lock = events.database_path.with_name(events.database_path.name + ".credentials.lock")
+            probe = subprocess.run(
+                [sys.executable, "-c", script, str(lock)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert probe.returncode == 0, probe.stderr
+            assert probe.stdout.strip() == "busy"
+            with pytest.raises(CredentialError, match="in progress"):
+                replica.rotate(principal, command_id=command)
+        finally:
+            release.set()
+        issued = winner.result(timeout=5)
+    retry = replica.rotate(principal, command_id=command)
+    assert retry.credential == issued.credential
+    assert (
+        replica.authenticate(f"Bearer {issued.credential}").principal_id == principal.principal_id
+    )
+
+
+def test_rotation_acknowledgment_failure_preserves_committed_secret(credentials, monkeypatch):
+    registry, events, secrets, clock = credentials
+    initial = registry.bootstrap_offline(principal_id="actor:manager", listener_stopped=True)
+    principal = registry.authenticate(f"Bearer {initial.credential}")
+    command = principal.idempotency_key("lost-reply")
+    original = registry._append
+
+    def committed_then_failed(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("lost acknowledgment")
+
+    monkeypatch.setattr(registry, "_append", committed_then_failed)
+    with pytest.raises(RuntimeError, match="lost acknowledgment"):
+        registry.rotate(principal, command_id=command)
+    restarted = ServiceCredentialRegistry(
+        SQLiteEventStore(events.database_path), secrets, clock=clock
+    )
+    issued = restarted.rotate(principal, command_id=command)
+    assert (
+        restarted.authenticate(f"Bearer {issued.credential}").principal_id == principal.principal_id
+    )

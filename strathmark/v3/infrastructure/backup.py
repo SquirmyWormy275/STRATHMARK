@@ -799,13 +799,17 @@ class ArchiveManager:
         """Build one deterministic self-contained contiguous-prefix archive package."""
 
         _require_token(tournament_id, "archive tournament id")
-        path = Path(destination).expanduser().resolve(strict=False)
+        from strathmark.input_limits import read_bounded_file
+        from strathmark.private_storage import private_file, reject_links
+
+        path = reject_links(destination)
         material = self._archive_package_material(tournament_id)
         encoded = material.encoded()
         from strathmark.v3.infrastructure.integrity import _publish_no_clobber
 
-        if not _publish_no_clobber(path, encoded):
-            if path.read_bytes() != encoded:
+        if not _publish_no_clobber(path, encoded, private=True):
+            private_file(path)
+            if read_bounded_file(path, _MAX_ARCHIVE_PACKAGE_BYTES) != encoded:
                 raise ArchiveEligibilityError("archive package path already binds other bytes")
         return path
 
@@ -831,9 +835,8 @@ class ArchiveManager:
         try:
             from strathmark.input_limits import read_bounded_file
 
-            observed_manifest, observed_entries = _decode_archive_package(
-                read_bounded_file(package_path, _MAX_ARCHIVE_PACKAGE_BYTES)
-            )
+            package_bytes = read_bounded_file(package_path, _MAX_ARCHIVE_PACKAGE_BYTES)
+            observed_manifest, observed_entries = _decode_archive_package(package_bytes)
         except (OSError, ValueError, BackupIntegrityError) as exc:
             raise ArchiveEligibilityError("archive package is malformed or incomplete") from exc
         if observed_manifest != material.manifest or observed_entries != dict(material.entries):
@@ -849,7 +852,7 @@ class ArchiveManager:
             self.blob_store.verify_required(required_blobs)
         except BlobIntegrityError as exc:
             raise ArchiveEligibilityError("required archive blob is missing or corrupt") from exc
-        package_digest = _file_digest(package_path)
+        package_digest = hashlib.sha256(package_bytes).hexdigest()
         first, second = copies
         if first.identity.device_id == second.identity.device_id:
             raise ArchiveEligibilityError("archive copies must use distinct physical devices")
@@ -865,7 +868,9 @@ class ArchiveManager:
                         "remote copy attester role or package binding differs"
                     )
             observed = (
-                _file_digest(copy.path) if copy.path is not None else copy.attested_package_digest
+                hashlib.sha256(read_bounded_file(copy.path, _MAX_ARCHIVE_PACKAGE_BYTES)).hexdigest()
+                if copy.path is not None
+                else copy.attested_package_digest
             )
             if observed != package_digest:
                 raise ArchiveEligibilityError("archive copy digest differs from the package")
@@ -994,6 +999,10 @@ class ArchiveManager:
                     (last_sequence,),
                 ).fetchone()[0]
             )
+            operation_rows = connection.execute(
+                "SELECT idempotency_key,principal_id,operation,request_digest,created_at "
+                "FROM v3_public_operation_bindings ORDER BY idempotency_key"
+            ).fetchall()
             projection_digest = SQLiteProjectionStore.projection_digest(connection)
         if not event_rows or int(event_rows[0][0]) != 1 or undelivered:
             raise ArchiveEligibilityError(
@@ -1001,6 +1010,17 @@ class ArchiveManager:
             )
 
         entries: list[tuple[str, bytes]] = []
+        if operation_rows:
+            entries.append(
+                (
+                    "public-operations.json",
+                    canonical_bytes(
+                        [list(row) for row in operation_rows],
+                        max_bytes=_MAX_ARCHIVE_MANIFEST_BYTES,
+                        max_items=2_000_000,
+                    ),
+                )
+            )
         blob_material: dict[str, BlobReferenceV2] = {}
         event_index: list[dict[str, Any]] = []
         for row in event_rows:
@@ -1307,7 +1327,9 @@ class DiskReservePolicy:
 
 def _read_manifest(path: Path, expected_kind: str) -> SignedManifest:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        from strathmark.input_limits import read_bounded_file
+
+        value = json.loads(read_bounded_file(path, _MAX_ARCHIVE_MANIFEST_BYTES))
         manifest = SignedManifest.from_dict(value)
     except Exception as exc:
         raise BackupIntegrityError("signed backup manifest cannot be decoded") from exc

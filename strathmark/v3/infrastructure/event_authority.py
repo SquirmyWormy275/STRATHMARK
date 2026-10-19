@@ -47,11 +47,29 @@ def _facts(connection: sqlite3.Connection) -> dict[str, object]:
         encoded = canonical_bytes(list(row), max_bytes=2_097_152)
         digest.update(len(encoded).to_bytes(8, "big"))
         digest.update(encoded)
-    return {
+    facts = {
         "global_sequence": 0 if tip is None else int(tip[0]),
         "event_digest": ZERO_DIGEST if tip is None else str(tip[1]),
         "command_results_digest": digest.hexdigest(),
     }
+    # An empty forward migration preserves the old independently signed facts.
+    # Once any public request is reserved, the witness must bind every reservation.
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='v3_public_operation_bindings'"
+    ).fetchone():
+        bindings = hashlib.sha256()
+        count = 0
+        for row in connection.execute(
+            "SELECT idempotency_key,principal_id,operation,request_digest,created_at "
+            "FROM v3_public_operation_bindings ORDER BY idempotency_key"
+        ):
+            encoded = canonical_bytes(list(row))
+            bindings.update(len(encoded).to_bytes(8, "big"))
+            bindings.update(encoded)
+            count += 1
+        if count:
+            facts["public_operations_digest"] = bindings.hexdigest()
+    return facts
 
 
 class AuthenticatedEventAuthority:
@@ -127,19 +145,12 @@ class AuthenticatedEventAuthority:
             raise IntegrityError(
                 "event authority witness is not independently authenticated"
             ) from exc
+        facts = _facts(connection)
         if (
-            set(payload)
-            != {
-                "scope",
-                "generation",
-                "previous_state_digest",
-                "global_sequence",
-                "event_digest",
-                "command_results_digest",
-            }
+            set(payload) != {"scope", "generation", "previous_state_digest", *facts}
             or payload["scope"] != self.witness.scope
             or payload["generation"] != current.generation
-            or any(payload[key] != value for key, value in _facts(connection).items())
+            or any(payload[key] != value for key, value in facts.items())
         ):
             raise IntegrityError("database differs from current authenticated event authority")
         return current
@@ -152,6 +163,7 @@ class AuthenticatedEventAuthority:
         expected_event_digest: str,
         expected_command_results_digest: str,
         created_at: str,
+        expected_public_operations_digest: str | None = None,
     ) -> None:
         """Explicit offline migration using independently reviewed exact facts.
 
@@ -178,6 +190,8 @@ class AuthenticatedEventAuthority:
             "event_digest": anchor.event_digest,
             "command_results_digest": expected_command_results_digest,
         }
+        if expected_public_operations_digest is not None:
+            expected["public_operations_digest"] = expected_public_operations_digest
         # Deliberately avoid constructor migration/checkpoint writes to legacy
         # evidence. Replay against the supplied anchor under one writer lock.
         store = object.__new__(SQLiteEventStore)

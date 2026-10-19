@@ -267,6 +267,66 @@ class SQLiteEventStore:
     def database_path(self) -> Path:
         return self._database_path
 
+    def reserve_public_operation(
+        self,
+        *,
+        principal_id: str,
+        idempotency_key: str,
+        operation: str,
+        payload: dict,
+        created_at: str,
+    ) -> None:
+        """Bind the entire external request before any multiphase side effect."""
+        from strathmark.v3.contracts.identifiers import deterministic_identifier
+
+        digest = canonical_digest({"operation": operation, "payload": payload})
+        with open_v3_connection(self._database_path) as connection:
+            with immediate_transaction(connection):
+                authority = require_event_authority(self._database_path)
+                self._verify_connection(connection)
+                previous = None if authority is None else authority.verify_connection(connection)
+                row = connection.execute(
+                    "SELECT principal_id,operation,request_digest FROM v3_public_operation_bindings "
+                    "WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if row is not None:
+                    if tuple(row) != (principal_id, operation, digest):
+                        raise EventStoreConflict(
+                            "public idempotency key already binds different input"
+                        )
+                    return
+                # Retained older histories have no independently bound full request.
+                # Never infer or overwrite that missing identity from a new request.
+                legacy_keys = [
+                    idempotency_key,
+                    *(
+                        str(
+                            deterministic_identifier(
+                                "command",
+                                {
+                                    "public_command_id": idempotency_key,
+                                    "phase": phase,
+                                },
+                            )
+                        )
+                        for phase in ("configure_scope", "configure_round", "begin_round_closing")
+                    ),
+                ]
+                if connection.execute(
+                    "SELECT 1 FROM v3_idempotency_records WHERE idempotency_key IN (?,?,?,?) LIMIT 1",
+                    legacy_keys,
+                ).fetchone():
+                    raise EventStoreConflict(
+                        "legacy public operation has no full request binding; use its retained runtime"
+                    )
+                connection.execute(
+                    "INSERT INTO v3_public_operation_bindings VALUES (?,?,?,?,?)",
+                    (idempotency_key, principal_id, operation, digest, created_at),
+                )
+                if authority is not None:
+                    authority.advance_connection(connection, previous, created_at=created_at)
+
     def execute(
         self,
         request: CommandRequest,
