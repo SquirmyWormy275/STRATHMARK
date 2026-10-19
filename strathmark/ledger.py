@@ -599,7 +599,6 @@ class PredictionLedger:
         if db_path is None:
             db_path = os.environ.get(_ENV_VAR) or _DEFAULT_PATH
         self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._mirror = mirror
         self._delivery_lock = threading.Lock()
         self._worker_lock = threading.Lock()

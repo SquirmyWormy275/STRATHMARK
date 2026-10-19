@@ -538,7 +538,6 @@ class ResultStore:
         self._evidence_health_lock = threading.Lock()
         self._cached_evidence_health_status: Optional[EvidenceSnapshotStatus] = None
         self._cached_evidence_health_signature: Optional[tuple[Any, ...]] = None
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
     # ------------------------------------------------------------------

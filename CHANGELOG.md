@@ -8,6 +8,8 @@
   longer override packaged models. Preserve V2 numerics and competition selections.
 - Use trusted service time for pre-field receipts and private authority-file modes;
   read verified blob descriptors and content together and verify restores before publication.
+- Create Windows authority files and directories with protected user-only ACLs,
+  verify existing access before use and stop on unsupported or unsafe storage.
 - Require successful protected-main CI for manual publication recovery and bind release
   evidence to controlled tools, environment and executable identities.
 

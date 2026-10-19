@@ -49,9 +49,23 @@ remain seeding-only and never issue marks.
 On POSIX systems, created authority databases and blob/backup files use mode 0600
 and new authority roots use 0700 independently of the process umask. Existing
 owner files are tightened without changing their content; links, junctions and
-unsafe ownership are rejected. Windows emits an explicit warning requiring
-independent owner-only ACL verification on the designated installation; Linux
-mode tests do not establish Windows ACL qualification.
+unsafe ownership are rejected. Windows creates files and directories with a
+protected DACL granting full access only to the current process user. Native
+handle checks reject reparse points, hard links and unrelated owners; existing
+ACLs are tightened and read back before access proceeds. An elevated token's
+default owner is accepted, but receives no separate DACL grant. The private
+directory's inheritable rule protects SQLite sidecars from their first byte.
+ACL failures and filesystems that do not retain these permissions stop the
+operation. Choose a dedicated authority subdirectory: the helper refuses to
+change the home directory, its ancestors or the shared temporary directory.
+It never changes ancestor permissions merely to create a deeper directory.
+
+Native Windows CI checks creation-time ACLs, existing-file tightening, sidecar
+inheritance, hard links and failure behavior using independent .NET ACL reads.
+These tests are distinct from designated Windows CNG production qualification.
+The implementation follows Microsoft's [file security rules](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights),
+[CreateFile security attributes](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)
+and [handle-based security updates](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
 
 Blob reads hash and return content through the same locked descriptors. Import
 parsing uses a private snapshot matching the original source digest and rechecks

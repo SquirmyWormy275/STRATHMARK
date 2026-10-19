@@ -172,9 +172,12 @@ class BackupManager:
             raise BackupError("backup generation destination already exists")
         source_store = SQLiteEventStore(self.database_path)
         source_anchor = source_store.current_anchor()
-        generation_root.parent.mkdir(parents=True, exist_ok=True)
+        from strathmark.private_storage import private_directory
+
+        if not generation_root.parent.exists():
+            private_directory(generation_root.parent)
         staging = generation_root.parent / f".{generation_root.name}.{uuid.uuid4().hex}.tmp"
-        staging.mkdir(mode=0o700, parents=False, exist_ok=False)
+        private_directory(staging)
         target = staging / "authority.sqlite3"
         try:
             with open_v3_connection(self.database_path, read_only=True) as source:
@@ -342,7 +345,6 @@ class BackupManager:
                 metadata=BlobMetadata.from_reference(reference),
             )
         self.blob_store.verify_required(references)
-        restored.parent.mkdir(parents=True, exist_ok=True)
         temporary = restored.parent / f".{restored.name}.{uuid.uuid4().hex}.tmp"
         try:
             source = sqlite3.connect(f"file:{artifact.database_path.as_posix()}?mode=ro", uri=True)
@@ -1429,12 +1431,11 @@ def _fsync_file(path: Path) -> None:
 
 
 def _durable_write(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from strathmark.private_storage import open_private_exclusive
+
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
-        with os.fdopen(
-            os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
-        ) as handle:
+        with os.fdopen(open_private_exclusive(temporary), "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())

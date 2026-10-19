@@ -375,7 +375,9 @@ class ContentAddressedBlobStore:
         write_stage: str,
         fsync_stage: str,
     ) -> None:
-        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as handle:
+        from strathmark.private_storage import open_private_exclusive
+
+        with os.fdopen(open_private_exclusive(path), "wb") as handle:
             handle.write(payload)
             handle.flush()
             _fault(fault_hook, write_stage)
