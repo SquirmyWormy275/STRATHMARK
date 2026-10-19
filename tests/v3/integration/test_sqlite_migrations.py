@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -768,8 +769,11 @@ def test_connection_rejects_bad_types_missing_read_target_and_closes_on_policy_f
 
 
 def test_deadline_connection_nested_transaction_and_checkpoint_guards(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Exercise policy guards independently of native filesystem setup latency.
+    clock = [0.0]
+    monkeypatch.setattr(sqlite_connection, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     deadline = SQLiteDeadline(timeout_seconds=1)
     with open_v3_connection(tmp_path / "deadline.sqlite3", deadline=deadline) as connection:
         assert connection.execute("PRAGMA busy_timeout").fetchone()[0] <= 1000
@@ -780,6 +784,11 @@ def test_deadline_connection_nested_transaction_and_checkpoint_guards(
         with pytest.raises(SQLitePolicyError, match="checkpoint"):
             bounded_checkpoint(connection)
         connection.rollback()
+
+    clock[0] = 1.0
+    assert deadline.progress_handler() == 1
+    with pytest.raises(SQLiteDeadlineExceeded, match="expired"):
+        deadline.raise_if_expired()
 
     class BadCheckpoint:
         in_transaction = False
