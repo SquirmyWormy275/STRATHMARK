@@ -63,7 +63,7 @@ def _private(path: Path) -> None:
     path = _authority_path(path)
     if path.is_symlink():
         raise LinuxLifecycleError("installation material cannot be a symlink")
-    stat = path.stat()
+    stat = path.lstat()
     if os.name == "posix" and (stat.st_uid != os.geteuid() or stat.st_mode & 0o077):
         raise LinuxLifecycleError("installation material must be owned by this user and private")
 

@@ -25,9 +25,10 @@ def private_file(path):
     path = _configuration_path(path)
     if path.is_symlink() or not path.is_file():
         raise EventError("private_configuration_file_required")
-    if os.name != "nt" and path.stat().st_mode & 0o077:
+    status = path.lstat()
+    if os.name != "nt" and status.st_mode & 0o077:
         raise EventError("private_configuration_requires_mode_600")
-    if os.name == "posix" and (path.stat().st_uid != os.geteuid() or path.stat().st_nlink != 1):
+    if os.name == "posix" and (status.st_uid != os.geteuid() or status.st_nlink != 1):
         raise EventError("private_configuration_requires_owner_only_file")
     if os.name == "nt":
         secure_file(path)

@@ -35,6 +35,74 @@ def test_directory_helper_rejects_a_file_without_changing_it(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("operation", ["provision", "verify"])
+def test_final_directory_swap_cannot_borrow_symlink_target_ownership(
+    tmp_path, monkeypatch, operation
+):
+    import strathmark.private_storage as storage
+
+    shared = tmp_path / "sticky"
+    shared.mkdir()
+    shared.chmod(0o1777)
+    leaf = shared / "authority"
+    leaf.mkdir(mode=0o700)
+    target = tmp_path / "unrelated"
+    target.mkdir()
+    mode = 0o755 if operation == "provision" else 0o700
+    target.chmod(mode)
+    original = storage.reject_links
+    calls = 0
+
+    def swap_after_check(path):
+        nonlocal calls
+        result = original(path)
+        if result == leaf:
+            calls += 1
+            if calls == (2 if operation == "provision" else 1):
+                leaf.rmdir()
+                leaf.symlink_to(target, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(storage, "reject_links", swap_after_check)
+    action = private_directory if operation == "provision" else verify_private_directory
+    with pytest.raises((NotADirectoryError, PermissionError)):
+        action(leaf)
+    assert stat.S_IMODE(target.stat().st_mode) == mode
+
+
+@pytest.mark.parametrize("kind", ["lifecycle", "workspace"])
+def test_private_secret_checks_do_not_follow_a_swapped_leaf(tmp_path, monkeypatch, kind):
+    from strathmark.events.contracts import EventError
+    from strathmark.events.workspace import private_file as workspace_file
+    from strathmark.v3.linux_lifecycle_store import LinuxLifecycleError, _private
+
+    leaf = tmp_path / "secret"
+    target = tmp_path / "unrelated-secret"
+    for path in (leaf, target):
+        path.write_bytes(b"synthetic secret")
+        path.chmod(0o600)
+    original = Path.is_symlink
+    calls = 0
+
+    def swap_after_link_test(path):
+        nonlocal calls
+        result = original(path)
+        if path == leaf:
+            calls += 1
+            # The first link test is in reject_links; the second is the
+            # caller's final check immediately before its ownership read.
+            if calls == 2:
+                path.unlink()
+                path.symlink_to(target)
+        return result
+
+    monkeypatch.setattr(Path, "is_symlink", swap_after_link_test)
+    with pytest.raises((LinuxLifecycleError, EventError)):
+        (_private if kind == "lifecycle" else workspace_file)(leaf)
+    assert target.read_bytes() == b"synthetic secret"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
 @pytest.mark.parametrize("mode", [0o770, 0o777, 0o1777])
 @pytest.mark.parametrize("operation", [private_file, open_private_exclusive])
 def test_shared_parent_is_refused_before_file_creation(tmp_path, mode, operation):

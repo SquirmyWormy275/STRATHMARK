@@ -75,7 +75,7 @@ def private_directory(path):
         # A concurrent creator of a missing intermediate directory must not
         # acquire control of the new authority path before any secret is used.
         reject_links(path)
-        status = path.stat()
+        status = path.lstat()
         if not stat.S_ISDIR(status.st_mode):
             raise NotADirectoryError(f"Authority path is not a directory: {path}")
         if status.st_uid != os.geteuid():
@@ -165,7 +165,7 @@ def verify_private_directory(path):
     if os.name == "nt":
         _windows().verify_directory(path)
     elif os.name == "posix":
-        status = path.stat()
+        status = path.lstat()
         if (
             not stat.S_ISDIR(status.st_mode)
             or status.st_uid != os.geteuid()
