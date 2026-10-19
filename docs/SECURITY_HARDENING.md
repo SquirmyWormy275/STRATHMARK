@@ -71,6 +71,10 @@ SYSTEM, built-in Administrators and Windows TrustedInstaller authority are
 trusted; these checks do not claim protection against that user or machine
 administrators. Shared writable ancestry must be replaced by a separately
 provisioned private location; it is never repaired implicitly.
+The Windows [Owner Rights identity](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/81d92bba-d22b-4a8c-908a-554ab29148ab)
+applies only to that object's actual owner. Its ancestor ACL entries are accepted
+only after the same handle's actual owner has passed the trust check; they do
+not allow unrelated owners or unrelated write grants.
 
 Native Windows CI checks creation-time ACLs, existing-file tightening, sidecar
 inheritance, hard links and failure behavior using independent .NET ACL reads.

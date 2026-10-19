@@ -315,15 +315,19 @@ class WindowsStorage:
                             )
                         if ace.kind == 1:
                             continue  # Ignoring denies is conservative: reject broad allows anyway.
+                        sid = pointer.value + AllowedAce.sid.offset
+                        # OWNER_RIGHTS represents this object's actual owner,
+                        # already verified above through the same open handle.
+                        # It is not an independently trusted group principal.
+                        if self._sid_text(sid) == "S-1-3-4":
+                            continue
                         # Create-child rights alone cannot replace an existing
                         # protected child. Delete/delete-child and security
                         # control rights can; broad generic writes are refused.
-                        if ace.mask & 0x500D0150 and not self._trusted_sid(
-                            pointer.value + AllowedAce.sid.offset
-                        ):
+                        if ace.mask & 0x500D0150 and not self._trusted_sid(sid):
                             raise PermissionError(
                                 "Authority ancestor is replaceable by another account: "
-                                f"SID={self._sid_text(pointer.value + AllowedAce.sid.offset)}, "
+                                f"SID={self._sid_text(sid)}, "
                                 f"mask=0x{ace.mask:08x}, blocked=0x{ace.mask & 0x500D0150:08x}, "
                                 f"flags=0x{ace.flags:02x}"
                             )

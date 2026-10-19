@@ -191,3 +191,38 @@ def test_junction_ancestor_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="junctions|reparse"):
         private_file(junction / "authority.sqlite3")
     assert not (target / "authority.sqlite3").exists()
+
+
+@pytest.mark.parametrize("scenario", ["trusted_owner", "unrelated_grant", "untrusted_owner"])
+def test_owner_rights_is_bound_to_verified_ancestor_owner(tmp_path, monkeypatch, scenario):
+    root = private_directory(tmp_path / "owner-rights")
+    script = """
+$path = $env:STRATHMARK_ACL_TEST_PATH
+$acl = Get-Acl -LiteralPath $path
+$sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-3-4')
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+$acl.AddAccessRule($rule)
+if ($env:STRATHMARK_TEST_SCENARIO -eq 'unrelated_grant') {
+  $world = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+  $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($world,'DeleteSubdirectoriesAndFiles','Allow'))
+}
+Set-Acl -LiteralPath $path -AclObject $acl
+"""
+    _powershell(script, STRATHMARK_ACL_TEST_PATH=str(root), STRATHMARK_TEST_SCENARIO=scenario)
+    before = _acl(root)
+    assert any(rule["sid"] == "S-1-3-4" for rule in before["rules"])
+    target = root / "private" / "authority.sqlite3"
+    if scenario == "untrusted_owner":
+        # Exercise the real native owner/ACL read with ownership disallowed;
+        # OWNER_RIGHTS must never bypass that earlier trust decision.
+        monkeypatch.setattr(_windows(), "_trusted_sid", lambda _sid: False)
+        with pytest.raises(PermissionError, match="belongs to another account"):
+            private_file(target)
+    elif scenario == "unrelated_grant":
+        with pytest.raises(PermissionError, match="SID=S-1-1-0"):
+            private_file(target)
+    else:
+        private_file(target)
+        _assert_private(target)
+    assert target.exists() is (scenario == "trusted_owner")
+    assert _acl(root) == before
