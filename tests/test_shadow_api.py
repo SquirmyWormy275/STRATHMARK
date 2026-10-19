@@ -2143,7 +2143,38 @@ def test_public_health_fails_closed_on_restart_and_observed_snapshot_file_change
     assert ledger.path.is_file()
 
 
-def test_calculation_capacity_and_timeout_have_explicit_recovery_semantics(shadow_client, tmp_path):
+def _timeout_after_persistence(monkeypatch, persisted):
+    import strathmark.api as api_module
+
+    executor = api_module._SHADOW_EXECUTOR
+    deadline_type = api_module.SQLiteQueryDeadline
+
+    class PersistedFuture:
+        def __init__(self, future):
+            self.future = future
+
+        def result(self, *, timeout):
+            assert persisted.wait(timeout=30), "calculation did not persist its receipt"
+            return self.future.result(timeout=timeout)
+
+    class AfterPersistenceExecutor:
+        def submit(self, operation):
+            return PersistedFuture(executor.submit(operation))
+
+    # Exercise the real Future timeout after the durable write, independently
+    # of filesystem/ACL preflight speed. The real query cancellation still runs;
+    # only its setup budget is longer in this controlled interleaving fixture.
+    monkeypatch.setattr(api_module, "_SHADOW_EXECUTOR", AfterPersistenceExecutor())
+    monkeypatch.setattr(
+        api_module,
+        "SQLiteQueryDeadline",
+        lambda *, timeout_seconds: deadline_type(timeout_seconds=60),
+    )
+
+
+def test_calculation_capacity_and_timeout_have_explicit_recovery_semantics(
+    shadow_client, tmp_path, monkeypatch
+):
     client, service, _ = shadow_client
     payload = _calculate_payload()
     assert _SHADOW_OPERATION_SLOTS.acquire(blocking=False)
@@ -2168,10 +2199,18 @@ def test_calculation_capacity_and_timeout_have_explicit_recovery_semantics(shado
         def record_field(self, *args, **kwargs):
             result = super().record_field(*args, **kwargs)
             persisted.set()
-            release.wait(timeout=5)
+            release.wait(timeout=30)
             return result
 
     real_store = _empty_snapshot_store(tmp_path / "real-timeout-results.db", cutoff=date.today())
+    load_evidence = real_store.load_evidence_for_competitors
+
+    def slow_preflight(*args, **kwargs):
+        # Reproduce storage work longer than the caller's 100 ms timeout.
+        time.sleep(0.15)
+        return load_evidence(*args, **kwargs)
+
+    monkeypatch.setattr(real_store, "load_evidence_for_competitors", slow_preflight)
     real_ledger = InterleavingLedger(tmp_path / "real-timeout-ledger.db")
     real_service = ShadowPredictionService(real_ledger, result_store=real_store)
     app.dependency_overrides[get_store] = lambda: real_store
@@ -2180,14 +2219,17 @@ def test_calculation_capacity_and_timeout_have_explicit_recovery_semantics(shado
     payload["timeout_ms"] = 100
     payload["prediction_as_of"] = date.today().isoformat()
     try:
-        timed_out = client.post(
-            "/v1/shadow/calculate",
-            json=payload,
-            headers=_headers("shadow.calculate", request_payload=payload),
-        )
+        with monkeypatch.context() as timing:
+            _timeout_after_persistence(timing, persisted)
+            timed_out = client.post(
+                "/v1/shadow/calculate",
+                json=payload,
+                headers=_headers("shadow.calculate", request_payload=payload),
+            )
         assert timed_out.status_code == 504
         assert "receipt lookup" in timed_out.json()["detail"].lower()
-        assert persisted.wait(timeout=3)
+        assert persisted.is_set()
+        assert not release.is_set()
 
         lookup = {
             "schema_version": "strathmark.shadow-receipt-lookup.v1",
@@ -2222,7 +2264,9 @@ def test_calculation_capacity_and_timeout_have_explicit_recovery_semantics(shado
         pytest.fail("calculation worker did not eventually release shared capacity")
 
 
-def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(shadow_client, tmp_path):
+def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(
+    shadow_client, tmp_path, monkeypatch
+):
     client, _, _ = shadow_client
     persisted = threading.Event()
     release = threading.Event()
@@ -2237,7 +2281,7 @@ def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(shado
                 persisted_count += 1
                 if persisted_count == 2:
                     persisted.set()
-            release.wait(timeout=5)
+            release.wait(timeout=30)
             return result
 
     real_store = _empty_snapshot_store(tmp_path / "two-timeouts-results.db", cutoff=date.today())
@@ -2279,12 +2323,16 @@ def test_two_persisted_calculation_timeouts_cannot_starve_receipt_recovery(shado
 
     workers = [threading.Thread(target=calculate, args=(payload,)) for payload in payloads]
     try:
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            worker.join(timeout=10)
+        with monkeypatch.context() as timing:
+            _timeout_after_persistence(timing, persisted)
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=30)
         assert sorted(response.status_code for response in responses) == [504, 504]
-        assert persisted.wait(timeout=10)
+        assert all("receipt lookup" in response.json()["detail"].lower() for response in responses)
+        assert persisted.is_set()
+        assert not release.is_set()
 
         lookup = {
             "schema_version": "strathmark.shadow-receipt-lookup.v1",
