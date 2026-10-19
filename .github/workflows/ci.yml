@@ -427,6 +427,12 @@ jobs:
           --build-tools-lock requirements/release-build-tools.lock
           --build-tools-wheelhouse "${{ runner.temp }}/release-build-wheels"
 
+      - name: Recheck artifacts after installed rehearsal
+        run: >-
+          python -B -m scripts.build_release --verify-only
+          --wheelhouse "${{ runner.temp }}/release-build-wheels"
+          --provenance "${{ runner.temp }}/release-build-provenance.json"
+
   required:
     name: Required CI
     runs-on: ubuntu-latest

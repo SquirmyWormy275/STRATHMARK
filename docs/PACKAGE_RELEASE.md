@@ -45,7 +45,8 @@ continue selecting the latest stable version until a final release is published.
    artifact creation. Source cleanliness and commit identity are checked again.
    The builder runs `twine check`, installs wheel and sdist outside the checkout,
    and uses the same verified build wheels for the sdist installation. Every extra
-   declared by the exact wheel is also installed and checked. Toolchain provenance
+   declared by the exact wheel is also installed and checked. Artifact hashes are recorded at build completion and rechecked after
+   installed rehearsals before upload. Toolchain provenance
    is retained as a separate workflow artifact; it is not uploaded as a package.
 6. The `pypi` environment publishes those exact artifacts through OIDC trusted
    publishing. A final job checks PyPI's filenames and SHA-256 hashes against the

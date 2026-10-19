@@ -65,6 +65,13 @@ jobs:
           python release-tools/scripts/smoke_installed_distribution.py --dist-dir release-source/dist --kind sdist
           --build-tools-lock release-tools/requirements/release-build-tools.lock
           --build-tools-wheelhouse "${{ runner.temp }}/release-build-wheels"
+      - name: Recheck artifact hashes and build tools after installed rehearsals
+        working-directory: release-tools
+        run: >-
+          python -B -m scripts.build_release --verify-only --source ../release-source
+          --wheelhouse "${{ runner.temp }}/release-build-wheels"
+          --provenance "${{ runner.temp }}/release-build-provenance.json"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: strathmark-test-${{ inputs.release_tag }}
