@@ -311,14 +311,26 @@ class LinuxLifecycleStore:
             if encryption_policy is not None:
                 from strathmark.v3.infrastructure.encrypted_archive import (
                     encrypt_file,
+                    inspect_file,
                     tar_digests,
-                    verify_file,
                 )
 
+                # The local snapshot, never the sidecar, owns this finite allowance.
+                archive_allowance = (
+                    2 * sum(path.stat().st_size for path in snapshot.rglob("*") if path.is_file())
+                    + (len(files) + 1) * 32768
+                )
                 encrypted = target.with_name(target.name + ".gpg")
                 if encrypted.exists():
-                    verify_file(encrypted, encryption_policy)
-                    if tar_digests(encrypted, encryption_policy) != files:
+                    inspect_file(
+                        encrypted, encryption_policy, max_plaintext_bytes=archive_allowance
+                    )
+                    if (
+                        tar_digests(
+                            encrypted, encryption_policy, max_plaintext_bytes=archive_allowance
+                        )
+                        != files
+                    ):
                         raise LinuxLifecycleError("encrypted recovery archive readback differs")
                     return encrypted
                 local_archive = Path(staging) / "snapshot.tar.gz"
@@ -344,8 +356,13 @@ class LinuxLifecycleStore:
                 except FileExistsError:
                     # Another writer may have committed this exact head while
                     # this snapshot was prepared. Verify it before reuse.
-                    verify_file(encrypted, encryption_policy)
-                if tar_digests(encrypted, encryption_policy) != files:
+                    inspect_file(
+                        encrypted, encryption_policy, max_plaintext_bytes=archive_allowance
+                    )
+                if (
+                    tar_digests(encrypted, encryption_policy, max_plaintext_bytes=archive_allowance)
+                    != files
+                ):
                     raise LinuxLifecycleError("encrypted independent archive readback differs")
                 return encrypted
             _authority_path(target)

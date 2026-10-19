@@ -15,7 +15,8 @@ import re
 import stat
 import subprocess
 import threading
-from contextlib import contextmanager
+import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -23,12 +24,68 @@ SCHEMA = "strath-encrypted-recovery-v1"
 CHUNK_BYTES = 1024 * 1024
 
 
-def sha(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+DEFAULT_PLAINTEXT_BYTES = 128 * 1024 * 1024
+MAX_PLAINTEXT_BYTES = 1024**4
+MAX_PROCESS_SECONDS = 6 * 60 * 60
+
+
+def _allowance(value):
+    # Only the caller's independent source/inventory may enlarge this budget.
+    if type(value) is not int or not 0 <= value <= MAX_PLAINTEXT_BYTES:
+        raise ValueError("invalid independent plaintext byte allowance")
+    return value
+
+
+def _ciphertext_allowance(plaintext_bytes):
+    return 2 * _allowance(plaintext_bytes) + CHUNK_BYTES
+
+
+def _duration(plaintext_bytes):
+    # One MiB/second allows conservative removable-drive throughput, with a cap.
+    return min(MAX_PROCESS_SECONDS, 30 + _allowance(plaintext_bytes) / CHUNK_BYTES)
+
+
+@contextmanager
+def _regular_input(path, maximum):
+    """Open a bounded regular file once, without following a final link."""
+    path = Path(path).absolute()
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or getattr(before, "st_file_attributes", 0) & 0x400:
+        raise ValueError("archive input must be a regular file, not a link or device")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0))
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or getattr(opened, "st_file_attributes", 0) & 0x400
+        ):
+            raise ValueError("archive input changed while opening")
+        if opened.st_size > maximum:
+            raise ValueError("archive input exceeds byte allowance")
+        with os.fdopen(descriptor, "rb", closefd=False) as incoming:
+            yield incoming
+    finally:
+        os.close(descriptor)
+
+
+def _hash_stream(stream, maximum, seconds):
+    deadline = time.monotonic() + seconds
+    digest, count = hashlib.sha256(), 0
+    for chunk in iter(lambda: stream.read(min(CHUNK_BYTES, maximum - count + 1)), b""):
+        count += len(chunk)
+        if count > maximum:
+            raise ValueError("archive input exceeds byte allowance")
+        if time.monotonic() > deadline:
+            raise ValueError("archive input deadline expired")
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha(path):
+    with _regular_input(path, DEFAULT_PLAINTEXT_BYTES) as stream:
+        return _hash_stream(stream, DEFAULT_PLAINTEXT_BYTES, _duration(DEFAULT_PLAINTEXT_BYTES))
 
 
 def _authority_input(path, *, directory=False, canonicalize=True):
@@ -102,66 +159,129 @@ def _sync(path):
 
 
 @contextmanager
-def _gpg_stream(path, policy, arguments):
-    """Feed GPG in bounded bulk reads, then require its authenticated completion.
+def _gpg_stream(source, policy, arguments, *, input_limit, output_limit, seconds):
+    """Bound one GPG process and hash exactly the bytes supplied through its pipe.
 
-    GPG's small direct reads can be very slow on removable NTFS volumes. Pipes
-    keep those reads in memory; only this feeder touches the source filesystem.
-    Output must be consumed concurrently so neither pipe can fill and deadlock.
+    A watchdog kills GPG even when its output pipe blocks. An underlying regular
+    file read stuck inside the OS can still delay feeder cleanup; this is not an
+    interruptible filesystem API. Bulk reads preserve removable-drive throughput.
     """
-    with subprocess.Popen(
-        _command(policy) + arguments,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ) as process:
+    if hasattr(source, "read"):
+        incoming_context = nullcontext(source)
+    else:
+        incoming_context = _regular_input(source, input_limit)
+    with (
+        incoming_context as incoming,
+        subprocess.Popen(
+            _command(policy) + arguments,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ) as process,
+    ):
         failures = []
-        stopped = threading.Event()
+        stopped, expired = threading.Event(), threading.Event()
+        input_digest = hashlib.sha256()
+        input_bytes = 0
 
-        def feed():
-            try:
-                with Path(path).open("rb") as incoming, process.stdin:
-                    while not stopped.is_set():
-                        chunk = incoming.read(CHUNK_BYTES)
-                        if not chunk:
-                            break
-                        process.stdin.write(chunk)
-            except BrokenPipeError:
-                # An early GPG exit is rejected by the return-code check below.
-                failures.append(ValueError("GPG closed its archive input early"))
-            except BaseException as exc:
-                failures.append(exc)
+        def expire():
+            expired.set()
+            stopped.set()
+            if process.poll() is None:
                 process.kill()
 
+        def feed():
+            nonlocal input_bytes
+            try:
+                with process.stdin:
+                    while not stopped.is_set():
+                        chunk = incoming.read(min(CHUNK_BYTES, input_limit - input_bytes + 1))
+                        if not chunk:
+                            break
+                        input_bytes += len(chunk)
+                        if input_bytes > input_limit:
+                            raise ValueError("archive input exceeds byte allowance")
+                        input_digest.update(chunk)
+                        process.stdin.write(chunk)
+            except BaseException as exc:
+                failures.append(exc)
+                if process.poll() is None:
+                    process.kill()
+
+        class Output:
+            bytes_read = 0
+
+            @property
+            def input_sha256(self):
+                return input_digest.hexdigest()
+
+            def read(self, size=-1):
+                if expired.is_set():
+                    raise ValueError("GPG archive processing deadline expired")
+                size = min(
+                    size if size >= 0 else CHUNK_BYTES,
+                    CHUNK_BYTES,
+                    output_limit - self.bytes_read + 1,
+                )
+                chunk = process.stdout.read(size)
+                self.bytes_read += len(chunk)
+                if expired.is_set():
+                    raise ValueError("GPG archive processing deadline expired")
+                if self.bytes_read > output_limit:
+                    raise ValueError("GPG archive output exceeds byte allowance")
+                return chunk
+
+        output = Output()
         feeder = threading.Thread(target=feed, name="strath-gpg-input")
+        watchdog = threading.Timer(seconds, expire)
+        watchdog.name = "strath-gpg-deadline"
+        watchdog.start()
         feeder.start()
         try:
-            yield process.stdout
-            # A tar reader can stop before GPG's authenticated end marker.
-            while process.stdout.read(CHUNK_BYTES):
+            yield output
+            # TAR can stop before GPG's authenticated end marker. Bound the tail too.
+            while output.read(CHUNK_BYTES):
                 pass
             process.stdout.close()
             returncode = process.wait()
             feeder.join()
+            if expired.is_set():
+                raise ValueError("GPG archive processing deadline expired")
+            if failures and isinstance(failures[0], ValueError):
+                raise failures[0]
             if returncode != 0 or failures:
                 cause = failures[0] if failures else None
                 raise ValueError("archive failed authenticated GPG processing") from cause
         finally:
             stopped.set()
+            watchdog.cancel()
             if process.poll() is None:
                 process.kill()
             process.stdout.close()
             process.wait()
             feeder.join()
+            watchdog.join()
 
 
-def plaintext_sha(path, policy):
-    """Hash the entire decrypted archive without exposing or storing its contents."""
-    with _gpg_stream(path, policy, ["--decrypt"]) as stream:
+def _decryption_report(path, policy, maximum):
+    maximum = _allowance(maximum)
+    with _gpg_stream(
+        path,
+        policy,
+        ["--decrypt"],
+        input_limit=_ciphertext_allowance(maximum),
+        output_limit=maximum,
+        seconds=_duration(maximum),
+    ) as stream:
         digest = hashlib.sha256()
         for chunk in iter(lambda: stream.read(CHUNK_BYTES), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    return digest.hexdigest(), stream.bytes_read, stream.input_sha256
+
+
+def plaintext_sha(path, policy, *, max_plaintext_bytes=DEFAULT_PLAINTEXT_BYTES):
+    """Bounded integrity readback; this alone does not authenticate archive origin."""
+    return _decryption_report(path, policy, max_plaintext_bytes)[0]
 
 
 @contextmanager
@@ -185,12 +305,20 @@ def _publish(source, destination):
 
 
 def encrypt_file(source, destination, policy_path):
-    source, destination = Path(source).resolve(strict=True), Path(destination).absolute()
+    source, destination = Path(source).absolute(), Path(destination).absolute()
+    with _regular_input(source, MAX_PLAINTEXT_BYTES) as incoming:
+        return _encrypt_opened(source, incoming, destination, policy_path)
+
+
+def _encrypt_opened(source, incoming, destination, policy_path):
     policy = load_policy(policy_path)
     destination.parent.resolve(strict=True)
     if Path(policy["gpg_home"]).stat().st_dev == destination.parent.stat().st_dev:
         raise ValueError("private recovery key and encrypted archive need different filesystems")
-    expected = sha(source)
+    source_size = os.fstat(incoming.fileno()).st_size
+    maximum, seconds = _allowance(source_size), _duration(source_size)
+    expected = _hash_stream(incoming, maximum, seconds)
+    incoming.seek(0)
     receipt = destination.with_name(destination.name + ".verified.json")
     with _publication_lock(destination):
         if destination.exists() or destination.is_symlink():
@@ -200,7 +328,7 @@ def encrypt_file(source, destination, policy_path):
             # ciphertext commit. Only quarantine a matching, tool-owned orphan.
             if receipt.is_symlink() or receipt.stat().st_size > 16384:
                 raise FileExistsError("unrecognized orphan encryption receipt")
-            orphan = json.loads(receipt.read_bytes())
+            orphan = _receipt(receipt)
             if (
                 orphan.get("schema_version") != SCHEMA
                 or orphan.get("recipient_fingerprint") != policy["recipient_fingerprint"]
@@ -220,7 +348,7 @@ def encrypt_file(source, destination, policy_path):
             created.append(temporary)
             with outgoing:
                 with _gpg_stream(
-                    source,
+                    incoming,
                     policy,
                     [
                         "--trust-model",
@@ -233,19 +361,28 @@ def encrypt_file(source, destination, policy_path):
                         "AES256",
                         "--encrypt",
                     ],
+                    input_limit=maximum,
+                    output_limit=_ciphertext_allowance(maximum),
+                    seconds=seconds,
                 ) as stream:
                     for chunk in iter(lambda: stream.read(CHUNK_BYTES), b""):
                         outgoing.write(chunk)
                 outgoing.flush()
                 os.fsync(outgoing.fileno())
-            if plaintext_sha(temporary, policy) != expected or sha(source) != expected:
+            incoming.seek(0)
+            actual, count, ciphertext_digest = _decryption_report(temporary, policy, maximum)
+            if (
+                actual != expected
+                or count != source_size
+                or _hash_stream(incoming, maximum, seconds) != expected
+            ):
                 raise ValueError("encrypted archive readback or source stability check failed")
             result = {
                 "schema_version": SCHEMA,
                 "recipient_fingerprint": policy["recipient_fingerprint"],
-                "ciphertext_sha256": sha(temporary),
+                "ciphertext_sha256": ciphertext_digest,
                 "plaintext_sha256": expected,
-                "plaintext_bytes": source.stat().st_size,
+                "plaintext_bytes": source_size,
                 "source_archive_name": source.name,
                 "authenticated_decryption_readback": True,
                 "original_preserved": True,
@@ -269,46 +406,123 @@ def encrypt_file(source, destination, policy_path):
             raise
 
 
-def verify_file(path, policy_path):
-    path = Path(path).resolve(strict=True)
-    policy = load_policy(policy_path)
-    receipt_path = path.with_name(path.name + ".verified.json")
-    if receipt_path.stat().st_size > 16384:
-        raise ValueError("encrypted archive verification receipt exceeds 16 KB")
-    receipt = json.loads(receipt_path.read_bytes())
-    if (
-        receipt.get("schema_version") != SCHEMA
-        or receipt.get("recipient_fingerprint") != policy["recipient_fingerprint"]
-        or sha(path) != receipt["ciphertext_sha256"]
-    ):
-        raise ValueError("encrypted archive identity or ciphertext checksum differs")
-    if plaintext_sha(path, policy) != receipt["plaintext_sha256"]:
-        raise ValueError("encrypted archive plaintext checksum differs")
+def _receipt(path):
+    with _regular_input(path, 16384) as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise ValueError("encrypted archive receipt exceeds 16 KB")
+    receipt = json.loads(raw)
+    if not isinstance(receipt, dict):
+        raise ValueError("invalid encrypted archive receipt")
     return receipt
 
 
-def tar_digests(path, policy_path):
+def inspect_file(path, policy_path, *, max_plaintext_bytes=DEFAULT_PLAINTEXT_BYTES):
+    """Check bounded legacy integrity only; the adjacent receipt is not trusted."""
+    maximum = _allowance(max_plaintext_bytes)
+    path = Path(path).absolute()
+    policy = load_policy(policy_path)
+    receipt = _receipt(path.with_name(path.name + ".verified.json"))
+    if (
+        receipt.get("schema_version") != SCHEMA
+        or receipt.get("recipient_fingerprint") != policy["recipient_fingerprint"]
+    ):
+        raise ValueError("encrypted archive receipt identity differs")
+    size = receipt.get("plaintext_bytes")
+    if type(size) is not int or not 0 <= size <= maximum:
+        raise ValueError("receipt plaintext size exceeds independent byte allowance")
+    actual, count, ciphertext = _decryption_report(path, policy, maximum)
+    if ciphertext != receipt.get("ciphertext_sha256"):
+        raise ValueError("encrypted archive ciphertext checksum differs")
+    if actual != receipt.get("plaintext_sha256") or count != size:
+        raise ValueError("encrypted archive plaintext checksum or size differs")
+    return {
+        "verification_scope": "integrity_only",
+        "origin_authenticated": False,
+        "plaintext_sha256": actual,
+        "plaintext_bytes": count,
+        "untrusted_receipt": receipt,
+    }
+
+
+def verify_file(
+    path,
+    policy_path,
+    *,
+    expected_plaintext_sha256=None,
+    max_plaintext_bytes=DEFAULT_PLAINTEXT_BYTES,
+):
+    """Require the plaintext identity retained independently of ciphertext/receipt.
+
+    The pin identifies exact content, not a signer, installation label or latest
+    sequence. Never obtain it from the neighboring unsigned receipt.
+    """
+    if (
+        not isinstance(expected_plaintext_sha256, str)
+        or re.fullmatch(r"[a-fA-F0-9]{64}", expected_plaintext_sha256) is None
+    ):
+        raise ValueError("verification requires an independently trusted plaintext SHA-256")
+    result = inspect_file(path, policy_path, max_plaintext_bytes=max_plaintext_bytes)
+    if result["plaintext_sha256"] != expected_plaintext_sha256.lower():
+        raise ValueError("archive differs from independently trusted plaintext identity")
+    return {**result, "verification_scope": "trusted_plaintext_identity"}
+
+
+def tar_digests(path, policy_path, *, max_plaintext_bytes=DEFAULT_PLAINTEXT_BYTES):
     """Read all decrypted tar members without creating a plaintext archive."""
     policy = load_policy(policy_path)
     from strathmark.input_limits import tar_stream_digests
 
-    with _gpg_stream(path, policy, ["--decrypt"]) as stream:
+    maximum = _allowance(max_plaintext_bytes)
+    with _gpg_stream(
+        path,
+        policy,
+        ["--decrypt"],
+        input_limit=_ciphertext_allowance(maximum),
+        output_limit=maximum,
+        seconds=_duration(maximum),
+    ) as stream:
         return tar_stream_digests(stream)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("encrypt", "verify"))
+    parser.add_argument("operation", choices=("encrypt", "verify", "inspect"))
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--destination", type=Path)
+    parser.add_argument(
+        "--expected-plaintext-sha256",
+        help="independently retained plaintext identity; never use the sidecar",
+    )
+    parser.add_argument(
+        "--max-plaintext-bytes",
+        type=int,
+        default=DEFAULT_PLAINTEXT_BYTES,
+        help="independent source/inventory allowance (default: 128 MiB)",
+    )
     args = parser.parse_args()
     if args.operation == "encrypt":
         if args.destination is None:
             parser.error("encryption requires a new destination")
+        if args.expected_plaintext_sha256 is not None:
+            parser.error("the trusted plaintext identity applies only to verify")
         result = encrypt_file(args.source, args.destination, args.policy)
+    elif args.operation == "verify":
+        if args.expected_plaintext_sha256 is None:
+            parser.error("verify requires --expected-plaintext-sha256 from an independent record")
+        result = verify_file(
+            args.source,
+            args.policy,
+            expected_plaintext_sha256=args.expected_plaintext_sha256,
+            max_plaintext_bytes=args.max_plaintext_bytes,
+        )
     else:
-        result = verify_file(args.source, args.policy)
+        if args.expected_plaintext_sha256 is not None:
+            parser.error("use verify to check a trusted plaintext identity")
+        result = inspect_file(
+            args.source, args.policy, max_plaintext_bytes=args.max_plaintext_bytes
+        )
     print(json.dumps(result, indent=2))
 
 

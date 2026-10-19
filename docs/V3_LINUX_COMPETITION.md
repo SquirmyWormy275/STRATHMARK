@@ -54,8 +54,52 @@ The Linux CLI accepts `--backup-encryption-policy /private/policy.json` together
 
 The policy file, verified GPG executable and private key home must have ancestry controlled by the current user or root. Group/other-writable ancestors are refused unless they are trusted-owner sticky directories such as `/tmp`; safe `0755` ancestors remain supported. The policy must be accessed without symlink aliases; the policy and executable must be regular files without peer write access, and the key home must have mode `0700` and belong to the current user. Checks never repair permissions or change shared folders. GPG execution uses the canonical absolute executable and home paths that were checked, including when configuration uses a legitimate symlink alias. These local trust requirements do not apply to the authenticated ciphertext destination, receipt or publication lock on an independent removable filesystem; encrypted recovery remains supported there even when Unix privacy modes are unavailable.
 
-Encryption stages plaintext only in private local storage and writes ciphertext directly to the archive drive. Every archive is fully decrypted and checked before success; competition backups also verify every member. Source archives are preserved. `strathmark-v3-encrypt-backup encrypt --policy /private/policy.json --source /private/original.tar.gz --destination /independent/new.tar.gz.gpg` encrypts an existing archive; `verify` accepts the same policy and encrypted `--source`. Recovery requires the private key, not merely the public fingerprint. Safe Python tar extraction does not restore directory permissions: restore the authority directory to mode 700 before reopening; keys/database remain mode 600.
+Encryption stages plaintext only in private local storage and writes ciphertext directly to the archive drive. Every archive is fully decrypted and checked before success; competition backups also verify every member. Source archives are preserved. `strathmark-v3-encrypt-backup encrypt --policy /private/policy.json --source /private/original.tar.gz --destination /independent/new.tar.gz.gpg` encrypts an existing archive; `verify` additionally requires `--expected-plaintext-sha256` from an independently protected source record, never from the adjacent receipt. Recovery requires the private key, not merely the public fingerprint. Safe Python tar extraction does not restore directory permissions: restore the authority directory to mode 700 before reopening; keys/database remain mode 600.
 
 From rc7, archive input and output use bounded 1 MiB Python reads/writes through GPG pipes. This avoids GPG's tiny direct filesystem operations on large removable-drive archives. Whole authenticated decryption, source stability, member hashes, receipt-first publication and no-overwrite recovery remain required. The helper creates no persistent ciphertext cache. On interruption, it stops GPG and joins the feeder before returning. Earlier saved competitions retain their original exact runtime; do not replace their installed Python files in place.
 
 Encrypted archives use a publication lock and temporary ciphertext names. After complete readback, the receipt is durably published first and the complete ciphertext name is published atomically as the commit marker. A killed job leaves no final-named partial archive; exact retry preserves and quarantines a matching orphan receipt before creating the verified pair. Original archives remain preserved.
+
+
+### rc13 recovery trust and processing limits
+
+A GPG recipient's public key is enough to create new ciphertext and a matching unsigned
+receipt. Successful decryption therefore establishes ciphertext integrity, not who
+created the backup. The receipt schema remains readable, including archives made with
+certification-only primary keys and encryption subkeys; no new signing key or policy
+migration is required.
+
+`strathmark-v3-encrypt-backup verify --policy /private/policy.json --source /independent/backup.tar.gz.gpg --expected-plaintext-sha256 TRUSTED_SHA256`
+requires the plaintext archive's exact SHA256 retained independently of the removable
+archive and its receipt. Retain that identity from the original trusted plaintext or
+from a protected creation record. Never copy it from the archive's `.verified.json`.
+This checks the chosen content identity; it does not prove a signer, installation
+label or that the chosen snapshot is the latest. Check the selected competition and
+recovery point against independent records before restoring. Keep that same content
+check on any subsequent decryption used for restoration.
+
+Without an independent identity, the explicit `inspect` operation only reports
+`verification_scope: integrity_only` and `origin_authenticated: false`. It remains
+available for legacy forensic inspection; it must not authorize a restore. `verify`
+reports `trusted_plaintext_identity` only after comparing actual decrypted bytes to
+the independent pin; it does not claim a sender signature. Native competition backup
+reuse separately requires exact member hashes from its trusted local snapshot, so it
+can inspect a legacy container without trusting its unsigned receipt as authority.
+
+Archive and receipt inputs must be regular files without final symlinks. Verification
+hashes the same opened ciphertext descriptor that feeds GPG. The default decrypted
+archive limit is 128 MiB; `--max-plaintext-bytes` can enlarge it only from independent
+source or inventory information, up to 1 TiB. Neither the ciphertext nor its receipt
+can enlarge this allowance. The ciphertext allowance is twice the plaintext allowance
+plus 1 MiB. The receipt's declared byte count must be an integer within the allowance
+and must equal actual decrypted bytes. These bounds precede TAR parsing and also
+apply when checking arbitrary encrypted files through the standalone CLI.
+
+Creation derives its allowance from the opened trusted source. Native retry derives
+one from the trusted snapshot inventory. Existing member/expanded-TAR limits still
+apply to native container inspection. Each GPG operation has a watchdog deadline of
+30 seconds plus one second per MiB of allowance, capped at six hours; expiry kills
+GPG even if its output pipe has blocked. An underlying regular-file read stuck in the
+operating system can still delay feeder cleanup until the OS returns. Source files,
+existing archives, private key storage, permissive removable ciphertext destinations
+and the saved profile's exact runtime identity remain preserved.

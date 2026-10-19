@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.0rc13] - 2026-10-19
+
+- Require an independently retained plaintext identity for encrypted recovery verification;
+  keep explicit integrity-only legacy inspection and exact snapshot inventory checks.
+- Bound encrypted input and decrypted output, reject nonregular inputs and use a GPG
+  watchdog deadline while preserving trusted large-source allowances and existing keys.
+
 ## [3.0.0rc12] - 2026-10-19
 
 - Bound public request bodies, aggregate history, slow receives, blocking work, archive
