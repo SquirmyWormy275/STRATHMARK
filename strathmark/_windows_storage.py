@@ -271,7 +271,9 @@ class WindowsStorage:
                 continue
             handle = self.kernel.CreateFileW(str(parent), 0x20000, 3, None, 3, 0x02200000, None)
             if handle == wt.HANDLE(-1).value:
-                self._check(False)
+                raise PermissionError(
+                    f"Cannot inspect authority ancestor {parent}: Win32 {ctypes.get_last_error()}"
+                )
             try:
                 information = FileInformation()
                 self._check(
@@ -293,7 +295,10 @@ class WindowsStorage:
                 self._check(code == 0, code)
                 try:
                     if not self._trusted_sid(owner):
-                        raise PermissionError("Authority ancestor belongs to another account")
+                        raise PermissionError(
+                            "Authority ancestor belongs to another account: "
+                            f"owner SID={self._sid_text(owner)}"
+                        )
                     if not dacl:
                         raise PermissionError("Authority ancestor has an unrestricted ACL")
                     count = ctypes.cast(dacl, ctypes.POINTER(AclHeader)).contents.count
@@ -304,7 +309,10 @@ class WindowsStorage:
                         if ace.flags & 8:  # INHERIT_ONLY: does not grant ancestor access.
                             continue
                         if ace.kind not in (0, 1):
-                            raise PermissionError("Authority ancestor has an unsupported ACL entry")
+                            raise PermissionError(
+                                "Authority ancestor has an unsupported ACL entry: "
+                                f"type={ace.kind}, flags=0x{ace.flags:02x}"
+                            )
                         if ace.kind == 1:
                             continue  # Ignoring denies is conservative: reject broad allows anyway.
                         # Create-child rights alone cannot replace an existing
@@ -314,10 +322,15 @@ class WindowsStorage:
                             pointer.value + AllowedAce.sid.offset
                         ):
                             raise PermissionError(
-                                "Authority ancestor is replaceable by another account"
+                                "Authority ancestor is replaceable by another account: "
+                                f"SID={self._sid_text(pointer.value + AllowedAce.sid.offset)}, "
+                                f"mask=0x{ace.mask:08x}, blocked=0x{ace.mask & 0x500D0150:08x}, "
+                                f"flags=0x{ace.flags:02x}"
                             )
                 finally:
                     self.kernel.LocalFree(descriptor)
+            except PermissionError as exc:
+                raise PermissionError(f"{exc}; ancestor={parent}") from exc
             finally:
                 self.kernel.CloseHandle(handle)
 

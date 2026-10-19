@@ -172,8 +172,13 @@ Set-Acl -LiteralPath $path -AclObject $acl
 """
     _powershell(script, STRATHMARK_ACL_TEST_PATH=str(root), STRATHMARK_TEST_RIGHTS=rights)
     before = _acl(root)
-    with pytest.raises(PermissionError, match="replaceable"):
+    with pytest.raises(PermissionError, match="replaceable") as failure:
         private_file(root / "authority" / "store.sqlite3")
+    assert str(root) in str(failure.value)
+    assert "SID=S-1-1-0" in str(failure.value)
+    assert "mask=0x" in str(failure.value)
+    assert "blocked=0x" in str(failure.value)
+    assert "flags=0x" in str(failure.value)
     assert not (root / "authority").exists()
     assert _acl(root) == before
 
