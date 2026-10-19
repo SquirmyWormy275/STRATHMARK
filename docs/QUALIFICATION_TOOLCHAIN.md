@@ -40,7 +40,10 @@ schema v3; do not rewrite old receipts to make them appear current.
 
 [Formula workbook tooling](FORMULA_RUNTIME.md) has a separate independently
 approved manifest for Node and the complete module inventory. The manifest is
-required before any version probe or workbook replay. Portable CI explicitly
+required before any version probe or workbook replay. Canonical Formula paths are
+frozen for execution and their input files/directories must be protected from
+writes or replacement by unrelated accounts; these checks do not chmod or change
+ACLs on an existing installation. Portable CI explicitly
 skips that designated replay; a green hosted run does not attest to the Formula
 installation or confer Windows CNG production eligibility.
 

@@ -7,7 +7,10 @@ import hashlib
 import json
 import os
 import re
+import runpy
+import stat
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -28,15 +31,57 @@ def formula_environment() -> dict[str, str]:
     }
 
 
+@lru_cache(maxsize=1)
+def _windows_tool_security():
+    # This committed helper uses only the standard library. Loading its source
+    # directly avoids importing strathmark (and unverified runtime dependencies).
+    source = ROOT / "strathmark/_windows_storage.py"
+    return runpy.run_path(str(source))["WindowsStorage"]()
+
+
+def _trusted_tool_input(path: Path) -> None:
+    """Read-only check: peer accounts must not replace names or change bytes."""
+    if os.name == "nt":
+        _windows_tool_security().verify_ancestors(path, include_tool_input=True)
+        return
+    if os.name != "posix":
+        raise PermissionError("Formula tool permissions are unsupported on this platform")
+    for current in reversed((path, *path.parents)):
+        status = current.lstat()
+        is_leaf = current == path
+        if status.st_uid not in (0, os.geteuid()):
+            raise PermissionError(f"Formula tool input has an unrelated owner: {current}")
+        if not is_leaf and not stat.S_ISDIR(status.st_mode):
+            raise PermissionError(f"Formula tool ancestor is not a real directory: {current}")
+        if stat.S_ISLNK(status.st_mode):
+            continue  # Internal link ownership + its protected parent guard the link name.
+        if not (stat.S_ISDIR(status.st_mode) or stat.S_ISREG(status.st_mode)):
+            raise PermissionError(
+                f"Formula tool input is not a regular file or directory: {current}"
+            )
+        if status.st_mode & 0o022 and (is_leaf or not status.st_mode & stat.S_ISVTX):
+            raise PermissionError(f"Formula tool input is writable by another account: {current}")
+
+
+def canonical_tool_paths(node: Path, node_modules: Path) -> tuple[Path, Path]:
+    """Resolve installation aliases once, before validating the protected targets."""
+    canonical_node = node.resolve(strict=True)
+    canonical_modules = node_modules.resolve(strict=True)
+    _trusted_tool_input(canonical_node)
+    _trusted_tool_input(canonical_modules)
+    return canonical_node, canonical_modules
+
+
 def _module_inventory(root: Path) -> dict[str, str]:
     if not root.is_dir():
         raise ValueError("designated Formula module directory is required")
-    root = root.resolve(strict=True)
+    _trusted_tool_input(root)
     inventory = {}
     for directory, directories, files in os.walk(root, followlinks=False):
         for name in sorted(directories + files):
             path = Path(directory) / name
             relative = path.relative_to(root).as_posix()
+            _trusted_tool_input(path)
             if path.is_symlink():
                 try:
                     path.resolve(strict=True).relative_to(root)
@@ -78,7 +123,8 @@ def runtime_identity(
         or trusted["schema_version"] != SCHEMA
     ):
         raise ValueError("Formula toolchain manifest schema differs")
-    node_digest = hashlib.sha256(_bytes(node.resolve(strict=True))).hexdigest()
+    _trusted_tool_input(node)
+    node_digest = hashlib.sha256(_bytes(node)).hexdigest()
     if node_digest != trusted["node_sha256"]:
         raise ValueError("Formula Node bytes differ from the approved manifest")
     inventory = _module_inventory(node_modules)
@@ -100,6 +146,7 @@ def verify_runtime(
     manifest: Path | None = None,
     expected_manifest_sha256: str | None = None,
 ) -> dict[str, str]:
+    node, node_modules = canonical_tool_paths(node, node_modules)
     identity = runtime_identity(
         node, node_modules, manifest=manifest, expected_manifest_sha256=expected_manifest_sha256
     )
@@ -109,7 +156,7 @@ def verify_runtime(
     package = node_modules / "@oai/artifact-tool/package.json"
     observed = {
         "node_version": subprocess.check_output(
-            [str(node.resolve(strict=True)), "--version"],
+            [str(node), "--version"],
             env=formula_environment(),
             text=True,
             timeout=10,
@@ -128,7 +175,7 @@ def verify_runtime(
         != identity
     ):
         raise ValueError("Formula tool identity changed during verification")
-    return {**observed, **identity}
+    return {**observed, **identity, "node_path": str(node), "node_modules_path": str(node_modules)}
 
 
 def main() -> None:

@@ -159,3 +159,74 @@ def test_designated_replay_rechecks_bytes_after_the_workbook_process(
     with pytest.raises(ValueError, match="module bytes differ"):
         test_formula_replay.test_designated_verification_runs_independent_artifact_engine(scratch)
     assert not (scratch / "formula-toolchain-verification.json").exists()
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="POSIX permission bits")
+@pytest.mark.parametrize("target", ["node", "module", "directory"])
+def test_peer_writable_formula_inputs_are_refused_before_execution(
+    approved_tools, monkeypatch, target
+):
+    node, modules, manifest, digest = approved_tools
+    path = {"node": node, "module": modules / "@oai/artifact-tool/index.js", "directory": modules}[
+        target
+    ]
+    before = path.stat().st_mode & 0o777
+    path.chmod(0o777 if path.is_dir() else 0o666)
+    monkeypatch.setattr(
+        verify_formula_runtime.subprocess,
+        "check_output",
+        lambda *args, **kwargs: pytest.fail("unsafe tool executed"),
+    )
+    try:
+        with pytest.raises(PermissionError, match="writable by another account"):
+            verify_formula_runtime.verify_runtime(
+                node, modules, manifest=manifest, expected_manifest_sha256=digest
+            )
+        assert path.stat().st_mode & 0o777 == (0o777 if path.is_dir() else 0o666)
+    finally:
+        path.chmod(before)
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="portable symlink fixture")
+def test_installation_alias_retarget_never_changes_executed_tool(
+    approved_tools, monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    node, modules, manifest, digest = approved_tools
+    other_node = tmp_path / "unapproved-node"
+    other_node.write_bytes(b"unapproved executable")
+    other_modules = tmp_path / "unapproved-modules"
+    other_modules.mkdir()
+    node_alias = tmp_path / "node-alias"
+    module_alias = tmp_path / "module-alias"
+    node_alias.symlink_to(node)
+    module_alias.symlink_to(modules, target_is_directory=True)
+    monkeypatch.setenv("STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION", "1")
+    monkeypatch.setenv("STRATHMARK_FORMULA_TOOLCHAIN_MANIFEST", str(manifest))
+    monkeypatch.setenv("STRATHMARK_FORMULA_TOOLCHAIN_SHA256", digest)
+    monkeypatch.setattr(
+        test_formula_replay, "_artifact_engine_paths", lambda: (node_alias, module_alias)
+    )
+
+    def version_probe(argv, **kwargs):
+        assert argv[0] == str(node)
+        node_alias.unlink()
+        module_alias.unlink()
+        node_alias.symlink_to(other_node)
+        module_alias.symlink_to(other_modules, target_is_directory=True)
+        return "v24.19.0\n"
+
+    def replay(argv, **kwargs):
+        assert argv[0] == str(node)
+        assert kwargs["env"]["STRATHMARK_ARTIFACT_NODE_MODULES"] == str(modules)
+        return SimpleNamespace(returncode=0, stdout='{"status": "verified"}', stderr="")
+
+    monkeypatch.setattr(verify_formula_runtime.subprocess, "check_output", version_probe)
+    monkeypatch.setattr(test_formula_replay.subprocess, "run", replay)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    test_formula_replay.test_designated_verification_runs_independent_artifact_engine(scratch)
+    assert json.loads((scratch / "formula-toolchain-verification.json").read_text())["toolchain"][
+        "node_path"
+    ] == str(node)

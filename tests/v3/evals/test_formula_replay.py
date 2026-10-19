@@ -228,6 +228,10 @@ def test_designated_verification_runs_independent_artifact_engine(tmp_path: Path
         identity = verify_runtime(node, node_modules)
     except ValueError as error:
         pytest.fail(str(error))
+    # Continue with the exact protected canonical targets authenticated above,
+    # even if a caller's installation aliases are retargeted after preflight.
+    node = Path(identity["node_path"])
+    node_modules = Path(identity["node_modules_path"])
     junction = tmp_path / "node_modules"
     if os.name == "nt":
         linked = subprocess.run(

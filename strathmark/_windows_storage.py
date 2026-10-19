@@ -264,9 +264,10 @@ class WindowsStorage:
     def verify_directory(self, path):
         self.kernel.CloseHandle(self._open(path, directory=True, tighten=False))
 
-    def verify_ancestors(self, path):
-        """Reject ancestry replaceable by an unrelated, unprivileged account."""
-        for parent in path.parents:
+    def verify_ancestors(self, path, *, include_tool_input=False):
+        """Reject peer replacement; optionally protect a tool input's bytes too."""
+        paths = (path, *path.parents) if include_tool_input else path.parents
+        for parent in paths:
             if not parent.exists():
                 continue
             handle = self.kernel.CreateFileW(str(parent), 0x20000, 3, None, 3, 0x02200000, None)
@@ -279,7 +280,10 @@ class WindowsStorage:
                 self._check(
                     self.kernel.GetFileInformationByHandle(handle, ctypes.byref(information))
                 )
-                if information.attributes & 0x400 or not information.attributes & 0x10:
+                is_tool_input = include_tool_input and parent == path
+                if information.attributes & 0x400 or (
+                    not is_tool_input and not information.attributes & 0x10
+                ):
                     raise PermissionError("Authority ancestry must contain only real directories")
                 owner, dacl, descriptor = wt.LPVOID(), wt.LPVOID(), wt.LPVOID()
                 code = self.security.GetSecurityInfo(
@@ -324,11 +328,14 @@ class WindowsStorage:
                         # Create-child rights alone cannot replace an existing
                         # protected child. Delete/delete-child and security
                         # control rights can; broad generic writes are refused.
-                        if ace.mask & 0x500D0150 and not self._trusted_sid(sid):
+                        # Tool input bytes and directory inventories also forbid
+                        # FILE_WRITE_DATA/ADD_FILE and APPEND_DATA/ADD_SUBDIRECTORY.
+                        blocked_mask = 0x500D0156 if is_tool_input else 0x500D0150
+                        if ace.mask & blocked_mask and not self._trusted_sid(sid):
                             raise PermissionError(
                                 "Authority ancestor is replaceable by another account: "
                                 f"SID={self._sid_text(sid)}, "
-                                f"mask=0x{ace.mask:08x}, blocked=0x{ace.mask & 0x500D0150:08x}, "
+                                f"mask=0x{ace.mask:08x}, blocked=0x{ace.mask & blocked_mask:08x}, "
                                 f"flags=0x{ace.flags:02x}"
                             )
                 finally:
