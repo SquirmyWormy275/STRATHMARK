@@ -303,10 +303,11 @@ class LinuxCompetitionRuntime:
         else:
             if path.exists():
                 raise LinuxLifecycleError("uncommitted history snapshot requires recovery")
-            source = Path(payload["workbook"]).resolve(strict=True)
-            raw = source.read_bytes()
-            if len(raw) > 100_000_000:
-                raise LinuxLifecycleError("history workbook exceeds capacity")
+            from strathmark.input_limits import bounded_workbook, read_bounded_file
+
+            source = Path(payload["workbook"]).absolute()
+            bounded = bounded_workbook(source)
+            raw = bounded.getvalue()
             metadata = {
                 "selection": context,
                 "cutoff_at_utc": payload["cutoff_at_utc"],
@@ -320,13 +321,13 @@ class LinuxCompetitionRuntime:
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
-            if sha256(source.read_bytes()).hexdigest() != metadata["sha256"]:
+            if sha256(read_bounded_file(source)).hexdigest() != metadata["sha256"]:
                 raise LinuxLifecycleError("operator history changed during snapshot creation")
             # Local issued results are admitted from the signed settlement log,
             # never a second time as unauthenticated legacy workbook history.
             from openpyxl import load_workbook
 
-            workbook = load_workbook(path)
+            workbook = load_workbook(bounded)
             removed = 0
             try:
                 for sheet in workbook.worksheets:

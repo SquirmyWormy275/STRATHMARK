@@ -18,10 +18,17 @@ MAX_ARCHIVE_MEMBERS = 1024
 
 def read_bounded_file(path, maximum=MAX_INPUT_BYTES):
     path = Path(path)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    named = path.lstat()
+    if not stat.S_ISREG(named.st_mode) or named.st_size > maximum:
+        raise ValueError("Input file exceeds its regular-file byte budget")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     with os.fdopen(os.open(path, flags), "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size > maximum
+            or (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino)
+        ):
             raise ValueError("Input file exceeds its regular-file byte budget")
         raw = stream.read(maximum + 1)
         after = os.fstat(stream.fileno())

@@ -10,6 +10,7 @@ import time
 import zipfile
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -43,6 +44,51 @@ def test_high_ratio_workbook_is_rejected_before_xml_parsing(tmp_path):
         archive.writestr("xl/worksheets/sheet1.xml", b"x" * 1_000_000)
     with pytest.raises(ValueError, match="compression"):
         bounded_workbook(path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO regression")
+def test_fifo_and_symlink_are_rejected_before_opening(tmp_path, monkeypatch):
+    fifo = tmp_path / "input.fifo"
+    os.mkfifo(fifo)
+    regular = tmp_path / "regular"
+    regular.write_bytes(b"input")
+    alias = tmp_path / "alias"
+    alias.symlink_to(regular)
+    monkeypatch.setattr(
+        os, "open", lambda *_args, **_kwargs: pytest.fail("unsafe input was opened")
+    )
+    for path in (fifo, alias):
+        with pytest.raises(ValueError, match="regular-file"):
+            read_bounded_file(path)
+
+
+@pytest.mark.parametrize("entry", ["legacy", "linux"])
+def test_administrative_workbooks_use_archive_bounds_before_parser(tmp_path, monkeypatch, entry):
+    import openpyxl
+
+    import import_legacy
+    from strathmark.v3.linux_lifecycle import LinuxCompetitionRuntime
+
+    workbook = tmp_path / "bomb.xlsx"
+    with zipfile.ZipFile(workbook, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", b"x" * 1_000_000)
+    monkeypatch.setattr(
+        import_legacy.pd, "ExcelFile", lambda *_a, **_kw: pytest.fail("unbounded parser")
+    )
+    monkeypatch.setattr(
+        openpyxl, "load_workbook", lambda *_a, **_kw: pytest.fail("unbounded parser")
+    )
+    with pytest.raises(ValueError, match="compression"):
+        if entry == "legacy":
+            import_legacy.load_and_validate_workbook(str(workbook))
+        else:
+            runtime = object.__new__(LinuxCompetitionRuntime)
+            runtime.store = SimpleNamespace(root=tmp_path / "authority")
+            runtime._history_snapshot(
+                {"scope_id": "tournament:synthetic"},
+                {"workbook": str(workbook), "cutoff_at_utc": "2026-10-19T00:00:00Z"},
+            )
+    assert not list((tmp_path / "authority").rglob("history.xlsx"))
 
 
 def test_tar_rejects_oversized_member_without_reading_payload():

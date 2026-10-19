@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -60,3 +61,41 @@ def test_provider_start_rejects_nonloopback_before_spawning(tmp_path, monkeypatc
     )
     with pytest.raises(ValueError, match="loopback"):
         provider.manage(profile, "start")
+
+
+@pytest.mark.parametrize("unsafe", ["directory", "binary", "profile", "log-link"])
+def test_provider_rejects_peer_replaceable_inputs_and_log_aliases(tmp_path, monkeypatch, unsafe):
+    root = tmp_path / "runtime"
+    root.mkdir(mode=0o700)
+    binary = root / "ollama"
+    binary.write_bytes(b"synthetic provider")
+    profile = root / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "runtime_binary": str(binary),
+                "runtime_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                "origin": "http://127.0.0.1:11435",
+            }
+        )
+    )
+    victim = tmp_path / "unrelated"
+    victim.write_bytes(b"unchanged")
+    before = victim.stat().st_mode
+    if unsafe == "directory":
+        root.chmod(0o777)
+    elif unsafe == "binary":
+        binary.chmod(0o666)
+    elif unsafe == "profile":
+        profile.chmod(0o666)
+    else:
+        (root / "provider.log").symlink_to(victim)
+    monkeypatch.setattr(provider.socket, "socket", lambda *_args: Mock())
+    monkeypatch.setattr(
+        provider.subprocess, "Popen", lambda *_a, **_kw: pytest.fail("unsafe provider started")
+    )
+    with pytest.raises((ValueError, PermissionError)):
+        provider.manage(profile, "start")
+    assert victim.read_bytes() == b"unchanged"
+    assert victim.stat().st_mode == before
+    assert not (root / "provider-process.json").exists()

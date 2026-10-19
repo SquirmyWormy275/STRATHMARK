@@ -8,11 +8,26 @@ import json
 import os
 import signal
 import socket
+import stat
 import subprocess
 import time
 from pathlib import Path
 
+from strathmark.input_limits import read_bounded_file
+from strathmark.private_storage import private_file, reject_links, verify_private_directory
 from strathmark.v3.factory.local_council_cli import LocalCouncilClient
+
+
+def _owned_input(path):
+    path = reject_links(path)
+    status = path.lstat()
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_uid not in (0, os.geteuid())
+        or status.st_mode & 0o022
+    ):
+        raise PermissionError("provider configuration and executable must be owner-controlled")
+    return path
 
 
 def _process_identity(pid):
@@ -23,7 +38,7 @@ def _process_identity(pid):
 
 
 def _owned_process(state, binary):
-    recorded = json.loads(state.read_text())
+    recorded = json.loads(read_bounded_file(_owned_input(state), maximum=16384))
     observed = _process_identity(recorded["pid"])
     if observed != recorded or observed["binary"] != str(binary):
         raise ValueError("provider process identity changed; refusing to signal another process")
@@ -33,11 +48,15 @@ def _owned_process(state, binary):
 def manage(profile_path: Path, operation: str):
     if os.name != "posix" or not Path("/proc").is_dir():
         raise ValueError("app-owned provider management requires Linux")
-    profile = json.loads(profile_path.read_text())
-    binary = Path(profile["runtime_binary"]).resolve(strict=True)
-    if hashlib.sha256(binary.read_bytes()).hexdigest() != profile["runtime_sha256"]:
+    profile_path = _owned_input(profile_path)
+    directory = verify_private_directory(profile_path.parent)
+    profile = json.loads(read_bounded_file(profile_path, maximum=16384))
+    binary = _owned_input(Path(profile["runtime_binary"]).resolve(strict=True))
+    if (
+        hashlib.sha256(read_bounded_file(binary, maximum=512 * 1024 * 1024)).hexdigest()
+        != profile["runtime_sha256"]
+    ):
         raise ValueError("provider binary differs from its pinned identity")
-    directory = profile_path.parent
     state = directory / "provider-process.json"
     if operation == "status":
         return LocalCouncilClient(profile).check_pins()
@@ -90,7 +109,9 @@ def manage(profile_path: Path, operation: str):
         OLLAMA_MAX_LOADED_MODELS="1",
         OLLAMA_NUM_PARALLEL="1",
     )
-    with (directory / "provider.log").open("ab") as log:
+    log_path = private_file(directory / "provider.log")
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "ab") as log:
         process = subprocess.Popen(
             [str(binary), "serve"],
             env=environment,
@@ -99,7 +120,6 @@ def manage(profile_path: Path, operation: str):
             stderr=log,
             start_new_session=True,
         )
-    (directory / "provider.log").chmod(0o600)
     try:
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
@@ -114,9 +134,9 @@ def manage(profile_path: Path, operation: str):
             observed = _process_identity(process.pid)
             if observed["binary"] != str(binary):
                 raise ValueError("provider executable identity changed during startup")
-            with state.open("x") as stream:
+            descriptor = os.open(state, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "w") as stream:
                 json.dump(observed, stream)
-            state.chmod(0o600)
             return result
         raise ValueError("provider did not become ready within 45 seconds")
     except Exception:
@@ -131,7 +151,7 @@ def main():
     parser.add_argument("operation", choices=("start", "status", "stop"))
     args = parser.parse_args()
     try:
-        print(json.dumps(manage(args.profile.resolve(strict=True), args.operation), indent=2))
+        print(json.dumps(manage(args.profile.expanduser().absolute(), args.operation), indent=2))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         parser.exit(2, f"{exc}\n")
 
