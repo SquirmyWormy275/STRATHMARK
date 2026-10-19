@@ -104,3 +104,23 @@ def _private_parent(path):
         # A file path does not authorize changing Documents/Desktop/a shared
         # project directory. Existing parents must already be private.
         _windows().verify_directory(path.parent)
+
+
+def verify_private_directory(path):
+    """Check an existing authority root without changing any permissions."""
+    path = reject_links(path)
+    if os.name == "nt":
+        _windows().verify_directory(path)
+    elif os.name == "posix":
+        status = path.stat()
+        if (
+            not stat.S_ISDIR(status.st_mode)
+            or status.st_uid != os.getuid()
+            or status.st_mode & 0o777 != 0o700
+        ):
+            raise PermissionError(
+                "Authority directory must already be private and owner-controlled"
+            )
+    else:
+        raise PermissionError("Private authority storage is unsupported on this platform")
+    return path
