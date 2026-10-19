@@ -64,14 +64,22 @@ jobs:
         run: ruff format --check .
 
   test:
-    name: Test (${{ matrix.os }} / Python ${{ matrix.python-version }})
+    name: Test (${{ matrix.os }} / Python ${{ matrix.python-version }} / shard ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        shard: [0, 1, 2, 3]
+        exclude:
+          - os: ubuntu-latest
+            shard: 1
+          - os: ubuntu-latest
+            shard: 2
+          - os: ubuntu-latest
+            shard: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -100,7 +108,7 @@ jobs:
         run: python -c "import strathmark; import strathmark.v3"
 
       - name: Verify native Windows storage permissions
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.shard == 0
         run: python -m pytest tests/test_windows_private_storage.py -v --tb=short --basetemp=${{ env.STRATHMARK_CI_TEMP }}/strathmark-native-permissions -p no:cacheprovider
 
       - name: Run pytest with coverage
@@ -124,19 +132,29 @@ jobs:
         # Python 3.10-3.13. V3's SQLite authority and exact release lock are a
         # designated Python 3.13 runtime contract: older bundled SQLite builds
         # reject its JSON expression indexes when trusted_schema is correctly
-        # disabled. Python 3.13 runs the complete suite here and again in the
-        # dedicated V3 rehearsal; older interpreters run every non-V3 test.
-        run: pytest tests/ -v --tb=short --cov=strathmark --cov-report=term-missing --basetemp=${{ env.STRATHMARK_CI_TEMP }}/strathmark-tests -p no:cacheprovider ${{ matrix.python-version != '3.13' && '--ignore=tests/v3' || '' }}
+        # disabled. Every interpreter runs every non-V3 test; the dedicated
+        # Python 3.13 job below runs every V3 test. Windows distributes each
+        # collected node into exactly one stable shard so validated storage
+        # work completes without dropping tests or relaxing its permissions.
+        run: python -m scripts.run_pytest_shard --index ${{ matrix.shard }} --count ${{ runner.os == 'Windows' && 4 || 1 }} -- tests/ -v --tb=short --maxfail=5 --durations=15 --cov=strathmark --cov-report=term-missing --basetemp=${{ env.STRATHMARK_CI_TEMP }}/strathmark-tests -p no:cacheprovider --ignore=tests/v3
 
   v3-ocean-boil:
-    name: V3 ocean-boil rehearsal (${{ matrix.os }} / Python 3.13)
+    name: V3 ocean-boil rehearsal (${{ matrix.os }} / Python 3.13 / shard ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     needs: lint
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        shard: [0, 1, 2, 3]
+        exclude:
+          - os: ubuntu-latest
+            shard: 1
+          - os: ubuntu-latest
+            shard: 2
+          - os: ubuntu-latest
+            shard: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -177,7 +195,7 @@ jobs:
           STRATHMARK_DB_PATH: ${{ env.STRATHMARK_CI_TEMP }}/strathmark-v2-v3-tests.sqlite3
           STRATHMARK_V3_DB_PATH: ${{ env.STRATHMARK_CI_TEMP }}/strathmark-v3-tests.sqlite3
           STRATHMARK_REQUIRE_FORMULA_ENGINE_VERIFICATION: "0"
-        run: pytest tests/v3 -v --tb=short --basetemp=${{ env.STRATHMARK_CI_TEMP }}/strathmark-v3-ocean-boil -p no:cacheprovider
+        run: python -m scripts.run_pytest_shard --index ${{ matrix.shard }} --count ${{ runner.os == 'Windows' && 4 || 1 }} -- tests/v3 -v --tb=short --maxfail=5 --durations=15 --cov=strathmark --cov-report=term-missing --basetemp=${{ env.STRATHMARK_CI_TEMP }}/strathmark-v3-ocean-boil -p no:cacheprovider
 
   api:
     name: API contract (${{ matrix.compatible-set }})
