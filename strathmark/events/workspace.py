@@ -8,6 +8,7 @@ import secrets
 from pathlib import Path
 from uuid import uuid4
 
+from strathmark.admission import LoginAttempts, WorkAdmission
 from strathmark.private_storage import open_private_exclusive, reject_links
 from strathmark.private_storage import private_file as secure_file
 
@@ -55,6 +56,8 @@ def create_workspace(ops, auth_file, session_key_file, *, origin=None):
         MAX_CONTENT_LENGTH=4 * 1024 * 1024,
     )
     CSRFProtect(app)
+    login_work = WorkAdmission(2, 1)
+    login_attempts = LoginAttempts()
 
     def accounts():
         return json.loads(private_file(auth_file).read_text())
@@ -98,13 +101,23 @@ def create_workspace(ops, auth_file, session_key_file, *, origin=None):
         error = None
         if request.method == "POST":
             username = request.form.get("username", "")
-            account = accounts().get(username)
-            # Maintained password verifier; no bearer/service token in browser.
-            valid = (
-                check_password_hash(account["password_hash"], request.form.get("password", ""))
-                if account
-                else False
-            )
+            source = request.remote_addr or "unknown"
+            password = request.form.get("password", "")
+            if (
+                len(username) > 256
+                or len(password) > 4096
+                or not login_attempts.admit(username, source)
+                or not login_work.acquire(source)
+            ):
+                return render_template_string(_LOGIN, error="Sign-in capacity is busy."), 429
+            try:
+                account = accounts().get(username)
+                # Maintained password verifier; no bearer/service token in browser.
+                valid = (
+                    check_password_hash(account["password_hash"], password) if account else False
+                )
+            finally:
+                login_work.release(source)
             if valid:
                 session.clear()
                 session.update(operator=username, account_binding=digest(account))

@@ -1045,3 +1045,28 @@ def test_calculator_idempotency_hash_includes_effective_mark_ceiling(tmp_path):
 
     assert conflicted[0].ledger_recorded is False
     assert conflicted[0].ledger_status == "idempotency_conflict"
+
+
+def test_field_deadline_cancels_before_commit_and_rolls_back_complete_write(tmp_path, monkeypatch):
+    from strathmark.ledger import LedgerQueryTimeoutError, SQLiteQueryDeadline
+
+    ledger = PredictionLedger(tmp_path / "deadline-field.db")
+    deadline = SQLiteQueryDeadline(timeout_seconds=5)
+    original = ledger._append_outbox
+    reached = []
+
+    def cancel_after_outbox(*args, **kwargs):
+        original(*args, **kwargs)
+        reached.append(True)
+        deadline.cancel()
+
+    monkeypatch.setattr(ledger, "_append_outbox", cancel_after_outbox)
+    with pytest.raises(LedgerQueryTimeoutError):
+        ledger.record_field(
+            "api", "expired-field", _request_payload(), [_pred()], query_deadline=deadline
+        )
+    assert reached
+    with ledger._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM prediction_requests").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM ledger_predictions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM prediction_mirror_outbox").fetchone()[0] == 0

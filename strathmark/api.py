@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import hmac
 import os
 import sqlite3
@@ -56,6 +57,7 @@ try:
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
+from strathmark.admission import WorkAdmission
 from strathmark.auth import (
     ShadowAttestationReplayError,
     ShadowAuthenticationConfigurationError,
@@ -954,6 +956,8 @@ class TrustedShadowRequestGate:
         # Starlette constructs middleware with the wrapped application as the
         # keyword argument ``app`` on every supported release line.
         self.application = app
+        self.body_admission = WorkAdmission(8, 2)
+        self.recovery_admission = WorkAdmission(4, 2)
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http" or not str(scope.get("path", "")).startswith("/v1/shadow/"):
@@ -975,41 +979,56 @@ class TrustedShadowRequestGate:
             await self._reject(scope, receive, send, 401, str(exc))
             return
 
-        body = bytearray()
-        deadline = asyncio.get_running_loop().time() + 10
-        while True:
-            try:
-                message = await asyncio.wait_for(
-                    receive(), min(2, deadline - asyncio.get_running_loop().time())
-                )
-            except TimeoutError:
-                await self._reject(scope, receive, send, 408, "Request body deadline expired.")
-                return
-            if message.get("type") == "http.disconnect":
-                return
-            chunk = message.get("body", b"")
-            if len(body) + len(chunk) > _MAX_SHADOW_BODY_BYTES:
-                await self._reject(scope, receive, send, 413, "Trusted shadow body is too large.")
-                return
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                break
-        if len(body) != declared_length:
-            await self._reject(
-                scope, receive, send, 400, "Content-Length does not match the request body."
-            )
+        # Hash only a successfully authenticated bearer; never retain the secret.
+        caller = hashlib.sha256(headers.get(b"authorization", b"")).digest()
+        pool = (
+            self.recovery_admission
+            if scope.get("path") in {"/v1/shadow/receipts/lookup", "/v1/shadow/status"}
+            else self.body_admission
+        )
+        if not pool.acquire(caller):
+            await self._reject(scope, receive, send, 429, "Shadow request capacity is busy.")
             return
+        try:
+            body = bytearray()
+            deadline = asyncio.get_running_loop().time() + 10
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        receive(), min(2, deadline - asyncio.get_running_loop().time())
+                    )
+                except TimeoutError:
+                    await self._reject(scope, receive, send, 408, "Request body deadline expired.")
+                    return
+                if message.get("type") == "http.disconnect":
+                    return
+                chunk = message.get("body", b"")
+                if len(body) + len(chunk) > _MAX_SHADOW_BODY_BYTES:
+                    await self._reject(
+                        scope, receive, send, 413, "Trusted shadow body is too large."
+                    )
+                    return
+                body.extend(chunk)
+                if not message.get("more_body", False):
+                    break
+            if len(body) != declared_length:
+                await self._reject(
+                    scope, receive, send, 400, "Content-Length does not match the request body."
+                )
+                return
 
-        delivered = False
+            delivered = False
 
-        async def replay_body() -> dict[str, Any]:
-            nonlocal delivered
-            if delivered:
-                return {"type": "http.disconnect"}
-            delivered = True
-            return {"type": "http.request", "body": bytes(body), "more_body": False}
+            async def replay_body() -> dict[str, Any]:
+                nonlocal delivered
+                if delivered:
+                    return {"type": "http.disconnect"}
+                delivered = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
 
-        await self.application(scope, replay_body, send)
+            await self.application(scope, replay_body, send)
+        finally:
+            pool.release(caller)
 
     @staticmethod
     async def _reject(
@@ -1352,6 +1371,7 @@ def calculate_shadow_field(
         selection = store.load_evidence_for_competitors(
             [str(competitor.competitor_id) for competitor in competitors],
             query_deadline=query_deadline,
+            bounded_shadow=True,
         )
         if (
             selection is None
@@ -1387,6 +1407,7 @@ def calculate_shadow_field(
             competitors,
             wood,
             evidence_selection=selection,
+            query_deadline=query_deadline,
         )
 
     try:

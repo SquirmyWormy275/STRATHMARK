@@ -74,6 +74,9 @@ EVIDENCE_ACTIVATION_SCHEMA_VERSION = "strathmark.evidence-snapshot-activation.v1
 DEFAULT_MAX_SNAPSHOT_AGE_DAYS = 7
 MAX_CAPTURE_CLOCK_SKEW_SECONDS = 300
 MAX_EVIDENCE_SNAPSHOT_ROWS = 100_000
+MAX_SHADOW_EVIDENCE_ROWS = 8192
+MAX_SHADOW_COMPETITOR_ROWS = 1024
+MAX_SHADOW_EVIDENCE_BYTES = 4 * 1024 * 1024
 MAX_EVIDENCE_SOURCE_STRING_LENGTH = 512
 MAX_EVIDENCE_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_EVIDENCE_SOURCE_NESTING = 4
@@ -1277,6 +1280,7 @@ class ResultStore:
         *,
         event_code: Optional[str] = None,
         query_deadline: Optional[QueryDeadline] = None,
+        bounded_shadow: bool = False,
     ) -> Optional[EvidenceSnapshotSelection]:
         """Verify once, then bulk-load a field from that exact immutable digest."""
 
@@ -1308,11 +1312,25 @@ class ResultStore:
             sql += "AND event_code = ? "
             params.append(event)
         sql += "ORDER BY competitor_id, result_date, ordinal"
+        if bounded_shadow:
+            sql += " LIMIT ?"
+            params.append(MAX_SHADOW_EVIDENCE_ROWS + 1)
+        selected_rows = 0
+        selected_bytes = 0
         histories: dict[str, list[HistoricalResult]] = {identity: [] for identity in identities}
         with self._connect(query_deadline=query_deadline) as conn:
             for row in conn.execute(sql, params):
                 if query_deadline is not None:
                     query_deadline.raise_if_expired()
+                if bounded_shadow:
+                    selected_rows += 1
+                    selected_bytes += len(json.dumps(tuple(row), ensure_ascii=True).encode("utf-8"))
+                    if (
+                        selected_rows > MAX_SHADOW_EVIDENCE_ROWS
+                        or len(histories[str(row["competitor_id"])]) >= MAX_SHADOW_COMPETITOR_ROWS
+                        or selected_bytes > MAX_SHADOW_EVIDENCE_BYTES
+                    ):
+                        raise ValueError("Shadow field evidence exceeds its row or byte budget.")
                 histories[str(row["competitor_id"])].append(
                     HistoricalResult(
                         event_code=str(row["event_code"]),

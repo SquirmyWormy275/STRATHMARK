@@ -975,3 +975,34 @@ def test_source_envelope_bounds_reject_hostile_shapes_before_persistence(tmp_pat
             captured_at=CAPTURED_AT,
             rows=({"a": 1, "b": 2},),
         )
+
+
+def test_shadow_field_row_budget_rejects_without_truncating_operator_snapshot(
+    tmp_path, monkeypatch
+):
+    import strathmark.store as store_module
+
+    store = ResultStore(tmp_path / "field-budget.db")
+    rows = [dict(_row(), heat_id=f"test:heat:{i}") for i in range(5)]
+    status = store.refresh_evidence_snapshot(_Source(_payload(rows)), cutoff=CUTOFF)
+    monkeypatch.setattr(store_module, "MAX_SHADOW_COMPETITOR_ROWS", 4)
+    with pytest.raises(ValueError, match="row or byte budget"):
+        store.load_evidence_for_competitors(["missoula:competitor:alice"], bounded_shadow=True)
+    assert store.get_evidence_snapshot_status().snapshot_digest == status.snapshot_digest
+    assert len(store.get_evidence_history("missoula:competitor:alice")) == 5
+    monkeypatch.setattr(store_module, "MAX_SHADOW_COMPETITOR_ROWS", 5)
+    assert (
+        len(
+            store.load_evidence_for_competitors(
+                ["missoula:competitor:alice"], bounded_shadow=True
+            ).histories["missoula:competitor:alice"]
+        )
+        == 5
+    )
+    monkeypatch.setattr(store_module, "MAX_SHADOW_EVIDENCE_ROWS", 4)
+    with pytest.raises(ValueError, match="row or byte budget"):
+        store.load_evidence_for_competitors(["missoula:competitor:alice"], bounded_shadow=True)
+    monkeypatch.setattr(store_module, "MAX_SHADOW_EVIDENCE_ROWS", 5)
+    monkeypatch.setattr(store_module, "MAX_SHADOW_EVIDENCE_BYTES", 1)
+    with pytest.raises(ValueError, match="row or byte budget"):
+        store.load_evidence_for_competitors(["missoula:competitor:alice"], bounded_shadow=True)
