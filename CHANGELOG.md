@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0rc12] - 2026-10-19
+
+- Bound public request bodies, aggregate history, slow receives, blocking work, archive
+  expansion, workbook dimensions, decimal rendering, optional narrative responses and imports.
+- Require explicit independent pins for custom V2 models; working-directory files no
+  longer override packaged models. Preserve V2 numerics and competition selections.
+- Use trusted service time for pre-field receipts and private authority-file modes;
+  read verified blob descriptors and content together and verify restores before publication.
+- Require successful protected-main CI for manual publication recovery and bind release
+  evidence to controlled tools, environment and executable identities.
+
 ## [3.0.0rc11] - 2026-10-16
 
 - Freeze engine and mark policy at each managed competition root; require accepted

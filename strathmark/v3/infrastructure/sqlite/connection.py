@@ -151,7 +151,9 @@ def open_v3_connection(
         raise SQLitePolicyError("read_only must be an explicit boolean")
     if deadline is not None and not isinstance(deadline, SQLiteDeadline):
         raise SQLitePolicyError("deadline must be a SQLiteDeadline")
-    path = Path(database_path).expanduser().resolve(strict=False)
+    from strathmark.private_storage import private_file, reject_links
+
+    path = reject_links(database_path)
     if deadline is not None:
         deadline.raise_if_expired()
         timeout_ms = min(policy.busy_timeout_ms, deadline.remaining_milliseconds())
@@ -161,9 +163,9 @@ def open_v3_connection(
     if read_only:
         if not path.is_file():
             raise FileNotFoundError(path)
-        target = f"{path.as_uri()}?mode=ro"
+        target = f"{path.as_uri()}?mode=ro&nofollow=1"
     else:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_file(path)
         target = str(path)
 
     connection = sqlite3.connect(

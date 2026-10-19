@@ -198,3 +198,14 @@ def test_forecast_set_identity_changes_with_epoch_bundle_or_cutoff() -> None:
         )
         == 4
     )
+
+
+def test_signed_pre_field_receipt_cannot_claim_creation_after_deadline():
+    signer = P256EphemeralSigner.generate("integrity-key:late-pre-field")
+    with pytest.raises(ContractError, match="deadline"):
+        PreFieldForecastReceipt.create(
+            snapshot=_snapshot(),
+            forecasts=(_entry("competitor:alice", 30_000), _entry("competitor:bob", 42_000)),
+            signer=signer,
+            created_at="2026-08-27T12:06:00.000Z",
+        )

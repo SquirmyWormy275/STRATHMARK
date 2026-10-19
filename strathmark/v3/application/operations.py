@@ -1009,6 +1009,9 @@ def verify_support_bundle(bundle: bytes, *, trust_store: IntegrityTrustStore) ->
         raise ValueError("support bundle bytes are invalid")
     try:
         with zipfile.ZipFile(io.BytesIO(bundle), "r") as archive:
+            from strathmark.input_limits import check_zip
+
+            check_zip(archive, stored_only=True, maximum=8_388_608)
             names = archive.namelist()
             if (
                 names != sorted(names)

@@ -181,14 +181,14 @@ class V3ApplicationPort(Protocol):
     def status(self, context: RequestContext) -> StatusResponse | Awaitable[StatusResponse]: ...
 
 
-async def _invoke(method, *arguments, deadline_ms: int):
+async def _invoke(method, *arguments, deadline_ms: int, blocking: BoundedBlockingExecutor):
     from strathmark.v3.api.app import TransportError
 
     try:
         if inspect.iscoroutinefunction(method):
             pending = method(*arguments)
         else:
-            pending = asyncio.to_thread(method, *arguments)
+            return await blocking.run(method, *arguments, timeout_ms=deadline_ms)
         return await asyncio.wait_for(pending, timeout=deadline_ms / 1000)
     except TimeoutError as exc:
         raise TransportError(
@@ -259,6 +259,9 @@ def create_router(
     router = APIRouter(prefix="/v3")
     blocking = blocking_executor or BoundedBlockingExecutor(max_concurrency=4)
 
+    async def invoke(method, *args, deadline_ms):
+        return await _invoke(method, *args, deadline_ms=deadline_ms, blocking=blocking)
+
     async def credential_call(function, /, *args, **kwargs):
         from strathmark.v3.api.app import TransportError
 
@@ -282,7 +285,7 @@ def create_router(
 
     @router.post("/scopes/open", response_model=ScopeOpenResponse, operation_id="v3_open_scope")
     async def open_scope(payload: ScopeOpenRequest, request: Request) -> ScopeOpenResponse:
-        return await _invoke(
+        return await invoke(
             gateway.open_scope,
             payload.model_dump(mode="json"),
             _context(request),
@@ -297,7 +300,7 @@ def create_router(
     async def synchronize_snapshot(
         payload: SnapshotSyncRequest, request: Request
     ) -> SnapshotSyncResponse:
-        return await _invoke(
+        return await invoke(
             gateway.synchronize_snapshot,
             payload.model_dump(mode="json"),
             _context(request),
@@ -310,7 +313,7 @@ def create_router(
         operation_id="v3_freeze_round",
     )
     async def freeze_round(payload: RoundFreezeRequest, request: Request) -> RoundFreezeResponse:
-        return await _invoke(
+        return await invoke(
             gateway.freeze_round,
             payload.model_dump(mode="json"),
             _context(request),
@@ -325,7 +328,7 @@ def create_router(
     async def forecast_pre_field(
         payload: PreFieldForecastRequest, request: Request
     ) -> PreFieldForecastResponse:
-        return await _invoke(
+        return await invoke(
             gateway.forecast_pre_field,
             payload.model_dump(mode="json"),
             _context(request),
@@ -344,7 +347,7 @@ def create_router(
         limit: int = Query(ge=1, le=100, default=25),
         snapshot_id: str | None = Query(default=None, pattern=r"^approval_snapshot:[0-9a-f]{64}$"),
     ) -> ApprovalPageResponse:
-        return await _invoke(
+        return await invoke(
             gateway.approval_page,
             {
                 "tournament_id": tournament_id,
@@ -367,7 +370,7 @@ def create_router(
         snapshot_id: str = Query(pattern=r"^approval_snapshot:[0-9a-f]{64}$"),
         receipt_id: str = Query(pattern=r"^receipt:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,94}$"),
     ) -> ApprovalDetailResponse:
-        return await _invoke(
+        return await invoke(
             gateway.approval_detail,
             {
                 "tournament_id": tournament_id,
@@ -380,7 +383,7 @@ def create_router(
 
     @router.post("/rounds/close", response_model=RoundCloseResponse, operation_id="v3_close_round")
     async def close_round(payload: RoundCloseRequest, request: Request) -> RoundCloseResponse:
-        return await _invoke(
+        return await invoke(
             gateway.close_round,
             payload.model_dump(mode="json"),
             _context(request),
@@ -389,7 +392,7 @@ def create_router(
 
     @router.post("/scopes/close", response_model=ScopeCloseResponse, operation_id="v3_close_scope")
     async def close_scope(payload: ScopeCloseRequest, request: Request) -> ScopeCloseResponse:
-        return await _invoke(
+        return await invoke(
             gateway.close_scope,
             payload.model_dump(mode="json"),
             _context(request),
@@ -403,7 +406,7 @@ def create_router(
         operation_id="v3_prepare_card",
     )
     async def prepare_card(payload: PrepareCardRequest, request: Request) -> PrepareCardResponse:
-        return await _invoke(
+        return await invoke(
             gateway.prepare_card,
             payload.model_dump(mode="json"),
             _context(request),
@@ -418,7 +421,7 @@ def create_router(
     async def assemble_field(
         payload: AssembleFieldRequest, request: Request
     ) -> AssembleFieldResponse:
-        return await _invoke(
+        return await invoke(
             gateway.assemble_field,
             payload.model_dump(mode="json"),
             _context(request),
@@ -433,7 +436,7 @@ def create_router(
     async def lookup_receipt(
         payload: ReceiptLookupRequest, request: Request
     ) -> ReceiptLookupResponse:
-        return await _invoke(
+        return await invoke(
             gateway.lookup_receipt,
             payload.model_dump(mode="json"),
             _context(request),
@@ -449,7 +452,7 @@ def create_router(
         payload: ApprovalDecisionRequest, request: Request
     ) -> ApprovalDecisionResponse:
         context = _context(request)
-        response = await _invoke(
+        response = await invoke(
             gateway.record_approval_decision,
             payload.model_dump(mode="json"),
             context,
@@ -469,7 +472,7 @@ def create_router(
     async def acknowledge_issue(
         payload: IssueAcknowledgmentRequest, request: Request
     ) -> IssueAcknowledgmentResponse:
-        return await _invoke(
+        return await invoke(
             gateway.acknowledge_issue,
             payload.model_dump(mode="json"),
             _context(request),
@@ -482,7 +485,7 @@ def create_router(
         operation_id="v3_settle_result",
     )
     async def settle_result(payload: SettlementRequest, request: Request) -> SettlementResponse:
-        return await _invoke(
+        return await invoke(
             gateway.settle_result,
             payload.model_dump(mode="json"),
             _context(request),
@@ -491,7 +494,7 @@ def create_router(
 
     @router.get("/status", response_model=StatusResponse, operation_id="v3_status")
     async def status(request: Request) -> StatusResponse:
-        return await _invoke(
+        return await invoke(
             gateway.status, _context(request, require_idempotency=False), deadline_ms=5_000
         )
 

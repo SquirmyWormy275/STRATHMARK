@@ -448,7 +448,7 @@ class V3ApplicationGateway:
                 snapshot,
                 caller_namespace=self._caller_namespace,
                 request_identity=str(context.command_id),
-                created_at=payload["requested_at_utc"],
+                created_at=self._clock(),
             )
         except (PreFieldForecastError, DurableJobError):
             self._conflict("pre_field_forecast_not_ready")

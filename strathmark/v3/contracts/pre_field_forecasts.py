@@ -333,6 +333,8 @@ class PreFieldForecastReceipt:
         if self.purpose != PRE_FIELD_PURPOSE or self.issued_mark is not False:
             raise ContractError("pre-field receipt cannot issue marks")
         require_utc_milliseconds(self.created_at)
+        if self.created_at > self.snapshot.hard_deadline_at:
+            raise ContractError("pre-field receipt was created after its deadline")
         _require_digest(self.receipt_digest, "pre-field receipt")
         if (
             not isinstance(self.manifest, SignedManifest)

@@ -87,7 +87,8 @@ class TestCallOllamaFailFast:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
         captured: dict = {}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, stream=False):
+            assert stream is True
             captured["timeout"] = timeout
             raise requests.exceptions.ConnectionError()
 

@@ -88,14 +88,11 @@ def _write_private(path: Path, raw: bytes, *, replace: bool = False) -> None:
 
 def _archive_digests(path):
     try:
-        with tarfile.open(path, "r:gz") as archive:
-            members = [item for item in archive.getmembers() if item.isfile()]
-            if len({item.name for item in members}) != len(members):
-                raise LinuxLifecycleError("recovery archive has duplicate members")
-            return {
-                item.name: sha256(archive.extractfile(item).read()).hexdigest() for item in members
-            }
-    except (OSError, tarfile.TarError, EOFError, zlib.error) as error:
+        from strathmark.input_limits import tar_stream_digests
+
+        with open(path, "rb") as stream:
+            return tar_stream_digests(stream)
+    except (OSError, ValueError, tarfile.TarError, EOFError, zlib.error) as error:
         raise LinuxLifecycleError("recovery archive is corrupted") from error
 
 

@@ -46,7 +46,7 @@ def canonical_decimal_string(value: Decimal | int | float | str) -> str:
             raise CanonicalNumberError("canonical numbers must be finite")
         decimal_value = Decimal(str(value))
     elif isinstance(value, str):
-        if not value or value.strip() != value:
+        if not value or len(value) > MAX_DECIMAL_CHARACTERS or value.strip() != value:
             raise CanonicalNumberError("canonical decimal strings must be nonempty and trimmed")
         try:
             decimal_value = Decimal(value)
@@ -62,6 +62,19 @@ def canonical_decimal_string(value: Decimal | int | float | str) -> str:
     if decimal_value.is_zero():
         return "0"
 
+    # Bound expansion before format() can allocate an exponent-sized string.
+    digits = decimal_value.as_tuple()
+    exponent = int(digits.exponent)
+    count = len(digits.digits)
+    while count > 1 and digits.digits[count - 1] == 0:
+        count -= 1
+        exponent += 1
+    width = (
+        count + exponent if exponent >= 0 else count + 1 if count + exponent > 0 else 2 - exponent
+    )
+    if width + digits.sign > MAX_DECIMAL_CHARACTERS:
+        raise CanonicalBoundsError("canonical decimal exceeds the character bound")
+    decimal_value = Decimal((digits.sign, digits.digits[:count], exponent))
     rendered = format(decimal_value, "f")
     if "." in rendered:
         rendered = rendered.rstrip("0").rstrip(".")

@@ -160,14 +160,17 @@ seed, passes, objectives, and fallback reason.
 The core is a checksummed JSON artifact; native pickle is not accepted. Load precedence
 is:
 
-1. `STRATHMARK_PREDICTION_CORE_ARTIFACT`;
-2. local `models/prediction_v2_core.json`;
-3. local `models/prediction_v2/core.json`;
-4. packaged `strathmark/models/prediction_v2_core.json`;
-5. labeled broad event prior.
+1. An absolute owner-controlled `STRATHMARK_PREDICTION_CORE_ARTIFACT`, with its
+   independently configured `STRATHMARK_PREDICTION_CORE_SHA256` pin;
+2. packaged `strathmark/models/prediction_v2_core.json`;
+3. labeled broad event prior.
+
+Working-directory models are never discovered automatically.
 
 `STRATHMARK_PREDICTION_RESIDUAL_ARTIFACT` can point at an optional residual directory.
-The loader checks compatibility, cutoffs, and checksums. A field holds one immutable
+It must be absolute and its manifest must match the independent
+`STRATHMARK_PREDICTION_RESIDUAL_MANIFEST_SHA256` pin. The loader checks compatibility,
+cutoffs, and checksums. A field holds one immutable
 `PredictionBundle`; files cannot change the model halfway through a request.
 
 `GET /health` reports core, residual, and calibration availability and versions,

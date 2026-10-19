@@ -133,7 +133,9 @@ def load_woodchopping_xlsx(
     ValueError
         If any validation rule is violated (see module docstring).
     """
-    xl = pd.ExcelFile(path, engine="openpyxl")
+    from strathmark.input_limits import bounded_workbook
+
+    xl = pd.ExcelFile(bounded_workbook(path), engine="openpyxl")
 
     required_sheets = {"Wood", "Competitor", "Results"}
     missing_sheets = required_sheets - set(xl.sheet_names)

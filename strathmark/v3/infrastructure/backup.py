@@ -66,7 +66,7 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _ARCHIVE_MAGIC = b"STRATHMARK-V3-ARCHIVE-PACKAGE-V1\n"
 _ARCHIVE_ENTRY_NAME = re.compile(r"^[a-z0-9][a-z0-9./-]{0,511}$")
 _MAX_ARCHIVE_MANIFEST_BYTES = 67_108_864
-_MAX_ARCHIVE_PACKAGE_BYTES = 2_147_483_648
+_MAX_ARCHIVE_PACKAGE_BYTES = 134_217_728
 
 
 class BackupError(RuntimeError):
@@ -174,10 +174,13 @@ class BackupManager:
         source_anchor = source_store.current_anchor()
         generation_root.parent.mkdir(parents=True, exist_ok=True)
         staging = generation_root.parent / f".{generation_root.name}.{uuid.uuid4().hex}.tmp"
-        staging.mkdir(parents=False, exist_ok=False)
+        staging.mkdir(mode=0o700, parents=False, exist_ok=False)
         target = staging / "authority.sqlite3"
         try:
             with open_v3_connection(self.database_path, read_only=True) as source:
+                from strathmark.private_storage import private_file
+
+                private_file(target)
                 destination_connection = sqlite3.connect(target)
                 try:
                     source.backup(destination_connection)
@@ -343,6 +346,9 @@ class BackupManager:
         temporary = restored.parent / f".{restored.name}.{uuid.uuid4().hex}.tmp"
         try:
             source = sqlite3.connect(f"file:{artifact.database_path.as_posix()}?mode=ro", uri=True)
+            from strathmark.private_storage import private_file
+
+            private_file(temporary)
             destination_connection = sqlite3.connect(temporary)
             try:
                 source.backup(destination_connection)
@@ -350,15 +356,24 @@ class BackupManager:
                 source.close()
                 destination_connection.close()
             _fsync_file(temporary)
+            # Verify the copied bytes before exposing an active restore path.
+            restored_report = self._verify_database(temporary, expected, issues)
+            if restored_report != report:
+                raise BackupIntegrityError("restored authority differs from verified backup")
             _publish_restore_database(temporary, restored)
         finally:
             try:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        restored_report = self._verify_database(restored, expected, issues)
-        if restored_report != report:
-            raise BackupIntegrityError("restored authority differs from verified backup")
+        try:
+            restored_report = self._verify_database(restored, expected, issues)
+            if restored_report != report:
+                raise BackupIntegrityError("restored authority differs from verified backup")
+        except Exception:
+            quarantine = restored.with_name(f".{restored.name}.{uuid.uuid4().hex}.unverified")
+            os.replace(restored, quarantine)
+            raise
         return restored_report
 
     def _reconcile_critical_recovery(
@@ -812,7 +827,11 @@ class ArchiveManager:
             ) from exc
         material = self._archive_package_material(tournament_id)
         try:
-            observed_manifest, observed_entries = _decode_archive_package(package_path.read_bytes())
+            from strathmark.input_limits import read_bounded_file
+
+            observed_manifest, observed_entries = _decode_archive_package(
+                read_bounded_file(package_path, _MAX_ARCHIVE_PACKAGE_BYTES)
+            )
         except (OSError, ValueError, BackupIntegrityError) as exc:
             raise ArchiveEligibilityError("archive package is malformed or incomplete") from exc
         if observed_manifest != material.manifest or observed_entries != dict(material.entries):
@@ -1413,7 +1432,9 @@ def _durable_write(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
-        with temporary.open("xb") as handle:
+        with os.fdopen(
+            os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+        ) as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())

@@ -433,6 +433,7 @@ def load_residual_artifact(
     expected_core_checksum: Optional[str] = None,
     expected_core_artifact_checksum: Optional[str] = None,
     prediction_as_of: Optional[date] = None,
+    expected_manifest_sha256: Optional[str] = None,
 ) -> ResidualArtifactLoad:
     """Load an eligible native artifact or return a disabled fail-closed state."""
 
@@ -443,7 +444,7 @@ def load_residual_artifact(
     if not directory.is_dir() or not manifest_path.is_file():
         return _disabled("residual_artifact_missing")
     try:
-        payload = _load_manifest(manifest_path, directory)
+        payload = _load_manifest(manifest_path, directory, expected_manifest_sha256)
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return _disabled("residual_artifact_invalid")
     if not payload["promoted"]:
@@ -474,8 +475,17 @@ def load_residual_artifact(
     return ResidualArtifactLoad(model=model, manifest=payload)
 
 
-def _load_manifest(manifest_path: Path, directory: Path) -> dict[str, Any]:
-    raw = manifest_path.read_bytes()
+def _load_manifest(
+    manifest_path: Path, directory: Path, expected_manifest_sha256=None
+) -> dict[str, Any]:
+    from strathmark.input_limits import read_bounded_file
+
+    raw = read_bounded_file(manifest_path, RESIDUAL_MANIFEST_MAX_BYTES)
+    if (
+        expected_manifest_sha256 is not None
+        and hashlib.sha256(raw).hexdigest() != expected_manifest_sha256
+    ):
+        raise ValueError("residual manifest differs from external pin")
     if len(raw) > RESIDUAL_MANIFEST_MAX_BYTES:
         raise ValueError("residual manifest exceeds maximum safe size")
     envelope = json.loads(raw)

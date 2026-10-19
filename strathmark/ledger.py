@@ -616,6 +616,9 @@ class PredictionLedger:
     def _connect(
         self, *, query_deadline: Optional[SQLiteQueryDeadline] = None
     ) -> sqlite3.Connection:
+        from strathmark.private_storage import private_file
+
+        private_file(self.path)
         conn = sqlite3.connect(
             str(self.path),
             timeout=30.0,

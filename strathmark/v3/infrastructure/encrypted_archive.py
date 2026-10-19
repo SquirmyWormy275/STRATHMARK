@@ -13,7 +13,6 @@ import json
 import os
 import re
 import subprocess
-import tarfile
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -266,27 +265,10 @@ def verify_file(path, policy_path):
 def tar_digests(path, policy_path):
     """Read all decrypted tar members without creating a plaintext archive."""
     policy = load_policy(policy_path)
-    result = {}
+    from strathmark.input_limits import tar_stream_digests
+
     with _gpg_stream(path, policy, ["--decrypt"]) as stream:
-        with tarfile.open(fileobj=stream, mode="r|gz") as archive:
-            for member in archive:
-                if (
-                    member.issym()
-                    or member.islnk()
-                    or Path(member.name).is_absolute()
-                    or ".." in Path(member.name).parts
-                ):
-                    raise ValueError("encrypted competition archive contains unsafe members")
-                if not member.isfile():
-                    continue
-                if member.name in result:
-                    raise ValueError("encrypted competition archive repeats a member")
-                digest = hashlib.sha256()
-                stream = archive.extractfile(member)
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                result[member.name] = digest.hexdigest()
-    return result
+        return tar_stream_digests(stream)
 
 
 def main():

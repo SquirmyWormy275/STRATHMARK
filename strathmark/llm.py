@@ -24,6 +24,7 @@ Source references (STRATHEX):
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -93,20 +94,43 @@ def check_ollama_connection(
         ):
             return _ollama_status["available"]
 
+    try:
+        # Network I/O never holds the status lock.
+        response = requests.get(
+            f"{base_url}/api/tags",
+            stream=True,
+            timeout=(llm_config.OLLAMA_CONNECT_TIMEOUT, llm_config.OLLAMA_READ_TIMEOUT),
+        )
         try:
-            # Explicit (connect, read) tuple — fail-fast on dead hosts.
-            resp = requests.get(
-                f"{base_url}/api/tags",
-                timeout=(llm_config.OLLAMA_CONNECT_TIMEOUT, llm_config.OLLAMA_READ_TIMEOUT),
-            )
-            _ollama_status["available"] = resp.status_code == 200
-            _ollama_status["last_check"] = now
-            _ollama_status["error_shown"] = False
-            return _ollama_status["available"]
-        except Exception:
-            _ollama_status["available"] = False
-            _ollama_status["last_check"] = now
-            return False
+            available = response.status_code == 200
+        finally:
+            response.close()
+    except Exception:
+        available = False
+    with _ollama_lock:
+        _ollama_status["available"] = available
+        _ollama_status["last_check"] = now
+        _ollama_status["error_shown"] = False
+    return available
+
+
+def _bounded_ollama_json(response, *, started_at):
+    """Read at most 1 MiB, with a total deadline even for a dripping peer."""
+    try:
+        maximum = 1_048_576
+        declared = response.headers.get("Content-Length")
+        if declared is not None and (int(declared) < 0 or int(declared) > maximum):
+            raise ValueError("Ollama response exceeds byte budget")
+        raw = bytearray()
+        for chunk in response.iter_content(chunk_size=1):
+            if time.monotonic() - started_at > 20:
+                raise TimeoutError("Ollama response deadline expired")
+            if len(raw) + len(chunk) > maximum:
+                raise ValueError("Ollama response exceeds byte budget")
+            raw.extend(chunk)
+        return json.loads(raw)
+    finally:
+        response.close()
 
 
 def reset_ollama_status() -> None:
@@ -220,17 +244,20 @@ def call_ollama(
 
     # Single attempt, explicit (connect, read) tuple, broad exception net.
     try:
+        started_at = time.monotonic()
         response = requests.post(
             ollama_url,
             json=payload,
+            stream=True,
             timeout=(llm_config.OLLAMA_CONNECT_TIMEOUT, llm_config.OLLAMA_READ_TIMEOUT),
         )
         if response.status_code == 200:
             _ollama_status["available"] = True
             _ollama_status["last_check"] = time.time()
             _ollama_status["error_shown"] = False
-            return response.json()["response"].strip()
+            return _bounded_ollama_json(response, started_at=started_at)["response"].strip()
 
+        response.close()
         # Non-200 — log once, fall through to Gemini.
         if not _ollama_status["error_shown"]:
             logger.warning("Ollama returned HTTP %s; falling through", response.status_code)

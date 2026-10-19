@@ -85,7 +85,9 @@ def load_woodchopping_xlsx(path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     Raises:
         FileNotFoundError: If the workbook does not exist at path.
     """
-    xl = pd.ExcelFile(path)
+    from strathmark.input_limits import bounded_workbook
+
+    xl = pd.ExcelFile(bounded_workbook(path))
 
     wood_df = pd.DataFrame()
     if "Wood" in xl.sheet_names:

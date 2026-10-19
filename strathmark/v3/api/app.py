@@ -276,6 +276,17 @@ class AuthenticatedBoundedMiddleware:
                     send, 415, "content_encoding_rejected", "Encoded request bodies are rejected."
                 )
                 return
+        if is_public:
+            # Health has no body and does not consume authority admission slots.
+            if headers.get(b"content-length", b"0") != b"0" or b"transfer-encoding" in headers:
+                await _send_error(send, 400, "health_body_rejected", "Health accepts no body.")
+                return
+
+            async def empty_receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            await self.app(scope, empty_receive, send)
+            return
         if not await self._gate.enter():
             await _send_error(
                 send,
@@ -302,8 +313,16 @@ class AuthenticatedBoundedMiddleware:
                     return
             body = bytearray()
             more = True
+            receive_deadline = asyncio.get_running_loop().time() + 10.0
             while more:
-                message = await receive()
+                remaining = receive_deadline - asyncio.get_running_loop().time()
+                try:
+                    message = await asyncio.wait_for(receive(), timeout=min(2.0, remaining))
+                except TimeoutError:
+                    await _send_error(
+                        send, 408, "request_body_timeout", "Request body deadline expired."
+                    )
+                    return
                 if message.get("type") == "http.disconnect":
                     return
                 if message.get("type") != "http.request":
@@ -311,12 +330,13 @@ class AuthenticatedBoundedMiddleware:
                         send, 400, "request_stream_invalid", "Request stream is invalid."
                     )
                     return
-                body.extend(message.get("body", b""))
-                if len(body) > self._max_body_bytes:
+                chunk = message.get("body", b"")
+                if len(body) + len(chunk) > self._max_body_bytes:
                     await _send_error(
                         send, 413, "request_body_too_large", "Request body is too large."
                     )
                     return
+                body.extend(chunk)
                 more = bool(message.get("more_body", False))
             replayed = False
 

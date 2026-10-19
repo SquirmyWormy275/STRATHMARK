@@ -56,6 +56,12 @@ python -m pip install --upgrade --pre strathmark
 New package versions publish to PyPI automatically after successful main CI. See
 the [package release policy](docs/PACKAGE_RELEASE.md) for versioning and recovery.
 
+The maintained **3.0.0rc12** candidate adds request and archive limits, private
+storage, trusted receipt timestamps and independent pins for custom V2 models.
+See [security and upgrade notes](docs/SECURITY_HARDENING.md). Keep saved Linux V3
+competitions on their original exact runtime; install upgrades separately for new
+competitions. The older 2.0.x library releases do not contain these transport fixes.
+
 ## Try the source-build demo
 
 From this repository, on Linux:

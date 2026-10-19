@@ -51,3 +51,19 @@ and [consumer migration guide](https://github.com/SquirmyWormy275/STRATHMARK/blo
 The [frozen OpenAPI](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/strathmark/v3/contracts/v3_consumer.openapi.json)
 and [checksum](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/strathmark/v3/contracts/v3_consumer.openapi.sha256)
 are the integration reference. Windows production qualification remains incomplete.
+
+## Request limits in 3.0.0rc12
+
+V2 request bodies are checked before JSON parsing and limited to 1 MiB. History
+is limited to 1,000 rows per competitor and 4,000 rows per field. Oversized input
+returns an explicit error; public work has bounded admission and does not consume
+the reserved shadow-recovery worker pools.
+
+V3 health returns without waiting for a request body. Trusted body reads have a
+10-second total deadline and a 2-second idle deadline. A timed-out synchronous
+operation keeps its worker slot until it actually exits, so recover a write by
+its original idempotency identity. Pre-field receipt creation uses the service
+clock; only an existing timely receipt can be recovered after its hard deadline.
+
+See [Security maintenance](Security-Maintenance) for artifact, archive and storage
+limits and the separate installation-verification requirements.

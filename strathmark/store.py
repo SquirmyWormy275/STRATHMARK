@@ -551,6 +551,9 @@ class ResultStore:
             timeout_ms = query_deadline.remaining_milliseconds()
         else:
             timeout_ms = 5_000
+        from strathmark.private_storage import private_file
+
+        private_file(self._path)
         conn = sqlite3.connect(
             str(self._path),
             check_same_thread=False,

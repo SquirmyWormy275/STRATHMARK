@@ -50,7 +50,7 @@ The public calculation endpoint does not require Ollama or a residual ML model.
 
 ## Current source build
 
-The repository version is 3.0.0rc7. Use Python 3.13 and install from the repository
+The repository version is 3.0.0rc12. Use Python 3.13 and install from the repository
 root into its own environment:
 
 ```bash
@@ -61,3 +61,20 @@ strathmark demo
 This synthetic demo uses V2 calculations and opens no operator database. To work
 on V3, follow [contributor setup](Testing) and install the exact release lock.
 Installing the source build does not select V3 for an existing competition.
+
+## Security maintenance
+
+Use the maintained 3.0.0rc12 candidate for the October 2026 input, transport and
+storage hardening. It publishes automatically after successful main CI:
+
+```bash
+python -m pip install --upgrade --pre "strathmark[api]"
+python -c "import strathmark; print(strathmark.__version__)"
+```
+
+Confirm the installed version is 3.0.0rc12 or newer. The stable 2.0.x artifacts
+remain immutable. Install an upgrade in a separate environment and run a synthetic
+calculation before serving new work. Saved Linux V3 competitions retain their exact
+source, model and key identities; continue them with their original environment.
+Custom V2 model paths now require independent digest pins, and working-directory
+models are ignored. See [Security maintenance](Security-Maintenance).
