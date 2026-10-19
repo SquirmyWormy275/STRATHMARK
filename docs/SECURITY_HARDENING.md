@@ -49,7 +49,25 @@ remain seeding-only and never issue marks.
 On POSIX systems, created authority databases and blob/backup files use mode 0600
 and new authority roots use 0700 independently of the process umask. Existing
 owner files are tightened without changing their content; links, junctions and
-unsafe ownership are rejected. Windows creates files and directories with a
+unsafe ownership are rejected. Every authority access checks existing ancestors
+from the filesystem root without changing their permissions. Ancestors must be
+owned by the current effective user or root, and group/other write access is
+rejected unless the directory has the sticky bit. This preserves safe 0755
+parents and trusted-owner sticky temporary roots while rejecting locations
+where another account could replace a checked database, private key or complete
+authority directory before it is reopened. POSIX ACL write masks are reflected
+in the group mode bits and are covered by the same conservative check. The
+protection assumes the current account and root remain trusted. See
+[rename permissions and sticky protection](https://man7.org/linux/man-pages/man2/rename.2.html)
+and [ACL permission-bit correspondence](https://man7.org/linux/man-pages/man5/acl.5.html).
+The immediate parent of an authority file must also prevent peer creation:
+SQLite reuses predictable journal/WAL names, which the sticky bit alone does not
+protect before creation. Use a dedicated private subdirectory beneath `/tmp`,
+not a database directly in its shared root. Missing intermediate authority
+directories are created with mode 0700 even under umask 000. The helper will not
+tighten HOME, its ancestors or the configured shared temporary root.
+
+Windows creates files and directories with a
 protected DACL granting full access only to the current process user. Native
 handle checks reject reparse points, hard links and unrelated owners; existing
 ACLs are tightened and read back before access proceeds. Existing administrative
@@ -76,8 +94,18 @@ applies only to that object's actual owner. Its ancestor ACL entries are accepte
 only after the same handle's actual owner has passed the trust check; they do
 not allow unrelated owners or unrelated write grants.
 
+The shared checks also protect the separate Linux lifecycle store and managed
+event SQLite/head files, workspace credentials and local GPG key home. Fresh
+dedicated managed-event roots and transfer staging are explicitly provisioned;
+an existing shared folder is never tightened merely because a database or key
+path names it. Plaintext authority backups need safe ancestry. Authenticated
+encrypted backup files and their receipts may still use an independent removable
+filesystem with permissive emulated modes; they contain ciphertext, and their
+private staging and decryption key remain on protected local storage.
+
 Native Windows CI checks creation-time ACLs, existing-file tightening, sidecar
-inheritance, hard links and failure behavior using independent .NET ACL reads.
+inheritance, managed-event storage and workspace keys, hard links and failure
+behavior using independent .NET ACL reads.
 These tests are distinct from designated Windows CNG production qualification.
 The implementation follows Microsoft's [file security rules](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights),
 [CreateFile security attributes](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)

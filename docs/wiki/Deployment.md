@@ -22,6 +22,17 @@ it. On Linux, the authority directory needs mode 700 and key, identity, head and
 database files need mode 600. Do not initialize a replacement key over an existing
 competition or edit the database to repair a command.
 
+Authority paths also need trusted ancestors. On POSIX, parent directories must
+belong to the current user or root, with no group/other write access unless they
+have the sticky bit. Safe 755 parents and trusted sticky temporary roots remain
+supported; shared writable locations are refused without changing their modes.
+Store database files inside a dedicated subdirectory of a sticky temporary root:
+their immediate parent must prevent peers from precreating journal/WAL siblings.
+This applies to local databases, workspace secrets and plaintext backups.
+Authenticated encrypted archives may still use a separate removable filesystem
+with permissive emulated modes. See
+[Security hardening](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/SECURITY_HARDENING.md).
+
 For profile selection and rollback, use the
 [portable installer guide](https://github.com/SquirmyWormy275/STRATHEX/blob/main/docs/PORTABLE_INSTALLATION.md).
 Rollback selects an earlier installation; it does not rewrite saved competitions.

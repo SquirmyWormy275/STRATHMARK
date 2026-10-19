@@ -110,6 +110,22 @@ def test_sqlite_sidecars_inherit_only_the_current_user(tmp_path):
             _assert_private(Path(f"{path}{suffix}"))
 
 
+def test_managed_store_and_workspace_key_create_private_dedicated_roots(tmp_path):
+    from strathmark.events.store import EventStore, atomic_json
+    from strathmark.events.workspace import new_session_key
+    from strathmark.events.workspace import private_file as workspace_file
+
+    store = EventStore(tmp_path / "managed" / "authority.sqlite3")
+    key = tmp_path / "workspace" / "session.key"
+    new_session_key(key)
+    assert len(workspace_file(key).read_text()) == 64
+    accounts = key.parent / "operators.json"
+    atomic_json(accounts, {})
+    for path in (store.path.parent, store.path, store.head, key.parent, key, accounts):
+        _assert_private(path)
+    assert EventStore(store.path).path == store.path
+
+
 def test_hardlinks_and_alternate_streams_are_rejected(tmp_path):
     root = private_directory(tmp_path / "private")
     target = private_file(root / "authority")
@@ -140,7 +156,8 @@ def test_exclusive_creation_does_not_overwrite_existing_file(tmp_path):
     assert path.read_bytes() == b"first"
 
 
-def test_file_path_does_not_tighten_a_shared_parent(tmp_path):
+@pytest.mark.parametrize("operation", ["file", "managed-transfer"])
+def test_file_path_does_not_tighten_a_shared_parent(tmp_path, operation):
     root = tmp_path / "shared-project"
     root.mkdir()
     script = """
@@ -153,8 +170,26 @@ Set-Acl -LiteralPath $path -AclObject $acl
 """
     _powershell(script, STRATHMARK_ACL_TEST_PATH=str(root))
     before = _acl(root)
-    with pytest.raises(PermissionError, match="explicitly provisioned"):
-        private_file(root / "authority.sqlite3")
+    if operation == "file":
+        with pytest.raises(PermissionError, match="explicitly provisioned"):
+            private_file(root / "authority.sqlite3")
+    else:
+        from strathmark.events import EventOperations, Principal
+        from strathmark.events.examples import synthetic_event
+
+        ops = EventOperations(tmp_path / "source" / "authority.sqlite3")
+        actor = Principal("synthetic", frozenset({"synthetic:missoula"}), "director")
+        state = ops.create(actor, "create", synthetic_event(), "cli")
+        with pytest.raises(PermissionError, match="explicitly provisioned"):
+            ops.transfer_to(
+                actor,
+                state["event_id"],
+                root / "authority.sqlite3",
+                request_id="transfer",
+                expected_revision=state["revision"],
+                editor="cli",
+            )
+        assert ops.read(actor, state["event_id"]) == state
     assert _acl(root) == before
     assert not (root / "authority.sqlite3").exists()
 

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
+
+from strathmark.private_storage import open_private_exclusive, private_file, reject_links
 
 from .contracts import CONTRACT, EventError, digest, encode
 
@@ -24,13 +26,18 @@ def sync_directory(path):
 def publish_file_exclusive(source, destination):
     # Staging and destination share a filesystem. link() atomically refuses
     # an existing target; neither a concurrent authority nor its head is replaced.
+    private_file(source)
+    destination = reject_links(destination)
     os.link(source, destination)
     sync_directory(Path(destination).parent)
 
 
 def atomic_json(path, value, *, replace=True):
-    path = Path(path)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".event-head-")
+    path = reject_links(path)
+    if path.exists():
+        private_file(path)
+    name = path.with_name(".event-head-" + uuid4().hex)
+    fd = open_private_exclusive(name)
     try:
         with os.fdopen(fd, "w") as output:
             output.write(encode(value))
@@ -48,9 +55,8 @@ def atomic_json(path, value, *, replace=True):
 
 class EventStore:
     def __init__(self, path):
-        self.path = Path(path).resolve()
+        self.path = reject_links(path).resolve()
         self.head = self.path.with_suffix(self.path.suffix + ".head.json")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         existed = self.path.exists()
         if existed and not self.head.exists():
             raise EventError(
@@ -79,11 +85,10 @@ class EventStore:
             if not existed:
                 atomic_json(self.head, {"tip": self.tip(db), "database_path": str(self.path)})
             self.verify(db)
-        if os.name != "nt":
-            self.path.chmod(0o600)
 
     @contextmanager
     def connection(self):
+        private_file(self.path)
         db = sqlite3.connect(self.path, timeout=15)
         try:
             db.execute("PRAGMA foreign_keys=ON")
@@ -99,6 +104,10 @@ class EventStore:
 
     def verify(self, db):
         try:
+            reject_links(self.head)
+            if not self.head.is_file():
+                raise FileNotFoundError(self.head)
+            private_file(self.head)
             head = json.loads(self.head.read_text())
             tip = self.tip(db)
             if head.get("database_path") != str(self.path):

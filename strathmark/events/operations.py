@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from strathmark.private_storage import (
+    private_directory,
+    reject_links,
+    verify_authority_parent,
+)
+
 from . import numerics
 from .contracts import (
     CONTRACT,
@@ -689,7 +695,10 @@ class EventOperations:
         """
         if principal.role != "director":
             raise EventError("director_authority_required")
-        destination = Path(destination).resolve()
+        destination = reject_links(destination).resolve()
+        if not destination.parent.exists():
+            private_directory(destination.parent)
+        verify_authority_parent(destination)
         if destination == self.store.path:
             raise EventError("fresh_recovery_destination_required")
         state = self.read(principal, event_id)
@@ -721,6 +730,7 @@ class EventOperations:
             raise EventError(
                 "incomplete_transfer_requires_reconciliation: source remains fenced"
             ) from exc
+        private_directory(stage)
         target = EventOperations(stage / "authority.sqlite3")
         with self.store.transaction() as db:
             commands = db.execute(

@@ -8,15 +8,29 @@ import secrets
 from pathlib import Path
 from uuid import uuid4
 
+from strathmark.private_storage import open_private_exclusive, reject_links
+from strathmark.private_storage import private_file as secure_file
+
 from .contracts import EventError, Principal, digest
 
 
+def _configuration_path(path):
+    try:
+        return reject_links(path) if os.name == "posix" else Path(path)
+    except (OSError, ValueError) as error:
+        raise EventError(f"private_configuration_path_unsafe: {error}") from error
+
+
 def private_file(path):
-    path = Path(path)
+    path = _configuration_path(path)
     if path.is_symlink() or not path.is_file():
         raise EventError("private_configuration_file_required")
     if os.name != "nt" and path.stat().st_mode & 0o077:
         raise EventError("private_configuration_requires_mode_600")
+    if os.name == "posix" and (path.stat().st_uid != os.geteuid() or path.stat().st_nlink != 1):
+        raise EventError("private_configuration_requires_owner_only_file")
+    if os.name == "nt":
+        secure_file(path)
     return path
 
 
@@ -267,7 +281,7 @@ def add_account(auth_file, actor, show):
 
     from .store import atomic_json
 
-    path = Path(auth_file)
+    path = _configuration_path(auth_file)
     registry = json.loads(private_file(path).read_text()) if path.exists() else {}
     if actor in registry:
         raise EventError("account_exists: use an explicit reviewed credential rotation")
@@ -283,10 +297,8 @@ def add_account(auth_file, actor, show):
 
 
 def new_session_key(path):
-    path = Path(path)
-    with path.open("x") as output:
-        if os.name != "nt":
-            os.fchmod(output.fileno(), 0o600)
+    path = _configuration_path(path)
+    with os.fdopen(open_private_exclusive(path), "w") as output:
         output.write(secrets.token_hex(32))
 
 
