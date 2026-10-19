@@ -19,6 +19,23 @@ from strathmark.private_storage import (
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="real Windows ACL enforcement")
 
 
+def _powershell(script, **variables):
+    script = "$ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest;\n" + script
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        env={
+            **{key: value for key, value in os.environ.items() if key.lower() != "psmodulepath"},
+            **variables,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
 def _acl(path):
     # Independent .NET inspection, not the implementation's ctypes ACL parser.
     script = """
@@ -31,15 +48,7 @@ $rules = @($acl.Access | ForEach-Object {
    user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 } | ConvertTo-Json -Depth 4 -Compress
 """
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        env={**os.environ, "STRATHMARK_ACL_TEST_PATH": str(path)},
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=30,
-    )
-    return json.loads(result.stdout)
+    return json.loads(_powershell(script, STRATHMARK_ACL_TEST_PATH=str(path)))
 
 
 def _assert_private(path, *, protected=True):
@@ -56,11 +65,11 @@ def test_new_acl_is_private_before_post_creation_tightening(tmp_path, monkeypatc
     target = root / "secret.bin"
     seen = []
 
-    def inspect(handle, directory, descriptor):
+    def inspect(handle, directory, descriptor, **kwargs):
         path = root if directory else target
         _assert_private(path)
         seen.append(path)
-        original(handle, directory, descriptor)
+        original(handle, directory, descriptor, **kwargs)
 
     monkeypatch.setattr(backend, "_secure_handle", inspect)
     private_directory(root)
@@ -75,6 +84,7 @@ def test_existing_acl_tightening_preserves_content_and_parent_home(tmp_path):
     root.mkdir()
     target = root / "secret.bin"
     target.write_bytes(b"retained authority")
+    private_directory(root)
     private_file(target)
     _assert_private(root)
     _assert_private(target)
@@ -122,9 +132,57 @@ def test_acl_write_failure_stops_without_changing_content(tmp_path, monkeypatch)
 
 
 def test_exclusive_creation_does_not_overwrite_existing_file(tmp_path):
-    path = tmp_path / "authority"
+    path = private_directory(tmp_path / "private") / "authority"
     with os.fdopen(open_private_exclusive(path), "wb") as stream:
         stream.write(b"first")
     with pytest.raises(FileExistsError):
         open_private_exclusive(path)
     assert path.read_bytes() == b"first"
+
+
+def test_file_path_does_not_tighten_a_shared_parent(tmp_path):
+    root = tmp_path / "shared-project"
+    root.mkdir()
+    script = """
+$path = $env:STRATHMARK_ACL_TEST_PATH
+$acl = Get-Acl -LiteralPath $path
+$sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $path -AclObject $acl
+"""
+    _powershell(script, STRATHMARK_ACL_TEST_PATH=str(root))
+    before = _acl(root)
+    with pytest.raises(PermissionError, match="explicitly provisioned"):
+        private_file(root / "authority.sqlite3")
+    assert _acl(root) == before
+    assert not (root / "authority.sqlite3").exists()
+
+
+@pytest.mark.parametrize("rights", ["Modify", "DeleteSubdirectoriesAndFiles", "Write"])
+def test_writable_ancestor_is_rejected_before_creating_authority(tmp_path, rights):
+    root = private_directory(tmp_path / "shared")
+    script = """
+$path = $env:STRATHMARK_ACL_TEST_PATH
+$acl = Get-Acl -LiteralPath $path
+$sid = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid,$env:STRATHMARK_TEST_RIGHTS,'Allow')
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $path -AclObject $acl
+"""
+    _powershell(script, STRATHMARK_ACL_TEST_PATH=str(root), STRATHMARK_TEST_RIGHTS=rights)
+    before = _acl(root)
+    with pytest.raises(PermissionError, match="replaceable"):
+        private_file(root / "authority" / "store.sqlite3")
+    assert not (root / "authority").exists()
+    assert _acl(root) == before
+
+
+def test_junction_ancestor_is_rejected(tmp_path):
+    target = private_directory(tmp_path / "target")
+    junction = tmp_path / "junction"
+    script = "New-Item -ItemType Junction -Path $env:STRATHMARK_TEST_LINK -Target $env:STRATHMARK_TEST_TARGET | Out-Null"
+    _powershell(script, STRATHMARK_TEST_LINK=str(junction), STRATHMARK_TEST_TARGET=str(target))
+    with pytest.raises(ValueError, match="junctions|reparse"):
+        private_file(junction / "authority.sqlite3")
+    assert not (target / "authority.sqlite3").exists()

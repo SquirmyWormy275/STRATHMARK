@@ -1,8 +1,8 @@
 """Private Win32 file creation and handle-based ACL verification.
 
-Loaded only on Windows. The process user is the sole DACL principal; inherited
-permissions never authorize another account. Elevated-token default owners are
-accepted for existing files, but never added to the DACL.
+Loaded only on Windows. The process user is the sole file DACL principal.
+Machine-privileged administrators and Windows services remain outside the
+unrelated-account threat boundary; arbitrary shared groups are not trusted.
 """
 
 import ctypes
@@ -118,17 +118,27 @@ class WindowsStorage:
         )
         try:
             self.user_buffer = self._token_info(token, 1)
-            self.owner_buffer = self._token_info(token, 4)
         finally:
             self.kernel.CloseHandle(token)
         self.user = ctypes.cast(self.user_buffer, pp).contents.value
-        self.owner = ctypes.cast(self.owner_buffer, pp).contents.value
-        text = pointer()
-        self._check(self.security.ConvertSidToStringSidW(self.user, ctypes.byref(text)))
+        self.sid = self._sid_text(self.user)
+
+    def _sid_text(self, sid):
+        text = wt.LPVOID()
+        self._check(self.security.ConvertSidToStringSidW(sid, ctypes.byref(text)))
         try:
-            self.sid = ctypes.wstring_at(text)
+            return ctypes.wstring_at(text)
         finally:
             self.kernel.LocalFree(text)
+
+    def _trusted_sid(self, sid):
+        return self._sid_text(sid) in {
+            self.sid,
+            "S-1-5-18",  # Local System
+            "S-1-5-32-544",  # Built-in Administrators
+            # The Windows Modules Installer's machine-privileged service SID.
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        }
 
     @staticmethod
     def _bind(library, name, args, result):
@@ -167,14 +177,14 @@ class WindowsStorage:
         finally:
             self.kernel.LocalFree(descriptor)
 
-    def _private_acl(self, descriptor, dacl, directory):
+    def _private_acl(self, descriptor, dacl, directory, *, allow_inherited=False):
         control, revision = wt.WORD(), wt.DWORD()
         self._check(
             self.security.GetSecurityDescriptorControl(
                 descriptor, ctypes.byref(control), ctypes.byref(revision)
             )
         )
-        if not dacl or not control.value & 0x1000:
+        if not dacl or (not allow_inherited and not control.value & 0x1000):
             return False
         if ctypes.cast(dacl, ctypes.POINTER(AclHeader)).contents.count != 1:
             return False
@@ -184,12 +194,13 @@ class WindowsStorage:
         sid = ace_pointer.value + AllowedAce.sid.offset
         return (
             ace.kind == 0
-            and ace.flags == (3 if directory else 0)
+            and ace.flags
+            in ((3, 19) if directory and allow_inherited else ((3 if directory else 0),))
             and ace.mask == 0x1F01FF
             and bool(self.security.EqualSid(sid, self.user))
         )
 
-    def _secure_handle(self, handle, directory, descriptor):
+    def _secure_handle(self, handle, directory, descriptor, *, tighten=True):
         information = FileInformation()
         self._check(self.kernel.GetFileInformationByHandle(handle, ctypes.byref(information)))
         if (
@@ -212,15 +223,16 @@ class WindowsStorage:
             )
             self._check(code == 0, code)
             try:
-                if not (
-                    self.security.EqualSid(owner, self.user)
-                    or self.security.EqualSid(owner, self.owner)
-                ):
+                if not self._trusted_sid(owner):
                     raise PermissionError("Authority storage is owned by another account")
-                if self._private_acl(observed, dacl, directory):
+                if self._private_acl(observed, dacl, directory, allow_inherited=not tighten):
                     return
             finally:
                 self.kernel.LocalFree(observed)
+            if not tighten:
+                raise PermissionError(
+                    "Existing parent needs an explicitly provisioned private authority root"
+                )
             if attempt:
                 raise PermissionError("Filesystem did not retain a private Windows ACL")
             present, defaulted, private_dacl = wt.BOOL(), wt.BOOL(), wt.LPVOID()
@@ -249,14 +261,74 @@ class WindowsStorage:
                 self._check(code == 183, code)
         self.kernel.CloseHandle(self._open(path, directory=True))
 
-    def _open(self, path, *, directory, exclusive=False):
+    def verify_directory(self, path):
+        self.kernel.CloseHandle(self._open(path, directory=True, tighten=False))
+
+    def verify_ancestors(self, path):
+        """Reject ancestry replaceable by an unrelated, unprivileged account."""
+        for parent in path.parents:
+            if not parent.exists():
+                continue
+            handle = self.kernel.CreateFileW(str(parent), 0x20000, 3, None, 3, 0x02200000, None)
+            if handle == wt.HANDLE(-1).value:
+                self._check(False)
+            try:
+                information = FileInformation()
+                self._check(
+                    self.kernel.GetFileInformationByHandle(handle, ctypes.byref(information))
+                )
+                if information.attributes & 0x400 or not information.attributes & 0x10:
+                    raise PermissionError("Authority ancestry must contain only real directories")
+                owner, dacl, descriptor = wt.LPVOID(), wt.LPVOID(), wt.LPVOID()
+                code = self.security.GetSecurityInfo(
+                    handle,
+                    1,
+                    5,
+                    ctypes.byref(owner),
+                    None,
+                    ctypes.byref(dacl),
+                    None,
+                    ctypes.byref(descriptor),
+                )
+                self._check(code == 0, code)
+                try:
+                    if not self._trusted_sid(owner):
+                        raise PermissionError("Authority ancestor belongs to another account")
+                    if not dacl:
+                        raise PermissionError("Authority ancestor has an unrestricted ACL")
+                    count = ctypes.cast(dacl, ctypes.POINTER(AclHeader)).contents.count
+                    for index in range(count):
+                        pointer = wt.LPVOID()
+                        self._check(self.security.GetAce(dacl, index, ctypes.byref(pointer)))
+                        ace = ctypes.cast(pointer, ctypes.POINTER(AllowedAce)).contents
+                        if ace.flags & 8:  # INHERIT_ONLY: does not grant ancestor access.
+                            continue
+                        if ace.kind not in (0, 1):
+                            raise PermissionError("Authority ancestor has an unsupported ACL entry")
+                        if ace.kind == 1:
+                            continue  # Ignoring denies is conservative: reject broad allows anyway.
+                        # Create-child rights alone cannot replace an existing
+                        # protected child. Delete/delete-child and security
+                        # control rights can; broad generic writes are refused.
+                        if ace.mask & 0x500D0150 and not self._trusted_sid(
+                            pointer.value + AllowedAce.sid.offset
+                        ):
+                            raise PermissionError(
+                                "Authority ancestor is replaceable by another account"
+                            )
+                finally:
+                    self.kernel.LocalFree(descriptor)
+            finally:
+                self.kernel.CloseHandle(handle)
+
+    def _open(self, path, *, directory, exclusive=False, tighten=True):
         with self.descriptor(directory) as descriptor:
             attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
             # OPEN_REPARSE_POINT makes final-link inspection handle-based. No
             # DELETE sharing prevents replacement while security is inspected.
             handle = self.kernel.CreateFileW(
                 str(path),
-                0x60000 | (0 if directory else 0xC0000000),
+                (0x60000 if tighten else 0x20000) | (0 if directory else 0xC0000000),
                 3,
                 ctypes.byref(attributes),
                 3 if directory else (1 if exclusive else 4),
@@ -269,7 +341,7 @@ class WindowsStorage:
                     raise FileExistsError(path)
                 self._check(False, code)
             try:
-                self._secure_handle(handle, directory, descriptor)
+                self._secure_handle(handle, directory, descriptor, tighten=tighten)
             except BaseException:
                 self.kernel.CloseHandle(handle)
                 raise

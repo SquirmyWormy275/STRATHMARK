@@ -599,6 +599,10 @@ class PredictionLedger:
         if db_path is None:
             db_path = os.environ.get(_ENV_VAR) or _DEFAULT_PATH
         self.path = Path(db_path)
+        if self.path.parent == _DEFAULT_PATH.parent:
+            from strathmark.private_storage import private_directory
+
+            private_directory(_DEFAULT_PATH.parent)
         self._mirror = mirror
         self._delivery_lock = threading.Lock()
         self._worker_lock = threading.Lock()

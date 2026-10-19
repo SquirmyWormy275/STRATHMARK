@@ -52,13 +52,25 @@ owner files are tightened without changing their content; links, junctions and
 unsafe ownership are rejected. Windows creates files and directories with a
 protected DACL granting full access only to the current process user. Native
 handle checks reject reparse points, hard links and unrelated owners; existing
-ACLs are tightened and read back before access proceeds. An elevated token's
-default owner is accepted, but receives no separate DACL grant. The private
+ACLs are tightened and read back before access proceeds. Existing administrative
+ownership is accepted, but receives no separate file DACL grant. The private
 directory's inheritable rule protects SQLite sidecars from their first byte.
 ACL failures and filesystems that do not retain these permissions stop the
 operation. Choose a dedicated authority subdirectory: the helper refuses to
 change the home directory, its ancestors or the shared temporary directory.
 It never changes ancestor permissions merely to create a deeper directory.
+Opening a file verifies an existing parent without changing that parent's ACL.
+A broader parent is rejected; applications must explicitly provision their own
+dedicated authority directory with `private_directory`. The default
+`~/.strathmark` root is provisioned explicitly. A file path in Documents or a
+shared project directory does not authorize changing that directory's access.
+Every access also checks existing ancestor ownership and permissions without
+changing them. An unrelated account's delete, replacement or security-control
+rights, unknown ACL entry types, and junctions stop the operation. Current-user,
+SYSTEM, built-in Administrators and Windows TrustedInstaller authority are
+trusted; these checks do not claim protection against that user or machine
+administrators. Shared writable ancestry must be replaced by a separately
+provisioned private location; it is never repaired implicitly.
 
 Native Windows CI checks creation-time ACLs, existing-file tightening, sidecar
 inheritance, hard links and failure behavior using independent .NET ACL reads.

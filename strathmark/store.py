@@ -538,6 +538,10 @@ class ResultStore:
         self._evidence_health_lock = threading.Lock()
         self._cached_evidence_health_status: Optional[EvidenceSnapshotStatus] = None
         self._cached_evidence_health_signature: Optional[tuple[Any, ...]] = None
+        if self._path.parent == _DEFAULT_DB_DIR:
+            from strathmark.private_storage import private_directory
+
+            private_directory(_DEFAULT_DB_DIR)
         self._init_schema()
 
     # ------------------------------------------------------------------

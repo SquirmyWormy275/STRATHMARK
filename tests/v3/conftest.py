@@ -41,6 +41,10 @@ def pytest_configure(config: pytest.Config) -> None:
     }
 
     database_root.mkdir(parents=True, exist_ok=False)
+    if os.name == "nt":
+        from strathmark.private_storage import private_directory
+
+        private_directory(session_root)
     for root in roots.values():
         root.mkdir(parents=True, exist_ok=False)
 

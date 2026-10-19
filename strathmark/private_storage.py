@@ -19,6 +19,8 @@ def reject_links(path):
             pass
     if os.name == "nt" and any(":" in part or part.endswith((".", " ")) for part in path.parts[1:]):
         raise ValueError("Authority paths cannot use alternate streams or ambiguous names")
+    if os.name == "nt":
+        _windows().verify_ancestors(path)
     return path
 
 
@@ -53,8 +55,7 @@ def private_file(path):
     if str(path) == ":memory:":
         return path
     path = reject_links(path)
-    if os.name == "nt" or not path.parent.exists():
-        private_directory(path.parent)
+    _private_parent(path)
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = (
         _windows().descriptor_file(path) if os.name == "nt" else os.open(path, flags, 0o600)
@@ -90,8 +91,16 @@ def _windows():
 def open_private_exclusive(path):
     """Return a new private writable descriptor without an ACL exposure window."""
     path = reject_links(path)
-    if os.name == "nt" or not path.parent.exists():
-        private_directory(path.parent)
+    _private_parent(path)
     if os.name == "nt":
         return _windows().descriptor_file(path, exclusive=True)
     return os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+
+
+def _private_parent(path):
+    if not path.parent.exists():
+        private_directory(path.parent)
+    elif os.name == "nt":
+        # A file path does not authorize changing Documents/Desktop/a shared
+        # project directory. Existing parents must already be private.
+        _windows().verify_directory(path.parent)
