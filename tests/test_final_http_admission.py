@@ -187,7 +187,9 @@ def test_cancelled_actual_health_request_retains_capacity_until_worker_exit(monk
                 assert (await client.get("/health")).status_code == 503
                 release.set()
                 for _ in range(1000):
-                    if middleware.health_admission.active == 0:
+                    # Capacity is released inside the coroutine; its registered
+                    # completion callback clears the retained task next.
+                    if middleware.health_admission.active == 0 and not middleware._health_tasks:
                         break
                     await asyncio.sleep(0.001)
                 assert finished.is_set()
