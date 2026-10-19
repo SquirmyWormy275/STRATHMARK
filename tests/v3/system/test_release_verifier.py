@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from scripts.evidence_execution import evidence_environment, isolated_python_argv
 from scripts.release_evidence import (
     EVIDENCE_SCHEMA,
     PROOF_OPERATIONS,
@@ -131,13 +132,16 @@ def _wheel(path: Path) -> None:
 def _step(operation: str, argv: list[str], run_directory: str) -> dict[str, object]:
     return {
         "operation": operation,
-        "argv": argv,
+        "executable_sha256": sha256_file(Path(sys.executable).resolve()),
+        "argv": isolated_python_argv(argv),
         "cwd": ".",
-        "environment": {
-            "STRATHMARK_TEST_DB": "1",
-            "STRATHMARK_DB_PATH": f"{run_directory}/{operation}-v2.sqlite3",
-            "STRATHMARK_V3_DB_PATH": f"{run_directory}/{operation}-v3.sqlite3",
-        },
+        "environment": evidence_environment(
+            {
+                "STRATHMARK_TEST_DB": "1",
+                "STRATHMARK_DB_PATH": f"{run_directory}/{operation}-v2.sqlite3",
+                "STRATHMARK_V3_DB_PATH": f"{run_directory}/{operation}-v3.sqlite3",
+            }
+        ),
         "exit_code": 0,
         "duration_ms": 1,
         "passed": 1,
@@ -151,7 +155,7 @@ def _step(operation: str, argv: list[str], run_directory: str) -> dict[str, obje
 
 def _pytest(root: Path, selectors: list[str], run_directory: str, name: str) -> list[str]:
     return [
-        str(Path(sys.executable).resolve()),
+        str(Path(sys.executable).absolute()),
         "-m",
         "pytest",
         *selectors,
@@ -271,6 +275,7 @@ def _stress_receipt(path: Path) -> None:
             {"model": "model:a", "duration_ms": 1, "response_sha256": "a" * 64, "done": True}
         ],
         "gpu_samples": [sample, sample, sample],
+        "telemetry_tool": {"path": "C:/Windows/System32/nvidia-smi.exe", "sha256": "a" * 64},
         "pressure_injection": {"exit_code": 0, "passed": 3},
         "storage_injection": {"exit_code": 0, "passed": 3},
     }
@@ -291,7 +296,7 @@ def _fixture(root: Path, tmp_path: Path) -> tuple[dict[str, object], Path, str]:
     relative_capacity = capacity.resolve().relative_to(root.resolve()).as_posix()
     relative_result_to_ready = result_to_ready.resolve().relative_to(root.resolve()).as_posix()
     relative_stress = stress.resolve().relative_to(root.resolve()).as_posix()
-    python = str(Path(sys.executable).resolve())
+    python = str(Path(sys.executable).absolute())
     selectors = {
         "consumer_contract": ["tests/v3/integration/test_v3_consumer_contract.py"],
         "full_causal_replay": ["tests/v3/system/test_executable_replay.py"],
@@ -444,6 +449,7 @@ def _fixture(root: Path, tmp_path: Path) -> tuple[dict[str, object], Path, str]:
         }
         proofs.append({**body, "receipt_digest": canonical_digest(body)})
     lock_sha, versions = dependency_snapshot(root / "requirements/v3-release.lock")
+    tool_sha, tool_versions = dependency_snapshot(root / "requirements/v3-evidence-tools.lock")
     payload = {
         "schema_version": EVIDENCE_SCHEMA,
         "source_commit": subprocess.check_output(
@@ -456,6 +462,8 @@ def _fixture(root: Path, tmp_path: Path) -> tuple[dict[str, object], Path, str]:
         "run_directory": run_directory,
         "dependency_lock_sha256": lock_sha,
         "dependency_versions_digest": versions,
+        "tool_lock_sha256": tool_sha,
+        "tool_versions_digest": tool_versions,
         "consumer_contract_sha256": sha256_file(
             root / "strathmark/v3/contracts/v3_consumer.openapi.json"
         ),
@@ -504,7 +512,7 @@ def test_signed_executable_receipt_validates_exact_current_inputs(
         (
             lambda value: (
                 value["proofs"][1]["steps"][0].__setitem__(
-                    "argv", [str(Path(sys.executable).resolve()), "fake.py"]
+                    "argv", [str(Path(sys.executable).absolute()), "-I", "-B", "fake.py"]
                 ),
                 _redigest(value["proofs"][1]),
             ),

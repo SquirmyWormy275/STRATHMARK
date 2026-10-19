@@ -97,6 +97,22 @@ def test_release_tag_rejects_dirty_checkout(tmp_path):
         verify_release_tag(repository, "pypi-v2.0.0")
 
 
+def test_release_tag_rejects_changed_authorization_after_ci_resolution(tmp_path):
+    repository = _release_repository(tmp_path)
+    commit = _git(repository, "rev-parse", "HEAD")
+    oid = _git(repository, "rev-parse", "pypi-v2.0.0")
+    verify_release_tag(
+        repository, "pypi-v2.0.0", expected_commit=commit, expected_authorization_oid=oid
+    )
+    _git(repository, "tag", "-f", "-a", "pypi-v2.0.0", "-m", "substituted authorization")
+    with pytest.raises(ReleaseTagError, match="tag changed"):
+        verify_release_tag(
+            repository, "pypi-v2.0.0", expected_commit=commit, expected_authorization_oid=oid
+        )
+    with pytest.raises(ReleaseTagError, match="CI-authorized commit"):
+        verify_release_tag(repository, "pypi-v2.0.0", expected_commit="0" * 40)
+
+
 def test_publication_workflows_are_tag_bound_and_rehearse_exact_artifacts():
     root = Path(__file__).resolve().parents[1]
     publish = (root / ".github/workflows/publish.yml").read_text(encoding="utf-8")

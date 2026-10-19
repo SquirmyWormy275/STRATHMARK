@@ -22,6 +22,21 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.evidence_execution import (
+        PROCESS_ENVIRONMENT_KEYS,
+        git_environment,
+        require_clean_release_inputs,
+        trusted_git_argv,
+    )
+except ModuleNotFoundError:  # direct verifier script execution
+    from evidence_execution import (
+        PROCESS_ENVIRONMENT_KEYS,
+        git_environment,
+        require_clean_release_inputs,
+        trusted_git_argv,
+    )
+
 from strathmark.v3.application.cutover import REQUIRED_RELEASE_EVIDENCE
 from strathmark.v3.contracts.canonical import canonical_digest
 from strathmark.v3.infrastructure.integrity import (
@@ -34,7 +49,7 @@ from strathmark.v3.infrastructure.integrity import (
 )
 
 EVIDENCE_ENVELOPE_SCHEMA = "strathmark-v3-executable-evidence-envelope-v1"
-EVIDENCE_SCHEMA = "strathmark-v3-executable-release-evidence-v1"
+EVIDENCE_SCHEMA = "strathmark-v3-executable-release-evidence-v2"
 EVIDENCE_KIND = "v3_executable_release_evidence"
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -82,8 +97,9 @@ def canonical_json_bytes(value: object) -> bytes:
 
 def git_source_paths(root: Path) -> tuple[Path, ...]:
     completed = subprocess.run(
-        ["git", "ls-files", "-z"],
+        trusted_git_argv("ls-files", "-z"),
         cwd=root,
+        env=git_environment(),
         capture_output=True,
         check=False,
     )
@@ -104,8 +120,9 @@ def git_source_paths(root: Path) -> tuple[Path, ...]:
 
 def source_tree_digest(root: Path) -> str:
     completed = subprocess.run(
-        ["git", "archive", "--format=tar", "HEAD"],
+        trusted_git_argv("archive", "--format=tar", "HEAD"),
         cwd=root,
+        env=git_environment(),
         capture_output=True,
         check=False,
     )
@@ -132,8 +149,9 @@ def source_tree_digest(root: Path) -> str:
 
 def git_head(root: Path) -> str:
     completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        trusted_git_argv("rev-parse", "HEAD"),
         cwd=root,
+        env=git_environment(),
         capture_output=True,
         text=True,
         check=False,
@@ -146,16 +164,20 @@ def git_head(root: Path) -> str:
 
 def verify_source_commit(root: Path, source_commit: str) -> None:
     exists = subprocess.run(
-        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+        trusted_git_argv("cat-file", "-e", f"{source_commit}^{{commit}}"),
         cwd=root,
+        env=git_environment(),
         capture_output=True,
         check=False,
     )
     if exists.returncode != 0:
         raise ValueError("executable evidence source commit is unavailable")
     changed = subprocess.run(
-        ["git", "diff", "--name-only", source_commit, "--"],
+        trusted_git_argv(
+            "diff", "--no-ext-diff", "--no-textconv", "--name-only", source_commit, "--"
+        ),
         cwd=root,
+        env=git_environment(),
         capture_output=True,
         text=True,
         check=False,
@@ -171,34 +193,6 @@ def verify_source_commit(root: Path, source_commit: str) -> None:
     ]
     if material:
         raise ValueError("executable evidence source commit is stale")
-
-
-def require_clean_release_inputs(root: Path) -> None:
-    """Refuse evidence generation from modified or untracked release inputs."""
-
-    completed = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise ValueError("release source cleanliness could not be determined")
-    dirty: list[str] = []
-    for line in completed.stdout.splitlines():
-        status = line[:2]
-        path_text = line[3:].strip().strip('"').replace("\\", "/")
-        if " -> " in path_text:
-            path_text = path_text.split(" -> ", 1)[1]
-        generated = path_text in GENERATED_SIDECARS or path_text.startswith(GENERATED_PREFIXES)
-        untracked_release_input = status == "??" and path_text.startswith(
-            ("strathmark/", "scripts/", "tests/v3/", "requirements/", "benchmarks/v3/")
-        )
-        if not generated and (status != "??" or untracked_release_input):
-            dirty.append(path_text)
-    if dirty:
-        raise ValueError("release evidence generation requires committed source inputs")
 
 
 def dependency_snapshot(lock_path: Path) -> tuple[str, str]:
@@ -326,6 +320,8 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         "run_directory",
         "dependency_lock_sha256",
         "dependency_versions_digest",
+        "tool_lock_sha256",
+        "tool_versions_digest",
         "consumer_contract_sha256",
         "wheel",
         "proofs",
@@ -345,7 +341,7 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         raise ValueError("executable evidence source tree is stale")
     if not isinstance(payload["platform"], str) or not payload["platform"]:
         raise ValueError("executable evidence platform differs")
-    if payload["python_executable"] != str(Path(sys.executable).resolve()):
+    if payload["python_executable"] != str(Path(sys.executable).absolute()):
         raise ValueError("executable evidence Python executable differs")
     if payload["python_version"] != sys.version.split()[0]:
         raise ValueError("executable evidence Python version differs")
@@ -358,6 +354,14 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         raise ValueError("executable evidence dependency lock is stale")
     if payload["dependency_versions_digest"] != versions_digest:
         raise ValueError("executable evidence dependency environment is stale")
+    tool_lock_sha, tool_versions_digest = dependency_snapshot(
+        root / "requirements/v3-evidence-tools.lock"
+    )
+    if (
+        payload["tool_lock_sha256"] != tool_lock_sha
+        or payload["tool_versions_digest"] != tool_versions_digest
+    ):
+        raise ValueError("executable evidence tool environment is stale")
     contract_sha = sha256_file(root / "strathmark/v3/contracts/v3_consumer.openapi.json")
     if payload["consumer_contract_sha256"] != contract_sha:
         raise ValueError("executable evidence consumer contract is stale")
@@ -448,6 +452,7 @@ def _verify_proof(
 def _verify_step(step: object, *, run_directory: str, wheel: Mapping[str, Any]) -> None:
     expected = {
         "operation",
+        "executable_sha256",
         "argv",
         "cwd",
         "environment",
@@ -468,14 +473,23 @@ def _verify_step(step: object, *, run_directory: str, wheel: Mapping[str, Any]) 
     if (
         not isinstance(argv, list)
         or not argv
-        or argv[0] != str(Path(sys.executable).resolve())
+        or argv[0] != str(Path(sys.executable).absolute())
         or any(not isinstance(item, str) or not item for item in argv)
     ):
         raise ValueError("executable proof argv differs")
+    if step["executable_sha256"] != sha256_file(Path(sys.executable).resolve()):
+        raise ValueError("executable proof interpreter digest differs")
     _verify_operation_argv(str(step["operation"]), argv, run_directory=run_directory, wheel=wheel)
     environment = step["environment"]
     if not isinstance(environment, Mapping) or environment.get("STRATHMARK_TEST_DB") != "1":
         raise ValueError("executable proof did not use isolated test authority")
+    if (
+        set(environment) - PROCESS_ENVIRONMENT_KEYS
+        or environment.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1"
+        or environment.get("PYTHONNOUSERSITE") != "1"
+        or environment.get("PIP_NO_INDEX") != "1"
+    ):
+        raise ValueError("executable proof contains ambient execution settings")
     for name in ("STRATHMARK_DB_PATH", "STRATHMARK_V3_DB_PATH"):
         value = environment.get(name)
         if not isinstance(value, str) or not value.startswith(f"{run_directory}/"):
@@ -497,7 +511,10 @@ def _verify_operation_argv(
     run_directory: str,
     wheel: Mapping[str, Any],
 ) -> None:
-    python = str(Path(sys.executable).resolve())
+    if list(argv[1:3]) != ["-I", "-B"]:
+        raise ValueError("executable proof requires isolated Python without cached bytecode")
+    argv = [argv[0], *argv[3:]]
+    python = str(Path(sys.executable).absolute())
     pytest_prefix = [python, "-m", "pytest"]
     fixed: dict[str, list[str]] = {
         "dependency_probe": [
@@ -568,7 +585,7 @@ def _verify_operation_argv(
             raise ValueError("wheel installation did not bind the candidate wheel")
         return
     if operation == "installed_probe":
-        expected = [python, "-I", "scripts/probe_v3_release.py", "installed-wheel"]
+        expected = [python, "scripts/probe_v3_release.py", "installed-wheel"]
         if list(argv[: len(expected)]) != expected or "--installed-root" not in argv:
             raise ValueError("installed wheel probe command differs")
         return
@@ -778,6 +795,7 @@ def _verify_stress_receipt(value: Mapping[str, Any]) -> None:
         "models",
         "model_runs",
         "gpu_samples",
+        "telemetry_tool",
         "pressure_injection",
         "storage_injection",
     }
@@ -788,6 +806,12 @@ def _verify_stress_receipt(value: Mapping[str, Any]) -> None:
         or value["bounded_non_exhaustive"] is not True
     ):
         raise ValueError("Windows stress execution did not pass")
+    tool = value["telemetry_tool"]
+    if not isinstance(tool, Mapping) or set(tool) != {"path", "sha256"}:
+        raise ValueError("Windows telemetry tool identity is missing")
+    _require_digest(tool["sha256"], "Windows telemetry tool digest")
+    if not isinstance(tool["path"], str) or not tool["path"]:
+        raise ValueError("Windows telemetry tool path is missing")
     _require_utc(value["recorded_at"])
     models = value["models"]
     runs = value["model_runs"]

@@ -42,3 +42,9 @@ Windows production qualification is incomplete. It requires the designated insta
 composition, non-exportable CNG signing identities, exact production evidence and a
 separately authorized eligibility handoff. A development-key rehearsal cannot supply
 that authority. See the [Windows deployment specification](https://github.com/SquirmyWormy275/STRATHMARK/blob/main/docs/DEPLOYMENT.md).
+
+Fresh rehearsal evidence also requires the exact evidence-tool lock, isolated Python
+(`python -I`), a clean committed checkout, and an independently approved NVIDIA tool
+path and digest. Its v2 receipts record the effective child environment, Python
+binary digest and tool versions. Existing receipts must be regenerated; a successful
+Linux regression run does not substitute for designated Windows execution.

@@ -66,10 +66,12 @@ def source_ci_passed(commit: str) -> bool:
     return bool(
         data
         and any(
-            run["head_sha"] == commit
-            and run["head_branch"] == "main"
-            and run["event"] == "push"
-            and run["conclusion"] == "success"
+            run.get("head_sha") == commit
+            and run.get("head_branch") == "main"
+            and run.get("event") == "push"
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+            and run.get("head_repository", {}).get("full_name") == repository
             for run in data.get("workflow_runs", [])
         )
     )
@@ -90,6 +92,40 @@ def successful_main_ci(event: dict, repository: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ReleaseTagError("CI event does not identify an exact source commit")
     return commit
+
+
+def prepare_manual_release(
+    repository: Path,
+    tag: str,
+    *,
+    ci_passed: Callable[[str], bool] = source_ci_passed,
+) -> dict[str, str]:
+    """Recover an authorized release only after its exact source passed main CI."""
+
+    if not re.fullmatch(r"pypi-v[0-9][0-9A-Za-z.]*", tag):
+        raise ReleaseTagError("manual publication requires a safe pypi-v<version> tag")
+    authorization_ref = f"refs/tags/{tag}"
+    kind = _git(repository, "cat-file", "-t", authorization_ref, check=False)
+    if kind.returncode or kind.stdout.strip() != "tag":
+        raise ReleaseTagError("manual publication authorization must be annotated")
+    commit = _git(repository, "rev-parse", f"{authorization_ref}^{{commit}}").stdout.strip()
+    version = tag.removeprefix("pypi-v")
+    source = _git(repository, "rev-parse", f"refs/tags/v{version}^{{commit}}").stdout.strip()
+    if source != commit:
+        raise ReleaseTagError("manual authorization must identify the exact source tag")
+    metadata = _git(repository, "show", f"{commit}:pyproject.toml").stdout
+    if tomllib.loads(metadata)["project"]["version"] != version:
+        raise ReleaseTagError("manual authorization version differs from its source")
+    if _git(repository, "merge-base", "--is-ancestor", commit, "HEAD", check=False).returncode:
+        raise ReleaseTagError("manual source is not an ancestor of maintained main")
+    if not ci_passed(commit):
+        raise ReleaseTagError("manual source has no successful same-repository main CI")
+    return {
+        "publish": "true",
+        "release_tag": tag,
+        "source_commit": commit,
+        "authorization_oid": _git(repository, "rev-parse", authorization_ref).stdout.strip(),
+    }
 
 
 def prepare_release(
@@ -175,6 +211,7 @@ def prepare_release(
         "release_tag": authorization_tag,
         "version": version,
         "source_commit": source_commit,
+        "authorization_oid": _git(repository, "rev-parse", authorization_ref).stdout.strip(),
     }
 
 
@@ -182,10 +219,7 @@ def main() -> int:
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise ReleaseTagError("publisher must execute on main")
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        tag = os.environ["RELEASE_TAG"]
-        if not re.fullmatch(r"pypi-v[0-9][0-9A-Za-z.]*", tag):
-            raise ReleaseTagError("manual publication requires a safe pypi-v<version> tag")
-        outputs = {"publish": "true", "release_tag": tag}
+        outputs = prepare_manual_release(Path.cwd(), os.environ["RELEASE_TAG"])
     elif os.environ.get("GITHUB_EVENT_NAME") == "workflow_run":
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         commit = successful_main_ci(event, os.environ["GITHUB_REPOSITORY"])

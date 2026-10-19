@@ -6,7 +6,12 @@ import hashlib
 
 import pytest
 
-from scripts.prepare_pypi_release import prepare_release, successful_main_ci
+from scripts.prepare_pypi_release import (
+    prepare_manual_release,
+    prepare_release,
+    source_ci_passed,
+    successful_main_ci,
+)
 from scripts.verify_pypi_publication import verify_artifact_metadata
 from scripts.verify_release_tag import ReleaseTagError, verify_release_tag
 from tests.test_package_release import _git, _release_repository
@@ -150,6 +155,66 @@ def test_fork_ci_cannot_authorize_publication():
     }
     with pytest.raises(ReleaseTagError, match="same-repository"):
         successful_main_ci(event, "owner/STRATHMARK")
+
+
+def test_manual_recovery_requires_exact_source_ci_and_preserves_tags(tmp_path):
+    repository = _release_repository(tmp_path)
+    commit = _git(repository, "rev-parse", "HEAD")
+    tag_oid = _git(repository, "rev-parse", "pypi-v2.0.0")
+    (repository / "README.md").write_text("Later maintained main\n", encoding="utf-8")
+    _git(repository, "add", "README.md")
+    _git(repository, "commit", "-m", "later main")
+    checked = []
+    result = prepare_manual_release(
+        repository, "pypi-v2.0.0", ci_passed=lambda value: checked.append(value) or True
+    )
+    assert checked == [commit]
+    assert result["source_commit"] == commit
+    assert result["authorization_oid"] == tag_oid
+    assert _git(repository, "rev-parse", "pypi-v2.0.0") == tag_oid
+
+
+def test_manual_recovery_rejects_source_without_successful_main_ci(tmp_path):
+    repository = _release_repository(tmp_path)
+    with pytest.raises(ReleaseTagError, match="no successful same-repository main CI"):
+        prepare_manual_release(repository, "pypi-v2.0.0", ci_passed=lambda value: False)
+
+
+def test_manual_recovery_rejects_tag_outside_main(tmp_path):
+    repository = _release_repository(tmp_path)
+    _git(repository, "checkout", "--orphan", "unrelated-main")
+    _git(repository, "commit", "-m", "unrelated main")
+    with pytest.raises(ReleaseTagError, match="not an ancestor"):
+        prepare_manual_release(repository, "pypi-v2.0.0", ci_passed=lambda value: True)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("head_repository", {"full_name": "attacker/fork"}),
+        ("head_sha", "2" * 40),
+        ("status", "in_progress"),
+        ("event", "pull_request"),
+        ("conclusion", "failure"),
+    ],
+)
+def test_recovery_ci_query_rejects_untrusted_run(monkeypatch, field, value):
+    import scripts.prepare_pypi_release as module
+
+    run = {
+        "head_sha": "1" * 40,
+        "head_branch": "main",
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "head_repository": {"full_name": "owner/STRATHMARK"},
+    }
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/STRATHMARK")
+    monkeypatch.setenv("GH_TOKEN", "test-only")
+    monkeypatch.setattr(module, "_json", lambda *args, **kwargs: {"workflow_runs": [run]})
+    assert source_ci_passed("1" * 40)
+    run[field] = value
+    assert not source_ci_passed("1" * 40)
 
 
 def test_publication_verification_rejects_missing_yanked_or_substituted_files(tmp_path):
