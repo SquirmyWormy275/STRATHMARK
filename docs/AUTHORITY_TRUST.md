@@ -59,6 +59,20 @@ stale witness replies, concurrent CAS, coherent SQLite rollback, and registry
 tail deletion before enabling an installation. These backend qualification
 checks remain required; synthetic unit tests do not qualify a production backend.
 
+The standalone Windows qualification entrypoints
+`scripts/benchmark_v3_result_to_ready.py` and
+`scripts/benchmark_v3_field_assembly.py` currently construct synthetic event-store
+fixtures without an authenticated witness. Outside an explicitly selected test
+scope they now fail closed at the event-write boundary. Consequently,
+`scripts/run_v3_release_evidence.py`, which invokes both benchmarks, cannot produce
+new operational qualification from those fixtures. Before using these commands
+for operational qualification, supply the real independently provisioned witness
+and measure its authentication, signing, CAS, timeout and recovery costs through
+the operational path. Do not add automatic rehearsal selection to make release
+evidence pass, and do not reuse older unwitnessed latency results as proof of the
+new operational path. Ordinary package candidate publication and portable
+rehearsal tests do not establish that qualification.
+
 ## Preserving and reviewing existing evidence
 
 1. Stop the listener, workers and backup publishers. Preserve independent copies
