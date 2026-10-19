@@ -27,8 +27,9 @@ continue selecting the latest stable version until a final release is published.
 1. Bump `[project].version` for changed package behavior or contents, update the
    changelog, and merge through the existing required CI checks.
 2. **Publish to PyPI** runs automatically after successful push CI on `main`.
-   Failed CI, pull-request CI and fork CI cannot authorize an upload. If `main`
-   advances while CI runs, publication waits for that newer commit's own CI.
+   Failed CI, pull-request CI and fork CI cannot authorize an upload. The resolver
+   and every later tooling checkout use the exact successful CI commit, even if
+   `main` advances. A newer commit cannot lend untested release code to an older run.
 3. The publisher checks the exact version on PyPI. Complete, non-yanked versions
    are skipped; missing versions proceed. An incomplete or yanked release fails
    for review rather than being silently treated as complete.
@@ -36,10 +37,16 @@ continue selecting the latest stable version until a final release is published.
    verified commit. Existing tags are preserved. An existing source tag must match
    the version, be an ancestor of maintained `main`, and have its own successful
    main CI. The annotated publication tag must authorize that exact source commit.
-5. The builder checks out the immutable authorized source, verifies both tags,
-   version and checkout cleanliness, builds wheel and sdist, runs `twine check`,
-   and installs both outside the checkout. Every extra declared by the exact
-   wheel is also installed and checked.
+5. The builder checks out the immutable authorized source and verifies both tags,
+   version and checkout cleanliness. Build, Hatchling, Twine and their dependencies
+   come from the reviewed SHA-256 lock `requirements/release-build-tools.lock`.
+   Downloaded wheels and their installed files are verified before and after the
+   build. Build isolation is disabled and package-index access is disabled during
+   artifact creation. Source cleanliness and commit identity are checked again.
+   The builder runs `twine check`, installs wheel and sdist outside the checkout,
+   and uses the same verified build wheels for the sdist installation. Every extra
+   declared by the exact wheel is also installed and checked. Toolchain provenance
+   is retained as a separate workflow artifact; it is not uploaded as a package.
 6. The `pypi` environment publishes those exact artifacts through OIDC trusted
    publishing. A final job checks PyPI's filenames and SHA-256 hashes against the
    built files and verifies an isolated indexed installation and synthetic demo.
@@ -77,8 +84,10 @@ Account-level web/email delivery preferences remain unchanged.
 
 The manual **Publish to PyPI** dispatch remains available on `main`, with an existing
 annotated `pypi-v<version>` authorization tag. It runs the same immutable-source and
-artifact checks. Recovery also requires the exact source commit to be an ancestor
-of maintained `main` with completed, successful same-repository push CI. The resolved
+artifact checks. Manual dispatch checks out the immutable dispatch commit and
+requires successful same-repository main CI for that tooling commit as well as
+for the selected source. Recovery also requires the exact source commit to be an
+ancestor of maintained `main`. The resolved
 commit and annotated tag object are carried into artifact verification, so moving
 a tag between jobs fails closed. Use it to retry a failed publication after correcting its cause
 only when no PyPI upload has completed. After an upload, use GitHub's **Re-run failed
@@ -88,7 +97,17 @@ Do not retag an already published version; ship a new version for changed conten
 
 **Rehearse package on TestPyPI** remains a separate optional manual workflow using
 the `testpypi` environment, its reviewer protection, and its own trusted publisher.
-TestPyPI is not a dependency of automatic production-index publication.
+Its tooling is pinned to the dispatch commit and must have successful main CI;
+it uses the same reviewed build-wheel lock. TestPyPI is not a dependency of
+automatic production-index publication.
+
+To review a build-tool update, update `requirements/release-build-tools.in`,
+regenerate its complete universal hash lock, review the changed versions and
+artifact hashes, and exercise Linux and Windows installed-distribution CI.
+`pyproject.toml` pins the Hatchling backend to the same exact version. Do not
+remove hash checking, enable build isolation to download a replacement backend,
+or reuse an unrelated wheelhouse to get around a failed build. A fresh empty
+wheelhouse is required for every build; existing published artifacts are immutable.
 
 The PyPI trusted publisher identity is owner `SquirmyWormy275`, repository
 `STRATHMARK`, workflow `publish.yml`, environment `pypi`. Retain that identity when
@@ -97,19 +116,23 @@ PyPI upload succeeded: verify the public files and indexed installation.
 
 ## Platform truth
 
-Executable V3 rehearsal evidence uses the exact runtime lock and separate
-`requirements/v3-evidence-tools.lock`. Run the committed candidate from a fresh
+Executable V3 rehearsal evidence uses the exact runtime and evidence-tool versions
+plus the complete distribution hash lock `requirements/v3-verified.lock`.
+Provision the retained wheelhouse and independently approved interpreter digest
+as described in [qualification tool byte identity](QUALIFICATION_TOOLCHAIN.md). Run the committed candidate from a fresh
 checkout with `python -I scripts/run_v3_release_evidence.py`. Untracked root hooks
 and ignored executable inputs are rejected. Child processes receive a recorded
 environment allowlist, isolated Python, disabled automatic pytest plugins, no
-package-index access, and disposable authority paths. The evidence binds the Python
-binary digest and exact build/test tool versions. NVIDIA telemetry requires an
+package-index access, and disposable authority paths. The evidence authenticates wheel and installed-file bytes before and after proof
+generation, and binds those identities alongside the approved Python digest. NVIDIA telemetry requires an
 absolute administrator-approved executable and independently recorded SHA-256 via
 `--nvidia-smi` and `--nvidia-smi-sha256`; it never searches the caller's `PATH`.
 Do not obtain the approved hash from an untrusted file presented for this run.
 
-The executable-evidence payload is now v2. Older evidence must be regenerated on
-the designated host; none of these changes grants Windows CNG production eligibility.
+The executable-evidence payload is now v3. Existing v1/v2 receipts remain unchanged
+historical records; new qualification must be regenerated with authenticated tools
+on the designated host. Formula Node and modules require a separate independently
+approved manifest. None of these changes grants Windows CNG production eligibility.
 
 V2 is a portable Python library. STRATHMARK 3.0.0rc7 also supplies the separate
 [Linux local competition profile](V3_LINUX_COMPETITION.md), using real Formula/ML,

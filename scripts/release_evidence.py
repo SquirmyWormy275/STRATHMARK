@@ -29,6 +29,7 @@ try:
         require_clean_release_inputs,
         trusted_git_argv,
     )
+    from scripts.verify_toolchain import qualification_toolchain
 except ModuleNotFoundError:  # direct verifier script execution
     from evidence_execution import (
         PROCESS_ENVIRONMENT_KEYS,
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # direct verifier script execution
         require_clean_release_inputs,
         trusted_git_argv,
     )
+    from verify_toolchain import qualification_toolchain
 
 from strathmark.v3.application.cutover import REQUIRED_RELEASE_EVIDENCE
 from strathmark.v3.contracts.canonical import canonical_digest
@@ -49,7 +51,7 @@ from strathmark.v3.infrastructure.integrity import (
 )
 
 EVIDENCE_ENVELOPE_SCHEMA = "strathmark-v3-executable-evidence-envelope-v1"
-EVIDENCE_SCHEMA = "strathmark-v3-executable-release-evidence-v2"
+EVIDENCE_SCHEMA = "strathmark-v3-executable-release-evidence-v3"
 EVIDENCE_KIND = "v3_executable_release_evidence"
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -322,6 +324,7 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         "dependency_versions_digest",
         "tool_lock_sha256",
         "tool_versions_digest",
+        "verified_toolchain",
         "consumer_contract_sha256",
         "wheel",
         "proofs",
@@ -362,6 +365,8 @@ def _verify_payload(payload: Mapping[str, Any], *, root: Path, wheel_path: Path)
         or payload["tool_versions_digest"] != tool_versions_digest
     ):
         raise ValueError("executable evidence tool environment is stale")
+    if payload["verified_toolchain"] != qualification_toolchain(root):
+        raise ValueError("executable evidence verified tool bytes differ")
     contract_sha = sha256_file(root / "strathmark/v3/contracts/v3_consumer.openapi.json")
     if payload["consumer_contract_sha256"] != contract_sha:
         raise ValueError("executable evidence consumer contract is stale")

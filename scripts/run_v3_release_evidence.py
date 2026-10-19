@@ -34,9 +34,13 @@ from scripts.evidence_execution import (  # noqa: E402
     isolated_python_argv,
     require_clean_release_inputs,
 )
+from scripts.verify_toolchain import qualification_toolchain  # noqa: E402
 
 if __name__ == "__main__":
     require_clean_release_inputs(ROOT)
+    if "--list-proofs" not in sys.argv:
+        # Check installed code before importing the signing/runtime dependencies.
+        qualification_toolchain(ROOT)
 
 try:
     from scripts.release_evidence import (
@@ -317,6 +321,7 @@ def build_evidence(
     nvidia_smi_sha256: str,
 ) -> dict[str, Any]:
     require_clean_release_inputs(ROOT)
+    verified_toolchain = qualification_toolchain(ROOT)
     dependency_snapshot(ROOT / "requirements/v3-release.lock")
     tool_lock_sha, tool_versions_digest = dependency_snapshot(
         ROOT / "requirements/v3-evidence-tools.lock"
@@ -490,6 +495,8 @@ def build_evidence(
         tool_versions_digest,
     ):
         raise RuntimeError("release evidence tools changed while proofs were running")
+    if qualification_toolchain(ROOT) != verified_toolchain:
+        raise RuntimeError("verified qualification tool bytes changed while proofs were running")
     payload = {
         "schema_version": EVIDENCE_SCHEMA,
         "source_commit": source_commit,
@@ -502,6 +509,7 @@ def build_evidence(
         "dependency_versions_digest": versions_digest,
         "tool_lock_sha256": tool_lock_sha,
         "tool_versions_digest": tool_versions_digest,
+        "verified_toolchain": verified_toolchain,
         "consumer_contract_sha256": sha256_file(
             ROOT / "strathmark/v3/contracts/v3_consumer.openapi.json"
         ),

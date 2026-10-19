@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+import scripts.release_evidence as release_evidence_module
 from scripts.evidence_execution import evidence_environment, isolated_python_argv
 from scripts.release_evidence import (
     EVIDENCE_SCHEMA,
@@ -71,6 +72,19 @@ def _treat_current_development_tree_as_committed(monkeypatch: pytest.MonkeyPatch
         original(candidate_root, source_commit)
 
     monkeypatch.setattr(module, "verify_source_commit", verify)
+    # Receipt structure is unit-tested here; actual wheel/file authentication is
+    # exercised separately by test_verified_toolchain with real disposable wheels.
+    monkeypatch.setattr(
+        module,
+        "qualification_toolchain",
+        lambda root: {
+            "schema_version": "strathmark-verified-toolchain-v1",
+            "lock_sha256": "c" * 64,
+            "wheel_sha256": {"fixture.whl": "d" * 64},
+            "installed_files_sha256": "e" * 64,
+            "python_sha256": sha256_file(Path(sys.executable).resolve()),
+        },
+    )
 
 
 def _run(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -464,6 +478,7 @@ def _fixture(root: Path, tmp_path: Path) -> tuple[dict[str, object], Path, str]:
         "dependency_versions_digest": versions,
         "tool_lock_sha256": tool_sha,
         "tool_versions_digest": tool_versions,
+        "verified_toolchain": release_evidence_module.qualification_toolchain(root),
         "consumer_contract_sha256": sha256_file(
             root / "strathmark/v3/contracts/v3_consumer.openapi.json"
         ),
@@ -505,6 +520,18 @@ def test_signed_executable_receipt_validates_exact_current_inputs(
     "mutation,match",
     [
         (lambda value: value.__setitem__("source_tree_digest", "f" * 64), "source tree is stale"),
+        (
+            lambda value: value["verified_toolchain"].__setitem__(
+                "installed_files_sha256", "0" * 64
+            ),
+            "verified tool bytes differ",
+        ),
+        (
+            lambda value: value.__setitem__(
+                "schema_version", "strathmark-v3-executable-release-evidence-v2"
+            ),
+            "schema differs",
+        ),
         (
             lambda value: value.__setitem__("source_commit", "0" * 40),
             "source commit is unavailable",
