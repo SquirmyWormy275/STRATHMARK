@@ -110,6 +110,23 @@ def test_private_key_and_archive_cannot_share_filesystem(gpg_archive):
         encrypt_file(source, source.parent / "same-filesystem.gpg", policy)
 
 
+def test_native_gpg_uses_validated_paths_after_aliases_change(gpg_archive, tmp_path):
+    source, destination, policy = gpg_archive
+    value = json.loads(policy.read_bytes())
+    binary_alias, home_alias = tmp_path / "gpg-alias", tmp_path / "home-alias"
+    binary_alias.symlink_to(value["gpg_binary"])
+    home_alias.symlink_to(value["gpg_home"], target_is_directory=True)
+    value.update(gpg_binary=str(binary_alias), gpg_home=str(home_alias))
+    policy.write_text(json.dumps(value))
+    encrypt_file(source, destination, policy)
+    configured = load_policy(policy)
+    binary_alias.unlink()
+    home_alias.unlink()
+    binary_alias.symlink_to(tmp_path / "missing-program")
+    home_alias.symlink_to(tmp_path / "missing-key-home", target_is_directory=True)
+    assert plaintext_sha(destination, configured) == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
 def test_bulk_streaming_and_truncated_authenticated_tail(gpg_archive):
     source, destination, policy = gpg_archive
     # More than either OS pipe's capacity; small fixtures cannot expose deadlock.
@@ -151,10 +168,15 @@ def test_tar_failure_closes_gpg_and_feeder(gpg_archive, tmp_path):
     assert not [t for t in threading.enumerate() if t.name == "strath-gpg-input"]
 
 
-def test_native_authority_backup_is_encrypted_and_restores_exact_retry(gpg_archive, tmp_path):
+@pytest.mark.parametrize("archive_mode", [0o700, 0o777])
+def test_native_authority_backup_is_encrypted_and_restores_exact_retry(
+    gpg_archive, tmp_path, archive_mode
+):
     from strathmark.v3.linux_lifecycle_store import LinuxLifecycleStore
 
     _, destination, policy = gpg_archive
+    # Removable ciphertext storage need not provide owner-only Unix modes.
+    destination.parent.chmod(archive_mode)
     store = LinuxLifecycleStore.initialize(tmp_path / "authority")
     command = dict(
         command_id="command:synthetic",

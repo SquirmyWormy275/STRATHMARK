@@ -1,6 +1,6 @@
 """Standard-library GPG archive encryption with full decryption readback.
 
-This file also ships as STRATHEX's standalone recovery_security.py bootstrap.
+STRATHEX ships a release-matched standalone recovery_security.py companion.
 Private keys stay in an explicitly configured workstation GPG home. No source
 archive is deleted, and no plaintext is written to the archive filesystem.
 """
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import threading
 from contextlib import contextmanager
@@ -30,8 +31,28 @@ def sha(path):
     return digest.hexdigest()
 
 
+def _authority_input(path, *, directory=False, canonicalize=True):
+    """Check canonical local inputs without changing their permissions."""
+    path = Path(path).expanduser().absolute()
+    if canonicalize:
+        path = path.resolve(strict=True)
+    if os.name == "posix":
+        from strathmark.private_storage import reject_links
+
+        reject_links(path)
+    status = path.lstat()
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_type(status.st_mode):
+        raise ValueError(f"GPG authority input has the wrong file type: {path}")
+    if os.name == "posix" and (status.st_uid not in (0, os.geteuid()) or status.st_mode & 0o022):
+        raise ValueError(f"GPG authority input is not owner-controlled: {path}")
+    return path
+
+
 def load_policy(path):
-    path = Path(path).resolve(strict=True)
+    # The policy is the trust root, so its original name must not be an alias
+    # that another account can redirect to a different policy before validation.
+    path = _authority_input(path, canonicalize=False)
     if path.stat().st_size > 16384:
         raise ValueError("recovery encryption policy exceeds 16 KB")
     value = json.loads(path.read_bytes())
@@ -50,14 +71,18 @@ def load_policy(path):
     if not re.fullmatch(r"[A-F0-9]{40,64}", value["recipient_fingerprint"]):
         raise ValueError("recovery recipient must be a full fingerprint")
     binary, home = (
-        Path(value["gpg_binary"]).resolve(strict=True),
-        Path(value["gpg_home"]).resolve(strict=True),
+        _authority_input(value["gpg_binary"]),
+        _authority_input(value["gpg_home"], directory=True),
     )
     if sha(binary) != value["gpg_binary_sha256"] or not home.is_dir():
         raise ValueError("GPG binary or private recovery home changed")
-    if os.name == "posix" and (home.stat().st_uid != os.getuid() or home.stat().st_mode & 0o077):
+    if os.name == "posix" and (
+        home.stat().st_uid != os.geteuid() or stat.S_IMODE(home.stat().st_mode) != 0o700
+    ):
         raise ValueError("GPG private home must be owned by this user with mode 700")
-    return value
+    # Execute the same canonical file whose digest was checked, never a relative
+    # PATH lookup or a symlink alias that can later identify another binary/home.
+    return {**value, "gpg_binary": str(binary), "gpg_home": str(home)}
 
 
 def _command(policy):
