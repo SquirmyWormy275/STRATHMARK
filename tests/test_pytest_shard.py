@@ -69,6 +69,7 @@ def run_wrapper(directory, index, count, *pytest_args):
     environment = dict(
         os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONHASHSEED=str(index + 10)
     )
+    environment.pop("PYTHONPATH", None)
     return subprocess.run(
         [
             sys.executable,
@@ -91,10 +92,13 @@ def run_wrapper(directory, index, count, *pytest_args):
 @pytest.mark.parametrize("count", [1, 3])
 def test_real_pytest_shards_execute_every_selected_case_once(tmp_path, count):
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-    (tmp_path / "test_cases.py").write_text(
+    (tmp_path / "root_support.py").write_text("CASE_COUNT = 24\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_cases.py").write_text(
         "from pathlib import Path\n"
         "import pytest\n"
-        "@pytest.mark.parametrize('number', range(24))\n"
+        "from root_support import CASE_COUNT\n"
+        "@pytest.mark.parametrize('number', range(CASE_COUNT))\n"
         "def test_selected(number):\n"
         "    with Path('executed.txt').open('a') as output:\n"
         "        output.write(str(number) + '\\n')\n"

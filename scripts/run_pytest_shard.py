@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -61,6 +63,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     if not args.pytest_args or args.pytest_args[0] != "--":
         parser.error("separate pytest arguments with --")
+    # Match python -m pytest's checkout-local imports when invoked by file path.
+    sys.path.insert(0, str(Path.cwd()))
     return int(pytest.main(args.pytest_args[1:], plugins=[plugin]))
 
 
