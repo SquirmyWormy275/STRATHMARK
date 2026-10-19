@@ -19,7 +19,7 @@ selection. They do not qualify Windows V3 production authority.
 | Recovery TAR | 1,024 members, 64 MiB per member, 128 MiB complete expanded stream and a 30-second processing deadline |
 | V2 import | 64 MiB source, 128 tables, 100,000 total rows and a mandatory 60-second default deadline |
 | Archive proof | 128 MiB package checked before allocation |
-| Optional Ollama narrative | Streaming read, 1 MiB response ceiling, 20-second processing deadline plus at most one outstanding socket read timeout |
+| Optional Ollama narrative | Streaming read, 1 MiB response ceiling, 20-second caller deadline (5 seconds for health), at most two admitted network calls |
 
 Over-limit work fails explicitly. Split large offline datasets into separately
 reviewed imports rather than raising production limits casually. A timeout never
@@ -64,3 +64,11 @@ Manual publication recovery now proves successful main CI for the exact source
 and protected-main ancestry. Release evidence uses the separately pinned tool
 lock, isolated Python execution, a controlled environment and explicit executable
 identities; see [Package release](PACKAGE_RELEASE.md).
+
+The Ollama deadline includes response headers. A caller stops waiting at the total
+deadline even if a peer trickles headers without triggering a socket idle timeout.
+Requests cannot forcibly cancel that header read, so its bounded worker retains
+its admission slot until the network call actually exits. At most two such calls
+may remain; further calls decline immediately instead of accumulating threads or
+queued requests. A returned response is closed after the byte/deadline checks.
+This optional narrative path does not change numeric forecasts or marks.
