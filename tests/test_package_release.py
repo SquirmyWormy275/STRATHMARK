@@ -30,6 +30,9 @@ def _release_repository(
     _git(repository, "init")
     _git(repository, "config", "user.name", "Release Test")
     _git(repository, "config", "user.email", "release-test@example.invalid")
+    # Fixtures must have the same byte identity with or without runner-global Git
+    # settings, which the release verifier intentionally discards.
+    _git(repository, "config", "core.autocrlf", "false")
     (repository / "pyproject.toml").write_text(
         f'[project]\nname = "strathmark"\nversion = "{version}"\n',
         encoding="utf-8",
