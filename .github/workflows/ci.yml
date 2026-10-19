@@ -96,6 +96,10 @@ jobs:
       - name: Verify distribution imports
         run: python -c "import strathmark; import strathmark.v3"
 
+      - name: Verify native Windows storage permissions
+        if: runner.os == 'Windows'
+        run: python -m pytest tests/test_windows_private_storage.py -v --tb=short --basetemp=${{ runner.temp }}/strathmark-native-permissions -p no:cacheprovider
+
       - name: Run pytest with coverage
         # Supabase-backed db tests are gated behind STRATHMARK_TEST_DB and
         # skip by default. ML predictor paths fall back to baseline when
