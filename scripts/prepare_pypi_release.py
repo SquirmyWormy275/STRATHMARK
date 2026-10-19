@@ -215,10 +215,21 @@ def prepare_release(
     }
 
 
+def verify_tooling_ci(repository: Path, expected_commit: str) -> str:
+    """Manual publication executes only the immutable, separately CI-tested tooling."""
+    commit = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    if commit != expected_commit or not source_ci_passed(commit):
+        raise ReleaseTagError("manual release tooling requires its own successful exact main CI")
+    if _git(repository, "status", "--porcelain", "--untracked-files=all").stdout:
+        raise ReleaseTagError("release tooling checkout must be clean")
+    return commit
+
+
 def main() -> int:
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise ReleaseTagError("publisher must execute on main")
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        verify_tooling_ci(Path.cwd(), os.environ["GITHUB_SHA"])
         outputs = prepare_manual_release(Path.cwd(), os.environ["RELEASE_TAG"])
     elif os.environ.get("GITHUB_EVENT_NAME") == "workflow_run":
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -226,6 +237,7 @@ def main() -> int:
         outputs = prepare_release(Path.cwd(), commit)
     else:
         raise ReleaseTagError("unsupported publication trigger")
+    outputs["tooling_commit"] = _git(Path.cwd(), "rev-parse", "HEAD").stdout.strip()
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
         for key, value in outputs.items():
             stream.write(f"{key}={value}\n")

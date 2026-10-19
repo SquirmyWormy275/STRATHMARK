@@ -128,7 +128,9 @@ def test_publication_workflows_are_tag_bound_and_rehearse_exact_artifacts():
         assert "release_tag:" in workflow
         assert "refs/tags/${{ " + release_tag + " }}" in workflow
         assert "scripts/verify_release_tag.py" in workflow
-        assert "python -m twine check dist/*" in workflow
+        assert "python -m scripts.build_release" in workflow
+        assert "--build-tools-wheelhouse" in workflow
+        assert "ref: main" not in workflow
         assert "--kind wheel" in workflow
         assert "--kind sdist" in workflow
         assert "--all-extras" in workflow
@@ -138,6 +140,8 @@ def test_publication_workflows_are_tag_bound_and_rehearse_exact_artifacts():
 
     assert "environment: pypi" in publish
     assert "workflow_run:" in publish
+    assert "ref: ${{ github.event.workflow_run.head_sha || github.sha }}" in publish
+    assert "ref: ${{ needs.resolve.outputs.tooling_commit }}" in publish
     assert "workflows: [CI]" in publish
     assert "python -m scripts.prepare_pypi_release" in publish
     assert "scripts/verify_pypi_publication.py" in publish

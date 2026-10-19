@@ -93,6 +93,37 @@ def test_newer_main_waits_for_its_own_ci(tmp_path):
     assert result["publish"] == "false"
 
 
+def test_original_ci_commit_can_publish_without_executing_later_main(tmp_path):
+    repository = _release_repository(tmp_path)
+    original = _git(repository, "rev-parse", "HEAD")
+    (repository / "later-tooling.py").write_text("raise RuntimeError('unreviewed')\n")
+    _git(repository, "add", "later-tooling.py")
+    _git(repository, "commit", "-m", "main advanced while original CI ran")
+    _git(repository, "checkout", "--detach", original)
+
+    result = prepare_release(repository, original, release_exists=lambda version: False, push=False)
+
+    assert result["source_commit"] == original
+    assert not (repository / "later-tooling.py").exists()
+
+
+def test_manual_tooling_requires_exact_successful_ci_and_clean_source(tmp_path, monkeypatch):
+    import scripts.prepare_pypi_release as module
+
+    repository = _release_repository(tmp_path)
+    original = _git(repository, "rev-parse", "HEAD")
+    monkeypatch.setattr(module, "source_ci_passed", lambda commit: False)
+    with pytest.raises(ReleaseTagError, match="own successful exact main CI"):
+        module.verify_tooling_ci(repository, original)
+    monkeypatch.setattr(module, "source_ci_passed", lambda commit: commit == original)
+    with pytest.raises(ReleaseTagError, match="own successful exact main CI"):
+        module.verify_tooling_ci(repository, "0" * 40)
+    assert module.verify_tooling_ci(repository, original) == original
+    (repository / "unreviewed.py").write_text("unexpected\n")
+    with pytest.raises(ReleaseTagError, match="clean"):
+        module.verify_tooling_ci(repository, original)
+
+
 def test_dirty_source_is_rejected(tmp_path):
     repository = _release_repository(tmp_path)
     (repository / "unreviewed.py").write_text("print('unexpected')\n", encoding="utf-8")
