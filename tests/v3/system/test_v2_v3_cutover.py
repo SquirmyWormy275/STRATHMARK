@@ -54,7 +54,10 @@ def _selection(scope: str, engine: PredictionEngine) -> CompetitionEngineSelecti
     )
 
 
-def test_v3_tournament_open_binds_one_immutable_scope_selection(tmp_path) -> None:
+@pytest.mark.parametrize("interleave_snapshot", [False, True])
+def test_v3_tournament_open_binds_one_immutable_scope_selection(
+    tmp_path, monkeypatch, interleave_snapshot
+) -> None:
     database = tmp_path / "selection-authority.sqlite3"
     lifecycle = LifecycleService(database)
     tournament = StableIdentifier("tournament:v3-show")
@@ -118,6 +121,41 @@ def test_v3_tournament_open_binds_one_immutable_scope_selection(tmp_path) -> Non
         monotonic_elapsed_ms=1,
         engine_selection=selection,
     )
+
+    if interleave_snapshot:
+        original_execute = lifecycle._execute
+
+        def raced_execute(*args, **kwargs):
+            if args[0] is CommandKind.OPEN_TOURNAMENT:
+                lifecycle.ingest_snapshot(
+                    UpstreamSnapshot(
+                        SnapshotKind.ROUND,
+                        round_id,
+                        2,
+                        tournament,
+                        round_id,
+                        {
+                            "round_ordinal": 1,
+                            "predecessor_round_ids": [],
+                            "successor_round_ids": [],
+                        },
+                        replace(selection, reason_code="concurrent_correction"),
+                    ),
+                    command_id=IdempotencyKey("command:raced-selection-snapshot"),
+                    actor_id=StableIdentifier("actor:tournament-manager"),
+                    occurred_at_utc=NOW,
+                    monotonic_elapsed_ms=1,
+                )
+            return original_execute(*args, **kwargs)
+
+        monkeypatch.setattr(lifecycle, "_execute", raced_execute)
+        with pytest.raises(ProjectionConflict, match="exact engine selection"):
+            lifecycle.open_tournament(tournament, **arguments)
+        assert not any(
+            event.kind is EventKind.TOURNAMENT_OPENED
+            for event in SQLiteEventStore(database).events()
+        )
+        return
 
     first = lifecycle.open_tournament(tournament, **arguments)
     repeated = lifecycle.open_tournament(tournament, **arguments)

@@ -204,3 +204,64 @@ def test_director_retention_form_keeps_acceptance_separate(tmp_path):
         },
     )
     assert response.status_code == 409 and "all_summary_results_must_be_accepted" in response.text
+
+
+def test_login_admission_precedes_password_work_and_keeps_csrf(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+
+    import werkzeug.security
+
+    auth = tmp_path / "bounded-auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "director": {
+                    "password_hash": "synthetic-held-verifier",
+                    "shows": [],
+                    "role": "director",
+                }
+            }
+        )
+    )
+    auth.chmod(0o600)
+    key = tmp_path / "bounded-session.key"
+    key.write_text("synthetic-stable-session-key-at-least32characters")
+    key.chmod(0o600)
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def held_verifier(*args):
+        calls.append(True)
+        started.set()
+        assert release.wait(3)
+        return False
+
+    monkeypatch.setattr(werkzeug.security, "check_password_hash", held_verifier)
+    app = create_workspace(None, auth, key)
+    app.config["TESTING"] = True
+    first = app.test_client()
+    second = app.test_client()
+    token = csrf(first.get("/login"))
+    other_token = csrf(second.get("/login"))
+    assert second.post("/login", data={"username": "director"}).status_code == 400
+    assert not calls
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        held = executor.submit(
+            first.post,
+            "/login",
+            data={"csrf_token": token, "username": "director", "password": "wrong"},
+        )
+        try:
+            assert started.wait(1)
+            for _ in range(16):
+                response = second.post(
+                    "/login",
+                    data={"csrf_token": other_token, "username": "director", "password": "wrong"},
+                )
+                assert response.status_code == 429
+            assert len(calls) == 1
+        finally:
+            release.set()
+        assert held.result().status_code == 200

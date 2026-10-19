@@ -13,7 +13,7 @@ are separate applications; starting one does not start the other.
 
 ## Start the V2 API locally
 
-Install the maintained rc13 [API extra](Installation). Use a new dedicated data
+Install the maintained rc14 [API extra](Installation). Use a new dedicated data
 directory under your account; do not select a shared directory, checkout or home
 root. Provision this directory explicitly before opening its database. Existing
 authority paths require trusted ancestry; shared parents are never changed.

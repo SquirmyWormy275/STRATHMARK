@@ -18,8 +18,8 @@ need the Python library or an API for another application.
 | **V3 Windows V7 service** | Development and rehearsal. Windows production qualification is incomplete. |
 | **Accuracy Preview** | Compare a frozen calibration candidate with the baseline. It does not change competition predictions. |
 
-The reviewed pair for new Linux profiles is **STRATHMARK 3.0.0rc13 + STRATHEX 7.4.5**.
-Retained rc7/7.4.2 competitions keep their original exact installation, model,
+The reviewed pair for new Linux profiles is **STRATHMARK 3.0.0rc14 + STRATHEX 7.4.6**.
+Retained rc7/7.4.2, rc12/7.4.4 and source-pinned rc13/7.4.5 profiles keep their original exact installation, model,
 signing authority and saved data. Installing the new pair does not migrate or
 activate a profile. Judges choose V2 or V3 when creating each event or tournament;
 its events and rounds keep that choice. See
@@ -42,12 +42,12 @@ installation and qualification requirements.
 Use Python 3.10–3.13; Python 3.13 is recommended. In your virtual environment:
 
 ```bash
-python -m pip install "strathmark==3.0.0rc13"
+python -m pip install "strathmark==3.0.0rc14"
 python -c "import strathmark; print(strathmark.__version__)"
 ```
 
-The maintained 3.0.0rc13 package retains the V2 `2.0.0` calculation contract.
-New STRATHEX 7.4.5 installations pin its exact reviewed security source. The older
+The maintained 3.0.0rc14 package retains the V2 `2.0.0` calculation contract.
+New STRATHEX 7.4.6 installations pin its exact reviewed security source. The older
 2.0.0/2.0.1 artifacts remain available for retained installations but do not contain
 these transport and storage fixes. Install upgrades in a separate environment.
 Follow the [Python example](docs/wiki/Quick-Start.md) to calculate a small synthetic
@@ -56,11 +56,12 @@ field, or [Installation](docs/wiki/Installation.md) for API setup.
 New package versions publish to PyPI automatically after successful main CI. See
 the [package release policy](docs/PACKAGE_RELEASE.md) for versioning and recovery.
 
-The maintained **3.0.0rc13** candidate also separates public and authenticated
+The maintained **3.0.0rc14** candidate also separates public and authenticated
 request capacity, verifies recovery against independently trusted identities,
 and pins release and qualification tools by their actual bytes. Diagnostic
 reports cannot authorize operational bundles. See the
-[verification follow-up](docs/SECURITY_VERIFICATION_2026-10-19.md) and
+[verification follow-up](docs/SECURITY_VERIFICATION_2026-10-19.md),
+[rc14 concurrency and archive fixes](docs/SECURITY_FINAL_SCAN_2026-10-19.md), and
 [security and upgrade notes](docs/SECURITY_HARDENING.md). Operational V3 event
 authority also requires an independently provisioned monotonic witness; see
 [authority trust and migration](docs/AUTHORITY_TRUST.md). Keep saved Linux V3

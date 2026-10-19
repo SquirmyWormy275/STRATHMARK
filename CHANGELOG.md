@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.0.0rc14] - 2026-10-19
+
+- Bound health, shadow-body and workspace password work independently, with immediate
+  overload refusal; carry shadow deadlines through evidence, calculation and commit.
+- Check ZIP directory counts/bytes before object allocation and reject oversized
+  spreadsheet coordinate text before numeric conversion.
+- Sign archive removal evidence from the exact validated package bytes, create plaintext
+  archives privately, and bound regular-file restore manifests before parsing.
+- Serialize credential changes across processes and retain pending secret material after
+  uncertain acknowledgments so a failed competing call cannot destroy the winner.
+- Reserve full public operation identities durably before preparatory lifecycle phases,
+  authenticate those bindings with the independent witness, and recheck opening
+  snapshot selections inside the event writer transaction.
+- Preserve numerical contracts, retained profile pins and Windows qualification gates.
+
 ## [3.0.0rc13] - 2026-10-19
 
 - Require an independently retained plaintext identity for encrypted recovery verification;

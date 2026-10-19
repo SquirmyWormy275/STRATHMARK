@@ -224,11 +224,27 @@ def _tournament_request_for(
     )
 
 
+@pytest.mark.parametrize("authenticated_binding", [False, True])
 def test_online_backup_restore_verifies_chain_projection_bundle_blob_and_issue_lookup(
     tmp_path: Path,
+    authenticated_binding: bool,
 ) -> None:
     database = tmp_path / "authority.sqlite3"
+    authority = None
+    if authenticated_binding:
+        from tests.v3.integration.test_authenticated_authority import _authority
+
+        authority, _witness = _authority(database)
     store = SQLiteEventStore(database)
+    reservation = dict(
+        principal_id="actor:judge",
+        idempotency_key="command:pending-public-operation",
+        operation="open_scope",
+        payload={"scope_id": "tournament:pending"},
+        created_at=NOW,
+    )
+    if authenticated_binding:
+        store.reserve_public_operation(**reservation)
     store.execute(
         _request(
             "command:prepare", CommandKind.OPTIMIZE_FIELD, EventKind.FIELD_OPTIMIZED, expected=0
@@ -267,6 +283,32 @@ def test_online_backup_restore_verifies_chain_projection_bundle_blob_and_issue_l
     )
     assert report.ready is True
     assert SQLiteEventStore(restored).event_count() == 2
+    if authenticated_binding:
+        from strathmark.v3.infrastructure.event_authority import bind_event_authority
+        from strathmark.v3.infrastructure.sqlite.connection import open_v3_connection
+
+        with open_v3_connection(restored, read_only=True) as connection:
+            assert (
+                connection.execute("SELECT COUNT(*) FROM v3_public_operation_bindings").fetchone()[
+                    0
+                ]
+                == 1
+            )
+            authority.verify_connection(connection)
+        bind_event_authority(restored, authority)
+        restored_store = SQLiteEventStore(restored)
+        restored_store.reserve_public_operation(**reservation)
+        assert (
+            restored_store.execute(
+                _request(
+                    "command:issue",
+                    CommandKind.ACKNOWLEDGE_ISSUE,
+                    EventKind.FIELD_ISSUED,
+                    expected=1,
+                )
+            )
+            == issued
+        )
 
 
 def test_backup_cannot_omit_any_acknowledged_issue(tmp_path: Path) -> None:
@@ -643,9 +685,11 @@ def test_restore_rejects_backup_older_than_acknowledged_issue_before_publication
     assert not destination.exists()
 
 
+@pytest.mark.parametrize("swap_after_validation", [False, True])
 def test_archive_needs_two_distinct_verified_copies_one_off_host_and_closed_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    swap_after_validation: bool,
 ) -> None:
     database = tmp_path / "authority.sqlite3"
     store = SQLiteEventStore(database)
@@ -743,6 +787,20 @@ def test_archive_needs_two_distinct_verified_copies_one_off_host_and_closed_evid
             verified_at=NOW,
         )
     held_blob.rename(blob_path)
+    if swap_after_validation:
+        import strathmark.input_limits as limits
+
+        original_read = limits.read_bounded_file
+
+        def swapped_read(path, maximum):
+            raw = original_read(path, maximum)
+            if path == package:
+                replacement = package.with_suffix(".replacement")
+                replacement.write_bytes(b"different archive generation")
+                replacement.replace(package)
+            return raw
+
+        monkeypatch.setattr(limits, "read_bounded_file", swapped_read)
     proof = archive.prove_two_copy_archive(
         tournament_id="tournament:closed",
         package_path=package,
@@ -2080,3 +2138,53 @@ def test_restore_verifies_temporary_copy_before_publishing(tmp_path, monkeypatch
         )
     assert not destination.exists()
     assert not tuple(tmp_path.glob(".restored.sqlite3.*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ["oversize", "symlink", "fifo"])
+def test_restore_manifest_rejects_unsafe_inputs_before_parsing(tmp_path, monkeypatch, kind):
+    import os
+
+    import strathmark.v3.infrastructure.backup as module
+
+    path = tmp_path / "manifest.json"
+    if kind == "oversize":
+        path.write_bytes(b"x" * 65)
+        monkeypatch.setattr(module, "_MAX_ARCHIVE_MANIFEST_BYTES", 64)
+    elif kind == "symlink":
+        if os.name == "nt":
+            pytest.skip("POSIX link fixture")
+        path.symlink_to(tmp_path / "target")
+    else:
+        if os.name != "posix":
+            pytest.skip("POSIX FIFO fixture")
+        os.mkfifo(path)
+    monkeypatch.setattr(
+        module.json, "loads", lambda *_a, **_k: pytest.fail("unsafe manifest parsed")
+    )
+    with pytest.raises(BackupIntegrityError, match="cannot be decoded"):
+        module._read_manifest(path, "backup")
+
+
+def test_plaintext_archive_publication_is_private_from_creation(tmp_path):
+    import os
+
+    from strathmark.private_storage import private_directory
+    from strathmark.v3.infrastructure.integrity import _publish_no_clobber
+
+    root = private_directory(tmp_path / "owned-archives")
+    path = root / "history.bin"
+    old = os.umask(0)
+    try:
+        assert _publish_no_clobber(path, b"private authority", private=True)
+        assert not _publish_no_clobber(path, b"replacement", private=True)
+    finally:
+        os.umask(old)
+    assert path.read_bytes() == b"private authority"
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+    else:
+        from tests.test_windows_private_storage import _assert_private
+
+        # Independent read-only inspection must not repair the ACL being tested.
+        _assert_private(path)
+    assert not list(root.glob(".*.tmp"))

@@ -2427,3 +2427,90 @@ def test_nonce_claims_purge_expired_rows_cap_active_per_consumer_and_survive_res
             subject_revision="missoula:run-revision:3",
             expires_at=now + 30,
         )
+
+
+def test_shadow_deadline_reaches_service_after_admitted_evidence(shadow_client):
+    from strathmark.ledger import LedgerQueryTimeoutError
+
+    client, service, _ = shadow_client
+    observed = {}
+    stopped = threading.Event()
+
+    def cooperative_calculation(*args, query_deadline=None, **kwargs):
+        observed["deadline"] = query_deadline
+        assert query_deadline is not None
+        try:
+            while True:
+                query_deadline.raise_if_expired()
+                time.sleep(0.001)
+        except LedgerQueryTimeoutError:
+            stopped.set()
+            raise
+
+    service.calculate = cooperative_calculation
+    payload = _calculate_payload()
+    payload["timeout_ms"] = 25
+    response = client.post(
+        "/v1/shadow/calculate",
+        json=payload,
+        headers=_headers("shadow.calculate", request_payload=payload),
+    )
+    assert response.status_code == 504
+    assert observed["deadline"] is not None
+    assert stopped.wait(1)
+
+
+def test_excessive_shadow_history_rejected_before_actor_nonce(shadow_client, monkeypatch):
+    import strathmark.store as store_module
+
+    client, service, ledger = shadow_client
+    rows = tuple(
+        {
+            "schema_version": "strathmark.evidence-history-row.v1",
+            "competitor_id": "missoula:competitor:alice",
+            "event_code": "SB",
+            "time_seconds": 40.0,
+            "species": "Pine",
+            "diameter_mm": 300,
+            "quality": 5,
+            "competition_id": "test:tournament:prior",
+            "heat_id": f"test:heat:{i}",
+            "result_date": "2026-10-01",
+        }
+        for i in range(3)
+    )
+    cutoff = date(2026, 11, 1)
+    captured_at = datetime.now(timezone.utc)
+    source_id = "test:history-export:budget"
+    payload = EvidenceSnapshotPayload(
+        schema_version=EVIDENCE_SNAPSHOT_SOURCE_SCHEMA_VERSION,
+        source_id=source_id,
+        cutoff=cutoff,
+        captured_at=captured_at,
+        rows=rows,
+        source_digest=canonical_evidence_source_digest(
+            source_id=source_id, cutoff=cutoff, captured_at=captured_at, rows=rows
+        ),
+    )
+
+    class Source:
+        def load_snapshot(self, *, cutoff):
+            return payload
+
+    ledger.snapshot_store.refresh_evidence_snapshot(
+        Source(),
+        cutoff=cutoff,
+        expected_active_snapshot_digest=ledger.snapshot_store.get_evidence_snapshot_status().snapshot_digest,
+    )
+    monkeypatch.setattr(store_module, "MAX_SHADOW_COMPETITOR_ROWS", 2)
+    request = _calculate_payload()
+    response = client.post(
+        "/v1/shadow/calculate",
+        json=request,
+        headers=_headers("shadow.calculate", request_payload=request),
+    )
+    assert response.status_code == 422
+    assert "budget" in response.json()["detail"]
+    assert ledger.nonces == set()
+    assert service.calls == 0
+    assert len(ledger.snapshot_store.get_evidence_history("missoula:competitor:alice")) == 3

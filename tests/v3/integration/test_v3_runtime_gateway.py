@@ -1201,6 +1201,14 @@ def test_concrete_gateway_exposes_scope_snapshot_freeze_and_close_lifecycle(
         "opened_at_utc": "2026-08-25T17:59:58.000Z",
         "deadline_ms": 10_000,
     }
+    before_conflict = SQLiteEventStore(_rest[2].database_path).events()
+    conflict = client.post(
+        "/v3/scopes/open",
+        headers=_headers(credential, "public-snapshot-0"),
+        json=open_payload,
+    )
+    assert conflict.status_code == 409
+    assert SQLiteEventStore(_rest[2].database_path).events() == before_conflict
     mismatched = client.post(
         "/v3/scopes/open",
         headers=_headers(credential, "public-open-mismatch"),

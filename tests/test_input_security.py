@@ -214,3 +214,78 @@ def test_history_limits_reject_per_competitor_aggregate_and_extra_fields():
     )
     with pytest.raises(ValidationError, match="4000"):
         CalculateRequest(**payload)
+
+
+@pytest.mark.parametrize("attribute", ["cell", "dimension", "row"])
+def test_long_coordinate_is_rejected_before_numeric_work(tmp_path, monkeypatch, attribute):
+    value = "Z" * 100_000 + "1"
+    element = {
+        "cell": f'<c r="{value}"/>',
+        "dimension": f'<dimension ref="A1:{value}"/>',
+        "row": f'<row r="{"9" * 100_000}"/>',
+    }[attribute]
+    path = tmp_path / "long.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", f"<worksheet>{element}</worksheet>")
+    import strathmark.input_limits as limits
+
+    monkeypatch.setattr(
+        limits,
+        "ord",
+        lambda *_a: pytest.fail("unbounded coordinate arithmetic began"),
+        raising=False,
+    )
+    with pytest.raises(ValueError, match=f"{attribute}.*budget"):
+        bounded_workbook(path)
+
+
+@pytest.mark.parametrize("coordinate", ["IV100000", "a1"])
+def test_valid_boundary_coordinates_remain_readable(tmp_path, coordinate):
+    path = tmp_path / "boundary.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "xl/worksheets/sheet1.xml",
+            f'<worksheet><dimension ref="A1:{coordinate}"/><c r="{coordinate}"/></worksheet>',
+        )
+    assert bounded_workbook(path).read() == path.read_bytes()
+
+
+@pytest.mark.parametrize("forged_count", [False, True])
+def test_member_count_checked_before_zipinfo_allocation(tmp_path, monkeypatch, forged_count):
+    import struct
+
+    path = tmp_path / "many.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        for index in range(1025):
+            archive.writestr(f"entry{index}", b"")
+    raw = bytearray(path.read_bytes())
+    if forged_count:
+        struct.pack_into("<HH", raw, len(raw) - 22 + 8, 1, 1)
+        path.write_bytes(raw)
+    monkeypatch.setattr(zipfile, "ZipInfo", lambda *_a, **_k: pytest.fail("allocated ZipInfo"))
+    with pytest.raises(ValueError, match="member|directory"):
+        bounded_workbook(path)
+
+
+def test_directory_byte_limit_runs_before_zipinfo_allocation(tmp_path, monkeypatch):
+    path = tmp_path / "metadata.xlsx"
+    with zipfile.ZipFile(path, "w") as archive:
+        for index in range(18):
+            entry = zipfile.ZipInfo(str(index))
+            entry.comment = b"x" * 65535
+            archive.writestr(entry, b"")
+    monkeypatch.setattr(zipfile, "ZipInfo", lambda *_a, **_k: pytest.fail("allocated ZipInfo"))
+    with pytest.raises(ValueError, match="directory"):
+        bounded_workbook(path)
+
+
+def test_support_bundle_member_preflight_precedes_zip_allocation(monkeypatch):
+    from strathmark.v3.application.operations import verify_support_bundle
+
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        for index in range(1025):
+            archive.writestr(f"entry{index}", b"")
+    monkeypatch.setattr(zipfile, "ZipInfo", lambda *_a, **_k: pytest.fail("allocated ZipInfo"))
+    with pytest.raises(ValueError, match="member|directory|bundle"):
+        verify_support_bundle(stream.getvalue(), trust_store=None)

@@ -41,6 +41,18 @@ REQUEST_PROJECTION_SCHEMA_VERSION = "strathmark.shadow-request-projection.v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+class _DeadlineLedger:
+    """Keep the same atomic field writer while carrying the caller deadline."""
+
+    def __init__(self, ledger, deadline):
+        self.ledger = ledger
+        self.deadline = deadline
+
+    def record_field(self, **kwargs):
+        self.deadline.raise_if_expired()
+        return self.ledger.record_field(**kwargs, query_deadline=self.deadline)
+
+
 @dataclass(frozen=True)
 class ShadowFieldRequest:
     """Versioned trusted request metadata supplied by one server-side consumer."""
@@ -158,6 +170,7 @@ class ShadowPredictionService:
             selection = self._result_store.load_evidence_for_competitors(
                 [str(competitor.competitor_id) for competitor in competitors],
                 query_deadline=query_deadline,
+                bounded_shadow=True,
             )
         if selection is None:
             raise ValueError(
@@ -177,6 +190,8 @@ class ShadowPredictionService:
             selection,
             query_deadline=query_deadline,
         )
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         effective_competitors = [
             replace(
                 competitor,
@@ -207,6 +222,8 @@ class ShadowPredictionService:
             wood_df=self._wood_df,
             effective_ceiling=mark_ceiling,
         )
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         active_input = {
             "schema_version": ACTIVE_INPUT_SCHEMA_VERSION,
             "tournament_id": request.tournament_id,
@@ -219,8 +236,12 @@ class ShadowPredictionService:
         active_input["evidence_snapshot"] = evidence_status.input_projection()
         active_fingerprint = canonical_hash(active_input)
 
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         provider = self._prediction_provider or get_prediction_provider()
         prediction_bundle = provider.snapshot(cutoff)
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         calculation_input = canonical_active_v2_request(
             effective_competitors,
             wood,
@@ -231,13 +252,21 @@ class ShadowPredictionService:
             prediction_bundle=prediction_bundle,
         )
 
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         calculator = HandicapCalculator(
             event_ceiling=self._event_ceiling,
             wood_df=self._wood_df,
             prediction_provider=provider,
-            ledger_sink=self._ledger,
+            ledger_sink=(
+                _DeadlineLedger(self._ledger, query_deadline)
+                if query_deadline is not None
+                else self._ledger
+            ),
             ledger_caller_id=request.consumer_id,
         )
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         receipt_metadata = {
             "schema_version": RECEIPT_CORE_SCHEMA_VERSION,
             "identity_schema_version": IDENTITY_SCHEMA_VERSION,
@@ -264,6 +293,8 @@ class ShadowPredictionService:
             },
         }
         receipt_metadata["evidence_snapshot"] = evidence_status.receipt_projection()
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         results = calculator.calculate(
             effective_competitors,
             wood,
@@ -273,6 +304,8 @@ class ShadowPredictionService:
             prediction_bundle=prediction_bundle,
         )
 
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         receipt = self._ledger.get_shadow_receipt(
             request.consumer_id,
             request.request_id,

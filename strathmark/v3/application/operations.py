@@ -1008,9 +1008,10 @@ def verify_support_bundle(bundle: bytes, *, trust_store: IntegrityTrustStore) ->
     if not isinstance(bundle, bytes) or not bundle or len(bundle) > 8_388_608:
         raise ValueError("support bundle bytes are invalid")
     try:
-        with zipfile.ZipFile(io.BytesIO(bundle), "r") as archive:
-            from strathmark.input_limits import check_zip
+        from strathmark.input_limits import check_zip, preflight_zip
 
+        preflight_zip(bundle)
+        with zipfile.ZipFile(io.BytesIO(bundle), "r") as archive:
             check_zip(archive, stored_only=True, maximum=8_388_608)
             names = archive.namelist()
             if (

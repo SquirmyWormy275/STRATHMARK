@@ -698,9 +698,12 @@ class PredictionLedger:
         *,
         legacy_request_payload: Optional[Mapping[str, Any]] = None,
         receipt_metadata: Optional[Mapping[str, Any]] = None,
+        query_deadline: Optional[SQLiteQueryDeadline] = None,
     ) -> LedgerWriteResult:
         """Atomically append one complete field or return its original IDs."""
 
+        if query_deadline is not None:
+            query_deadline.raise_if_expired()
         caller = _identifier(caller_id, "caller_id")
         idempotency_key = _identifier(request_id, "request_id")
         if not predictions:
@@ -733,7 +736,12 @@ class PredictionLedger:
         request_row_id = str(uuid.uuid5(_LEDGER_NAMESPACE, f"request:{caller}:{idempotency_key}"))
         timestamp = _now()
         prediction_ids: list[str] = []
-        with self._connect() as conn:
+        connection = (
+            self._connect(query_deadline=query_deadline)
+            if query_deadline is not None
+            else self._connect()
+        )
+        with connection as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 existing = conn.execute(
@@ -771,6 +779,8 @@ class PredictionLedger:
                         (existing["ledger_request_id"],),
                     ).fetchall()
                     existing_request_id = str(existing["ledger_request_id"])
+                    if query_deadline is not None:
+                        query_deadline.raise_if_expired()
                     conn.commit()
                     cloud_status = self._schedule_delivery("field", existing_request_id)
                     status = "duplicate_cloud_pending" if cloud_status == "pending" else "duplicate"
@@ -930,6 +940,8 @@ class PredictionLedger:
                     payload=cloud_payload,
                     timestamp=timestamp,
                 )
+                if query_deadline is not None:
+                    query_deadline.raise_if_expired()
                 conn.commit()
             except Exception:
                 conn.rollback()

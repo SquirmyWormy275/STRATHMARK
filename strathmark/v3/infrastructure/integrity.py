@@ -1434,13 +1434,21 @@ def _database_checkpoint_facts(
     }
 
 
-def _publish_no_clobber(path: Path, payload: bytes) -> bool:
+def _publish_no_clobber(path: Path, payload: bytes, *, private: bool = False) -> bool:
     """Durably publish one final name without ever replacing a concurrent winner."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if private:
+        from strathmark.private_storage import open_private_exclusive, reject_links
+
+        path = reject_links(path)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
-        with temporary.open("xb") as handle:
+        handle = (
+            os.fdopen(open_private_exclusive(temporary), "wb") if private else temporary.open("xb")
+        )
+        with handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())

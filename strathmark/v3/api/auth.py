@@ -19,6 +19,7 @@ import threading
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -32,7 +33,7 @@ from strathmark.v3.contracts.identifiers import (
     StableIdentifier,
     require_identifier,
 )
-from strathmark.v3.infrastructure.sqlite.event_store import SQLiteEventStore
+from strathmark.v3.infrastructure.sqlite.event_store import EventStoreConflict, SQLiteEventStore
 
 MAX_CREDENTIAL_OVERLAP_SECONDS = 900
 _CREDENTIAL_AUTHORITY_ID = "service_credential:authority"
@@ -265,6 +266,47 @@ class _CredentialState:
     current_digest: str
 
 
+def _serialize_secret_change(function):
+    @wraps(function)
+    def serialized(self, *args, **kwargs):
+        # A private OS lock serializes every registry/process sharing this event
+        # authority. In-memory instance locks cannot protect DPAPI secret files.
+        from strathmark.private_storage import _windows, private_file
+
+        path = private_file(
+            self._authority.database_path.with_name(
+                self._authority.database_path.name + ".credentials.lock"
+            )
+        )
+        descriptor = (
+            _windows().descriptor_file(path)
+            if os.name == "nt"
+            else os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        )
+        try:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise CredentialError("credential change is already in progress; retry") from exc
+            try:
+                return function(self, *args, **kwargs)
+            except EventStoreConflict as exc:
+                raise CredentialError(
+                    "idempotency key already binds different credential input"
+                ) from exc
+        finally:
+            os.close(descriptor)
+
+    return serialized
+
+
 class ServiceCredentialRegistry:
     """Replayable current/next credentials bound to one immutable service principal."""
 
@@ -294,6 +336,7 @@ class ServiceCredentialRegistry:
                 raise CredentialError("service credential has not been bootstrapped") from exc
             raise
 
+    @_serialize_secret_change
     def bootstrap_offline(
         self,
         *,
@@ -314,6 +357,9 @@ class ServiceCredentialRegistry:
             "key_id_digest": digest,
             "activated_at_utc": _utc_text(self._now()),
         }
+        existing_secret = self._secrets.read(key_id)
+        if existing_secret is not None and not hmac.compare_digest(existing_secret, secret):
+            raise CredentialError("credential key ID already binds pending secret material")
         self._secrets.write(key_id, secret)
         try:
             self._append(
@@ -323,11 +369,13 @@ class ServiceCredentialRegistry:
                 payload,
             )
         except BaseException:
-            self._secrets.delete(key_id)
+            # The append may have committed before an acknowledgment failed.
+            # Keep pending material for exact retry/offline incident recovery.
             raise
         self.refresh()
         return IssuedServiceCredential(token, digest, principal)
 
+    @_serialize_secret_change
     def rotate(
         self,
         principal: ServicePrincipal,
@@ -351,6 +399,14 @@ class ServiceCredentialRegistry:
             raise CredentialError("credential overlap must be an integer from 1 to 900 seconds")
         if command_id is not None and not isinstance(command_id, IdempotencyKey):
             raise CredentialError("credential rotation command identity is invalid")
+        if command_id is not None:
+            self._authority.reserve_public_operation(
+                principal_id=str(state.principal_id),
+                idempotency_key=str(command_id),
+                operation="credential_rotate",
+                payload={"overlap_seconds": overlap_seconds, "principal_id": principal_id},
+                created_at=_utc_text(self._now()),
+            )
         prior = self._event_for_command(command_id)
         if prior is not None:
             if not isinstance(prior.command.payload, InlinePayload):
@@ -389,6 +445,9 @@ class ServiceCredentialRegistry:
             "overlap_until_utc": _utc_text(now + timedelta(seconds=overlap_seconds)),
             "overlap_seconds": overlap_seconds,
         }
+        existing_secret = self._secrets.read(key_id)
+        if existing_secret is not None and not hmac.compare_digest(existing_secret, secret):
+            raise CredentialError("credential key ID already binds pending secret material")
         self._secrets.write(key_id, secret)
         try:
             self._append(
@@ -399,11 +458,13 @@ class ServiceCredentialRegistry:
                 command_id=command_id,
             )
         except BaseException:
-            self._secrets.delete(key_id)
+            # The append may have committed before an acknowledgment failed.
+            # Keep pending material for exact retry/offline incident recovery.
             raise
         self.refresh()
         return IssuedServiceCredential(token, digest, state.principal_id)
 
+    @_serialize_secret_change
     def revoke(
         self,
         principal: ServicePrincipal,
@@ -414,6 +475,14 @@ class ServiceCredentialRegistry:
         state = self._require_principal(principal)
         if command_id is not None and not isinstance(command_id, IdempotencyKey):
             raise CredentialError("credential revocation command identity is invalid")
+        if command_id is not None:
+            self._authority.reserve_public_operation(
+                principal_id=str(state.principal_id),
+                idempotency_key=str(command_id),
+                operation="credential_revoke",
+                payload={"key_id_digest": key_id_digest},
+                created_at=_utc_text(self._now()),
+            )
         prior = self._event_for_command(command_id)
         if prior is not None:
             if not isinstance(prior.command.payload, InlinePayload):
@@ -459,6 +528,7 @@ class ServiceCredentialRegistry:
         self.refresh()
         self._secrets.delete_digest(key_id_digest)
 
+    @_serialize_secret_change
     def recover_offline(
         self,
         *,
@@ -483,6 +553,9 @@ class ServiceCredentialRegistry:
             "recovered_at_utc": _utc_text(self._now()),
             "replaced_key_id_digests": sorted(state.active_until),
         }
+        existing_secret = self._secrets.read(key_id)
+        if existing_secret is not None and not hmac.compare_digest(existing_secret, secret):
+            raise CredentialError("credential key ID already binds pending secret material")
         self._secrets.write(key_id, secret)
         try:
             self._append(
@@ -492,7 +565,8 @@ class ServiceCredentialRegistry:
                 payload,
             )
         except BaseException:
-            self._secrets.delete(key_id)
+            # The append may have committed before an acknowledgment failed.
+            # Keep pending material for exact retry/offline incident recovery.
             raise
         self.refresh()
         for replaced_digest in state.active_until:

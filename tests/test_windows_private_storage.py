@@ -316,3 +316,25 @@ Set-Acl -LiteralPath $path -AclObject $acl
     with pytest.raises(PermissionError, match="SID=S-1-1-0"):
         _trusted_tool_input(target)
     assert _acl(target) == before, "tool verification must never change permissions"
+
+
+def test_plaintext_archive_acl_is_private_before_first_write(tmp_path, monkeypatch):
+    from strathmark.v3.infrastructure.integrity import _publish_no_clobber
+
+    root = private_directory(tmp_path / "archive")
+    backend = _windows()
+    original = backend._secure_handle
+    seen = []
+
+    def inspect(handle, directory, descriptor, **kwargs):
+        if not directory:
+            (temporary,) = root.glob(".*.tmp")
+            _assert_private(temporary)
+            assert temporary.stat().st_size == 0
+            seen.append(temporary)
+        return original(handle, directory, descriptor, **kwargs)
+
+    monkeypatch.setattr(backend, "_secure_handle", inspect)
+    assert _publish_no_clobber(root / "authority.bin", b"private archive", private=True)
+    assert len(seen) == 1
+    _assert_private(root / "authority.bin")

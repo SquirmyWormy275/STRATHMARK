@@ -1292,6 +1292,35 @@ class SQLiteProjectionStore:
                 raise ProjectionError("tournament-open engine selection is invalid") from exc
             if selection.scope_id != event.aggregate_id:
                 raise ProjectionConflict("tournament-open engine selection scope drifted")
+            # This runs inside the same writer transaction as the open event.
+            # A preflight read cannot stop a later snapshot from replacing it.
+            rows = connection.execute(
+                "SELECT snapshot.entity_kind,snapshot.entity_id,source.envelope_json "
+                "FROM v3_ingress_snapshots snapshot JOIN v3_events source "
+                "ON source.global_sequence=snapshot.source_global_sequence "
+                "WHERE snapshot.tournament_id=? AND snapshot.source_global_sequence<? "
+                "AND snapshot.upstream_revision=(SELECT MAX(latest.upstream_revision) "
+                "FROM v3_ingress_snapshots latest WHERE latest.entity_kind=snapshot.entity_kind "
+                "AND latest.entity_id=snapshot.entity_id AND latest.source_global_sequence<?)",
+                (str(event.aggregate_id), event.global_sequence, event.global_sequence),
+            ).fetchall()
+            required = {
+                ("tournament", str(event.aggregate_id)),
+                *(("round", root) for root in value["root_round_ids"]),
+            }
+            if not required.issubset({(str(row[0]), str(row[1])) for row in rows}):
+                raise ProjectionConflict(
+                    "selected scope requires bound tournament and root snapshots"
+                )
+            for row in rows:
+                snapshot_event = EventEnvelope.from_dict(json.loads(str(row[2])))
+                if (
+                    snapshot_event.command.payload.to_value().get("engine_selection")
+                    != selection_value
+                ):
+                    raise ProjectionConflict(
+                        "scope snapshots do not bind the exact engine selection"
+                    )
         roots = value["root_round_ids"]
         if not isinstance(roots, list) or not roots or len(roots) != len(set(roots)):
             raise ProjectionError("tournament open requires unique root rounds")

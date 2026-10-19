@@ -4,6 +4,8 @@ import asyncio
 
 from starlette.responses import JSONResponse
 
+from strathmark.admission import WorkAdmission
+
 
 class BoundedRequestMiddleware:
     def __init__(self, app, *, max_bytes=1_048_576, max_inflight=16, trusted_request=None):
@@ -14,6 +16,8 @@ class BoundedRequestMiddleware:
         self.trusted_active = 0
         self._sources = {}
         self._trusted_request = trusted_request
+        self.health_admission = WorkAdmission(2, 1)
+        self._health_tasks = set()
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or str(scope.get("path", "")).startswith("/v1/shadow/"):
@@ -50,7 +54,23 @@ class BoundedRequestMiddleware:
             async def empty_receive():
                 return {"type": "http.request", "body": b"", "more_body": False}
 
-            await self.app(scope, empty_receive, send)
+            source = str((scope.get("client") or ("unknown",))[0])
+            if not self.health_admission.acquire(source):
+                await reject(503, "Health capacity is busy.")
+                return
+
+            async def complete_health():
+                try:
+                    await self.app(scope, empty_receive, send)
+                finally:
+                    self.health_admission.release(source)
+
+            # A disconnected caller must not free capacity while its synchronous
+            # dependency or handler is still running in the framework thread pool.
+            task = asyncio.create_task(complete_health())
+            self._health_tasks.add(task)
+            task.add_done_callback(self._health_completed)
+            await asyncio.shield(task)
             return
         authorization = headers.get(b"authorization", b"")
         trusted = False
@@ -112,3 +132,9 @@ class BoundedRequestMiddleware:
                     self._sources[source] = count
                 else:
                     del self._sources[source]
+
+    def _health_completed(self, task):
+        self._health_tasks.discard(task)
+        if not task.cancelled():
+            # Retrieve detached errors when the client has already disconnected.
+            task.exception()
