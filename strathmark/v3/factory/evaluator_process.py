@@ -1,4 +1,9 @@
-"""Canonical bounded file exchange for a separately hosted frozen evaluator process."""
+"""Bounded diagnostic evaluator exchange; caller metrics never authorize promotion.
+
+This transport checks the consistency of supplied metrics. It does not execute an
+independently provisioned audit harness and cannot produce promotion evidence.
+Operational publication requires separate trusted promotion authority.
+"""
 
 from __future__ import annotations
 
