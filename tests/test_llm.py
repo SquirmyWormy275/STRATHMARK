@@ -24,7 +24,7 @@ def test_slow_headers_have_total_deadline_and_retain_bounded_admission(monkeypat
             self.wfile.flush()
             release.wait(5)
             try:
-                self.wfile.write(b'Content-Length: 18\r\n\r\n{"response":"ok"}')
+                self.wfile.write(b'Content-Length: 17\r\n\r\n{"response":"ok"}')
                 self.wfile.flush()
             except OSError:
                 pass
