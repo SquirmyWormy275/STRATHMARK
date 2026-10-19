@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from strathmark.private_storage import private_directory
 from strathmark.v3.application.capacity import (
     CapacityManifest,
     JobLane,
@@ -798,7 +799,7 @@ def build_replay_report(*, fault_plan: ReplayFaultPlan | None = None) -> dict[st
     if not isinstance(plan, ReplayFaultPlan):
         raise TypeError("replay fault plan must be typed")
     with TemporaryDirectory(prefix="strathmark-v3-replay-") as directory:
-        root = Path(directory)
+        root = private_directory(directory)
         enable_unwitnessed_rehearsal(
             root, signer=P256EphemeralSigner.generate("integrity-key:acceptance-rehearsal")
         )
